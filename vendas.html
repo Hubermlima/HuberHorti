@@ -335,7 +335,6 @@ body{font-family:'Inter',sans-serif;background:#F7F8FA;color:#1A1D23;min-height:
 
   
 <script>
-  
 document.addEventListener('DOMContentLoaded', function () {
 
   const SUPA_URL = 'https://suwaqkxkhhfopjkhsptf.supabase.co';
@@ -350,6 +349,7 @@ document.addEventListener('DOMContentLoaded', function () {
   let itens = [];
   let privado = true;
   let rowAtual = null;
+  let pedidoAtual = null;
 
   const PRODS = [
     'Abacate Paulista','Alho Roxo','Batata Doce Roxa','Batata Portuguesa',
@@ -413,12 +413,13 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   function executarTrocarCliente() {
-    clienteSel = null; itens = [];
+    clienteSel = null; itens = []; pedidoAtual = null;
     document.getElementById('cli-busca').style.display = 'block';
     document.getElementById('cli-sel').style.display = 'none';
     document.getElementById('cli-input').value = '';
     document.getElementById('cli-lista').innerHTML = '';
     document.getElementById('cli-lista').classList.remove('open');
+    document.getElementById('nota-num').textContent = 'Nota --';
     renderTabela(); atualizarResumo();
   }
 
@@ -428,17 +429,17 @@ document.addEventListener('DOMContentLoaded', function () {
       document.getElementById('popup-nova-venda').classList.add('open');
     } else {
       limparVenda();
+      executarTrocarCliente();
     }
   }
 
-    function confirmarNovaVenda() {
+  function confirmarNovaVenda() {
     document.getElementById('popup-nova-venda').classList.remove('open');
     salvarNota().then(function() {
       limparVenda();
       executarTrocarCliente();
     });
   }
-
 
   function excluirVenda() {
     const com = itens.filter(function(i) { return i.quantidade > 0; });
@@ -456,6 +457,8 @@ document.addEventListener('DOMContentLoaded', function () {
 
   function limparVenda() {
     itens = [];
+    pedidoAtual = null;
+    document.getElementById('nota-num').textContent = 'Nota --';
     renderTabela();
     atualizarResumo();
   }
@@ -468,6 +471,7 @@ document.addEventListener('DOMContentLoaded', function () {
       return { produto: p, quantidade: 0, preco_unit: 0, preco_manual: false, custo_unit: est.custo, total: 0, custo_total: 0, lucro: 0, estoque: est.saldo };
     }).filter(Boolean);
     renderTabela();
+    atualizarResumo();
   }
 
   function calcPreco(prod, qtd) {
@@ -562,7 +566,7 @@ document.addEventListener('DOMContentLoaded', function () {
     if (inputs[0]) inputs[0].className = 't-input ' + (qtd > 0 ? (est < qtd ? 'low' : 'ok') : '');
   }
 
-    function atualizarResumo() {
+  function atualizarResumo() {
     const com = itens.filter(function(i) { return i.quantidade > 0; });
     const tv = com.reduce(function(s, i) { return s + i.total; }, 0);
     const tc = com.reduce(function(s, i) { return s + i.custo_total; }, 0);
@@ -574,7 +578,6 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('r-lucro').textContent = fmtR(tl);
     document.getElementById('r-margem').textContent = pct + '%';
   }
-
 
   function togglePrivado() {
     privado = !privado;
@@ -590,7 +593,7 @@ document.addEventListener('DOMContentLoaded', function () {
       : '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
   }
 
-    function buscarProduto() {
+  function buscarProduto() {
     const q = document.getElementById('prod-search').value.toLowerCase();
     const ac = document.getElementById('prod-ac');
     if (!q) { ac.classList.remove('open'); return; }
@@ -655,7 +658,7 @@ document.addEventListener('DOMContentLoaded', function () {
     fecharProducao();
   }
 
-    function confirmarSalvar() {
+  function confirmarSalvar() {
     if (!clienteSel) { toast('Selecione um cliente', 'err'); return; }
     const com = itens.filter(function(i) { return i.quantidade > 0; });
     if (!com.length) { toast('Nenhum item com quantidade', 'err'); return; }
@@ -663,23 +666,41 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('popup-salvar').classList.add('open');
   }
 
-
-    async function salvarNota() {
+  async function salvarNota() {
     document.getElementById('popup-salvar').classList.remove('open');
     const com = itens.filter(function(i) { return i.quantidade > 0; });
     const tv = com.reduce(function(s, i) { return s + i.total; }, 0);
     const tc = com.reduce(function(s, i) { return s + i.custo_total; }, 0);
-    const { data: ped, error: e1 } = await db.from('pedidos').insert({
-      cliente_id: clienteSel.id,
-      data: document.getElementById('nota-data').value,
-      total_venda: tv, total_custo: tc, total_lucro: tv - tc,
-      margem_pct: tv > 0 ? ((tv - tc) / tv * 100) : 0
-    }).select().single();
-    if (e1) { toast('Erro: ' + e1.message, 'err'); return; }
-    const { error: e2 } = await db.from('itens_pedido').insert(com.map(function(i) {
-      return { pedido_id: ped.id, produto_id: i.produto.id, quantidade: i.quantidade, preco_unit: i.preco_unit, custo_unit: i.custo_unit, total_venda: i.total, total_custo: i.custo_total, lucro: i.lucro };
-    }));
-    if (e2) { toast('Erro itens: ' + e2.message, 'err'); return; }
+
+    if (!pedidoAtual) {
+      const { data: ped, error: e1 } = await db.from('pedidos').insert({
+        cliente_id: clienteSel.id,
+        data: document.getElementById('nota-data').value,
+        total_venda: tv, total_custo: tc, total_lucro: tv - tc,
+        margem_pct: tv > 0 ? ((tv - tc) / tv * 100) : 0
+      }).select().single();
+      if (e1) { toast('Erro: ' + e1.message, 'err'); return; }
+      pedidoAtual = ped.id;
+      document.getElementById('nota-num').textContent = 'Nota ' + ped.id.substring(0, 8).toUpperCase();
+      const { error: e2 } = await db.from('itens_pedido').insert(com.map(function(i) {
+        return { pedido_id: pedidoAtual, produto_id: i.produto.id, quantidade: i.quantidade, preco_unit: i.preco_unit, custo_unit: i.custo_unit, total_venda: i.total, total_custo: i.custo_total, lucro: i.lucro };
+      }));
+      if (e2) { toast('Erro itens: ' + e2.message, 'err'); return; }
+      await db.from('contas_receber').insert({ pedido_id: pedidoAtual, cliente_id: clienteSel.id, valor_original: tv, saldo: tv, status: 'aberto' });
+    } else {
+      const { error: e1 } = await db.from('pedidos').update({
+        total_venda: tv, total_custo: tc, total_lucro: tv - tc,
+        margem_pct: tv > 0 ? ((tv - tc) / tv * 100) : 0
+      }).eq('id', pedidoAtual);
+      if (e1) { toast('Erro: ' + e1.message, 'err'); return; }
+      await db.from('itens_pedido').delete().eq('pedido_id', pedidoAtual);
+      const { error: e2 } = await db.from('itens_pedido').insert(com.map(function(i) {
+        return { pedido_id: pedidoAtual, produto_id: i.produto.id, quantidade: i.quantidade, preco_unit: i.preco_unit, custo_unit: i.custo_unit, total_venda: i.total, total_custo: i.custo_total, lucro: i.lucro };
+      }));
+      if (e2) { toast('Erro itens: ' + e2.message, 'err'); return; }
+      await db.from('contas_receber').update({ valor_original: tv, saldo: tv }).eq('pedido_id', pedidoAtual);
+    }
+
     for (var idx = 0; idx < com.length; idx++) {
       var item = com[idx];
       var est = estoque[item.produto.id] || { saldo: 0, custo: 0 };
@@ -687,13 +708,9 @@ document.addEventListener('DOMContentLoaded', function () {
       await db.from('estoque_caminhao').upsert({ produto_id: item.produto.id, saldo_kg: novo, custo_medio: est.custo, updated_at: new Date().toISOString() }, { onConflict: 'produto_id' });
       estoque[item.produto.id] = { saldo: novo, custo: est.custo };
     }
-    await db.from('contas_receber').insert({ pedido_id: ped.id, cliente_id: clienteSel.id, valor_original: tv, saldo: tv, status: 'aberto' });
-    toast('Nota salva!', 'ok');
-    setTimeout(function() {
-      document.getElementById('nota-num').textContent = 'Nota #' + ped.id.substring(0, 8);
-    }, 800);
-  }
 
+    toast('Nota salva!', 'ok');
+  }
 
   function gerarComprovante() { window.print(); }
 
