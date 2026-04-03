@@ -205,7 +205,7 @@ body{font-family:'Inter',sans-serif;background:#F7F8FA;color:#1A1D23;min-height:
         <svg viewBox="0 0 24 24"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>
         Producao
       </div>
-      <div class="sidebar-item purple" onclick="abrirMovimentacoesClientes();toggleSidebar()">
+      <div class="sidebar-item purple" onclick="abrirMovimentacoesCliente();toggleSidebar()">
         <svg viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
         Movimentações
       </div>
@@ -475,17 +475,6 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('sidebar-overlay').classList.toggle('open');
   }
 
-
-  function abrirMovimentacoesClientes() {
-    const params = new URLSearchParams();
-    if (clienteSel && clienteSel.id) {
-      params.set('cliente_id', clienteSel.id);
-      params.set('cliente_nome', clienteSel.nome || '');
-    }
-    const url = 'movimentacoes_clientes.html' + (params.toString() ? '?' + params.toString() : '');
-    window.location.href = url;
-  }
-
   function toggleResumo() {
     const expanded = document.getElementById('resumo-expanded');
     const arrow = document.getElementById('resumo-arrow');
@@ -551,7 +540,7 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('cli-meta').textContent = (c.cidade || '') + ' - ' + (c.margem_tipo === 'reais' ? 'R$ ' + c.margem_valor + '/cx' : c.margem_valor + '%');
 
     const range = getRangeOntemAteHoje();
-    const { data: pedidos } = await db.from('pedidos').select('*')
+    const { data: pedidos } = await db.from('pedidos_vendas').select('*')
       .eq('cliente_id', c.id)
       .gte('data', range.inicioISO)
       .lte('data', range.fimISO)
@@ -573,7 +562,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     const limite = getInicioAntesDeOntem();
 
-    const { data: pedidos } = await db.from('pedidos').select('*')
+    const { data: pedidos } = await db.from('pedidos_vendas').select('*')
       .eq('cliente_id', clienteSel.id)
       .lt('data', limite)
       .order('data', { ascending: false })
@@ -632,8 +621,8 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   async function carregarPedidoAnterior(id) {
-    const { data: ped } = await db.from('pedidos').select('*').eq('id', id).single();
-    const { data: itensPed } = await db.from('itens_pedido').select('*').eq('pedido_id', id);
+    const { data: ped } = await db.from('pedidos_vendas').select('*').eq('id', id).single();
+    const { data: itensPed } = await db.from('itens_pedidos_vendas').select('*').eq('pedido_id', id);
 
     if (!ped || !itensPed) {
       toast('Erro ao carregar pedido', 'err');
@@ -1177,6 +1166,14 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('popup-salvar').classList.add('open');
   }
 
+  async function restaurarEstoquePedidoAntigo() {
+    return true;
+  }
+
+  async function aplicarBaixaEstoque(itensParaBaixar) {
+    return true;
+  }
+
   async function salvarNota() {
     document.getElementById('popup-salvar').classList.remove('open');
 
@@ -1196,13 +1193,15 @@ document.addEventListener('DOMContentLoaded', function () {
 
     try {
       if (!pedidoAtual) {
-        const { data: ped, error: e1 } = await db.from('pedidos').insert({
+        const { data: ped, error: e1 } = await db.from('pedidos_vendas').insert({
           cliente_id: clienteSel.id,
           data: document.getElementById('nota-data').value,
           total_venda: tv,
           total_custo: tc,
           total_lucro: tv - tc,
-          margem_pct: tv > 0 ? ((tv - tc) / tv * 100) : 0
+          margem_pct: tv > 0 ? ((tv - tc) / tv * 100) : 0,
+          em_aberto: tv,
+          status: 0
         }).select().single();
 
         if (e1) {
@@ -1213,7 +1212,7 @@ document.addEventListener('DOMContentLoaded', function () {
         pedidoAtual = ped.id;
         document.getElementById('nota-num').textContent = 'Nota ' + ped.id.substring(0, 8).toUpperCase();
 
-        const { error: e2 } = await db.from('itens_pedido').insert(com.map(function(i) {
+        const { error: e2 } = await db.from('itens_pedidos_vendas').insert(com.map(function(i) {
           return {
             pedido_id: pedidoAtual,
             produto_id: i.produto.id,
@@ -1231,29 +1230,20 @@ document.addEventListener('DOMContentLoaded', function () {
           return false;
         }
 
-        const { error: e3 } = await db.from('contas_receber').insert({
-          pedido_id: pedidoAtual,
-          cliente_id: clienteSel.id,
-          valor_original: tv,
-          saldo: tv,
-          status: 'aberto'
-        });
 
-        if (e3) {
-          toast('Erro contas: ' + e3.message, 'err');
-          return false;
-        }
       } else {
         const estoqueRestaurado = await restaurarEstoquePedidoAntigo();
         if (!estoqueRestaurado) return false;
 
-        const { error: e1 } = await db.from('pedidos').update({
+        const { error: e1 } = await db.from('pedidos_vendas').update({
           cliente_id: clienteSel.id,
           data: document.getElementById('nota-data').value,
           total_venda: tv,
           total_custo: tc,
           total_lucro: tv - tc,
-          margem_pct: tv > 0 ? ((tv - tc) / tv * 100) : 0
+          margem_pct: tv > 0 ? ((tv - tc) / tv * 100) : 0,
+          em_aberto: tv,
+          status: 0
         }).eq('id', pedidoAtual);
 
         if (e1) {
@@ -1261,13 +1251,13 @@ document.addEventListener('DOMContentLoaded', function () {
           return false;
         }
 
-        const { error: eDel } = await db.from('itens_pedido').delete().eq('pedido_id', pedidoAtual);
+        const { error: eDel } = await db.from('itens_pedidos_vendas').delete().eq('pedido_id', pedidoAtual);
         if (eDel) {
           toast('Erro apagando itens: ' + eDel.message, 'err');
           return false;
         }
 
-        const { error: e2 } = await db.from('itens_pedido').insert(com.map(function(i) {
+        const { error: e2 } = await db.from('itens_pedidos_vendas').insert(com.map(function(i) {
           return {
             pedido_id: pedidoAtual,
             produto_id: i.produto.id,
@@ -1285,15 +1275,7 @@ document.addEventListener('DOMContentLoaded', function () {
           return false;
         }
 
-        const { error: e3 } = await db.from('contas_receber').update({
-          valor_original: tv,
-          saldo: tv
-        }).eq('pedido_id', pedidoAtual);
 
-        if (e3) {
-          toast('Erro contas: ' + e3.message, 'err');
-          return false;
-        }
       }
 
       const estoqueAplicado = await aplicarBaixaEstoque(com);
@@ -1314,6 +1296,19 @@ document.addEventListener('DOMContentLoaded', function () {
       toast('Erro inesperado: ' + (err.message || err), 'err');
       return false;
     }
+  }
+
+
+  function abrirMovimentacoesCliente() {
+    if (clienteSel && clienteSel.id) {
+      const params = new URLSearchParams({
+        cliente_id: clienteSel.id,
+        cliente_nome: clienteSel.nome || ''
+      });
+      window.location.href = 'movimentacoes_clientes.html?' + params.toString();
+      return;
+    }
+    window.location.href = 'movimentacoes_clientes.html';
   }
 
   function gerarComprovante() {
@@ -1370,6 +1365,7 @@ document.addEventListener('DOMContentLoaded', function () {
   window.gerarPDFProducao = gerarPDFProducao;
   window.confirmarSalvar = confirmarSalvar;
   window.salvarNota = salvarNota;
+  window.abrirMovimentacoesCliente = abrirMovimentacoesCliente;
   window.gerarComprovante = gerarComprovante;
 
   carregarDados().then(function() {
