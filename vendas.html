@@ -154,6 +154,17 @@ body{font-family:'Inter',sans-serif;background:#F7F8FA;color:#1A1D23;min-height:
 .toast.ok{background:#16A34A}
 .toast.err{background:#EF4444}
 
+.autosave-status{
+  position:fixed;left:12px;right:12px;bottom:16px;z-index:950;
+  background:#fff;border:1px solid #ECEEF2;border-radius:10px;
+  padding:9px 12px;font-size:12px;font-weight:500;color:#6B7280;
+  box-shadow:0 4px 16px rgba(0,0,0,.06)
+}
+.autosave-status.ok{color:#16A34A}
+.autosave-status.warn{color:#EA580C}
+.autosave-status.err{color:#EF4444}
+.autosave-status.info{color:#2563EB}
+
 </style>
 </head>
 <body>
@@ -396,6 +407,7 @@ body{font-family:'Inter',sans-serif;background:#F7F8FA;color:#1A1D23;min-height:
   </div>
 </div>
 
+<div class="autosave-status" id="autosave-status">Status: pronto</div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -413,6 +425,10 @@ document.addEventListener('DOMContentLoaded', function () {
   let pedidoAtual = null;
   let pedidoPendenteId = null;
   let pedidoSelecionadoId = null;
+  let autosaveTimer = null;
+  let autosaveDirty = false;
+  let autosaveEmExecucao = false;
+  const AUTOSAVE_DELAY_MS = 15000;
 
   const PRODS = [
     'Abacate Paulista','Alho Roxo','Batata Doce Roxa','Batata Portuguesa',
@@ -460,6 +476,70 @@ document.addEventListener('DOMContentLoaded', function () {
     return sinal + 'R$ ' + Math.abs(v).toFixed(2).replace('.', ',');
   }
 
+  function horaAtualFormatada() {
+    return new Date().toLocaleTimeString('pt-BR', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    });
+  }
+
+  function setAutosaveStatus(texto, tipo) {
+    const el = document.getElementById('autosave-status');
+    if (!el) return;
+    el.textContent = 'Status: ' + texto;
+    el.className = 'autosave-status' + (tipo ? ' ' + tipo : '');
+  }
+
+  function cancelarAutosave() {
+    if (autosaveTimer) {
+      clearTimeout(autosaveTimer);
+      autosaveTimer = null;
+    }
+  }
+
+  function podeAutosalvar() {
+    if (autosaveEmExecucao) return false;
+    if (!clienteSel) return false;
+    const com = itens.filter(function(i) { return Number(i.quantidade) > 0; });
+    if (!com.length) return false;
+    return true;
+  }
+
+  function agendarAutosave() {
+    cancelarAutosave();
+
+    if (!podeAutosalvar()) {
+      if (clienteSel) {
+        setAutosaveStatus('pronto', '');
+      } else {
+        setAutosaveStatus('aguardando seleção do cliente', '');
+      }
+      return;
+    }
+
+    autosaveDirty = true;
+    setAutosaveStatus('alterações pendentes', 'warn');
+
+    autosaveTimer = setTimeout(async function () {
+      if (!autosaveDirty || !podeAutosalvar()) return;
+
+      autosaveEmExecucao = true;
+      setAutosaveStatus('salvando automaticamente...', 'info');
+
+      const ok = await salvarNota(true);
+
+      autosaveEmExecucao = false;
+
+      if (ok) {
+        autosaveDirty = false;
+        setAutosaveStatus('salvo automaticamente às ' + horaAtualFormatada(), 'ok');
+      } else {
+        setAutosaveStatus('erro ao salvar automaticamente', 'err');
+      }
+    }, AUTOSAVE_DELAY_MS);
+  }
+
   async function carregarDados() {
     const { data: cli } = await db.from('clientes').select('*').order('nome');
     clientes = cli || [];
@@ -468,6 +548,7 @@ document.addEventListener('DOMContentLoaded', function () {
     produtos = prod || [];
 
     document.getElementById('nota-data').value = getAgoraLocalISO();
+    setAutosaveStatus('aguardando seleção do cliente', '');
   }
 
   function toggleSidebar() {
@@ -673,6 +754,9 @@ document.addEventListener('DOMContentLoaded', function () {
     renderTabela();
     atualizarResumo();
     aplicarPrivacidade();
+    autosaveDirty = false;
+    cancelarAutosave();
+    setAutosaveStatus('nota carregada', '');
     toast('Pedido carregado!', 'ok');
   }
 
@@ -702,6 +786,7 @@ document.addEventListener('DOMContentLoaded', function () {
     renderTabela();
     atualizarResumo();
     aplicarPrivacidade();
+    setAutosaveStatus(clienteSel ? 'pronto para edição' : 'aguardando seleção do cliente', '');
   }
 
   function resetHistoricoUI() {
@@ -712,6 +797,10 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   function resetTelaNovaVenda() {
+    cancelarAutosave();
+    autosaveDirty = false;
+    autosaveEmExecucao = false;
+    setAutosaveStatus('pronto', '');
     clienteSel = null;
     pedidoAtual = null;
     pedidoPendenteId = null;
@@ -881,6 +970,7 @@ document.addEventListener('DOMContentLoaded', function () {
     renderLinha(idx);
     atualizarResumo();
     aplicarPrivacidade();
+    agendarAutosave();
   }
 
   function onPrecoChange(idx, val) {
@@ -904,6 +994,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     atualizarResumo();
     aplicarPrivacidade();
+    agendarAutosave();
   }
 
   function onTotalChange(idx, val) {
@@ -933,6 +1024,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     atualizarResumo();
     aplicarPrivacidade();
+    agendarAutosave();
   }
 
   function renderTabela() {
@@ -1085,6 +1177,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     document.getElementById('prod-search').value = '';
     document.getElementById('prod-ac').classList.remove('open');
+    agendarAutosave();
   }
 
   function abrirRowMenu(idx, nome, cd) {
@@ -1112,6 +1205,7 @@ document.addEventListener('DOMContentLoaded', function () {
       renderTabela();
       atualizarResumo();
       aplicarPrivacidade();
+      agendarAutosave();
       rowAtual = null;
     }
     fecharRowMenu();
@@ -1196,7 +1290,7 @@ document.addEventListener('DOMContentLoaded', function () {
     return true;
   }
 
-  async function salvarNota() {
+  async function salvarNota(silencioso = false) {
     document.getElementById('popup-salvar').classList.remove('open');
 
     if (!clienteSel) {
@@ -1308,7 +1402,12 @@ document.addEventListener('DOMContentLoaded', function () {
       renderTabela();
       atualizarResumo();
       aplicarPrivacidade();
-      toast('Nota salva!', 'ok');
+      autosaveDirty = false;
+      cancelarAutosave();
+      setAutosaveStatus((silencioso ? 'salvo automaticamente às ' : 'salvo às ') + horaAtualFormatada(), 'ok');
+      if (!silencioso) {
+        toast('Nota salva!', 'ok');
+      }
       return true;
     } catch (err) {
       toast('Erro inesperado: ' + (err.message || err), 'err');
