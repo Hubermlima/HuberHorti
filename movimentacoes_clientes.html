@@ -482,8 +482,9 @@ body{
 
 <script>
 document.addEventListener('DOMContentLoaded', async function(){
-  const clienteNome = new URLSearchParams(window.location.search).get('cliente_nome');
-  const clienteId = new URLSearchParams(window.location.search).get('cliente_id');
+  const params = new URLSearchParams(window.location.search);
+  const clienteNomeParam = params.get('cliente_nome');
+  const clienteIdParam = params.get('cliente_id');
 
   const label = document.getElementById('cliente-nome');
   const input = document.getElementById('cliente-input');
@@ -495,17 +496,31 @@ document.addEventListener('DOMContentLoaded', async function(){
   const sheetClose = document.getElementById('sheet-close');
   const btnCancelarSheet = document.getElementById('btn-cancelar-sheet');
   const btnGravarSheet = document.getElementById('btn-gravar-sheet');
+  const sheetTitle = document.querySelector('.sheet-title');
   const sheetCliente = document.getElementById('sheet-cliente');
   const movData = document.getElementById('mov-data');
   const movValor = document.getElementById('mov-valor');
   const movConta = document.getElementById('mov-conta');
   const consumoSim = document.getElementById('consumo-sim');
   const consumoNao = document.getElementById('consumo-nao');
+  const totalEl = document.getElementById('total-geral');
+  const listaMovimentacoes = document.getElementById('lista-movimentacoes');
 
   let clientes = [];
-  let clienteSelecionado = clienteId || null;
-  let clienteSelecionadoNome = clienteNome ? decodeURIComponent(clienteNome) : '';
+  let clienteSelecionado = clienteIdParam || null;
+  let clienteSelecionadoNome = clienteNomeParam ? decodeURIComponent(clienteNomeParam) : '';
   let consumo = true;
+  let editandoId = null;
+  let salvando = false;
+
+  function escapeHtml(text){
+    return String(text || '')
+      .replace(/&/g,'&amp;')
+      .replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;')
+      .replace(/'/g,'&#39;');
+  }
 
   function mostrarToast(msg){
     toast.textContent = msg;
@@ -516,66 +531,208 @@ document.addEventListener('DOMContentLoaded', async function(){
     }, 2200);
   }
 
-  function atualizarTotal(){
-    const totalEl = document.getElementById('total-geral');
-    const valores = Array.from(document.querySelectorAll('.item .value')).map(function(el){
-      return Number(String(el.textContent).replace(/[^\d,.-]/g,'').replace(/\./g,'').replace(',','.')) || 0;
-    });
-    const soma = valores.reduce((a,b) => a + b, 0);
-    totalEl.textContent = soma.toLocaleString('pt-BR', {style:'currency', currency:'BRL'});
+  function formatarMoeda(valor){
+    return Number(valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
   }
 
-  function renderLista(items){
-    if (!items.length) {
-      lista.innerHTML = '<div class="cliente-item">Nenhum cliente encontrado</div>';
-      lista.style.display = 'block';
-      return;
-    }
-    lista.innerHTML = items.map(function(c){
-      const nome = String(c.nome || '');
-      const safeNome = nome.replace(/"/g, '&quot;');
-      return '<div class="cliente-item" data-id="' + c.id + '" data-nome="' + safeNome + '">' + nome + '</div>';
-    }).join('');
-    lista.style.display = 'block';
+  function formatarDataTela(dataIso){
+    if (!dataIso) return '—';
+    const d = new Date(dataIso);
+    if (isNaN(d.getTime())) return '—';
+    return d.toLocaleDateString('pt-BR');
+  }
 
-    lista.querySelectorAll('.cliente-item[data-id]').forEach(function(el){
-      el.addEventListener('click', function(){
-        clienteSelecionado = this.dataset.id;
-        clienteSelecionadoNome = this.dataset.nome;
-        window.clienteSelecionado = clienteSelecionado;
-        label.style.display = 'block';
-        label.textContent = clienteSelecionadoNome;
-        input.style.display = 'none';
-        input.value = '';
-        lista.style.display = 'none';
-        lista.innerHTML = '';
-        mostrarToast('Cliente selecionado');
-      });
-    });
+  function formatarDataInput(dataIso){
+    if (!dataIso) return '';
+    const d = new Date(dataIso);
+    if (isNaN(d.getTime())) return '';
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return y + '-' + m + '-' + day;
+  }
+
+  function valorTextoParaNumero(texto){
+    return Number(String(texto || '').replace(/[^\d,.-]/g,'').replace(/\./g,'').replace(',','.')) || 0;
+  }
+
+  function numeroParaValorTexto(valor){
+    return formatarMoeda(Number(valor || 0));
+  }
+
+  function atualizarTotalPorDados(items){
+    const soma = (items || []).reduce(function(acc, item){
+      return acc + (Number(item.valor) || 0);
+    }, 0);
+    totalEl.textContent = formatarMoeda(soma);
   }
 
   function ativarConsumo(isSim){
-    consumo = isSim;
-    consumoSim.classList.toggle('active', isSim);
-    consumoNao.classList.toggle('active', !isSim);
+    consumo = !!isSim;
+    consumoSim.classList.toggle('active', consumo);
+    consumoNao.classList.toggle('active', !consumo);
   }
 
-  function abrirFormulario(){
+  function limparFormulario(){
+    editandoId = null;
+    if (sheetTitle) sheetTitle.textContent = 'Nova movimentação';
+    sheetCliente.textContent = clienteSelecionadoNome || label.textContent || 'Selecione um cliente';
+    movData.value = new Date().toISOString().slice(0,10);
+    movConta.value = 'nenhum';
+    movValor.value = '';
+    ativarConsumo(true);
+  }
+
+  function preencherFormulario(item){
+    editandoId = item.id;
+    if (sheetTitle) sheetTitle.textContent = 'Editar movimentação';
+    sheetCliente.textContent = clienteSelecionadoNome || label.textContent || 'Cliente';
+    movData.value = formatarDataInput(item.data);
+    movConta.value = item.destino || 'nenhum';
+    movValor.value = numeroParaValorTexto(item.valor);
+    ativarConsumo(String(item.tipo || '').toLowerCase() === 'consumo');
+  }
+
+  function abrirFormulario(item){
     if (!clienteSelecionado && !clienteSelecionadoNome) {
       mostrarToast('Selecione um cliente primeiro');
+      input.style.display = 'block';
+      label.style.display = 'none';
       input.focus();
-      if (clientes.length) renderLista(clientes.slice(0, 8));
       return;
     }
-    sheetCliente.textContent = clienteSelecionadoNome || label.textContent || 'Cliente';
-    if (!movData.value) movData.value = new Date().toISOString().slice(0,10);
-    if (!movConta.value) movConta.value = 'nenhum';
-    ativarConsumo(true);
+    if (item) preencherFormulario(item);
+    else limparFormulario();
     sheet.classList.add('open');
   }
 
   function fecharFormulario(){
     sheet.classList.remove('open');
+  }
+
+  function esconderSugestoes(){
+    lista.style.display = 'none';
+    lista.innerHTML = '';
+  }
+
+  function renderSugestoes(items){
+    if (!items.length) {
+      lista.innerHTML = '<div class="cliente-item">Nenhum cliente encontrado</div>';
+      lista.style.display = 'block';
+      return;
+    }
+
+    lista.innerHTML = items.map(function(c){
+      const nome = escapeHtml(c.nome || '');
+      return '<div class="cliente-item" data-id="' + escapeHtml(c.id) + '" data-nome="' + nome + '">' + nome + '</div>';
+    }).join('');
+    lista.style.display = 'block';
+
+    lista.querySelectorAll('.cliente-item[data-id]').forEach(function(el){
+      el.addEventListener('click', async function(){
+        clienteSelecionado = this.dataset.id;
+        clienteSelecionadoNome = this.dataset.nome;
+        label.textContent = clienteSelecionadoNome;
+        label.style.display = 'block';
+        input.value = '';
+        input.style.display = 'none';
+        esconderSugestoes();
+        await carregarMovimentacoes();
+        mostrarToast('Cliente selecionado');
+      });
+    });
+  }
+
+  async function carregarMovimentacoes(){
+    if (!clienteSelecionado) {
+      listaMovimentacoes.innerHTML = '';
+      atualizarTotalPorDados([]);
+      return;
+    }
+
+    listaMovimentacoes.innerHTML = '<div class="item"><div class="meta">Carregando movimentações...</div></div>';
+
+    try {
+      const result = await window.db
+        .from('movimentos_clientes')
+        .select('id, cliente_id, data, destino, forma, valor, tipo, status')
+        .eq('cliente_id', clienteSelecionado)
+        .order('data', { ascending: false });
+
+      if (result.error) throw result.error;
+
+      const items = result.data || [];
+      atualizarTotalPorDados(items);
+
+      if (!items.length) {
+        listaMovimentacoes.innerHTML = '<div class="item"><div class="meta">Nenhuma movimentação encontrada</div></div>';
+        return;
+      }
+
+      listaMovimentacoes.innerHTML = items.map(function(item){
+        const destinoLabel = item.destino === 'proprio'
+          ? 'O Próprio'
+          : item.destino === 'externa'
+            ? 'Conta Externa'
+            : 'Nenhum';
+
+        const consumoLabel = String(item.tipo || '').toLowerCase() === 'consumo' ? 'Sim' : 'Não';
+
+        return [
+          '<div class="item" data-id="' + escapeHtml(item.id) + '">',
+            '<div class="item-row">',
+              '<div class="item-main">',
+                '<div class="date">' + formatarDataTela(item.data) + '</div>',
+                '<div class="value">' + formatarMoeda(item.valor) + '</div>',
+                '<div class="meta">' + escapeHtml(destinoLabel) + '</div>',
+                '<div class="cons">Consumo: ' + consumoLabel + '</div>',
+              '</div>',
+              '<div class="actions">',
+                '<button class="btn edit" type="button" data-id="' + escapeHtml(item.id) + '">Editar</button>',
+                '<button class="btn del" type="button" data-id="' + escapeHtml(item.id) + '">Excluir</button>',
+              '</div>',
+            '</div>',
+          '</div>'
+        ].join('');
+      }).join('');
+
+      listaMovimentacoes.querySelectorAll('.btn.edit').forEach(function(btn){
+        btn.addEventListener('click', function(){
+          const id = this.dataset.id;
+          const item = items.find(function(row){ return String(row.id) === String(id); });
+          if (!item) return;
+          abrirFormulario(item);
+        });
+      });
+
+      listaMovimentacoes.querySelectorAll('.btn.del').forEach(function(btn){
+        btn.addEventListener('click', async function(){
+          const id = this.dataset.id;
+          const ok = window.confirm('Excluir esta movimentação?');
+          if (!ok) return;
+
+          try {
+            const resultDelete = await window.db
+              .from('movimentos_clientes')
+              .delete()
+              .eq('id', id);
+
+            if (resultDelete.error) throw resultDelete.error;
+
+            await carregarMovimentacoes();
+            mostrarToast('Movimentação excluída');
+          } catch (err) {
+            console.error('Erro ao excluir movimentação:', err);
+            mostrarToast('Erro ao excluir');
+          }
+        });
+      });
+    } catch (err) {
+      console.error('Erro ao carregar movimentações:', err);
+      listaMovimentacoes.innerHTML = '<div class="item"><div class="meta">Erro ao carregar movimentações</div></div>';
+      atualizarTotalPorDados([]);
+      mostrarToast('Erro ao carregar movimentações');
+    }
   }
 
   if (btnVoltar) {
@@ -588,44 +745,79 @@ document.addEventListener('DOMContentLoaded', async function(){
   consumoSim.addEventListener('click', function(){ ativarConsumo(true); });
   consumoNao.addEventListener('click', function(){ ativarConsumo(false); });
 
-  document.querySelectorAll('.btn.edit').forEach(function(btn){
-    btn.addEventListener('click', abrirFormulario);
+  btnNova.addEventListener('click', function(){
+    abrirFormulario();
   });
 
-  document.querySelectorAll('.btn.del').forEach(function(btn){
-    btn.addEventListener('click', function(){
-      const item = this.closest('.item');
-      if (!item) return;
-      item.remove();
-      atualizarTotal();
-      mostrarToast('Movimentação excluída');
-    });
-  });
-
-  btnNova.addEventListener('click', abrirFormulario);
   sheetClose.addEventListener('click', fecharFormulario);
   btnCancelarSheet.addEventListener('click', fecharFormulario);
-  btnGravarSheet.addEventListener('click', function(){
-    const formaPagamento = movConta.value === 'nenhum' ? 'Dinheiro' : 'Depósito';
-    console.log({
-      cliente_id: clienteSelecionado,
-      cliente_nome: clienteSelecionadoNome,
-      data: movData.value,
-      consumo: consumo,
-      conta_destinatario: movConta.value,
-      forma_pagamento: formaPagamento,
-      valor: movValor.value
-    });
-    mostrarToast('Formulário restaurado');
-    fecharFormulario();
+
+  btnGravarSheet.addEventListener('click', async function(){
+    if (salvando) return;
+    if (!clienteSelecionado) {
+      mostrarToast('Selecione um cliente');
+      return;
+    }
+
+    const valorNumerico = valorTextoParaNumero(movValor.value);
+    if (!valorNumerico) {
+      mostrarToast('Informe o valor');
+      movValor.focus();
+      return;
+    }
+
+    salvando = true;
+    btnGravarSheet.disabled = true;
+
+    try {
+      const payload = {
+        cliente_id: clienteSelecionado,
+        data: movData.value ? new Date(movData.value + 'T12:00:00').toISOString() : new Date().toISOString(),
+        destino: movConta.value || 'nenhum',
+        forma: movConta.value === 'nenhum' ? 'dinheiro' : 'deposito',
+        valor: valorNumerico,
+        tipo: consumo ? 'consumo' : 'nao_consumo',
+        status: 0
+      };
+
+      if (editandoId) {
+        const updateResult = await window.db
+          .from('movimentos_clientes')
+          .update(payload)
+          .eq('id', editandoId);
+
+        if (updateResult.error) throw updateResult.error;
+
+        mostrarToast('Movimentação atualizada');
+      } else {
+        const insertResult = await window.db
+          .from('movimentos_clientes')
+          .insert([payload]);
+
+        if (insertResult.error) throw insertResult.error;
+
+        mostrarToast('Movimentação gravada');
+      }
+
+      fecharFormulario();
+      limparFormulario();
+      await carregarMovimentacoes();
+    } catch (err) {
+      console.error('Erro ao gravar movimentação:', err);
+      mostrarToast('Erro ao gravar');
+    } finally {
+      salvando = false;
+      btnGravarSheet.disabled = false;
+    }
   });
+
   sheet.addEventListener('click', function(e){
     if (e.target === sheet) fecharFormulario();
   });
 
   document.addEventListener('click', function(e){
     if (!input.contains(e.target) && !lista.contains(e.target) && e.target !== input) {
-      lista.style.display = 'none';
+      esconderSugestoes();
     }
   });
 
@@ -642,6 +834,7 @@ document.addEventListener('DOMContentLoaded', async function(){
 
   if (clienteSelecionadoNome) {
     label.textContent = clienteSelecionadoNome;
+    label.style.display = 'block';
     input.style.display = 'none';
   } else {
     label.style.display = 'none';
@@ -651,42 +844,49 @@ document.addEventListener('DOMContentLoaded', async function(){
   if (!(window.db && typeof window.db.from === 'function')) {
     lista.innerHTML = '<div class="cliente-item">Supabase não inicializado</div>';
     lista.style.display = 'block';
+    listaMovimentacoes.innerHTML = '<div class="item"><div class="meta">Supabase não inicializado</div></div>';
+    totalEl.textContent = formatarMoeda(0);
     mostrarToast('Supabase não inicializado');
-    atualizarTotal();
     return;
   }
 
   try {
-    const result = await window.db.from('clientes').select('id, nome').order('nome');
-    if (result.error) throw result.error;
-    clientes = result.data || [];
+    const resultClientes = await window.db.from('clientes').select('id, nome').order('nome');
+    if (resultClientes.error) throw resultClientes.error;
+    clientes = resultClientes.data || [];
 
     input.addEventListener('focus', function(){
-      renderLista(clientes.slice(0, 8));
+      esconderSugestoes();
     });
 
     input.addEventListener('input', function(){
       const termo = this.value.trim().toLowerCase();
-      const filtrados = termo
-        ? clientes.filter(function(c){
-            return String(c.nome || '').toLowerCase().includes(termo);
-          }).slice(0, 8)
-        : clientes.slice(0, 8);
-      renderLista(filtrados);
+      if (!termo) {
+        esconderSugestoes();
+        return;
+      }
+
+      const filtrados = clientes.filter(function(c){
+        return String(c.nome || '').toLowerCase().includes(termo);
+      }).slice(0, 8);
+
+      renderSugestoes(filtrados);
     });
 
-    if (!clientes.length) {
-      lista.innerHTML = '<div class="cliente-item">Nenhum cliente cadastrado</div>';
-      lista.style.display = 'block';
+    if (clienteSelecionado) {
+      await carregarMovimentacoes();
+    } else {
+      listaMovimentacoes.innerHTML = '<div class="item"><div class="meta">Selecione um cliente para ver as movimentações</div></div>';
+      totalEl.textContent = formatarMoeda(0);
     }
   } catch (err) {
     console.error('Erro ao carregar clientes:', err);
     lista.innerHTML = '<div class="cliente-item">Erro ao carregar clientes</div>';
     lista.style.display = 'block';
+    listaMovimentacoes.innerHTML = '<div class="item"><div class="meta">Erro ao carregar clientes</div></div>';
+    totalEl.textContent = formatarMoeda(0);
     mostrarToast('Erro ao carregar clientes');
   }
-
-  atualizarTotal();
 });
 </script>
 
