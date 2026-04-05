@@ -117,22 +117,111 @@ body{
   font-size:28px;
   border:none;
 }
+
+.back-row{
+  display:flex;
+  align-items:center;
+  gap:14px;
+}
+.back-btn{
+  width:44px;
+  height:44px;
+  border:none;
+  border-radius:999px;
+  background:linear-gradient(180deg,#FFFFFF 0%,#F2F2F7 100%);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  cursor:pointer;
+  box-shadow:
+    0 14px 30px rgba(15,23,42,.14),
+    0 4px 10px rgba(15,23,42,.08),
+    inset 0 1px 0 rgba(255,255,255,.95);
+  transition:transform .15s ease, box-shadow .15s ease, background .15s ease;
+  flex-shrink:0;
+}
+.back-btn:active{
+  transform:scale(.96);
+  background:linear-gradient(180deg,#F8F8FA 0%,#EAEAEE 100%);
+  box-shadow:
+    0 8px 18px rgba(15,23,42,.12),
+    0 2px 6px rgba(15,23,42,.08),
+    inset 0 1px 0 rgba(255,255,255,.9);
+}
+.back-btn svg{
+  width:22px;
+  height:22px;
+  stroke:#111827;
+  fill:none;
+  stroke-width:2.75;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+}
+.head-copy{min-width:0}
+.cliente-lista{
+  position:relative;
+  z-index:5;
+}
+.total{
+  margin:20px 16px;
+  font-size:28px;
+  font-weight:800;
+}
+.fab{
+  position:fixed;
+  right:20px;
+  bottom:20px;
+  width:60px;
+  height:60px;
+  border-radius:50%;
+  background:#2563EB;
+  color:#fff;
+  font-size:28px;
+  border:none;
+  box-shadow:0 18px 36px rgba(37,99,235,.30);
+  cursor:pointer;
+}
+.fab:active{
+  transform:scale(.96);
+}
+.toast{
+  position:fixed;
+  left:50%;
+  bottom:94px;
+  transform:translateX(-50%);
+  background:#111827;
+  color:#fff;
+  padding:10px 14px;
+  border-radius:12px;
+  font-size:13px;
+  display:none;
+  z-index:20;
+  box-shadow:0 12px 28px rgba(0,0,0,.18);
+}
+
 </style>
 </head>
 <body>
 
 <div class="top">
-  <div class="title">Movimentações</div>
-  <div class="sub" id="cliente-nome">Selecione um cliente</div>
+  <div class="back-row">
+    <button class="back-btn" id="btn-voltar" type="button" aria-label="Voltar" title="Voltar">
+      <svg viewBox="0 0 24 24"><polyline points="15 6 9 12 15 18"/></svg>
+    </button>
+    <div class="head-copy">
+      <div class="title">Movimentações</div>
+      <div class="sub" id="cliente-nome">Selecione um cliente</div>
+    </div>
+  </div>
   <div class="cliente-box">
     <input class="cliente-input" id="cliente-input" type="text" placeholder="Buscar cliente..." style="display:none;" autocomplete="off"/>
     <div class="cliente-lista" id="cliente-lista"></div>
   </div>
 </div>
 
-<div class="total">R$ 1.580,00</div>
+<div class="total" id="total-geral">R$ 1.580,00</div>
 
-<div class="list">
+<div class="list" id="lista-movimentacoes">
 
   <div class="item">
     <div class="date">05/04/2026</div>
@@ -169,11 +258,12 @@ body{
 
 </div>
 
-<button class="fab">+</button>
+<button class="fab" id="btn-nova" type="button" aria-label="Nova movimentação" title="Nova movimentação">+</button>
+
 
 
 <script>
-(async function(){
+document.addEventListener('DOMContentLoaded', async function(){
   const db = window.db;
   const params = new URLSearchParams(window.location.search);
   const clienteNome = params.get('cliente_nome');
@@ -182,19 +272,44 @@ body{
   const label = document.getElementById('cliente-nome');
   const input = document.getElementById('cliente-input');
   const lista = document.getElementById('cliente-lista');
+  const btnVoltar = document.getElementById('btn-voltar');
+  const btnNova = document.getElementById('btn-nova');
+  const toast = document.getElementById('toast');
+  const listaMov = document.getElementById('lista-movimentacoes');
 
   let clientes = [];
   let clienteSelecionado = clienteId || null;
 
+  function mostrarToast(msg){
+    if (!toast) return;
+    toast.textContent = msg;
+    toast.style.display = 'block';
+    clearTimeout(window.__toastTimer);
+    window.__toastTimer = setTimeout(function(){
+      toast.style.display = 'none';
+    }, 1800);
+  }
+
+  function atualizarTotal(){
+    const totalEl = document.getElementById('total-geral');
+    if (!totalEl) return;
+    const valores = Array.from(document.querySelectorAll('.item .value')).map(function(el){
+      return Number(String(el.textContent).replace(/[^\d,.-]/g,'').replace(/\./g,'').replace(',','.')) || 0;
+    });
+    const soma = valores.reduce((a,b) => a + b, 0);
+    totalEl.textContent = soma.toLocaleString('pt-BR', {style:'currency', currency:'BRL'});
+  }
+
   function selecionarCliente(id, nome){
     clienteSelecionado = id;
+    window.clienteSelecionado = id;
     label.style.display = 'block';
     label.textContent = nome;
     input.style.display = 'none';
     input.value = '';
     lista.style.display = 'none';
     lista.innerHTML = '';
-    window.clienteSelecionado = clienteSelecionado;
+    mostrarToast('Cliente selecionado');
   }
 
   function renderLista(items){
@@ -204,15 +319,27 @@ body{
       return;
     }
 
-    lista.innerHTML = items.map(c =>
-      `<div class="cliente-item" data-id="${c.id}" data-nome="${String(c.nome).replace(/"/g, '&quot;')}">${c.nome}</div>`
-    ).join('');
+    lista.innerHTML = items.map(function(c){
+      const nome = String(c.nome || '');
+      const nomeSafe = nome.replace(/"/g, '&quot;');
+      return '<div class="cliente-item" data-id="' + c.id + '" data-nome="' + nomeSafe + '">' + nome + '</div>';
+    }).join('');
     lista.style.display = 'block';
 
-    lista.querySelectorAll('.cliente-item[data-id]').forEach(el => {
+    lista.querySelectorAll('.cliente-item[data-id]').forEach(function(el){
       el.addEventListener('click', function(){
         selecionarCliente(this.dataset.id, this.dataset.nome);
       });
+    });
+  }
+
+  if (btnVoltar) {
+    btnVoltar.addEventListener('click', function(){
+      if (window.history.length > 1) {
+        window.history.back();
+      } else {
+        window.location.href = 'dashboard.html';
+      }
     });
   }
 
@@ -220,43 +347,85 @@ body{
     label.textContent = decodeURIComponent(clienteNome);
     input.style.display = 'none';
     window.clienteSelecionado = clienteSelecionado;
-    return;
-  }
+  } else {
+    label.style.display = 'none';
+    input.style.display = 'block';
 
-  label.style.display = 'none';
-  input.style.display = 'block';
+    if (db) {
+      const { data, error } = await db.from('clientes').select('id, nome').order('nome');
+      clientes = data || [];
 
-  if (!db) return;
+      if (error) {
+        lista.innerHTML = '<div class="cliente-item">Erro ao carregar clientes</div>';
+        lista.style.display = 'block';
+      }
 
-  const { data, error } = await db
-    .from('clientes')
-    .select('id, nome')
-    .order('nome');
+      input.addEventListener('focus', function(){
+        const termo = this.value.trim().toLowerCase();
+        const items = termo
+          ? clientes.filter(c => String(c.nome || '').toLowerCase().includes(termo)).slice(0, 8)
+          : clientes.slice(0, 8);
+        renderLista(items);
+      });
 
-  clientes = data || [];
-  if (error) {
-    lista.innerHTML = '<div class="cliente-item">Erro ao carregar clientes</div>';
-    lista.style.display = 'block';
-    return;
-  }
-
-  input.addEventListener('input', function(){
-    const termo = this.value.trim().toLowerCase();
-
-    if (!termo) {
-      lista.innerHTML = '';
-      lista.style.display = 'none';
-      return;
+      input.addEventListener('input', function(){
+        const termo = this.value.trim().toLowerCase();
+        if (!termo) {
+          renderLista(clientes.slice(0, 8));
+          return;
+        }
+        const filtrados = clientes.filter(function(c){
+          return String(c.nome || '').toLowerCase().includes(termo);
+        }).slice(0, 8);
+        renderLista(filtrados);
+      });
+    } else {
+      lista.innerHTML = '<div class="cliente-item">Conexão com banco indisponível</div>';
+      lista.style.display = 'block';
     }
+  }
 
-    const filtrados = clientes.filter(c =>
-      String(c.nome || '').toLowerCase().includes(termo)
-    ).slice(0, 8);
-
-    renderLista(filtrados);
+  document.addEventListener('click', function(e){
+    if (input && lista && !input.contains(e.target) && !lista.contains(e.target)) {
+      lista.style.display = 'none';
+    }
   });
-})();
+
+  document.querySelectorAll('.btn.edit').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      mostrarToast('Editar movimentação');
+    });
+  });
+
+  document.querySelectorAll('.btn.del').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      const item = this.closest('.item');
+      if (!item) return;
+      item.remove();
+      atualizarTotal();
+      mostrarToast('Movimentação excluída');
+    });
+  });
+
+  if (btnNova) {
+    btnNova.addEventListener('click', function(){
+      if (!window.clienteSelecionado && !clienteNome) {
+        mostrarToast('Selecione um cliente primeiro');
+        if (input) input.focus();
+        if (input && input.style.display !== 'none' && clientes.length) {
+          renderLista(clientes.slice(0, 8));
+        }
+        return;
+      }
+      mostrarToast('Nova movimentação');
+    });
+  }
+
+  atualizarTotal();
+});
 </script>
 
+
+<div class="toast" id="toast"></div>
 </body>
 </html>
