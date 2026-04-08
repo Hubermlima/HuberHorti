@@ -5,7 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"/>
 <title>HuberHorti - Compras v25.9</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="supabase.js"></script>
 <script src="utils.js"></script>
+
 <style>
 /* RESET & BASE */
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -52,9 +55,37 @@ body{
     transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.card-search-section {
-    padding: 14px 14px 8px 14px;
+/* AUTOCOMPLETE STYLES */
+.autocomplete-wrapper { position: relative; width: 100%; }
+.autocomplete-results {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: #FFF;
+    border-radius: 18px;
+    box-shadow: 0 12px 30px rgba(0,0,0,0.15);
+    z-index: 1000;
+    max-height: 250px;
+    overflow-y: auto;
+    display: none;
+    margin-top: 8px;
+    border: 1px solid #F2F2F7;
 }
+.autocomplete-item {
+    padding: 14px 18px;
+    font-size: 14px;
+    border-bottom: 1px solid #F2F2F7;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.autocomplete-item:last-child { border-bottom: none; }
+.autocomplete-item:active { background: #F2F2F7; }
+.autocomplete-item span { color: #8E8E93; font-size: 11px; font-weight: 500; }
+
+.card-search-section { padding: 14px 14px 8px 14px; }
 .busca-wrap-ios {
     position: relative;
     display: flex;
@@ -94,13 +125,7 @@ body{
 .total-label { font-size: 9px; font-weight: 700; color: #8E8E93; text-transform: uppercase; margin-bottom: 2px; display: block; }
 .price-tag { font-size: 18px; font-weight: 700; color: #1C1C1E; letter-spacing: -0.5px; }
 
-/* CONTAINER DE BOTÕES */
-.card-actions {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-}
-
+.card-actions { display: flex; gap: 8px; align-items: center; }
 .btn-card-action {
     width: 32px; height: 32px; border-radius: 50%; border: none;
     background: #F2F2F7; display: flex; align-items: center; justify-content: center;
@@ -111,7 +136,6 @@ body{
 .btn-card-action.expand-btn { transition: transform 0.3s ease; }
 .unified-card.expanded .expand-btn { transform: rotate(180deg); }
 
-/* DETALHES EXPANSÍVEIS */
 .details-content {
     max-height: 0;
     opacity: 0;
@@ -147,7 +171,6 @@ body{
 }
 .grid-scroll { flex: 1; overflow: auto; }
 
-/* TABELA & PAGINAÇÃO */
 table { border-collapse: collapse; width: max-content; font-size: 10px; table-layout: fixed; }
 th, td { padding: 12px 8px; text-align: center; border-bottom: 1px solid #F9FAFB; color: #48484A; width: 75px; }
 th:first-child, td:first-child { 
@@ -181,9 +204,12 @@ thead th { position: sticky; top: 0; background: #F9FAFB; padding: 12px 8px; col
 <div class="main">
   <div class="unified-card" id="mainCard">
     <div class="card-search-section">
-      <div class="busca-wrap-ios">
-        <svg class="busca-icon" viewBox="0 0 24 24"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-        <input class="busca-input" type="text" placeholder="Buscar Fornecedor...">
+      <div class="autocomplete-wrapper">
+        <div class="busca-wrap-ios">
+          <svg class="busca-icon" viewBox="0 0 24 24"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+          <input id="busca-fornecedor" class="busca-input" type="text" placeholder="Buscar Fornecedor..." autocomplete="off">
+        </div>
+        <div id="resultados-fornecedor" class="autocomplete-results"></div>
       </div>
     </div>
 
@@ -264,15 +290,63 @@ thead th { position: sticky; top: 0; background: #F9FAFB; padding: 12px 8px; col
 </div>
 
 <script>
-// INICIALIZAÇÃO DAS VARIÁVEIS E ATRIBUIÇÃO DA DATA D0
+// INICIALIZAÇÃO DE VARIÁVEIS DO UTILS.JS
 if (window.HHUtils) {
     const ciclo = window.HHUtils.atualizarCicloAtualGlobal();
-    // Atribui d0 ao elemento de tela usando o formatador do utils.js
     const campoData = document.getElementById('data-ciclo');
     if (campoData && ciclo.d0) {
         campoData.textContent = window.HHUtils.formatarDataBR(ciclo.d0);
     }
 }
+
+// LOGICA AUTOCOMPLETE SUPABASE
+const inputBusca = document.getElementById('busca-fornecedor');
+const listaResultados = document.getElementById('resultados-fornecedor');
+
+inputBusca.addEventListener('input', async (e) => {
+    const termo = e.target.value;
+    if (termo.length < 2) {
+        listaResultados.style.display = 'none';
+        return;
+    }
+
+    try {
+        const { data: fornecedores, error } = await window.db
+            .from('fornecedores')
+            .select('id, codigo, nome')
+            .ilike('nome', `%${termo}%`)
+            .limit(10);
+
+        if (error) throw error;
+
+        if (fornecedores && fornecedores.length > 0) {
+            listaResultados.innerHTML = fornecedores.map(f => `
+                <div class="autocomplete-item" onclick="selecionarFornecedor('${f.nome}', '${f.codigo}', '${f.id}')">
+                    ${f.nome} <span>COD: ${f.codigo}</span>
+                </div>
+            `).join('');
+            listaResultados.style.display = 'block';
+        } else {
+            listaResultados.style.display = 'none';
+        }
+    } catch (err) {
+        console.error('Erro na busca:', err.message);
+    }
+});
+
+function selecionarFornecedor(nome, codigo, id) {
+    inputBusca.value = nome;
+    listaResultados.style.display = 'none';
+    // Guardar o ID e Código se necessário para o banco futuramente
+    inputBusca.dataset.selectedId = id;
+    inputBusca.dataset.selectedCod = codigo;
+}
+
+document.addEventListener('click', (e) => {
+    if (!inputBusca.contains(e.target) && !listaResultados.contains(e.target)) {
+        listaResultados.style.display = 'none';
+    }
+});
 
 function toggleCard() {
   document.getElementById('mainCard').classList.toggle('expanded');
