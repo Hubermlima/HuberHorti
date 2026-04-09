@@ -219,18 +219,6 @@ th:first-child, td:first-child {
 }
 thead th { position: sticky; top: 0; background: #F9FAFB; padding: 12px 8px; color: #8E8E93; z-index: 10; border-bottom: 1px solid #F3F4F6; }
 
-.grid-input {
-    width: 100%;
-    border: 1px solid #E5E5EA;
-    border-radius: 6px;
-    padding: 5px;
-    text-align: center;
-    font-size: 10px;
-    background: #F9FAFB;
-    outline: none;
-}
-.grid-input:focus { border-color: #007AFF; background: #FFF; }
-
 .pagination-footer {
   flex-shrink: 0; height: 65px; padding: 0 20px calc(8px + env(safe-area-inset-bottom));
   background: #FFF; border-top: 1px solid #F3F4F6; display: flex; justify-content: space-between; align-items: center;
@@ -342,6 +330,10 @@ const setupDataDefault = () => {
 };
 setupDataDefault();
 
+// FORMATAÇÃO PT-BR
+const formatarMoedaGrid = (valor) => Number(valor || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const formatarQtdGrid = (valor) => Number(valor || 0).toLocaleString('pt-BR');
+
 const inputBusca = document.getElementById('busca-fornecedor');
 const listaResultados = document.getElementById('resultados-fornecedor');
 const corpoGrid = document.getElementById('corpo-grid');
@@ -360,15 +352,13 @@ inputBusca.addEventListener('input', async (e) => {
             .limit(20);
 
         if (error) throw error;
-
         if (fornecedores && fornecedores.length > 0) {
-            const flagContagem = `<div class="search-count">Encontrados: ${fornecedores.length} registros</div>`;
-            const itensHtml = fornecedores.map(f => `
+            listaResultados.innerHTML = `<div class="search-count">Encontrados: ${fornecedores.length}</div>` + 
+                fornecedores.map(f => `
                 <div class="autocomplete-item" onclick="selecionarFornecedor('${f.nome}', '${f.codigo}', '${f.id}')">
                     ${f.nome} <span>COD: ${f.codigo}</span>
                 </div>
             `).join('');
-            listaResultados.innerHTML = flagContagem + itensHtml;
             listaResultados.style.display = 'block';
         }
     } catch (err) { console.error('Erro busca:', err.message); }
@@ -378,27 +368,17 @@ async function selecionarFornecedor(nome, codigo, id) {
     inputBusca.value = nome;
     listaResultados.style.display = 'none';
     inputBusca.dataset.selectedId = id;
-    inputBusca.dataset.selectedCod = codigo;
     await carregarProdutosEstoque(id);
 }
 
-// FUNÇÃO DE FORMATAÇÃO PADRÃO
-const formatarMoedaGrid = (valor) => {
-    return Number(valor || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-};
-const formatarQtdGrid = (valor) => {
-    return Number(valor || 0).toLocaleString('pt-BR');
-};
-
+// INJEÇÃO DA FUNÇÃO CORRIGIDA
 async function carregarProdutosEstoque(fornecedorUuid) {
-    document.getElementById('status-sinc').textContent = "Sincronizando estoque e QT1/QT2...";
-    corpoGrid.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:20px;">Processando dados...</td></tr>';
+    document.getElementById('status-sinc').textContent = "Sincronizando...";
+    corpoGrid.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:20px;">Carregando...</td></tr>';
 
     try {
-        const ciclo = window.cicloAtual;
-        const d0_ant = new Date(ciclo.d0); d0_ant.setDate(d0_ant.getDate() - 7);
-        const d7_ant = new Date(ciclo.d7); d7_ant.setDate(d7_ant.getDate() - 7);
-        const dataCard = document.getElementById('data-ciclo').value;
+        const dataCardRaw = document.getElementById('data-ciclo').value;
+        const dataFiltroGTE = dataCardRaw + 'T00:00:00'; 
 
         const { data: produtos, error: errProd } = await window.db
             .from('produtos')
@@ -408,28 +388,22 @@ async function carregarProdutosEstoque(fornecedorUuid) {
 
         if (errProd) throw errProd;
 
-        const { data: vQT1 } = await window.db
+        const { data: vQT2, error: errQT2 } = await window.db
             .from('itens_pedidos_vendas')
             .select('quantidade, produto_id, pedidos_vendas!inner(data)')
-            .gte('pedidos_vendas.data', d0_ant.toISOString())
-            .lte('pedidos_vendas.data', d7_ant.toISOString());
+            .gte('pedidos_vendas.data', dataFiltroGTE);
 
-        const { data: vQT2 } = await window.db
-            .from('itens_pedidos_vendas')
-            .select('quantidade, produto_id, pedidos_vendas!inner(data)')
-            .gte('pedidos_vendas.data', new Date(dataCard).toISOString());
+        if (errQT2) throw errQT2;
 
-        const mapaQT1 = {};
-        if (vQT1) vQT1.forEach(v => mapaQT1[v.produto_id] = (mapaQT1[v.produto_id] || 0) + parseFloat(v.quantidade || 0));
-        
         const mapaQT2 = {};
-        if (vQT2) vQT2.forEach(v => mapaQT2[v.produto_id] = (mapaQT2[v.produto_id] || 0) + parseFloat(v.quantidade || 0));
+        if (vQT2) vQT2.forEach(v => {
+            mapaQT2[v.produto_id] = (mapaQT2[v.produto_id] || 0) + parseFloat(v.quantidade || 0);
+        });
 
         if (produtos && produtos.length > 0) {
             corpoGrid.innerHTML = produtos.map(p => {
                 const estIni = p.estoque_inicial?.[0]?.quantidade_inicial || 0;
                 const custoIni = p.estoque_inicial?.[0]?.custo_unitario_inicial || 0;
-                const valQT1 = mapaQT1[p.id] || 0;
                 const valQT2 = mapaQT2[p.id] || 0;
 
                 return `
@@ -437,10 +411,9 @@ async function carregarProdutosEstoque(fornecedorUuid) {
                         <td>${p.nome}</td>
                         <td style="color:#8E8E93">${formatarQtdGrid(estIni)}</td>
                         <td style="color:#8E8E93">${formatarMoedaGrid(custoIni)}</td>
-                        <td style="color:#8E8E93">${formatarQtdGrid(valQT1)}</td>
+                        <td style="color:#8E8E93">0,00</td>
                         <td style="color:#8E8E93">${formatarQtdGrid(valQT2)}</td>
-                        <td style="color:#8E8E93">0</td>
-                        <td style="color:#8E8E93">0</td>
+                        <td style="color:#8E8E93">0,00</td>
                         <td style="color:#8E8E93">0,00</td>
                         <td style="color:#10B981; font-weight:700">0,00</td>
                     </tr>
@@ -452,7 +425,7 @@ async function carregarProdutosEstoque(fornecedorUuid) {
             corpoGrid.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:20px;">Nenhum produto encontrado.</td></tr>';
         }
     } catch (err) {
-        console.error('Erro:', err.message);
+        console.error(err);
         corpoGrid.innerHTML = '<tr><td colspan="8" style="text-align:center; color:red; padding:20px;">Erro ao carregar dados.</td></tr>';
     } finally { document.getElementById('status-sinc').textContent = "Sincronizado"; }
 }
