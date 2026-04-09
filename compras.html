@@ -308,6 +308,7 @@ thead th { position: sticky; top: 0; background: #F9FAFB; padding: 12px 8px; col
           <th>QT2</th>
           <th>COMP</th>
           <th>CUST</th>
+          <th>PM</th>
           <th>GAN</th>
         </tr>
       </thead>
@@ -326,7 +327,6 @@ thead th { position: sticky; top: 0; background: #F9FAFB; padding: 12px 8px; col
 </div>
 
 <script>
-// INSTANCIAÇÃO DO CICLO GLOBAL
 window.HHUtils.atualizarCicloAtualGlobal();
 
 const setupDataDefault = () => {
@@ -382,10 +382,30 @@ async function selecionarFornecedor(nome, codigo, id) {
     await carregarProdutosEstoque(id);
 }
 
+// Escutador para cálculo em tempo real do PM
+corpoGrid.addEventListener('input', (e) => {
+    if (e.target.classList.contains('grid-input')) {
+        const tr = e.target.closest('tr');
+        const comp = parseFloat(tr.querySelector('.col-comp').value) || 0;
+        const cust = parseFloat(tr.querySelector('.col-custo-input').value) || 0;
+        const estIni = parseFloat(tr.querySelector('.col-est-ini').textContent) || 0;
+        const ctIni = parseFloat(tr.querySelector('.col-ct-ini').textContent) || 0;
+
+        // Regra PM: ((CUST x COMP) + (EST INI x CT. INI)) / (COMP + EST INI)
+        const divisor = comp + estIni;
+        let pm = 0;
+        if (divisor !== 0) {
+            pm = ((cust * comp) + (estIni * ctIni)) / divisor;
+        }
+
+        tr.querySelector('.col-pm').textContent = pm.toFixed(2);
+    }
+});
+
 async function carregarProdutosEstoque(fornecedorUuid) {
     document.getElementById('status-sinc').textContent = "Sincronizando estoque e QT1...";
     const dataCiclo = document.getElementById('data-ciclo').value;
-    corpoGrid.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:20px;">Processando dados...</td></tr>';
+    corpoGrid.innerHTML = '<tr><td colspan="9" style="text-align:center; padding:20px;">Processando dados...</td></tr>';
 
     try {
         const ciclo = window.cicloAtual;
@@ -394,7 +414,6 @@ async function carregarProdutosEstoque(fornecedorUuid) {
         const d7_ant = new Date(ciclo.d7);
         d7_ant.setDate(d7_ant.getDate() - 7);
 
-        // 1. Busca Produtos
         const { data: produtos, error: errProd } = await window.db
             .from('produtos')
             .select(`id, nome, estoque_inicial (quantidade_inicial, custo_unitario_inicial)`)
@@ -403,7 +422,6 @@ async function carregarProdutosEstoque(fornecedorUuid) {
 
         if (errProd) throw errProd;
 
-        // 2. Busca Vendas Ciclo Anterior (QT1)
         const { data: vendasAnteriores } = await window.db
             .from('itens_pedidos_vendas')
             .select('quantidade, produto_id, pedidos_vendas!inner(data)')
@@ -417,7 +435,6 @@ async function carregarProdutosEstoque(fornecedorUuid) {
             });
         }
 
-        // 3. Busca Vendas Futuras (QT2)
         const { data: vendasFuturas } = await window.db
             .from('itens_pedidos_vendas')
             .select('quantidade, produto_id, pedidos_vendas!pedido_venda_id!inner(data)')
@@ -436,19 +453,18 @@ async function carregarProdutosEstoque(fornecedorUuid) {
                 const custoIni = p.estoque_inicial?.[0]?.custo_unitario_inicial || 0;
                 const valorQT1 = mapaVendas[p.id] || 0;
                 const valorQT2 = mapaQT2[p.id] || 0;
-
-                // REGRA DE NEGÓCIO: (QT1 + QT2) - EST INI
                 const valorComp = (valorQT1 + valorQT2) - estIni;
 
                 return `
                     <tr data-id="${p.id}">
                         <td>${p.nome}</td>
-                        <td style="color:#8E8E93">${estIni}</td>
-                        <td style="color:#8E8E93">${parseFloat(custoIni).toFixed(2)}</td>
+                        <td class="col-est-ini" style="color:#8E8E93">${estIni}</td>
+                        <td class="col-ct-ini" style="color:#8E8E93">${parseFloat(custoIni).toFixed(2)}</td>
                         <td style="color:#8E8E93">${valorQT1}</td>
                         <td style="font-weight:700; color:#1C1C1E">${valorQT2}</td>
-                        <td><input type="number" class="grid-input" value="${valorComp}"></td>
-                        <td><input type="number" class="grid-input col-custo" value="0.00" step="0.01"></td>
+                        <td><input type="number" class="grid-input col-comp" value="${valorComp}"></td>
+                        <td><input type="number" class="grid-input col-custo-input" value="0.00" step="0.01"></td>
+                        <td class="col-pm" style="font-weight:700; color:#48484A">0.00</td>
                         <td style="color:#10B981; font-weight:700" class="col-ganho">0.00</td>
                     </tr>
                 `;
@@ -456,11 +472,11 @@ async function carregarProdutosEstoque(fornecedorUuid) {
             document.getElementById('info-pag').textContent = `${produtos.length} produtos encontrados`;
             document.getElementById('qtd-itens').textContent = produtos.length;
         } else {
-            corpoGrid.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:20px;">Nenhum produto encontrado.</td></tr>';
+            corpoGrid.innerHTML = '<tr><td colspan="9" style="text-align:center; padding:20px;">Nenhum produto encontrado.</td></tr>';
         }
     } catch (err) {
         console.error('Erro:', err.message);
-        corpoGrid.innerHTML = '<tr><td colspan="8" style="text-align:center; color:red; padding:20px;">Erro ao carregar dados.</td></tr>';
+        corpoGrid.innerHTML = '<tr><td colspan="9" style="text-align:center; color:red; padding:20px;">Erro ao carregar dados.</td></tr>';
     } finally { document.getElementById('status-sinc').textContent = "Sincronizado"; }
 }
 
