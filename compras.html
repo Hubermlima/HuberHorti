@@ -118,7 +118,7 @@ thead th{position:sticky;top:0;background:#F9FAFB;padding:12px 8px;color:#8E8E93
 </div>
 
 <script>
-// --- BLINDAGEM DE FORMATAÇÃO (IGNORA O UTILS.JS SE ESTIVER ERRADO) ---
+// --- BLINDAGEM DE FORMATAÇÃO ---
 const fmtM = (v) => Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtQ = (v) => Number(v || 0).toLocaleString('pt-BR');
 
@@ -134,7 +134,7 @@ document.getElementById('data-ciclo').value = hoje.toISOString().split('T')[0];
 inputBusca.addEventListener('input', async (e) => {
     const termo = e.target.value;
     if (termo.length < 1) { listaResultados.style.display = 'none'; return; }
-    const { data } = await window.db.from('fornecedores').select('id, nome, codigo').ilike('nome', `%${termo}%`).limit(10);
+    const { data } = await window.db.from('fornecedores').select('id, nome').ilike('nome', `%${termo}%`).limit(10);
     if (data) {
         listaResultados.innerHTML = data.map(f => `<div class="autocomplete-item" onclick="selecionarFornecedor('${f.nome}','${f.id}')">${f.nome}</div>`).join('');
         listaResultados.style.display = 'block';
@@ -152,20 +152,32 @@ async function carregarProdutosEstoque(fornecedorUuid) {
     const dataCard = document.getElementById('data-ciclo').value;
 
     try {
-        // 1. Produtos
+        // 1. Busca Produtos e Estoque Inicial
         const { data: produtos } = await window.db.from('produtos')
             .select(`id, nome, estoque_inicial(quantidade_inicial, custo_unitario_inicial)`)
             .eq('fornecedor_id', fornecedorUuid).order('nome');
 
-        // 2. Vendas QT2 (Igual ou Maior que a data do card)
-        const { data: vendas } = await window.db.from('itens_pedidos_vendas')
-            .select('quantidade, produto_id, pedidos_vendas!inner(data)')
-            .gte('pedidos_vendas.data', dataCard + 'T00:00:00');
+        // 2. Busca Vendas QT2 (Filtro ajustado para pedido_venda_id e Fuso Horário)
+        const { data: vendas, error: erroVendas } = await window.db
+            .from('itens_pedidos_vendas')
+            .select(`
+                quantidade, 
+                produto_id, 
+                pedidos_vendas!pedido_venda_id!inner(data)
+            `)
+            .gte('pedidos_vendas.data', `${dataCard}T00:00:00+00:00`);
+
+        if (erroVendas) console.error("Erro Supabase:", erroVendas);
 
         const mapaQT2 = {};
-        if (vendas) vendas.forEach(v => mapaQT2[v.produto_id] = (mapaQT2[v.produto_id] || 0) + parseFloat(v.quantidade));
+        if (vendas) {
+            vendas.forEach(v => {
+                const qtd = parseFloat(v.quantidade) || 0;
+                mapaQT2[v.produto_id] = (mapaQT2[v.produto_id] || 0) + qtd;
+            });
+        }
 
-        // 3. Renderização Forçada PT-BR
+        // 3. Renderização
         corpoGrid.innerHTML = produtos.map(p => {
             const ei = p.estoque_inicial?.[0]?.quantidade_inicial || 0;
             const ci = p.estoque_inicial?.[0]?.custo_unitario_inicial || 0;
@@ -184,8 +196,13 @@ async function carregarProdutosEstoque(fornecedorUuid) {
         }).join('');
 
         document.getElementById('qtd-itens').textContent = produtos.length;
-    } catch (err) { console.error(err); }
-    finally { document.getElementById('status-sinc').textContent = "Sincronizado"; }
+        document.getElementById('info-pag').textContent = `Fornecedor: ${inputBusca.value}`;
+
+    } catch (err) { 
+        console.error("Erro Geral:", err); 
+    } finally { 
+        document.getElementById('status-sinc').textContent = "Sincronizado"; 
+    }
 }
 
 function toggleCard() { document.getElementById('mainCard').classList.toggle('expanded'); }
