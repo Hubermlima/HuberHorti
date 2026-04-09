@@ -180,7 +180,6 @@ body{
 }
 .detail-item b { color: #1C1C1E; }
 
-/* INPUT DE DATA - ALINHAMENTO FIXO À DIREITA */
 .input-data-edit {
     border: none;
     background: transparent;
@@ -327,17 +326,17 @@ thead th { position: sticky; top: 0; background: #F9FAFB; padding: 12px 8px; col
 </div>
 
 <script>
-// Lógica de Data Local (Hoje + 1)
+// INSTANCIAÇÃO DO CICLO GLOBAL (d0 e d7)
+window.HHUtils.atualizarCicloAtualGlobal();
+
 const setupDataDefault = () => {
     const campoData = document.getElementById('data-ciclo');
     if (campoData) {
         const hoje = new Date();
         hoje.setDate(hoje.getDate() + 1); 
-        
         const yyyy = hoje.getFullYear();
         const mm = String(hoje.getMonth() + 1).padStart(2, '0');
         const dd = String(hoje.getDate()).padStart(2, '0');
-        
         campoData.value = `${yyyy}-${mm}-${dd}`;
     }
 };
@@ -353,7 +352,6 @@ inputBusca.addEventListener('input', async (e) => {
         listaResultados.style.display = 'none';
         return;
     }
-
     try {
         const { data: fornecedores, error } = await window.db
             .from('fornecedores')
@@ -372,13 +370,8 @@ inputBusca.addEventListener('input', async (e) => {
             `).join('');
             listaResultados.innerHTML = flagContagem + itensHtml;
             listaResultados.style.display = 'block';
-        } else {
-            listaResultados.innerHTML = `<div class="search-count">Encontrados: 0 registros</div>`;
-            listaResultados.style.display = 'block';
         }
-    } catch (err) {
-        console.error('Erro na busca:', err.message);
-    }
+    } catch (err) { console.error('Erro busca:', err.message); }
 });
 
 async function selecionarFornecedor(nome, codigo, id) {
@@ -390,28 +383,54 @@ async function selecionarFornecedor(nome, codigo, id) {
 }
 
 async function carregarProdutosEstoque(fornecedorUuid) {
-    document.getElementById('status-sinc').textContent = "Sincronizando estoque...";
+    document.getElementById('status-sinc').textContent = "Sincronizando estoque e QT1...";
     corpoGrid.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:20px;">Processando dados...</td></tr>';
 
     try {
-        const { data: produtos, error } = await window.db
+        // 1. DEFINIÇÃO DO CICLO ANTERIOR (QT1)
+        const ciclo = window.cicloAtual;
+        const d0_ant = new Date(ciclo.d0);
+        d0_ant.setDate(d0_ant.getDate() - 7);
+        const d7_ant = new Date(ciclo.d7);
+        d7_ant.setDate(d7_ant.getDate() - 7);
+
+        // 2. BUSCAR PRODUTOS DO FORNECEDOR
+        const { data: produtos, error: errProd } = await window.db
             .from('produtos')
             .select(`id, nome, estoque_inicial (quantidade_inicial, custo_unitario_inicial)`)
             .eq('fornecedor_id', fornecedorUuid)
             .order('nome', { ascending: true });
 
-        if (error) throw error;
+        if (errProd) throw errProd;
 
+        // 3. BUSCA RÁPIDA DE VENDAS (QT1) EM LOTE
+        const { data: vendasAnteriores, error: errVendas } = await window.db
+            .from('itens_pedidos_vendas')
+            .select('quantidade, produto_id, pedidos_vendas!inner(data)')
+            .gte('pedidos_vendas.data', d0_ant.toISOString())
+            .lte('pedidos_vendas.data', d7_ant.toISOString());
+
+        // Criar mapa de somas: id_produto -> total_vendas
+        const mapaVendas = {};
+        if (vendasAnteriores) {
+            vendasAnteriores.forEach(v => {
+                mapaVendas[v.produto_id] = (mapaVendas[v.produto_id] || 0) + parseFloat(v.quantidade || 0);
+            });
+        }
+
+        // 4. RENDERIZAÇÃO DO GRID
         if (produtos && produtos.length > 0) {
             corpoGrid.innerHTML = produtos.map(p => {
                 const estIni = p.estoque_inicial?.[0]?.quantidade_inicial || 0;
                 const custoIni = p.estoque_inicial?.[0]?.custo_unitario_inicial || 0;
+                const valorQT1 = mapaVendas[p.id] || 0;
+
                 return `
                     <tr data-id="${p.id}">
                         <td>${p.nome}</td>
                         <td style="color:#8E8E93">${estIni}</td>
                         <td style="color:#8E8E93">${parseFloat(custoIni).toFixed(2)}</td>
-                        <td><input type="number" class="grid-input" value="0"></td>
+                        <td><input type="number" class="grid-input" value="${valorQT1}"></td>
                         <td><input type="number" class="grid-input" value="0"></td>
                         <td class="col-comp">0</td>
                         <td class="col-custo">0.00</td>
@@ -422,33 +441,25 @@ async function carregarProdutosEstoque(fornecedorUuid) {
             document.getElementById('info-pag').textContent = `${produtos.length} produtos encontrados`;
             document.getElementById('qtd-itens').textContent = produtos.length;
         } else {
-            corpoGrid.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:20px;">Nenhum produto cadastrado.</td></tr>';
-            document.getElementById('info-pag').textContent = "Sem produtos";
+            corpoGrid.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:20px;">Nenhum produto encontrado.</td></tr>';
         }
     } catch (err) {
-        console.error('Erro ao carregar dados:', err.message);
+        console.error('Erro:', err.message);
         corpoGrid.innerHTML = '<tr><td colspan="8" style="text-align:center; color:red; padding:20px;">Erro ao carregar dados.</td></tr>';
-    } finally {
-        document.getElementById('status-sinc').textContent = "Sincronizado";
-    }
+    } finally { document.getElementById('status-sinc').textContent = "Sincronizado"; }
 }
 
 document.addEventListener('click', (e) => {
-    if (!inputBusca.contains(e.target) && !listaResultados.contains(e.target)) {
-        listaResultados.style.display = 'none';
-    }
+    if (!inputBusca.contains(e.target) && !listaResultados.contains(e.target)) listaResultados.style.display = 'none';
 });
 
-function toggleCard() {
-  document.getElementById('mainCard').classList.toggle('expanded');
-}
+function toggleCard() { document.getElementById('mainCard').classList.toggle('expanded'); }
 
 const fixIOSHeight = () => {
     let vh = window.innerHeight * 0.01;
     document.documentElement.style.setProperty('--vh', `${vh}px`);
 };
 window.addEventListener('resize', fixIOSHeight);
-window.addEventListener('orientationchange', fixIOSHeight);
 fixIOSHeight();
 </script>
 
