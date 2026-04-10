@@ -23,6 +23,13 @@ body{
     overflow:hidden;
 }
 
+/* ESTADO BLOQUEADO */
+.btn-disabled {
+    opacity: 0.4 !important;
+    pointer-events: none !important;
+    filter: grayscale(1);
+}
+
 /* TOPBAR */
 .topbar{
     height: 64px;
@@ -35,7 +42,7 @@ body{
 }
 .topbar-copy{display:flex;flex-direction:column;align-items:center;text-align:center;flex-grow:1}
 .breadcrumb .active{color:#1C1C1E;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:0.8px}
-.autosave-status{font-size:10px;color:#10B981;font-weight:500}
+.autosave-status{font-size:10px;color:#10B981;font-weight:500;transition: color 0.3s ease;}
 
 /* ÁREA PRINCIPAL */
 .main{
@@ -272,14 +279,14 @@ thead th { position: sticky; top: 0; background: #F9FAFB; padding: 12px 8px; col
 <body>
 
 <div class="topbar">
-  <button class="ios-btn-float" onclick="history.back()">
+  <button id="btn-voltar" class="ios-btn-float" onclick="history.back()">
     <svg viewBox="0 0 24 24" style="width:18px; height:18px; stroke:#1C1C1E; stroke-width:2.2; fill:none"><path d="M15.75 19.5L8.25 12l7.5-7.5" /></svg>
   </button>
   <div class="topbar-copy">
     <div class="breadcrumb"><span class="active">Central de Compras</span></div>
     <div class="autosave-status" id="status-sinc">Sincronizado</div>
   </div>
-  <button class="ios-btn-float">
+  <button id="btn-add-topbar" class="ios-btn-float">
     <svg viewBox="0 0 24 24" style="width:18px; height:18px; stroke:#1C1C1E; stroke-width:2.2; fill:none"><path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0 M12 8v8 M8 12h8"/></svg>
   </button>
 </div>
@@ -306,8 +313,8 @@ thead th { position: sticky; top: 0; background: #F9FAFB; padding: 12px 8px; col
       </div>
       
       <div class="card-actions">
-        <button class="btn-card-action" title="Nova Compra"><svg viewBox="0 0 24 24"><path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/><path d="M13 2v7h7"/></svg></button>
-        <button class="btn-card-action" title="Excluir Compra"><svg viewBox="0 0 24 24"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2M10 11v6M14 11v6"/></svg></button>
+        <button id="btn-nova-compra" class="btn-card-action" title="Nova Compra"><svg viewBox="0 0 24 24"><path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/><path d="M13 2v7h7"/></svg></button>
+        <button id="btn-excluir-compra" class="btn-card-action" title="Excluir Compra"><svg viewBox="0 0 24 24"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2M10 11v6M14 11v6"/></svg></button>
         <button class="btn-card-action expand-btn" onclick="toggleCard()"><svg viewBox="0 0 24 24"><path d="M19.5 8.25l-7.5 7.5-7.5-7.5" /></svg></button>
       </div>
     </div>
@@ -373,6 +380,64 @@ thead th { position: sticky; top: 0; background: #F9FAFB; padding: 12px 8px; col
 <script>
 window.HHUtils.atualizarCicloAtualGlobal();
 let currentView = 'QT1';
+let timerAutoSave;
+let statusAtual = 'sincronizado';
+
+// LÓGICA DE GESTÃO DE ESTADO E BLOQUEIO
+function setEstado(novoStatus) {
+    const elStatus = document.getElementById('status-sinc');
+    statusAtual = novoStatus;
+
+    // IDs dos botões que serão bloqueados
+    const botoesParaTravar = ['btn-voltar', 'btn-add-topbar', 'btn-nova-compra', 'btn-excluir-compra'];
+
+    if (novoStatus === 'editando') {
+        elStatus.textContent = 'Editando...';
+        elStatus.style.color = '#F59E0B'; // Laranja
+        botoesParaTravar.forEach(id => document.getElementById(id)?.classList.add('btn-disabled'));
+    } 
+    else if (novoStatus === 'salvando') {
+        elStatus.textContent = 'Salvando...';
+        elStatus.style.color = '#3B82F6'; // Azul
+    } 
+    else {
+        elStatus.textContent = 'Sincronizado';
+        elStatus.style.color = '#10B981'; // Verde
+        botoesParaTravar.forEach(id => document.getElementById(id)?.classList.remove('btn-disabled'));
+    }
+}
+
+// FUNÇÃO PROPRIAMENTE DITA DE GRAVAÇÃO
+async function salvarDadosSinc() {
+    // SÓ SALVA SE ESTIVER NO MODO EDITANDO
+    if (statusAtual !== 'editando') return;
+
+    setEstado('salvando');
+
+    try {
+        // Exemplo de coleta de dados para enviar ao Supabase
+        const linhas = document.querySelectorAll('#corpo-grid tr');
+        const dadosParaSalvar = Array.from(linhas).map(tr => ({
+            produto_id: tr.dataset.id,
+            quantidade: parseFloat(tr.querySelector('.col-comp').value) || 0,
+            custo: parseFloat(tr.querySelector('.col-custo-input').value) || 0,
+            mkt: parseFloat(tr.querySelector('.col-mkt-input').value) || 0
+        }));
+
+        console.log('Gravando no banco...', dadosParaSalvar);
+        
+        // Simulação de delay de rede
+        await new Promise(res => setTimeout(res, 1000));
+        
+        // Aqui entraria seu window.db.from('compras').upsert(...)
+
+        setEstado('sincronizado');
+    } catch (err) {
+        console.error('Erro ao salvar:', err);
+        alert('Erro ao salvar dados automaticamente.');
+        setEstado('editando'); // Volta para editando para tentar de novo
+    }
+}
 
 const setupDataDefault = () => {
     const campoData = document.getElementById('data-ciclo');
@@ -387,13 +452,11 @@ const setupDataDefault = () => {
 };
 setupDataDefault();
 
-// FUNÇÃO DE ALTERNÂNCIA DE VISÃO
 function setViewMode(mode) {
     currentView = mode;
     document.getElementById('opt-qt1').classList.toggle('active', mode === 'QT1');
     document.getElementById('opt-qt2').classList.toggle('active', mode === 'QT2');
     
-    // Toggle visibilidade dos headers
     document.querySelector('.th-qt1').classList.toggle('col-hidden', mode !== 'QT1');
     document.querySelector('.th-qt2').classList.toggle('col-hidden', mode !== 'QT2');
     
@@ -447,14 +510,15 @@ function atualizarSumario() {
     let contadorItens = 0;
 
     linhas.forEach(tr => {
-        const valQT1 = parseFloat(tr.querySelector('.td-qt1')?.textContent) || 0;
-        const valQT2 = parseFloat(tr.querySelector('.td-qt2')?.textContent) || 0;
+        const tdQt1 = tr.querySelector('.td-qt1');
+        const tdQt2 = tr.querySelector('.td-qt2');
         
-        // Esconder a coluna inativa em cada linha
-        tr.querySelector('.td-qt1').classList.toggle('col-hidden', currentView !== 'QT1');
-        tr.querySelector('.td-qt2').classList.toggle('col-hidden', currentView !== 'QT2');
+        const valQT1 = parseFloat(tdQt1?.textContent) || 0;
+        const valQT2 = parseFloat(tdQt2?.textContent) || 0;
+        
+        if(tdQt1) tdQt1.classList.toggle('col-hidden', currentView !== 'QT1');
+        if(tdQt2) tdQt2.classList.toggle('col-hidden', currentView !== 'QT2');
 
-        // Lógica de filtragem de linha por valor > 0 na visão ativa
         const valorAtivo = (currentView === 'QT1') ? valQT1 : valQT2;
         
         if (valorAtivo > 0) {
@@ -511,6 +575,11 @@ corpoGrid.addEventListener('input', (e) => {
         tr.querySelector('.col-ganho-input').value = ganValue.toFixed(2);
 
         atualizarSumario();
+
+        // GATILHO DE AUTO-SALVAMENTO (8 SEGUNDOS)
+        setEstado('editando');
+        clearTimeout(timerAutoSave);
+        timerAutoSave = setTimeout(salvarDadosSinc, 8000);
     }
 });
 
@@ -598,7 +667,7 @@ async function carregarProdutosEstoque(fornecedorUuid) {
     } catch (err) {
         console.error('Erro:', err.message);
         corpoGrid.innerHTML = '<tr><td colspan="12" style="text-align:center; color:red; padding:20px;">Erro ao carregar dados.</td></tr>';
-    } finally { document.getElementById('status-sinc').textContent = "Sincronizado"; }
+    } finally { setEstado('sincronizado'); }
 }
 
 document.addEventListener('click', (e) => {
