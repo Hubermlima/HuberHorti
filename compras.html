@@ -387,55 +387,106 @@ let statusAtual = 'sincronizado';
 function setEstado(novoStatus) {
     const elStatus = document.getElementById('status-sinc');
     statusAtual = novoStatus;
-
-    // IDs dos botões que serão bloqueados
     const botoesParaTravar = ['btn-voltar', 'btn-add-topbar', 'btn-nova-compra', 'btn-excluir-compra'];
 
     if (novoStatus === 'editando') {
         elStatus.textContent = 'Editando...';
-        elStatus.style.color = '#F59E0B'; // Laranja
+        elStatus.style.color = '#F59E0B';
         botoesParaTravar.forEach(id => document.getElementById(id)?.classList.add('btn-disabled'));
     } 
     else if (novoStatus === 'salvando') {
         elStatus.textContent = 'Salvando...';
-        elStatus.style.color = '#3B82F6'; // Azul
+        elStatus.style.color = '#3B82F6';
     } 
     else {
         elStatus.textContent = 'Sincronizado';
-        elStatus.style.color = '#10B981'; // Verde
+        elStatus.style.color = '#10B981';
         botoesParaTravar.forEach(id => document.getElementById(id)?.classList.remove('btn-disabled'));
     }
 }
 
-// FUNÇÃO PROPRIAMENTE DITA DE GRAVAÇÃO
+// FUNÇÃO DE GRAVAÇÃO REAL NO SUPABASE
 async function salvarDadosSinc() {
-    // SÓ SALVA SE ESTIVER NO MODO EDITANDO
     if (statusAtual !== 'editando') return;
-
     setEstado('salvando');
 
-    try {
-        // Exemplo de coleta de dados para enviar ao Supabase
-        const linhas = document.querySelectorAll('#corpo-grid tr');
-        const dadosParaSalvar = Array.from(linhas).map(tr => ({
-            produto_id: tr.dataset.id,
-            quantidade: parseFloat(tr.querySelector('.col-comp').value) || 0,
-            custo: parseFloat(tr.querySelector('.col-custo-input').value) || 0,
-            mkt: parseFloat(tr.querySelector('.col-mkt-input').value) || 0
-        }));
+    const numCompraEl = document.getElementById('num-compra');
+    const valorTotalStr = document.getElementById('total-geral').textContent.replace(/[^\d,.-]/g, '').replace(',', '.');
+    const valorTotalNum = parseFloat(valorTotalStr) || 0;
+    const fornecedorId = document.getElementById('busca-fornecedor').dataset.selectedId;
+    const dataCompra = document.getElementById('data-ciclo').value;
+    
+    let pedidoId = numCompraEl.textContent.replace('#', '');
+    const isNovoPedido = pedidoId === '-----';
 
-        console.log('Gravando no banco...', dadosParaSalvar);
+    try {
+        let resPedido;
         
-        // Simulação de delay de rede
-        await new Promise(res => setTimeout(res, 1000));
-        
-        // Aqui entraria seu window.db.from('compras').upsert(...)
+        // 1. SALVAR/ATUALIZAR O PEDIDO PRINCIPAL
+        if (isNovoPedido) {
+            resPedido = await window.db.from('pedidos_compras').insert({
+                data: dataCompra,
+                fornecedor_id: fornecedorId,
+                valor_total: valorTotalNum,
+                em_aberto: valorTotalNum // "em_aberto" assume o valor do total conforme solicitado
+            }).select();
+            
+            if (resPedido.error) throw resPedido.error;
+            pedidoId = resPedido.data[0].id;
+            numCompraEl.textContent = `#${pedidoId}`;
+        } else {
+            const { error } = await window.db.from('pedidos_compras').update({
+                data: dataCompra,
+                valor_total: valorTotalNum,
+                em_aberto: valorTotalNum
+            }).eq('id', pedidoId);
+            if (error) throw error;
+        }
+
+        // 2. LIMPAR ITENS ANTIGOS E INSERIR NOVOS (ESPELHAMENTO)
+        await window.db.from('itens_pedidos_compras').delete().eq('pedido_compra_id', pedidoId);
+
+        const linhas = document.querySelectorAll('#corpo-grid tr');
+        const itensParaInserir = [];
+        const updatesPM = [];
+
+        linhas.forEach(tr => {
+            const comp = parseFloat(tr.querySelector('.col-comp').value) || 0;
+            if (comp > 0) {
+                const prodId = tr.dataset.id;
+                const cust = parseFloat(tr.querySelector('.col-custo-input').value) || 0;
+                const mkt = parseFloat(tr.querySelector('.col-mkt-input').value) || 0;
+                const t1 = parseFloat(tr.querySelector('.col-t1-input').value) || 0;
+                const gan = parseFloat(tr.querySelector('.col-ganho-input').value) || 0;
+                const pm = parseFloat(tr.querySelector('.col-pm').textContent) || 0;
+
+                itensParaInserir.push({
+                    pedido_compra_id: pedidoId,
+                    produto_id: prodId,
+                    quantidade: comp,
+                    preco_unitario: cust,
+                    valor_total: t1,
+                    ganho: gan,
+                    preco_compra_mkt: mkt
+                });
+
+                // Prepara a atualização do PM na tabela produtos
+                updatesPM.push(window.db.from('produtos').update({ preco_medio_compra: pm }).eq('id', prodId));
+            }
+        });
+
+        if (itensParaInserir.length > 0) {
+            const { error: errItens } = await window.db.from('itens_pedidos_compras').insert(itensParaInserir);
+            if (errItens) throw errItens;
+            
+            // Executa as atualizações de PM em paralelo
+            await Promise.all(updatesPM);
+        }
 
         setEstado('sincronizado');
     } catch (err) {
-        console.error('Erro ao salvar:', err);
-        alert('Erro ao salvar dados automaticamente.');
-        setEstado('editando'); // Volta para editando para tentar de novo
+        console.error('Erro no Auto-Save:', err.message);
+        setEstado('editando');
     }
 }
 
@@ -456,10 +507,8 @@ function setViewMode(mode) {
     currentView = mode;
     document.getElementById('opt-qt1').classList.toggle('active', mode === 'QT1');
     document.getElementById('opt-qt2').classList.toggle('active', mode === 'QT2');
-    
     document.querySelector('.th-qt1').classList.toggle('col-hidden', mode !== 'QT1');
     document.querySelector('.th-qt2').classList.toggle('col-hidden', mode !== 'QT2');
-    
     atualizarSumario();
 }
 
@@ -500,6 +549,7 @@ async function selecionarFornecedor(nome, codigo, id) {
     listaResultados.style.display = 'none';
     inputBusca.dataset.selectedId = id;
     inputBusca.dataset.selectedCod = codigo;
+    document.getElementById('num-compra').textContent = '#-----'; // Reseta ID ao trocar fornecedor
     await carregarProdutosEstoque(id);
 }
 
@@ -512,7 +562,6 @@ function atualizarSumario() {
     linhas.forEach(tr => {
         const tdQt1 = tr.querySelector('.td-qt1');
         const tdQt2 = tr.querySelector('.td-qt2');
-        
         const valQT1 = parseFloat(tdQt1?.textContent) || 0;
         const valQT2 = parseFloat(tdQt2?.textContent) || 0;
         
@@ -525,7 +574,6 @@ function atualizarSumario() {
             tr.style.display = 'table-row';
             const t1Value = parseFloat(tr.querySelector('.col-t1-input').value) || 0;
             const ganValue = parseFloat(tr.querySelector('.col-ganho-input').value) || 0;
-            
             contadorItens++;
             somaT1 += t1Value;
             somaGAN += ganValue;
@@ -535,7 +583,6 @@ function atualizarSumario() {
     });
 
     const formatBRL = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-
     document.getElementById('total-geral').textContent = formatBRL(somaT1);
     document.getElementById('subtotal-card').textContent = formatBRL(somaT1);
     document.getElementById('ganho-card').textContent = formatBRL(somaGAN);
@@ -555,22 +602,17 @@ corpoGrid.addEventListener('input', (e) => {
         }
 
         const mkt = parseFloat(tr.querySelector('.col-mkt-input').value) || 0;
-
         const divisor = comp + estIni;
         let pm = 0;
         if (divisor !== 0) {
             pm = ((mkt * comp) + (estIni * ctIni)) / divisor;
         }
         
-        const elPm = tr.querySelector('.col-pm');
-        elPm.textContent = pm.toFixed(2);
-        
+        tr.querySelector('.col-pm').textContent = pm.toFixed(2);
         const t1Value = comp * cust;
         tr.querySelector('.col-t1-input').value = t1Value.toFixed(2);
-
         const t2Value = comp * mkt;
         tr.querySelector('.col-t2-input').value = t2Value.toFixed(2);
-
         const ganValue = t2Value - t1Value;
         tr.querySelector('.col-ganho-input').value = ganValue.toFixed(2);
 
