@@ -198,7 +198,7 @@ body{
 }
 .detail-item b { color: #1C1C1E; }
 
-/* NOVO: SELETOR DE VISÃO DISCRETO */
+/* SELETOR DE VISÃO */
 .view-selector {
     display: flex;
     align-items: center;
@@ -383,29 +383,25 @@ let currentView = 'QT1';
 let timerAutoSave;
 let statusAtual = 'sincronizado';
 
-// LÓGICA DE GESTÃO DE ESTADO E BLOQUEIO
 function setEstado(novoStatus) {
     const elStatus = document.getElementById('status-sinc');
     statusAtual = novoStatus;
-    const botoesParaTravar = ['btn-voltar', 'btn-add-topbar', 'btn-nova-compra', 'btn-excluir-compra'];
+    const botoes = ['btn-voltar', 'btn-add-topbar', 'btn-nova-compra', 'btn-excluir-compra'];
 
     if (novoStatus === 'editando') {
         elStatus.textContent = 'Editando...';
         elStatus.style.color = '#F59E0B';
-        botoesParaTravar.forEach(id => document.getElementById(id)?.classList.add('btn-disabled'));
-    } 
-    else if (novoStatus === 'salvando') {
+        botoes.forEach(id => document.getElementById(id)?.classList.add('btn-disabled'));
+    } else if (novoStatus === 'salvando') {
         elStatus.textContent = 'Salvando...';
         elStatus.style.color = '#3B82F6';
-    } 
-    else {
+    } else {
         elStatus.textContent = 'Sincronizado';
         elStatus.style.color = '#10B981';
-        botoesParaTravar.forEach(id => document.getElementById(id)?.classList.remove('btn-disabled'));
+        botoes.forEach(id => document.getElementById(id)?.classList.remove('btn-disabled'));
     }
 }
 
-// FUNÇÃO DE GRAVAÇÃO REAL NO SUPABASE
 async function salvarDadosSinc() {
     if (statusAtual !== 'editando') return;
     setEstado('salvando');
@@ -417,38 +413,35 @@ async function salvarDadosSinc() {
     const dataCompra = document.getElementById('data-ciclo').value;
     
     let pedidoId = numCompraEl.textContent.replace('#', '');
-    const isNovoPedido = pedidoId === '-----';
+    const isNovo = pedidoId === '-----';
 
     try {
-        let resPedido;
-        
-        // 1. SALVAR/ATUALIZAR O PEDIDO PRINCIPAL
-        if (isNovoPedido) {
-            resPedido = await window.db.from('pedidos_compras').insert({
+        // 1. PAI
+        if (isNovo) {
+            const { data: pData, error: pErr } = await window.db.from('pedidos_compras').insert({
                 data: dataCompra,
                 fornecedor_id: fornecedorId,
                 valor_total: valorTotalNum,
-                em_aberto: valorTotalNum // "em_aberto" assume o valor do total conforme solicitado
+                em_aberto: valorTotalNum
             }).select();
-            
-            if (resPedido.error) throw resPedido.error;
-            pedidoId = resPedido.data[0].id;
+            if (pErr) throw pErr;
+            pedidoId = pData[0].id;
             numCompraEl.textContent = `#${pedidoId}`;
         } else {
-            const { error } = await window.db.from('pedidos_compras').update({
+            const { error: pErr } = await window.db.from('pedidos_compras').update({
                 data: dataCompra,
                 valor_total: valorTotalNum,
                 em_aberto: valorTotalNum
             }).eq('id', pedidoId);
-            if (error) throw error;
+            if (pErr) throw pErr;
         }
 
-        // 2. LIMPAR ITENS ANTIGOS E INSERIR NOVOS (ESPELHAMENTO)
+        // 2. FILHOS (LIMPAR E INSERIR)
         await window.db.from('itens_pedidos_compras').delete().eq('pedido_compra_id', pedidoId);
 
         const linhas = document.querySelectorAll('#corpo-grid tr');
-        const itensParaInserir = [];
-        const updatesPM = [];
+        const itens = [];
+        const updatesProd = [];
 
         linhas.forEach(tr => {
             const comp = parseFloat(tr.querySelector('.col-comp').value) || 0;
@@ -460,7 +453,7 @@ async function salvarDadosSinc() {
                 const gan = parseFloat(tr.querySelector('.col-ganho-input').value) || 0;
                 const pm = parseFloat(tr.querySelector('.col-pm').textContent) || 0;
 
-                itensParaInserir.push({
+                itens.push({
                     pedido_compra_id: pedidoId,
                     produto_id: prodId,
                     quantidade: comp,
@@ -470,35 +463,128 @@ async function salvarDadosSinc() {
                     preco_compra_mkt: mkt
                 });
 
-                // Prepara a atualização do PM na tabela produtos
-                updatesPM.push(window.db.from('produtos').update({ preco_medio_compra: pm }).eq('id', prodId));
+                updatesProd.push(window.db.from('produtos').update({ preco_medio_compra: pm }).eq('id', prodId));
             }
         });
 
-        if (itensParaInserir.length > 0) {
-            const { error: errItens } = await window.db.from('itens_pedidos_compras').insert(itensParaInserir);
-            if (errItens) throw errItens;
-            
-            // Executa as atualizações de PM em paralelo
-            await Promise.all(updatesPM);
+        if (itens.length > 0) {
+            const { error: iErr } = await window.db.from('itens_pedidos_compras').insert(itens);
+            if (iErr) throw iErr;
+            await Promise.all(updatesProd);
         }
 
         setEstado('sincronizado');
     } catch (err) {
-        console.error('Erro no Auto-Save:', err.message);
+        console.error('Falha no save:', err);
         setEstado('editando');
     }
 }
 
+async function carregarProdutosEstoque(fornecedorUuid) {
+    setEstado('salvando'); // Feedback visual de carga
+    const dataCiclo = document.getElementById('data-ciclo').value;
+    corpoGrid.innerHTML = '<tr><td colspan="12" style="text-align:center; padding:20px;">Carregando...</td></tr>';
+
+    try {
+        // BUSCA SE JÁ EXISTE UM PEDIDO SALVO PARA ESSE FORNECEDOR NESTA DATA
+        const { data: pedidoExistente } = await window.db
+            .from('pedidos_compras')
+            .select('id, valor_total')
+            .eq('fornecedor_id', fornecedorUuid)
+            .eq('data', dataCiclo)
+            .maybeSingle();
+
+        let mapaItensSalvos = {};
+        if (pedidoExistente) {
+            document.getElementById('num-compra').textContent = `#${pedidoExistente.id}`;
+            const { data: itensDB } = await window.db
+                .from('itens_pedidos_compras')
+                .select('*')
+                .eq('pedido_compra_id', pedidoExistente.id);
+            
+            if (itensDB) {
+                itensDB.forEach(it => { mapaItensSalvos[it.produto_id] = it; });
+            }
+        } else {
+            document.getElementById('num-compra').textContent = '#-----';
+        }
+
+        // LÓGICA DE ESTOQUE E VENDAS (MANTIDA)
+        const ciclo = window.cicloAtual;
+        const d0_ant = new Date(ciclo.d0); d0_ant.setDate(d0_ant.getDate() - 7);
+        const d7_ant = new Date(ciclo.d7); d7_ant.setDate(d7_ant.getDate() - 7);
+
+        const { data: produtos } = await window.db
+            .from('produtos')
+            .select(`id, nome, preco_medio_compra, estoque_inicial (quantidade_inicial, custo_unitario_inicial)`)
+            .eq('fornecedor_id', fornecedorUuid)
+            .order('nome', { ascending: true });
+
+        const { data: vendasAnteriores } = await window.db
+            .from('itens_pedidos_vendas')
+            .select('quantidade, produto_id, pedidos_vendas!inner(data)')
+            .gte('pedidos_vendas.data', d0_ant.toISOString())
+            .lte('pedidos_vendas.data', d7_ant.toISOString());
+
+        const mapaVendas = {};
+        if (vendasAnteriores) vendasAnteriores.forEach(v => { mapaVendas[v.produto_id] = (mapaVendas[v.produto_id] || 0) + parseFloat(v.quantidade || 0); });
+
+        const { data: vendasFuturas } = await window.db
+            .from('itens_pedidos_vendas')
+            .select('quantidade, produto_id, pedidos_vendas!pedido_venda_id!inner(data)')
+            .gte('pedidos_vendas.data', `${dataCiclo}T00:00:00+00:00`);
+
+        const mapaQT2 = {};
+        if (vendasFuturas) vendasFuturas.forEach(v => { mapaQT2[v.produto_id] = (mapaQT2[v.produto_id] || 0) + parseFloat(v.quantidade || 0); });
+
+        if (produtos) {
+            corpoGrid.innerHTML = produtos.map(p => {
+                const estIni = p.estoque_inicial?.[0]?.quantidade_inicial || 0;
+                const custoIni = p.estoque_inicial?.[0]?.custo_unitario_inicial || 0;
+                const vQT1 = mapaVendas[p.id] || 0;
+                const vQT2 = mapaQT2[p.id] || 0;
+                
+                // PRIORIZA DADOS SALVOS NO BANCO, SE NÃO EXISTIR, USA O CÁLCULO
+                const itemSalvo = mapaItensSalvos[p.id];
+                const vComp = itemSalvo ? itemSalvo.quantidade : (vQT1 + vQT2) - estIni;
+                const vCusto = itemSalvo ? itemSalvo.preco_unitario : 0;
+                const vMkt = itemSalvo ? itemSalvo.preco_compra_mkt : 0;
+                
+                const pm = p.preco_medio_compra || 0;
+                const t1 = vComp * vCusto;
+                const t2 = vComp * vMkt;
+                const gan = t2 - t1;
+
+                return `
+                    <tr data-id="${p.id}">
+                        <td>${p.nome}</td>
+                        <td class="col-est-ini col-standard">${estIni}</td>
+                        <td class="col-ct-ini col-standard">${parseFloat(custoIni).toFixed(2)}</td>
+                        <td class="td-qt1 col-standard">${vQT1}</td>
+                        <td class="td-qt2 col-hidden" style="font-weight:700; color:#1C1C1E">${vQT2}</td>
+                        <td><input type="number" class="grid-input col-comp" value="${vComp}"></td>
+                        <td><input type="number" class="grid-input col-custo-input" value="${vCusto.toFixed(2)}" step="0.01"></td>
+                        <td><input type="number" class="grid-input col-mkt-input" value="${vMkt.toFixed(2)}" step="0.01"></td>
+                        <td class="col-pm">${pm.toFixed(2)}</td>
+                        <td><input type="number" class="grid-input col-t1-input" value="${t1.toFixed(2)}" readonly></td>
+                        <td><input type="number" class="grid-input col-t2-input" value="${t2.toFixed(2)}" readonly></td>
+                        <td><input type="number" class="grid-input col-ganho-input" value="${gan.toFixed(2)}" readonly style="color:#10B981; font-weight:700"></td>
+                    </tr>
+                `;
+            }).join('');
+            atualizarSumario();
+        }
+    } catch (err) {
+        console.error(err);
+    } finally { setEstado('sincronizado'); }
+}
+
+// RESTANTE DAS FUNÇÕES (IGUAIS)
 const setupDataDefault = () => {
     const campoData = document.getElementById('data-ciclo');
     if (campoData) {
-        const hoje = new Date();
-        hoje.setDate(hoje.getDate() + 1); 
-        const yyyy = hoje.getFullYear();
-        const mm = String(hoje.getMonth() + 1).padStart(2, '0');
-        const dd = String(hoje.getDate()).padStart(2, '0');
-        campoData.value = `${yyyy}-${mm}-${dd}`;
+        const hoje = new Date(); hoje.setDate(hoje.getDate() + 1);
+        campoData.value = hoje.toISOString().split('T')[0];
     }
 };
 setupDataDefault();
@@ -518,75 +604,42 @@ const corpoGrid = document.getElementById('corpo-grid');
 
 inputBusca.addEventListener('input', async (e) => {
     const termo = e.target.value;
-    if (termo.length < 1) {
-        listaResultados.style.display = 'none';
-        return;
+    if (termo.length < 1) { listaResultados.style.display = 'none'; return; }
+    const { data: fornecedores } = await window.db.from('fornecedores').select('id, codigo, nome').ilike('nome', `%${termo}%`).limit(10);
+    if (fornecedores) {
+        listaResultados.innerHTML = fornecedores.map(f => `<div class="autocomplete-item" onclick="selecionarFornecedor('${f.nome}', '${f.codigo}', '${f.id}')">${f.nome}</div>`).join('');
+        listaResultados.style.display = 'block';
     }
-    try {
-        const { data: fornecedores, error } = await window.db
-            .from('fornecedores')
-            .select('id, codigo, nome')
-            .ilike('nome', `%${termo}%`)
-            .limit(20);
-
-        if (error) throw error;
-
-        if (fornecedores && fornecedores.length > 0) {
-            const flagContagem = `<div class="search-count">Encontrados: ${fornecedores.length} registros</div>`;
-            const itensHtml = fornecedores.map(f => `
-                <div class="autocomplete-item" onclick="selecionarFornecedor('${f.nome}', '${f.codigo}', '${f.id}')">
-                    ${f.nome} <span>COD: ${f.codigo}</span>
-                </div>
-            `).join('');
-            listaResultados.innerHTML = flagContagem + itensHtml;
-            listaResultados.style.display = 'block';
-        }
-    } catch (err) { console.error('Erro busca:', err.message); }
 });
 
 async function selecionarFornecedor(nome, codigo, id) {
     inputBusca.value = nome;
     listaResultados.style.display = 'none';
     inputBusca.dataset.selectedId = id;
-    inputBusca.dataset.selectedCod = codigo;
-    document.getElementById('num-compra').textContent = '#-----'; // Reseta ID ao trocar fornecedor
     await carregarProdutosEstoque(id);
 }
 
 function atualizarSumario() {
     const linhas = document.querySelectorAll('#corpo-grid tr');
-    let somaT1 = 0;
-    let somaGAN = 0;
-    let contadorItens = 0;
-
+    let somaT1 = 0, somaGAN = 0, contador = 0;
     linhas.forEach(tr => {
-        const tdQt1 = tr.querySelector('.td-qt1');
-        const tdQt2 = tr.querySelector('.td-qt2');
-        const valQT1 = parseFloat(tdQt1?.textContent) || 0;
-        const valQT2 = parseFloat(tdQt2?.textContent) || 0;
-        
-        if(tdQt1) tdQt1.classList.toggle('col-hidden', currentView !== 'QT1');
-        if(tdQt2) tdQt2.classList.toggle('col-hidden', currentView !== 'QT2');
-
-        const valorAtivo = (currentView === 'QT1') ? valQT1 : valQT2;
-        
-        if (valorAtivo > 0) {
+        const vQT1 = parseFloat(tr.querySelector('.td-qt1')?.textContent) || 0;
+        const vQT2 = parseFloat(tr.querySelector('.td-qt2')?.textContent) || 0;
+        const ativo = currentView === 'QT1' ? vQT1 : vQT2;
+        tr.querySelector('.td-qt1').classList.toggle('col-hidden', currentView !== 'QT1');
+        tr.querySelector('.td-qt2').classList.toggle('col-hidden', currentView !== 'QT2');
+        if (ativo > 0) {
             tr.style.display = 'table-row';
-            const t1Value = parseFloat(tr.querySelector('.col-t1-input').value) || 0;
-            const ganValue = parseFloat(tr.querySelector('.col-ganho-input').value) || 0;
-            contadorItens++;
-            somaT1 += t1Value;
-            somaGAN += ganValue;
-        } else {
-            tr.style.display = 'none';
-        }
+            somaT1 += parseFloat(tr.querySelector('.col-t1-input').value) || 0;
+            somaGAN += parseFloat(tr.querySelector('.col-ganho-input').value) || 0;
+            contador++;
+        } else { tr.style.display = 'none'; }
     });
-
-    const formatBRL = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-    document.getElementById('total-geral').textContent = formatBRL(somaT1);
-    document.getElementById('subtotal-card').textContent = formatBRL(somaT1);
-    document.getElementById('ganho-card').textContent = formatBRL(somaGAN);
-    document.getElementById('qtd-itens').textContent = contadorItens;
+    const format = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    document.getElementById('total-geral').textContent = format(somaT1);
+    document.getElementById('subtotal-card').textContent = format(somaT1);
+    document.getElementById('ganho-card').textContent = format(somaGAN);
+    document.getElementById('qtd-itens').textContent = contador;
 }
 
 corpoGrid.addEventListener('input', (e) => {
@@ -596,135 +649,24 @@ corpoGrid.addEventListener('input', (e) => {
         const cust = parseFloat(tr.querySelector('.col-custo-input').value) || 0;
         const estIni = parseFloat(tr.querySelector('.col-est-ini').textContent) || 0;
         const ctIni = parseFloat(tr.querySelector('.col-ct-ini').textContent) || 0;
-
-        if (e.target.classList.contains('col-custo-input')) {
-            tr.querySelector('.col-mkt-input').value = cust.toFixed(2);
-        }
-
+        if (e.target.classList.contains('col-custo-input')) tr.querySelector('.col-mkt-input').value = cust.toFixed(2);
         const mkt = parseFloat(tr.querySelector('.col-mkt-input').value) || 0;
         const divisor = comp + estIni;
-        let pm = 0;
-        if (divisor !== 0) {
-            pm = ((mkt * comp) + (estIni * ctIni)) / divisor;
-        }
-        
+        const pm = divisor !== 0 ? ((mkt * comp) + (estIni * ctIni)) / divisor : 0;
         tr.querySelector('.col-pm').textContent = pm.toFixed(2);
-        const t1Value = comp * cust;
-        tr.querySelector('.col-t1-input').value = t1Value.toFixed(2);
-        const t2Value = comp * mkt;
-        tr.querySelector('.col-t2-input').value = t2Value.toFixed(2);
-        const ganValue = t2Value - t1Value;
-        tr.querySelector('.col-ganho-input').value = ganValue.toFixed(2);
-
+        const t1 = comp * cust; tr.querySelector('.col-t1-input').value = t1.toFixed(2);
+        const t2 = comp * mkt; tr.querySelector('.col-t2-input').value = t2.toFixed(2);
+        tr.querySelector('.col-ganho-input').value = (t2 - t1).toFixed(2);
         atualizarSumario();
-
-        // GATILHO DE AUTO-SALVAMENTO (8 SEGUNDOS)
         setEstado('editando');
         clearTimeout(timerAutoSave);
         timerAutoSave = setTimeout(salvarDadosSinc, 8000);
     }
 });
 
-async function carregarProdutosEstoque(fornecedorUuid) {
-    document.getElementById('status-sinc').textContent = "Sincronizando estoque...";
-    const dataCiclo = document.getElementById('data-ciclo').value;
-    corpoGrid.innerHTML = '<tr><td colspan="12" style="text-align:center; padding:20px;">Processando dados...</td></tr>';
-
-    try {
-        const ciclo = window.cicloAtual;
-        const d0_ant = new Date(ciclo.d0); d0_ant.setDate(d0_ant.getDate() - 7);
-        const d7_ant = new Date(ciclo.d7); d7_ant.setDate(d7_ant.getDate() - 7);
-
-        const { data: produtos, error: errProd } = await window.db
-            .from('produtos')
-            .select(`id, nome, estoque_inicial (quantidade_inicial, custo_unitario_inicial)`)
-            .eq('fornecedor_id', fornecedorUuid)
-            .order('nome', { ascending: true });
-
-        if (errProd) throw errProd;
-
-        const { data: vendasAnteriores } = await window.db
-            .from('itens_pedidos_vendas')
-            .select('quantidade, produto_id, pedidos_vendas!inner(data)')
-            .gte('pedidos_vendas.data', d0_ant.toISOString())
-            .lte('pedidos_vendas.data', d7_ant.toISOString());
-
-        const mapaVendas = {};
-        if (vendasAnteriores) {
-            vendasAnteriores.forEach(v => {
-                mapaVendas[v.produto_id] = (mapaVendas[v.produto_id] || 0) + parseFloat(v.quantidade || 0);
-            });
-        }
-
-        const { data: vendasFuturas } = await window.db
-            .from('itens_pedidos_vendas')
-            .select('quantidade, produto_id, pedidos_vendas!pedido_venda_id!inner(data)')
-            .gte('pedidos_vendas.data', `${dataCiclo}T00:00:00+00:00`);
-
-        const mapaQT2 = {};
-        if (vendasFuturas) {
-            vendasFuturas.forEach(v => {
-                mapaQT2[v.produto_id] = (mapaQT2[v.produto_id] || 0) + parseFloat(v.quantidade || 0);
-            });
-        }
-
-        if (produtos && produtos.length > 0) {
-            corpoGrid.innerHTML = produtos.map(p => {
-                const estIni = p.estoque_inicial?.[0]?.quantidade_inicial || 0;
-                const custoIni = p.estoque_inicial?.[0]?.custo_unitario_inicial || 0;
-                const valorQT1 = mapaVendas[p.id] || 0;
-                const valorQT2 = mapaQT2[p.id] || 0;
-                const valorComp = (valorQT1 + valorQT2) - estIni;
-                
-                const valorMkt = 0;
-                const divisor = valorComp + estIni;
-                const pmInicial = divisor !== 0 ? ((valorMkt * valorComp) + (estIni * custoIni)) / divisor : 0;
-                const t1Inicial = valorComp * 0;
-                const t2Inicial = valorComp * valorMkt;
-                const ganInicial = t2Inicial - t1Inicial;
-
-                return `
-                    <tr data-id="${p.id}">
-                        <td>${p.nome}</td>
-                        <td class="col-est-ini col-standard">${estIni}</td>
-                        <td class="col-ct-ini col-standard">${parseFloat(custoIni).toFixed(2)}</td>
-                        <td class="td-qt1 col-standard">${valorQT1}</td>
-                        <td class="td-qt2 col-hidden" style="font-weight:700; color:#1C1C1E">${valorQT2}</td>
-                        <td><input type="number" class="grid-input col-comp" value="${valorComp}"></td>
-                        <td><input type="number" class="grid-input col-custo-input" value="0.00" step="0.01"></td>
-                        <td><input type="number" class="grid-input col-mkt-input" value="0.00" step="0.01"></td>
-                        <td class="col-pm">${pmInicial.toFixed(2)}</td>
-                        <td><input type="number" class="grid-input col-t1-input" value="${t1Inicial.toFixed(2)}" readonly></td>
-                        <td><input type="number" class="grid-input col-t2-input" value="${t2Inicial.toFixed(2)}" readonly></td>
-                        <td><input type="number" class="grid-input col-ganho-input" value="${ganInicial.toFixed(2)}" readonly style="color:#10B981; font-weight:700"></td>
-                    </tr>
-                `;
-            }).join('');
-            document.getElementById('info-pag').textContent = `${produtos.length} produtos encontrados`;
-            atualizarSumario();
-        } else {
-            corpoGrid.innerHTML = '<tr><td colspan="12" style="text-align:center; padding:20px;">Nenhum produto encontrado.</td></tr>';
-            atualizarSumario();
-        }
-    } catch (err) {
-        console.error('Erro:', err.message);
-        corpoGrid.innerHTML = '<tr><td colspan="12" style="text-align:center; color:red; padding:20px;">Erro ao carregar dados.</td></tr>';
-    } finally { setEstado('sincronizado'); }
-}
-
-document.addEventListener('click', (e) => {
-    if (!inputBusca.contains(e.target) && !listaResultados.contains(e.target)) listaResultados.style.display = 'none';
-});
-
 function toggleCard() { document.getElementById('mainCard').classList.toggle('expanded'); }
-
-const fixIOSHeight = () => {
-    let vh = window.innerHeight * 0.01;
-    document.documentElement.style.setProperty('--vh', `${vh}px`);
-};
-window.addEventListener('resize', fixIOSHeight);
-fixIOSHeight();
+const fixHeight = () => document.documentElement.style.setProperty('--vh', `${window.innerHeight * 0.01}px`);
+window.addEventListener('resize', fixHeight); fixHeight();
 </script>
-
 </body>
 </html>
