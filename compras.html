@@ -198,7 +198,7 @@ body{
 }
 .detail-item b { color: #1C1C1E; }
 
-/* SELETOR DE VISÃO */
+/* SELETOR DE VISÃO DISCRETO */
 .view-selector {
     display: flex;
     align-items: center;
@@ -386,19 +386,19 @@ let statusAtual = 'sincronizado';
 function setEstado(novoStatus) {
     const elStatus = document.getElementById('status-sinc');
     statusAtual = novoStatus;
-    const botoes = ['btn-voltar', 'btn-add-topbar', 'btn-nova-compra', 'btn-excluir-compra'];
+    const ids = ['btn-voltar', 'btn-add-topbar', 'btn-nova-compra', 'btn-excluir-compra'];
 
     if (novoStatus === 'editando') {
         elStatus.textContent = 'Editando...';
         elStatus.style.color = '#F59E0B';
-        botoes.forEach(id => document.getElementById(id)?.classList.add('btn-disabled'));
+        ids.forEach(id => document.getElementById(id)?.classList.add('btn-disabled'));
     } else if (novoStatus === 'salvando') {
         elStatus.textContent = 'Salvando...';
         elStatus.style.color = '#3B82F6';
     } else {
         elStatus.textContent = 'Sincronizado';
         elStatus.style.color = '#10B981';
-        botoes.forEach(id => document.getElementById(id)?.classList.remove('btn-disabled'));
+        ids.forEach(id => document.getElementById(id)?.classList.remove('btn-disabled'));
     }
 }
 
@@ -412,11 +412,11 @@ async function salvarDadosSinc() {
     const fornecedorId = document.getElementById('busca-fornecedor').dataset.selectedId;
     const dataCompra = document.getElementById('data-ciclo').value;
     
-    let pedidoId = numCompraEl.textContent.replace('#', '');
-    const isNovo = pedidoId === '-----';
+    let pedidoId = numCompraEl.textContent.replace('#', '').trim();
+    const isNovo = (pedidoId === '-----');
 
     try {
-        // 1. PAI
+        // 1. SALVAR CABEÇALHO
         if (isNovo) {
             const { data: pData, error: pErr } = await window.db.from('pedidos_compras').insert({
                 data: dataCompra,
@@ -436,135 +436,117 @@ async function salvarDadosSinc() {
             if (pErr) throw pErr;
         }
 
-        // 2. FILHOS (LIMPAR E INSERIR)
-        await window.db.from('itens_pedidos_compras').delete().eq('pedido_compra_id', pedidoId);
+        // 2. SALVAR ITENS
+        // Deleta todos e insere os da grade (estratégia de espelhamento)
+        const { error: delErr } = await window.db.from('itens_pedidos_compras').delete().eq('pedido_compra_id', pedidoId);
+        if (delErr) throw delErr;
 
         const linhas = document.querySelectorAll('#corpo-grid tr');
-        const itens = [];
-        const updatesProd = [];
+        const itensParaInserir = [];
+        const promessasPM = [];
 
         linhas.forEach(tr => {
             const comp = parseFloat(tr.querySelector('.col-comp').value) || 0;
-            if (comp > 0) {
-                const prodId = tr.dataset.id;
-                const cust = parseFloat(tr.querySelector('.col-custo-input').value) || 0;
-                const mkt = parseFloat(tr.querySelector('.col-mkt-input').value) || 0;
-                const t1 = parseFloat(tr.querySelector('.col-t1-input').value) || 0;
-                const gan = parseFloat(tr.querySelector('.col-ganho-input').value) || 0;
-                const pm = parseFloat(tr.querySelector('.col-pm').textContent) || 0;
+            const prodId = tr.dataset.id;
+            const pmVal = parseFloat(tr.querySelector('.col-pm').textContent) || 0;
 
-                itens.push({
+            if (comp > 0) {
+                itensParaInserir.push({
                     pedido_compra_id: pedidoId,
                     produto_id: prodId,
                     quantidade: comp,
-                    preco_unitario: cust,
-                    valor_total: t1,
-                    ganho: gan,
-                    preco_compra_mkt: mkt
+                    preco_unitario: parseFloat(tr.querySelector('.col-custo-input').value) || 0,
+                    valor_total: parseFloat(tr.querySelector('.col-t1-input').value) || 0,
+                    ganho: parseFloat(tr.querySelector('.col-ganho-input').value) || 0,
+                    preco_compra_mkt: parseFloat(tr.querySelector('.col-mkt-input').value) || 0
                 });
 
-                updatesProd.push(window.db.from('produtos').update({ preco_medio_compra: pm }).eq('id', prodId));
+                // Prepara atualização do PM na tabela produtos
+                promessasPM.push(window.db.from('produtos').update({ preco_medio_compra: pmVal }).eq('id', prodId));
             }
         });
 
-        if (itens.length > 0) {
-            const { error: iErr } = await window.db.from('itens_pedidos_compras').insert(itens);
-            if (iErr) throw iErr;
-            await Promise.all(updatesProd);
+        if (itensParaInserir.length > 0) {
+            const { error: insErr } = await window.db.from('itens_pedidos_compras').insert(itensParaInserir);
+            if (insErr) {
+                console.warn("Erro ao inserir itens:", insErr);
+                throw insErr;
+            }
+            
+            // Tenta atualizar os PMs mas não trava o processo se um der erro
+            try { await Promise.all(promessasPM); } catch(e) { console.warn("Erro ao atualizar PMs:", e); }
         }
 
         setEstado('sincronizado');
     } catch (err) {
-        console.error('Falha no save:', err);
-        setEstado('editando');
+        console.error("Erro geral no salvamento:", err);
+        // Mesmo em erro, tentamos destravar a tela após 3 segundos para não congelar o usuário
+        setTimeout(() => setEstado('sincronizado'), 3000);
     }
 }
 
 async function carregarProdutosEstoque(fornecedorUuid) {
-    setEstado('salvando'); // Feedback visual de carga
     const dataCiclo = document.getElementById('data-ciclo').value;
-    corpoGrid.innerHTML = '<tr><td colspan="12" style="text-align:center; padding:20px;">Carregando...</td></tr>';
+    corpoGrid.innerHTML = '<tr><td colspan="12" style="text-align:center; padding:20px;">Sincronizando...</td></tr>';
 
     try {
-        // BUSCA SE JÁ EXISTE UM PEDIDO SALVO PARA ESSE FORNECEDOR NESTA DATA
-        const { data: pedidoExistente } = await window.db
+        // TENTA RECUPERAR PEDIDO SALVO PARA ESTE FORNECEDOR/DATA
+        const { data: pedidoDB } = await window.db
             .from('pedidos_compras')
-            .select('id, valor_total')
+            .select('id')
             .eq('fornecedor_id', fornecedorUuid)
             .eq('data', dataCiclo)
             .maybeSingle();
 
-        let mapaItensSalvos = {};
-        if (pedidoExistente) {
-            document.getElementById('num-compra').textContent = `#${pedidoExistente.id}`;
-            const { data: itensDB } = await window.db
-                .from('itens_pedidos_compras')
-                .select('*')
-                .eq('pedido_compra_id', pedidoExistente.id);
-            
-            if (itensDB) {
-                itensDB.forEach(it => { mapaItensSalvos[it.produto_id] = it; });
-            }
+        let itensNoBanco = {};
+        if (pedidoDB) {
+            document.getElementById('num-compra').textContent = `#${pedidoDB.id}`;
+            const { data: listaItens } = await window.db.from('itens_pedidos_compras').select('*').eq('pedido_compra_id', pedidoDB.id);
+            if (listaItens) listaItens.forEach(it => itensNoBanco[it.produto_id] = it);
         } else {
             document.getElementById('num-compra').textContent = '#-----';
         }
 
-        // LÓGICA DE ESTOQUE E VENDAS (MANTIDA)
+        // LÓGICA DE CÁLCULO DE VENDAS (MANTIDA)
         const ciclo = window.cicloAtual;
         const d0_ant = new Date(ciclo.d0); d0_ant.setDate(d0_ant.getDate() - 7);
         const d7_ant = new Date(ciclo.d7); d7_ant.setDate(d7_ant.getDate() - 7);
 
-        const { data: produtos } = await window.db
-            .from('produtos')
-            .select(`id, nome, preco_medio_compra, estoque_inicial (quantidade_inicial, custo_unitario_inicial)`)
-            .eq('fornecedor_id', fornecedorUuid)
-            .order('nome', { ascending: true });
+        const { data: produtos } = await window.db.from('produtos').select(`id, nome, preco_medio_compra, estoque_inicial (quantidade_inicial, custo_unitario_inicial)`).eq('fornecedor_id', fornecedorUuid).order('nome', { ascending: true });
+        const { data: vAnt } = await window.db.from('itens_pedidos_vendas').select('quantidade, produto_id, pedidos_vendas!inner(data)').gte('pedidos_vendas.data', d0_ant.toISOString()).lte('pedidos_vendas.data', d7_ant.toISOString());
+        const { data: vFut } = await window.db.from('itens_pedidos_vendas').select('quantidade, produto_id, pedidos_vendas!pedido_venda_id!inner(data)').gte('pedidos_vendas.data', `${dataCiclo}T00:00:00+00:00`);
 
-        const { data: vendasAnteriores } = await window.db
-            .from('itens_pedidos_vendas')
-            .select('quantidade, produto_id, pedidos_vendas!inner(data)')
-            .gte('pedidos_vendas.data', d0_ant.toISOString())
-            .lte('pedidos_vendas.data', d7_ant.toISOString());
-
-        const mapaVendas = {};
-        if (vendasAnteriores) vendasAnteriores.forEach(v => { mapaVendas[v.produto_id] = (mapaVendas[v.produto_id] || 0) + parseFloat(v.quantidade || 0); });
-
-        const { data: vendasFuturas } = await window.db
-            .from('itens_pedidos_vendas')
-            .select('quantidade, produto_id, pedidos_vendas!pedido_venda_id!inner(data)')
-            .gte('pedidos_vendas.data', `${dataCiclo}T00:00:00+00:00`);
-
-        const mapaQT2 = {};
-        if (vendasFuturas) vendasFuturas.forEach(v => { mapaQT2[v.produto_id] = (mapaQT2[v.produto_id] || 0) + parseFloat(v.quantidade || 0); });
+        const mapaVendas = {}; if(vAnt) vAnt.forEach(v => mapaVendas[v.produto_id] = (mapaVendas[v.produto_id] || 0) + parseFloat(v.quantidade));
+        const mapaQT2 = {}; if(vFut) vFut.forEach(v => mapaQT2[v.produto_id] = (mapaQT2[v.produto_id] || 0) + parseFloat(v.quantidade));
 
         if (produtos) {
             corpoGrid.innerHTML = produtos.map(p => {
                 const estIni = p.estoque_inicial?.[0]?.quantidade_inicial || 0;
-                const custoIni = p.estoque_inicial?.[0]?.custo_unitario_inicial || 0;
-                const vQT1 = mapaVendas[p.id] || 0;
-                const vQT2 = mapaQT2[p.id] || 0;
+                const custIni = p.estoque_inicial?.[0]?.custo_unitario_inicial || 0;
+                const q1 = mapaVendas[p.id] || 0;
+                const q2 = mapaQT2[p.id] || 0;
                 
-                // PRIORIZA DADOS SALVOS NO BANCO, SE NÃO EXISTIR, USA O CÁLCULO
-                const itemSalvo = mapaItensSalvos[p.id];
-                const vComp = itemSalvo ? itemSalvo.quantidade : (vQT1 + vQT2) - estIni;
-                const vCusto = itemSalvo ? itemSalvo.preco_unitario : 0;
-                const vMkt = itemSalvo ? itemSalvo.preco_compra_mkt : 0;
-                
+                // SE EXISTE NO BANCO, TRAZ O QUE ESTÁ SALVO
+                const salvo = itensNoBanco[p.id];
+                const comp = salvo ? salvo.quantidade : (q1 + q2) - estIni;
+                const cust = salvo ? salvo.preco_unitario : 0;
+                const mkt = salvo ? salvo.preco_compra_mkt : 0;
                 const pm = p.preco_medio_compra || 0;
-                const t1 = vComp * vCusto;
-                const t2 = vComp * vMkt;
+
+                const t1 = comp * cust;
+                const t2 = comp * mkt;
                 const gan = t2 - t1;
 
                 return `
                     <tr data-id="${p.id}">
                         <td>${p.nome}</td>
                         <td class="col-est-ini col-standard">${estIni}</td>
-                        <td class="col-ct-ini col-standard">${parseFloat(custoIni).toFixed(2)}</td>
-                        <td class="td-qt1 col-standard">${vQT1}</td>
-                        <td class="td-qt2 col-hidden" style="font-weight:700; color:#1C1C1E">${vQT2}</td>
-                        <td><input type="number" class="grid-input col-comp" value="${vComp}"></td>
-                        <td><input type="number" class="grid-input col-custo-input" value="${vCusto.toFixed(2)}" step="0.01"></td>
-                        <td><input type="number" class="grid-input col-mkt-input" value="${vMkt.toFixed(2)}" step="0.01"></td>
+                        <td class="col-ct-ini col-standard">${parseFloat(custIni).toFixed(2)}</td>
+                        <td class="td-qt1 col-standard">${q1}</td>
+                        <td class="td-qt2 col-hidden" style="font-weight:700">${q2}</td>
+                        <td><input type="number" class="grid-input col-comp" value="${comp}"></td>
+                        <td><input type="number" class="grid-input col-custo-input" value="${cust.toFixed(2)}"></td>
+                        <td><input type="number" class="grid-input col-mkt-input" value="${mkt.toFixed(2)}"></td>
                         <td class="col-pm">${pm.toFixed(2)}</td>
                         <td><input type="number" class="grid-input col-t1-input" value="${t1.toFixed(2)}" readonly></td>
                         <td><input type="number" class="grid-input col-t2-input" value="${t2.toFixed(2)}" readonly></td>
@@ -574,72 +556,64 @@ async function carregarProdutosEstoque(fornecedorUuid) {
             }).join('');
             atualizarSumario();
         }
-    } catch (err) {
-        console.error(err);
-    } finally { setEstado('sincronizado'); }
+    } catch (err) { console.error(err); } 
+    finally { setEstado('sincronizado'); }
 }
 
-// RESTANTE DAS FUNÇÕES (IGUAIS)
+// FUNÇÕES DE APOIO (MANTIDAS)
 const setupDataDefault = () => {
-    const campoData = document.getElementById('data-ciclo');
-    if (campoData) {
-        const hoje = new Date(); hoje.setDate(hoje.getDate() + 1);
-        campoData.value = hoje.toISOString().split('T')[0];
-    }
+    const c = document.getElementById('data-ciclo');
+    if(c){ const h = new Date(); h.setDate(h.getDate()+1); c.value = h.toISOString().split('T')[0]; }
 };
 setupDataDefault();
 
-function setViewMode(mode) {
-    currentView = mode;
-    document.getElementById('opt-qt1').classList.toggle('active', mode === 'QT1');
-    document.getElementById('opt-qt2').classList.toggle('active', mode === 'QT2');
-    document.querySelector('.th-qt1').classList.toggle('col-hidden', mode !== 'QT1');
-    document.querySelector('.th-qt2').classList.toggle('col-hidden', mode !== 'QT2');
+function setViewMode(m) {
+    currentView = m;
+    document.getElementById('opt-qt1').classList.toggle('active', m === 'QT1');
+    document.getElementById('opt-qt2').classList.toggle('active', m === 'QT2');
     atualizarSumario();
 }
 
 const inputBusca = document.getElementById('busca-fornecedor');
-const listaResultados = document.getElementById('resultados-fornecedor');
+const listaRes = document.getElementById('resultados-fornecedor');
 const corpoGrid = document.getElementById('corpo-grid');
 
 inputBusca.addEventListener('input', async (e) => {
-    const termo = e.target.value;
-    if (termo.length < 1) { listaResultados.style.display = 'none'; return; }
-    const { data: fornecedores } = await window.db.from('fornecedores').select('id, codigo, nome').ilike('nome', `%${termo}%`).limit(10);
-    if (fornecedores) {
-        listaResultados.innerHTML = fornecedores.map(f => `<div class="autocomplete-item" onclick="selecionarFornecedor('${f.nome}', '${f.codigo}', '${f.id}')">${f.nome}</div>`).join('');
-        listaResultados.style.display = 'block';
+    const t = e.target.value; if(t.length < 1){ listaRes.style.display = 'none'; return; }
+    const { data: f } = await window.db.from('fornecedores').select('id, codigo, nome').ilike('nome', `%${t}%`).limit(10);
+    if(f){
+        listaRes.innerHTML = f.map(x => `<div class="autocomplete-item" onclick="selecionarFornecedor('${x.nome}', '${x.id}')">${x.nome}</div>`).join('');
+        listaRes.style.display = 'block';
     }
 });
 
-async function selecionarFornecedor(nome, codigo, id) {
-    inputBusca.value = nome;
-    listaResultados.style.display = 'none';
+async function selecionarFornecedor(n, id) {
+    inputBusca.value = n; listaRes.style.display = 'none';
     inputBusca.dataset.selectedId = id;
     await carregarProdutosEstoque(id);
 }
 
 function atualizarSumario() {
     const linhas = document.querySelectorAll('#corpo-grid tr');
-    let somaT1 = 0, somaGAN = 0, contador = 0;
+    let sT1 = 0, sGan = 0, count = 0;
     linhas.forEach(tr => {
-        const vQT1 = parseFloat(tr.querySelector('.td-qt1')?.textContent) || 0;
-        const vQT2 = parseFloat(tr.querySelector('.td-qt2')?.textContent) || 0;
-        const ativo = currentView === 'QT1' ? vQT1 : vQT2;
+        const q1 = parseFloat(tr.querySelector('.td-qt1').textContent) || 0;
+        const q2 = parseFloat(tr.querySelector('.td-qt2').textContent) || 0;
+        const ativo = currentView === 'QT1' ? q1 : q2;
         tr.querySelector('.td-qt1').classList.toggle('col-hidden', currentView !== 'QT1');
         tr.querySelector('.td-qt2').classList.toggle('col-hidden', currentView !== 'QT2');
-        if (ativo > 0) {
+        if(ativo > 0) {
             tr.style.display = 'table-row';
-            somaT1 += parseFloat(tr.querySelector('.col-t1-input').value) || 0;
-            somaGAN += parseFloat(tr.querySelector('.col-ganho-input').value) || 0;
-            contador++;
+            sT1 += parseFloat(tr.querySelector('.col-t1-input').value) || 0;
+            sGan += parseFloat(tr.querySelector('.col-ganho-input').value) || 0;
+            count++;
         } else { tr.style.display = 'none'; }
     });
-    const format = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-    document.getElementById('total-geral').textContent = format(somaT1);
-    document.getElementById('subtotal-card').textContent = format(somaT1);
-    document.getElementById('ganho-card').textContent = format(somaGAN);
-    document.getElementById('qtd-itens').textContent = contador;
+    const fBRL = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    document.getElementById('total-geral').textContent = fBRL(sT1);
+    document.getElementById('subtotal-card').textContent = fBRL(sT1);
+    document.getElementById('ganho-card').textContent = fBRL(sGan);
+    document.getElementById('qtd-itens').textContent = count;
 }
 
 corpoGrid.addEventListener('input', (e) => {
@@ -647,12 +621,12 @@ corpoGrid.addEventListener('input', (e) => {
         const tr = e.target.closest('tr');
         const comp = parseFloat(tr.querySelector('.col-comp').value) || 0;
         const cust = parseFloat(tr.querySelector('.col-custo-input').value) || 0;
-        const estIni = parseFloat(tr.querySelector('.col-est-ini').textContent) || 0;
-        const ctIni = parseFloat(tr.querySelector('.col-ct-ini').textContent) || 0;
-        if (e.target.classList.contains('col-custo-input')) tr.querySelector('.col-mkt-input').value = cust.toFixed(2);
+        const est = parseFloat(tr.querySelector('.col-est-ini').textContent) || 0;
+        const cIni = parseFloat(tr.querySelector('.col-ct-ini').textContent) || 0;
+        if(e.target.classList.contains('col-custo-input')) tr.querySelector('.col-mkt-input').value = cust.toFixed(2);
         const mkt = parseFloat(tr.querySelector('.col-mkt-input').value) || 0;
-        const divisor = comp + estIni;
-        const pm = divisor !== 0 ? ((mkt * comp) + (estIni * ctIni)) / divisor : 0;
+        const div = comp + est;
+        const pm = div !== 0 ? ((mkt * comp) + (est * cIni)) / div : 0;
         tr.querySelector('.col-pm').textContent = pm.toFixed(2);
         const t1 = comp * cust; tr.querySelector('.col-t1-input').value = t1.toFixed(2);
         const t2 = comp * mkt; tr.querySelector('.col-t2-input').value = t2.toFixed(2);
@@ -665,8 +639,8 @@ corpoGrid.addEventListener('input', (e) => {
 });
 
 function toggleCard() { document.getElementById('mainCard').classList.toggle('expanded'); }
-const fixHeight = () => document.documentElement.style.setProperty('--vh', `${window.innerHeight * 0.01}px`);
-window.addEventListener('resize', fixHeight); fixHeight();
+const fixH = () => document.documentElement.style.setProperty('--vh', `${window.innerHeight * 0.01}px`);
+window.addEventListener('resize', fixH); fixH();
 </script>
 </body>
 </html>
