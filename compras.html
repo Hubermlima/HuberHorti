@@ -273,7 +273,7 @@ thead th { position: sticky; top: 0; background: #F9FAFB; padding: 12px 8px; col
   flex-shrink: 0; height: 65px; padding: 0 20px calc(8px + env(safe-area-inset-bottom));
   background: #FFF; border-top: 1px solid #F3F4F6; display: flex; justify-content: space-between; align-items: center;
 }
-.ios-btn-float { width: 38px; height: 38px; border-radius: 50%; border: none; background: #FFF; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+.ios-btn-float { width: 38px; height: 38px; border-radius: 50%; border: none; background: #FFF; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 8px rgba(0,0,0,0.05); cursor: pointer; }
 </style>
 </head>
 <body>
@@ -371,8 +371,8 @@ thead th { position: sticky; top: 0; background: #F9FAFB; padding: 12px 8px; col
   <div class="pagination-footer">
     <span id="info-pag" style="font-size:10px; color:#8E8E93; font-weight:600">Selecione um fornecedor</span>
     <div style="display:flex; gap:10px">
-      <button class="ios-btn-float" style="width:34px; height:34px"><svg viewBox="0 0 24 24" style="width:16px; stroke:#1C1C1E; stroke-width:2.5; fill:none"><path d="M15 18l-6-6 6-6" /></svg></button>
-      <button class="ios-btn-float" style="width:34px; height:34px"><svg viewBox="0 0 24 24" style="width:16px; stroke:#1C1C1E; stroke-width:2.5; fill:none"><path d="M9 18l6-6-6-6" /></svg></button>
+      <button id="btn-pag-prev" class="ios-btn-float" style="width:34px; height:34px"><svg viewBox="0 0 24 24" style="width:16px; stroke:#1C1C1E; stroke-width:2.5; fill:none"><path d="M15 18l-6-6 6-6" /></svg></button>
+      <button id="btn-pag-next" class="ios-btn-float" style="width:34px; height:34px"><svg viewBox="0 0 24 24" style="width:16px; stroke:#1C1C1E; stroke-width:2.5; fill:none"><path d="M9 18l6-6-6-6" /></svg></button>
     </div>
   </div>
 </div>
@@ -383,7 +383,10 @@ let currentView = 'QT1';
 let timerAutoSave;
 let statusAtual = 'sincronizado';
 
-// Adicionado Listener para cópia de erro ao clicar no status
+// Variáveis de Paginação
+let paginaAtual = 1;
+const itensPorPagina = 10;
+
 document.getElementById('status-sinc').addEventListener('click', function() {
     if (this.textContent.includes('ERRO')) {
         const erroLimpo = this.textContent.replace(' (Toque p/ copiar)', '');
@@ -408,7 +411,6 @@ function setEstado(novoStatus, msgErro = '') {
     } else if (novoStatus === 'erro') {
         elStatus.textContent = `ERRO: [${msgErro}] (Toque p/ copiar)`;
         elStatus.style.color = '#EF4444';
-        // Mantém botões desabilitados em caso de erro crítico no save
         botoes.forEach(id => document.getElementById(id)?.classList.add('btn-disabled'));
     } else {
         elStatus.textContent = 'Sincronizado';
@@ -431,7 +433,6 @@ async function salvarDadosSinc() {
     const isNovo = pedidoId === '-----';
 
     try {
-        // 1. PAI
         if (isNovo) {
             const { data: pData, error: pErr } = await window.db.from('pedidos_compras').insert({
                 data: dataCompra,
@@ -451,7 +452,6 @@ async function salvarDadosSinc() {
             if (pErr) throw pErr;
         }
 
-        // 2. FILHOS (LIMPAR E INSERIR)
         const { error: dErr } = await window.db.from('itens_pedidos_compras').delete().eq('pedido_compra_id', pedidoId);
         if (dErr) throw dErr;
 
@@ -492,18 +492,17 @@ async function salvarDadosSinc() {
         setEstado('sincronizado');
     } catch (err) {
         console.error('Falha no save:', err);
-        // Exibe o erro no status para cópia
         setEstado('erro', err.message || 'Erro desconhecido');
     }
 }
 
 async function carregarProdutosEstoque(fornecedorUuid) {
-    setEstado('salvando'); // Feedback visual de carga
+    setEstado('salvando');
+    paginaAtual = 1; // Reset da página ao carregar novo fornecedor
     const dataCiclo = document.getElementById('data-ciclo').value;
     corpoGrid.innerHTML = '<tr><td colspan="12" style="text-align:center; padding:20px;">Carregando...</td></tr>';
 
     try {
-        // BUSCA SE JÁ EXISTE UM PEDIDO SALVO PARA ESSE FORNECEDOR NESTA DATA
         const { data: pedidoExistente } = await window.db
             .from('pedidos_compras')
             .select('id, valor_total')
@@ -526,7 +525,6 @@ async function carregarProdutosEstoque(fornecedorUuid) {
             document.getElementById('num-compra').textContent = '#-----';
         }
 
-        // LÓGICA DE ESTOQUE E VENDAS (MANTIDA)
         const ciclo = window.cicloAtual;
         const d0_ant = new Date(ciclo.d0); d0_ant.setDate(d0_ant.getDate() - 7);
         const d7_ant = new Date(ciclo.d7); d7_ant.setDate(d7_ant.getDate() - 7);
@@ -560,13 +558,10 @@ async function carregarProdutosEstoque(fornecedorUuid) {
                 const custoIni = p.estoque_inicial?.[0]?.custo_unitario_inicial || 0;
                 const vQT1 = mapaVendas[p.id] || 0;
                 const vQT2 = mapaQT2[p.id] || 0;
-                
-                // PRIORIZA DADOS SALVOS NO BANCO, SE NÃO EXISTIR, USA O CÁLCULO
                 const itemSalvo = mapaItensSalvos[p.id];
                 const vComp = itemSalvo ? itemSalvo.quantidade : (vQT1 + vQT2) - estIni;
                 const vCusto = itemSalvo ? itemSalvo.preco_unitario : 0;
                 const vMkt = itemSalvo ? itemSalvo.preco_compra_mkt : 0;
-                
                 const pm = p.preco_medio_compra || 0;
                 const t1 = vComp * vCusto;
                 const t2 = vComp * vMkt;
@@ -599,7 +594,6 @@ async function carregarProdutosEstoque(fornecedorUuid) {
     }
 }
 
-// RESTANTE DAS FUNÇÕES (IGUAIS)
 const setupDataDefault = () => {
     const campoData = document.getElementById('data-ciclo');
     if (campoData) {
@@ -611,6 +605,7 @@ setupDataDefault();
 
 function setViewMode(mode) {
     currentView = mode;
+    paginaAtual = 1; // Reset da página ao mudar visão
     document.getElementById('opt-qt1').classList.toggle('active', mode === 'QT1');
     document.getElementById('opt-qt2').classList.toggle('active', mode === 'QT2');
     document.querySelector('.th-qt1').classList.toggle('col-hidden', mode !== 'QT1');
@@ -640,27 +635,60 @@ async function selecionarFornecedor(nome, codigo, id) {
 }
 
 function atualizarSumario() {
-    const linhas = document.querySelectorAll('#corpo-grid tr');
-    let somaT1 = 0, somaGAN = 0, contador = 0;
-    linhas.forEach(tr => {
+    const todasLinhas = Array.from(document.querySelectorAll('#corpo-grid tr'));
+    
+    // 1. Filtrar linhas que devem estar ativas na visão atual
+    const linhasFiltradas = todasLinhas.filter(tr => {
         const vQT1 = parseFloat(tr.querySelector('.td-qt1')?.textContent) || 0;
         const vQT2 = parseFloat(tr.querySelector('.td-qt2')?.textContent) || 0;
         const ativo = currentView === 'QT1' ? vQT1 : vQT2;
+        
         tr.querySelector('.td-qt1').classList.toggle('col-hidden', currentView !== 'QT1');
         tr.querySelector('.td-qt2').classList.toggle('col-hidden', currentView !== 'QT2');
-        if (ativo > 0) {
-            tr.style.display = 'table-row';
-            somaT1 += parseFloat(tr.querySelector('.col-t1-input').value) || 0;
-            somaGAN += parseFloat(tr.querySelector('.col-ganho-input').value) || 0;
-            contador++;
-        } else { tr.style.display = 'none'; }
+        
+        return ativo > 0;
     });
+
+    // 2. Lógica de Paginação (Slice)
+    const totalPaginas = Math.ceil(linhasFiltradas.length / itensPorPagina) || 1;
+    const inicio = (paginaAtual - 1) * itensPorPagina;
+    const fim = inicio + itensPorPagina;
+
+    todasLinhas.forEach(tr => tr.style.display = 'none'); // Esconde tudo
+    linhasFiltradas.slice(inicio, fim).forEach(tr => tr.style.display = 'table-row'); // Mostra só a página
+
+    // 3. Cálculos Totais (Baseados em todos os filtrados, não só na página)
+    let somaT1 = 0, somaGAN = 0;
+    linhasFiltradas.forEach(tr => {
+        somaT1 += parseFloat(tr.querySelector('.col-t1-input').value) || 0;
+        somaGAN += parseFloat(tr.querySelector('.col-ganho-input').value) || 0;
+    });
+
+    // 4. Update UI
     const format = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
     document.getElementById('total-geral').textContent = format(somaT1);
     document.getElementById('subtotal-card').textContent = format(somaT1);
     document.getElementById('ganho-card').textContent = format(somaGAN);
-    document.getElementById('qtd-itens').textContent = contador;
+    document.getElementById('qtd-itens').textContent = linhasFiltradas.length;
+    document.getElementById('info-pag').textContent = `Página ${paginaAtual} de ${totalPaginas}`;
 }
+
+// Listeners dos botões de paginação
+document.getElementById('btn-pag-prev').addEventListener('click', () => {
+    if (paginaAtual > 1) {
+        paginaAtual--;
+        atualizarSumario();
+    }
+});
+
+document.getElementById('btn-pag-next').addEventListener('click', () => {
+    const totalItens = parseInt(document.getElementById('qtd-itens').textContent) || 0;
+    const totalPaginas = Math.ceil(totalItens / itensPorPagina);
+    if (paginaAtual < totalPaginas) {
+        paginaAtual++;
+        atualizarSumario();
+    }
+});
 
 corpoGrid.addEventListener('input', (e) => {
     if (e.target.classList.contains('grid-input')) {
