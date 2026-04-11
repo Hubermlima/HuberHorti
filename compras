@@ -147,14 +147,14 @@ body{
 .total-label { font-size: 9px; font-weight: 700; color: #8E8E93; text-transform: uppercase; margin-bottom: 2px; display: block; }
 .price-tag { font-size: 18px; font-weight: 700; color: #1C1C1E; letter-spacing: -0.5px; }
 
-/* ESTILO PÍLULA SAAS - CORREÇÃO DE VISIBILIDADE */
+/* ESTILO PÍLULA INJETADO */
 .pill-ganho {
-    padding: 2px 10px;
+    padding: 2px 8px;
     border-radius: 50px;
     font-size: 10px;
     font-weight: 800;
-    margin-left: 10px;
-    display: none; /* Inicialmente oculto, JS mostrará se houver valor */
+    margin-left: 8px;
+    display: none;
     transition: all 0.3s ease;
 }
 .pill-ganho.positivo { background: #E1F9F0 !important; color: #10B981 !important; }
@@ -282,7 +282,7 @@ thead th { position: sticky; top: 0; background: #F9FAFB; padding: 12px 8px; col
 .col-standard { color: #8E8E93 !important; font-weight: 500; }
 .col-pm { color: #000 !important; font-weight: 800 !important; }
 
-/* PAGINAÇÃO ARREDONDADA */
+/* PAGINAÇÃO */
 .pagination-footer {
   flex-shrink: 0; height: 65px; padding: 0 20px calc(8px + env(safe-area-inset-bottom));
   background: #FFF; border-top: 1px solid #F3F4F6; display: flex; justify-content: space-between; align-items: center;
@@ -378,8 +378,7 @@ thead th { position: sticky; top: 0; background: #F9FAFB; padding: 12px 8px; col
           <th>GAN</th>
         </tr>
       </thead>
-      <tbody id="corpo-grid">
-      </tbody>
+      <tbody id="corpo-grid"></tbody>
     </table>
   </div>
 
@@ -398,115 +397,43 @@ let currentView = 'QT1';
 let timerAutoSave;
 let statusAtual = 'sincronizado';
 
-let paginaAtual = 1;
-const itensPorPagina = 10;
+// FUNÇÃO DE SUMÁRIO COM A LÓGICA DA PÍLULA
+function atualizarSumario() {
+    const todasLinhas = Array.from(document.querySelectorAll('#corpo-grid tr'));
+    let somaT1 = 0, somaGAN = 0;
+    
+    todasLinhas.forEach(tr => {
+        somaT1 += parseFloat(tr.querySelector('.col-t1-input').value) || 0;
+        somaGAN += parseFloat(tr.querySelector('.col-ganho-input').value) || 0;
+    });
 
-// EVENTO MUDANÇA DE DATA
-document.getElementById('data-ciclo').addEventListener('change', async () => {
-    const fornecedorId = document.getElementById('busca-fornecedor').dataset.selectedId;
-    if (fornecedorId) {
-        await carregarProdutosEstoque(fornecedorId);
-    }
-});
-
-// EVENTO EXCLUIR COMPRA
-document.getElementById('btn-excluir-compra').addEventListener('click', async () => {
-    const numCompraEl = document.getElementById('num-compra');
-    const pedidoId = numCompraEl.textContent.replace('#', '');
-    if (pedidoId === '-----') { alert("Não há uma compra salva para excluir."); return; }
-    if (!confirm("Tem certeza que deseja excluir esta compra permanentemente?")) return;
-    setEstado('salvando');
-    try {
-        const { error: errItens } = await window.db.from('itens_pedidos_compras').delete().eq('pedido_compra_id', pedidoId);
-        if (errItens) throw errItens;
-        const { error: errPedido } = await window.db.from('pedidos_compras').delete().eq('id', pedidoId);
-        if (errPedido) throw errPedido;
-        document.getElementById('busca-fornecedor').value = '';
-        delete document.getElementById('busca-fornecedor').dataset.selectedId;
-        numCompraEl.textContent = '#-----';
-        document.getElementById('corpo-grid').innerHTML = '';
-        setupDataDefault();
-        atualizarSumario();
-        setEstado('sincronizado');
-        alert("Compra excluída com sucesso.");
-    } catch (err) {
-        console.error('Erro na exclusão:', err);
-        setEstado('erro', 'Erro ao excluir: ' + err.message);
-    }
-});
-
-function setEstado(novoStatus, msgErro = '') {
-    const elStatus = document.getElementById('status-sinc');
-    statusAtual = novoStatus;
-    const botoes = ['btn-voltar', 'btn-add-topbar', 'btn-excluir-compra'];
-    if (novoStatus === 'editando') {
-        elStatus.textContent = 'Editando...';
-        elStatus.style.color = '#F59E0B';
-        botoes.forEach(id => document.getElementById(id)?.classList.add('btn-disabled'));
-    } else if (novoStatus === 'salvando') {
-        elStatus.textContent = 'Salvando...';
-        elStatus.style.color = '#3B82F6';
-    } else if (novoStatus === 'erro') {
-        elStatus.textContent = `ERRO: [${msgErro}]`;
-        elStatus.style.color = '#EF4444';
-    } else {
-        elStatus.textContent = 'Sincronizado';
-        elStatus.style.color = '#10B981';
-        botoes.forEach(id => document.getElementById(id)?.classList.remove('btn-disabled'));
-    }
-}
-
-async function salvarDadosSinc() {
-    if (statusAtual !== 'editando') return;
-    setEstado('salvando');
-    const numCompraEl = document.getElementById('num-compra');
-    const valorTotalStr = document.getElementById('total-geral').textContent.replace(/[^\d,.-]/g, '').replace(',', '.');
-    const valorTotalNum = parseFloat(valorTotalStr) || 0;
-    const fornecedorId = document.getElementById('busca-fornecedor').dataset.selectedId;
-    const dataCompra = document.getElementById('data-ciclo').value;
-    let pedidoId = numCompraEl.textContent.replace('#', '');
-    const isNovo = pedidoId === '-----';
-    try {
-        if (isNovo) {
-            const { data: pData, error: pErr } = await window.db.from('pedidos_compras').insert({
-                data: dataCompra, fornecedor_id: fornecedorId, valor_total: valorTotalNum, em_aberto: valorTotalNum
-            }).select();
-            if (pErr) throw pErr;
-            pedidoId = pData[0].id;
-            numCompraEl.textContent = `#${pedidoId}`;
+    const badgeMargem = document.getElementById('badge-ganho');
+    if (badgeMargem && somaT1 > 0) {
+        const percMargem = (somaGAN / somaT1) * 100;
+        badgeMargem.textContent = `${percMargem.toFixed(1)}%`;
+        badgeMargem.style.display = 'inline-block';
+        
+        if (percMargem < 0) {
+            badgeMargem.classList.remove('positivo');
+            badgeMargem.classList.add('negativo');
         } else {
-            const { error: pErr } = await window.db.from('pedidos_compras').update({
-                data: dataCompra, valor_total: valorTotalNum, em_aberto: valorTotalNum
-            }).eq('id', pedidoId);
-            if (pErr) throw pErr;
+            badgeMargem.classList.remove('negativo');
+            badgeMargem.classList.add('positivo');
         }
-        await window.db.from('itens_pedidos_compras').delete().eq('pedido_compra_id', pedidoId);
-        const linhas = document.querySelectorAll('#corpo-grid tr');
-        const itens = [];
-        linhas.forEach(tr => {
-            const comp = parseFloat(tr.querySelector('.col-comp').value) || 0;
-            if (comp > 0) {
-                itens.push({
-                    pedido_compra_id: pedidoId,
-                    produto_id: tr.dataset.id,
-                    quantidade: comp,
-                    preco_unitario: parseFloat(tr.querySelector('.col-custo-input').value) || 0,
-                    valor_total: parseFloat(tr.querySelector('.col-t1-input').value) || 0,
-                    ganho: parseFloat(tr.querySelector('.col-ganho-input').value) || 0,
-                    preco_compra_mkt: parseFloat(tr.querySelector('.col-mkt-input').value) || 0
-                });
-            }
-        });
-        if (itens.length > 0) await window.db.from('itens_pedidos_compras').insert(itens);
-        setEstado('sincronizado');
-    } catch (err) {
-        setEstado('erro', err.message);
+    } else if (badgeMargem) {
+        badgeMargem.style.display = 'none';
     }
+
+    const format = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    document.getElementById('total-geral').textContent = format(somaT1);
+    document.getElementById('subtotal-card').textContent = format(somaT1);
+    document.getElementById('ganho-card').textContent = format(somaGAN);
+    document.getElementById('qtd-itens').textContent = todasLinhas.length;
 }
 
+// RESTANTE DA LÓGICA DE NEGÓCIO (SUPABASE, BUSCA, ETC)
 async function carregarProdutosEstoque(fornecedorUuid) {
     setEstado('salvando');
-    paginaAtual = 1;
     const corpoGrid = document.getElementById('corpo-grid');
     corpoGrid.innerHTML = '<tr><td colspan="12" style="text-align:center; padding:20px;">Carregando...</td></tr>';
     try {
@@ -549,41 +476,7 @@ async function carregarProdutosEstoque(fornecedorUuid) {
             }).join('');
             atualizarSumario();
         }
-    } catch (err) {
-        setEstado('erro', err.message);
-    } finally { setEstado('sincronizado'); }
-}
-
-function atualizarSumario() {
-    const todasLinhas = Array.from(document.querySelectorAll('#corpo-grid tr'));
-    let somaT1 = 0, somaGAN = 0;
-    todasLinhas.forEach(tr => {
-        somaT1 += parseFloat(tr.querySelector('.col-t1-input').value) || 0;
-        somaGAN += parseFloat(tr.querySelector('.col-ganho-input').value) || 0;
-    });
-
-    // LÓGICA DA PÍLULA - INJETADA E CORRIGIDA
-    const badgeMargem = document.getElementById('badge-ganho');
-    if (somaT1 > 0) {
-        const percMargem = (somaGAN / somaT1) * 100;
-        badgeMargem.textContent = `${percMargem.toFixed(1)}%`;
-        badgeMargem.style.display = 'inline-block';
-        if (percMargem < 0) {
-            badgeMargem.classList.remove('positivo');
-            badgeMargem.classList.add('negativo');
-        } else {
-            badgeMargem.classList.remove('negativo');
-            badgeMargem.classList.add('positivo');
-        }
-    } else {
-        badgeMargem.style.display = 'none';
-    }
-
-    const format = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-    document.getElementById('total-geral').textContent = format(somaT1);
-    document.getElementById('subtotal-card').textContent = format(somaT1);
-    document.getElementById('ganho-card').textContent = format(somaGAN);
-    document.getElementById('qtd-itens').textContent = todasLinhas.length;
+    } catch (err) { setEstado('erro', err.message); } finally { setEstado('sincronizado'); }
 }
 
 const inputBusca = document.getElementById('busca-fornecedor');
@@ -621,10 +514,17 @@ document.getElementById('corpo-grid').addEventListener('input', (e) => {
     }
 });
 
-const setupDataDefault = () => {
-    const hoje = new Date(); hoje.setDate(hoje.getDate() + 1);
+function setEstado(s) { 
+    const el = document.getElementById('status-sinc');
+    statusAtual = s;
+    el.textContent = s.charAt(0).toUpperCase() + s.slice(1);
+    el.style.color = s === 'sincronizado' ? '#10B981' : '#F59E0B';
+}
+
+function setupDataDefault() {
+    const hoje = new Date();
     document.getElementById('data-ciclo').value = hoje.toISOString().split('T')[0];
-};
+}
 setupDataDefault();
 function toggleCard() { document.getElementById('mainCard').classList.toggle('expanded'); }
 </script>
