@@ -28,8 +28,8 @@ body{ font-family:'Inter',sans-serif; background:var(--bg); margin:0; color:#111
 .total{ font-size:20px; font-weight:700; color:#1C1C1E; }
 .fab-inline{ min-width:40px; height:40px; border-radius:50%; border:none; background:#fff; color:var(--blue); font-size:22px; font-weight:700; box-shadow:0 4px 12px rgba(37,99,235,0.12); }
 
-/* LISTA COM SWIPE */
-.list{ padding:0 16px 40px; } /* Ajustado o padding inferior */
+/* LISTA */
+.list{ padding:0 16px 40px; }
 .item-container { position: relative; margin-bottom: 12px; overflow: hidden; border-radius: 16px; background: var(--red); }
 .item { 
   background:#fff; padding:12px 16px; position: relative; z-index: 2;
@@ -100,7 +100,13 @@ body{ font-family:'Inter',sans-serif; background:var(--bg); margin:0; color:#111
     <div class="sheet-title" id="sheet-titulo">Nova movimentação</div>
     <div class="sub" id="sheet-fornecedor" style="margin-bottom:20px"></div>
     <div class="sheet-field"><div class="sheet-label">Data</div><input class="sheet-input" id="mov-data" type="date"/></div>
-    <div class="sheet-field"><div class="sheet-label">Forma de Pagamento</div><div class="seg-control"><div class="seg-option active" data-value="Depósito">Depósito</div><div class="seg-option" data-value="Dinheiro">Dinheiro</div></div></div>
+    <div class="sheet-field">
+      <div class="sheet-label">Forma de Pagamento</div>
+      <div class="seg-control">
+        <div class="seg-option active" data-value="Depósito">Depósito</div>
+        <div class="seg-option" data-value="Dinheiro">Dinheiro</div>
+      </div>
+    </div>
     <div class="sheet-field"><div class="sheet-label">Valor Pago</div><input class="sheet-input" id="mov-valor" type="text" inputmode="decimal" placeholder="R$ 0,00"/></div>
     <div class="sheet-actions"><button class="sheet-btn secondary" id="btn-cancelar">Cancelar</button><button class="sheet-btn primary" id="btn-gravar">Gravar</button></div>
   </div>
@@ -125,7 +131,6 @@ document.addEventListener('DOMContentLoaded', async function(){
   const btnGravar = document.getElementById('btn-gravar');
 
   let formaPagamento = "Depósito";
-  let salvando = false;
   let idEdicao = null;
   let listaOriginal = [];
 
@@ -141,6 +146,7 @@ document.addEventListener('DOMContentLoaded', async function(){
     return Number(v).toLocaleString('pt-BR', {style: 'currency', currency: 'BRL'});
   }
 
+  // Máscara estilo Banco
   movValor.addEventListener('input', (e) => {
     let v = e.target.value.replace(/\D/g, '');
     if (v === '') v = '0';
@@ -148,35 +154,32 @@ document.addEventListener('DOMContentLoaded', async function(){
     e.target.value = 'R$ ' + result;
   });
 
+  // Swipe logic
   let touchStartX = 0;
-  let currentSwipeElement = null;
-
   function handleSwipe(el) {
-    el.addEventListener('touchstart', e => { touchStartX = e.touches[0].clientX; currentSwipeElement = el; });
+    el.addEventListener('touchstart', e => { touchStartX = e.touches[0].clientX; });
     el.addEventListener('touchmove', e => {
       let x = e.touches[0].clientX - touchStartX;
       if (x < 0 && x > -100) el.style.transform = `translateX(${x}px)`;
     });
     el.addEventListener('touchend', e => {
       let x = e.changedTouches[0].clientX - touchStartX;
-      if (x < -60) { el.style.transform = 'translateX(-80px)'; }
-      else { el.style.transform = 'translateX(0)'; }
+      el.style.transform = (x < -60) ? 'translateX(-80px)' : 'translateX(0)';
     });
   }
 
   async function carregar(){
     if(!fId) return;
     const { data, error } = await window.db.from('movimentos_fornecedores').select('*').eq('fornecedor_id', fId).eq('status', 0).order('data', { ascending: false });
-    if(error) return toast("Erro");
+    if(error) return toast("Erro ao carregar");
     listaOriginal = data;
     let total = 0;
     listaEl.innerHTML = data.map(i => {
       total += Number(i.valor);
-      const semData = !i.data;
       return `
         <div class="item-container">
           <div class="delete-action" onclick="deletar('${i.id}')">Excluir</div>
-          <div class="item ${semData ? 'sem-data' : ''}" data-swipe="true">
+          <div class="item" data-swipe="true">
             <div class="item-row">
               <div>
                 ${i.data ? `<div class="date">${new Date(i.data).toLocaleDateString('pt-BR')}</div>` : ''}
@@ -200,18 +203,37 @@ document.addEventListener('DOMContentLoaded', async function(){
     carregar();
   }
 
+  // SELETOR DINÂMICO (CORREÇÃO DO CLIQUE)
+  document.querySelectorAll('.seg-option').forEach(opt => {
+    opt.onclick = function() {
+      document.querySelectorAll('.seg-option').forEach(o => o.classList.remove('active'));
+      this.classList.add('active');
+      formaPagamento = this.getAttribute('data-value');
+    };
+  });
+
   window.abrirEdicao = (id) => {
     const item = listaOriginal.find(i => i.id == id);
     idEdicao = id;
     movData.value = item.data ? item.data.split('T')[0] : '';
-    const valorFormatado = new Intl.NumberFormat('pt-BR', { minimumFractionDigits: 2 }).format(item.valor);
-    movValor.value = 'R$ ' + valorFormatado;
+    movValor.value = 'R$ ' + new Intl.NumberFormat('pt-BR', { minimumFractionDigits: 2 }).format(item.valor);
+    
+    // Atualiza seletor na edição
+    document.querySelectorAll('.seg-option').forEach(o => o.classList.remove('active'));
+    document.querySelector(`.seg-option[data-value="${item.forma}"]`).classList.add('active');
+    formaPagamento = item.forma;
+    
     sheet.classList.add('open');
   };
 
   document.getElementById('btn-nova').onclick = () => {
     if(!fId) return toast("Selecione fornecedor");
-    idEdicao = null; movData.value = ''; movValor.value = ''; sheet.classList.add('open');
+    idEdicao = null; movData.value = ''; movValor.value = '';
+    // Reset seletor para padrão
+    document.querySelectorAll('.seg-option').forEach(o => o.classList.remove('active'));
+    document.querySelector('.seg-option[data-value="Depósito"]').classList.add('active');
+    formaPagamento = "Depósito";
+    sheet.classList.add('open');
   };
 
   btnGravar.onclick = async () => {
@@ -220,16 +242,8 @@ document.addEventListener('DOMContentLoaded', async function(){
     const payload = { fornecedor_id: fId, data: movData.value ? movData.value + 'T12:00:00' : null, forma: formaPagamento, valor: v, status: 0 };
     if(idEdicao) await window.db.from('movimentos_fornecedores').update(payload).eq('id', idEdicao);
     else await window.db.from('movimentos_fornecedores').insert([payload]);
-    sheet.classList.remove('open'); carregar();
+    sheet.classList.remove('open'); carregar(); toast("Salvo!");
   };
-
-  document.querySelectorAll('.seg-option').forEach(opt => {
-    opt.onclick = () => {
-      document.querySelectorAll('.seg-option').forEach(o => o.classList.remove('active'));
-      opt.classList.add('active');
-      formaPagamento = opt.getAttribute('data-value');
-    };
-  });
 
   if(!fId) {
     label.onclick = () => { label.style.display='none'; inputBusca.style.display='block'; inputBusca.focus(); };
