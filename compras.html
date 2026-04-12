@@ -432,8 +432,6 @@ thead th { position: sticky; top: 0; background: #F9FAFB; padding: 12px 8px; col
   </div>
 </div>
 
-// Substitua o bloco <script> final por este:
-
 <script>
 window.HHUtils.atualizarCicloAtualGlobal();
 let currentView = 'QT1';
@@ -496,46 +494,7 @@ function aplicarMascaraBanco(input) {
     return (parseFloat(value) / 100).toFixed(2).replace('.', ',');
 }
 
-const parseVal = (v) => {
-    if (typeof v === 'number') return v;
-    return parseFloat(String(v).replace('R$', '').replace(/\./g, '').replace(',', '.').trim()) || 0;
-};
-
-// --- LÓGICA FINANCEIRA (EXTRATO CONSOLIDADO) ---
-async function atualizarExtratoFinanceiro() {
-    const inputFornecedor = document.getElementById('busca-fornecedor');
-    const fornecedorId = inputFornecedor.dataset.selectedId;
-    const numCompraTexto = document.getElementById('num-compra').textContent.replace('#', '');
-    const numeroCompra = (numCompraTexto === '-----') ? 0 : parseInt(numCompraTexto);
-
-    if (!fornecedorId) return;
-
-    // 1. Busca Compras em Aberto (Passado)
-    const saldoAnterior = await HHUtils.emAbertoFornecedor(fornecedorId, numeroCompra);
-
-    // 2. Busca Pagamentos Realizados (Movimentos Status 0)
-    const { data: movimentos } = await window.db
-        .from('movimentos_fornecedores')
-        .select('valor')
-        .eq('fornecedor_id', fornecedorId)
-        .eq('status', 0)
-        .not('data', 'is', null);
-
-    const totalPagos = (movimentos || []).reduce((acc, m) => acc + Number(m.valor || 0), 0);
-    const compraAtual = parseVal(document.getElementById('total-geral').textContent);
-
-    // 3. Renderização
-    const format = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-
-    document.getElementById('ext-compras-aberto').textContent = format(saldoAnterior);
-    document.getElementById('ext-compra-atual').textContent = format(compraAtual);
-    document.getElementById('ext-pagos').textContent = `- ${format(totalPagos)}`;
-    
-    const saldoFinal = (saldoAnterior + compraAtual) - totalPagos;
-    const elSaldo = document.getElementById('ext-saldo-atual');
-    elSaldo.textContent = format(saldoFinal);
-    elSaldo.style.color = saldoFinal > 0 ? '#EF4444' : '#10B981';
-}
+const parseVal = (v) => parseFloat(String(v).replace(',', '.')) || 0;
 
 // --- LÓGICA DE NEGÓCIO & SUPABASE ---
 document.getElementById('data-ciclo').addEventListener('change', async () => {
@@ -586,7 +545,7 @@ async function salvarDadosSinc() {
     if (statusAtual !== 'editando') return;
     setEstado('salvando');
     const numCompraEl = document.getElementById('num-compra');
-    const valorTotalNum = parseVal(document.getElementById('total-geral').textContent);
+    const valorTotalNum = parseVal(document.getElementById('total-geral').textContent.replace(/[^\d,.-]/g, ''));
     const fornecedorId = document.getElementById('busca-fornecedor').dataset.selectedId;
     const dataCompra = document.getElementById('data-ciclo').value;
     let pedidoId = numCompraEl.textContent.replace('#', '');
@@ -619,7 +578,6 @@ async function salvarDadosSinc() {
         });
         if (itens.length > 0) await window.db.from('itens_pedidos_compras').insert(itens);
         setEstado('sincronizado');
-        await atualizarExtratoFinanceiro(); 
     } catch (err) { setEstado('erro', err.message); }
 }
 
@@ -663,7 +621,6 @@ async function carregarProdutosEstoque(fornecedorUuid) {
                 </tr>`;
             }).join('');
             atualizarSumario();
-            await atualizarExtratoFinanceiro();
         }
     } catch (err) { setEstado('erro', err.message); } finally { setEstado('sincronizado'); }
 }
@@ -710,18 +667,6 @@ function atualizarSumario() {
     document.getElementById('ext-compra-atual').textContent = format(somaT1);
     document.getElementById('qtd-itens').textContent = todasLinhas.length;
     
-    // Atualiza saldo final no extrato sem re-consultar o banco
-    const elSaldoAberto = document.getElementById('ext-compras-aberto');
-    const elPagos = document.getElementById('ext-pagos');
-    if (elSaldoAberto && elPagos) {
-        const saldoAnterior = parseVal(elSaldoAberto.textContent);
-        const totalPagos = parseVal(elPagos.textContent);
-        const saldoFinal = (saldoAnterior + somaT1) - totalPagos;
-        const elSaldo = document.getElementById('ext-saldo-atual');
-        elSaldo.textContent = format(saldoFinal);
-        elSaldo.style.color = saldoFinal > 0 ? '#EF4444' : '#10B981';
-    }
-
     const pill = document.getElementById('pill-margem');
     if (somaT1 > 0) {
         const margem = (somaGAN / somaT1) * 100;
@@ -753,6 +698,5 @@ const fixHeight = () => document.documentElement.style.setProperty('--vh', `${wi
 window.addEventListener('resize', fixHeight); fixHeight();
 document.getElementById('data-ciclo').value = new Date(new Date().setDate(new Date().getDate() + 1)).toISOString().split('T')[0];
 </script>
-
 </body>
 </html>
