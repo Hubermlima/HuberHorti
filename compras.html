@@ -715,6 +715,27 @@ async function carregarProdutosEstoque(fornecedorUuid) {
     corpoGrid.innerHTML = '<tr><td colspan="12" style="text-align:center; padding:20px;">Carregando...</td></tr>';
 
     try {
+        // --- BUSCA SALDO FINANCEIRO CONSOLIDADO ---
+        const { data: movs } = await window.db.from('movimentos_fornecedores')
+            .select('valor, tipo')
+            .eq('fornecedor_id', fornecedorUuid);
+        
+        let totalAberto = 0;
+        let totalPagos = 0;
+        
+        if (movs) {
+            movs.forEach(m => {
+                const val = parseFloat(m.valor || 0);
+                if (m.tipo === 'COMPRA') totalAberto += val;
+                if (m.tipo === 'PAGAMENTO') totalPagos += Math.abs(val);
+            });
+        }
+        
+        const fmtBRL = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+        document.getElementById('extrato-aberto').textContent = fmtBRL(totalAberto);
+        document.getElementById('extrato-pagos').textContent = `- ${fmtBRL(totalPagos)}`;
+        // ------------------------------------------
+
         const { data: pedidoExistente } = await window.db.from('pedidos_compras')
             .select('id, valor_total').eq('fornecedor_id', fornecedorUuid).eq('data', dataCiclo).maybeSingle();
 
@@ -844,15 +865,28 @@ function atualizarSumario() {
     });
 
     const format = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    
+    // UI Principal
     document.getElementById('total-geral').textContent = format(somaT1);
     document.getElementById('subtotal-card').textContent = format(somaT1);
     document.getElementById('ganho-card').textContent = format(somaGAN);
     document.getElementById('qtd-itens').textContent = linhasFiltradas.length;
     document.getElementById('info-pag').textContent = `Página ${paginaAtual} de ${totalPaginas}`;
 
-    // Atualiza também o extrato consolidado se estiver ativo
+    // --- CÁLCULO DO EXTRATO CONSOLIDADO ---
     document.getElementById('extrato-atual').textContent = format(somaT1);
+    
+    // Captura valores do extrato e soma com a compra atual
+    const vAberto = parseVal(document.getElementById('extrato-aberto').textContent.replace(/[^\d,.-]/g, ''));
+    const vPagos = parseVal(document.getElementById('extrato-pagos').textContent.replace(/[^\d,.-]/g, ''));
+    
+    const saldoFinal = (vAberto + somaT1) - vPagos;
+    
+    const elSaldo = document.getElementById('extrato-saldo');
+    elSaldo.textContent = format(saldoFinal);
+    elSaldo.style.color = saldoFinal > 0 ? '#007AFF' : '#10B981';
 
+    // Badge de Margem
     const pill = document.getElementById('pill-margem');
     if (somaT1 > 0) {
         const margemPct = (somaGAN / somaT1) * 100;
@@ -904,7 +938,6 @@ corpoGrid.addEventListener('input', (e) => {
 
 function toggleCard() { document.getElementById('mainCard').classList.toggle('expanded'); }
 
-// NOVA FUNÇÃO: TOGGLE EXTRATO
 function toggleExtrato() {
     const extrato = document.getElementById('extratoCard');
     extrato.classList.toggle('active');
