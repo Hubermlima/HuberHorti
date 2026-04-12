@@ -512,17 +512,6 @@ let statusAtual = 'sincronizado';
 let paginaAtual = 1;
 const itensPorPagina = 10;
 
-// --- PERSISTÊNCIA AO VOLTAR ---
-window.onload = () => {
-    const urlParams = new URLSearchParams(window.location.search);
-    const fId = urlParams.get('fornecedor_id');
-    const fNome = urlParams.get('fornecedor_nome');
-    if (fId && fNome) {
-        selecionarFornecedor(decodeURIComponent(fNome), fId);
-    }
-    fixHeight();
-};
-
 // --- LÓGICA DO MENU DE AÇÕES ---
 const btnAddTopbar = document.getElementById('btn-add-topbar');
 const menuDropdown = document.getElementById('menu-dropdown');
@@ -558,6 +547,10 @@ function abrirMovimentacoes() {
         return;
     }
 
+    // MEMORIZAÇÃO PARA VOLTA (INVISÍVEL)
+    localStorage.setItem('huber_last_id', fornecedorId);
+    localStorage.setItem('huber_last_nome', fornecedorNome);
+
     const nomeUrl = encodeURIComponent(fornecedorNome);
     window.location.href = `movimentacoes_fornecedores.html?fornecedor_id=${fornecedorId}&fornecedor_nome=${nomeUrl}`;
 }
@@ -572,12 +565,14 @@ document.getElementById('corpo-grid').addEventListener('focusin', (e) => {
 function aplicarMascaraBanco(input) {
     let value = input.value.replace(/\D/g, '');
     if (value === '') return "0,00";
+    // Centavos absolutos: 7500 vira 75.00
     let valorNumerico = (parseInt(value) / 100).toFixed(2);
     return valorNumerico.replace('.', ',');
 }
 
 const parseVal = (v) => {
     if (!v) return 0;
+    // Limpa pontos de milhar e símbolos de moeda para processamento matemático puro
     let s = String(v).replace('R$', '').replace(/\s/g, '').replace('-', '').trim();
     if (s.indexOf(',') !== -1) {
         s = s.replace(/\./g, '').replace(',', '.');
@@ -588,10 +583,7 @@ const parseVal = (v) => {
 // --- LÓGICA DE NEGÓCIO ---
 document.getElementById('data-ciclo').addEventListener('change', async () => {
     const fornecedorId = document.getElementById('busca-fornecedor').dataset.selectedId;
-    if (fornecedorId) {
-        await carregarProdutosEstoque(fornecedorId);
-        await atualizarExtratoComprasEmAberto(fornecedorId); // Atualiza financeiro ao mudar data
-    }
+    if (fornecedorId) await carregarProdutosEstoque(fornecedorId);
 });
 
 async function acaoExcluirCompra() {
@@ -712,7 +704,6 @@ async function salvarDadosSinc() {
             await window.db.from('itens_pedidos_compras').insert(itens);
             await Promise.all(updatesProd);
         }
-        await atualizarExtratoComprasEmAberto(fornecedorId); // Atualiza saldo após salvar
         setEstado('sincronizado');
     } catch (err) { setEstado('erro', err.message); }
 }
@@ -826,15 +817,11 @@ inputBusca.addEventListener('input', async (e) => {
 // --- LÓGICA FINANCEIRA CORRIGIDA ---
 async function atualizarExtratoComprasEmAberto(fornecedorId) {
     if (!fornecedorId) return;
-    const numCompraEl = document.getElementById('num-compra');
-    const pedidoIdAtual = numCompraEl.textContent.replace('#', '');
-
     try {
-        // Busca todas as compras do fornecedor, excluindo a que está aberta na tela no momento
-        let query = window.db.from('pedidos_compras').select('em_aberto').eq('fornecedor_id', fornecedorId);
-        if (pedidoIdAtual !== '-----') query = query.neq('id', pedidoIdAtual);
-        
-        const { data, error } = await query;
+        const { data, error } = await window.db
+            .from('pedidos_compras')
+            .select('em_aberto')
+            .eq('fornecedor_id', fornecedorId);
         if (error) throw error;
         const totalEmAberto = data.reduce((acc, curr) => acc + (parseFloat(curr.em_aberto) || 0), 0);
         document.getElementById('extrato-aberto').textContent = totalEmAberto.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -848,8 +835,8 @@ async function atualizarPagamentosRealizados(fornecedorId) {
         const { data, error } = await window.db
             .from('movimentos_fornecedores')
             .select('valor')
-            .eq('fornecedor_id', fornecedorId);
-            // .eq('status', 0); // Se houver status de 'Pago' vs 'Pendente'
+            .eq('fornecedor_id', fornecedorId)
+            .eq('status', 0); // Considera pagos
         if (error) throw error;
         const totalPagos = data.reduce((acc, curr) => acc + (parseFloat(curr.valor) || 0), 0);
         document.getElementById('extrato-pagos').textContent = `- ${totalPagos.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`;
@@ -861,10 +848,13 @@ function recalcularSaldoExtrato() {
     const aberto = parseVal(document.getElementById('extrato-aberto').textContent);
     const atual = parseVal(document.getElementById('extrato-atual').textContent);
     const pagos = parseVal(document.getElementById('extrato-pagos').textContent);
+    
+    // Cálculo: O que deve (Aberto + Atual) menos o que já pagou
     const saldoTotal = (aberto + atual) - pagos;
+    
     const elSaldo = document.getElementById('extrato-saldo');
     elSaldo.textContent = saldoTotal.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-    elSaldo.style.color = saldoTotal > 0 ? '#EF4444' : '#10B981'; // Vermelho se deve, verde se saldo >= 0
+    elSaldo.style.color = saldoTotal > 0 ? '#007AFF' : '#10B981';
 }
 
 async function selecionarFornecedor(nome, id) {
@@ -872,9 +862,9 @@ async function selecionarFornecedor(nome, id) {
     listaResultados.style.display = 'none';
     inputBusca.dataset.selectedId = id;
     await Promise.all([
-        carregarProdutosEstoque(id),
         atualizarExtratoComprasEmAberto(id),
-        atualizarPagamentosRealizados(id)
+        atualizarPagamentosRealizados(id),
+        carregarProdutosEstoque(id)
     ]);
 }
 
@@ -959,7 +949,16 @@ function toggleCard() { document.getElementById('mainCard').classList.toggle('ex
 function toggleExtrato() { document.getElementById('extratoCard').classList.toggle('active'); }
 
 const fixHeight = () => document.documentElement.style.setProperty('--vh', `${window.innerHeight * 0.01}px`);
-window.addEventListener('resize', fixHeight);
+window.addEventListener('resize', fixHeight); fixHeight();
+
+// GATILHO DE RESTAURAÇÃO (INVISÍVEL)
+window.addEventListener('load', () => {
+    const salvoId = localStorage.getItem('huber_last_id');
+    const salvoNome = localStorage.getItem('huber_last_nome');
+    if (salvoId && salvoNome && !document.getElementById('busca-fornecedor').value) {
+        selecionarFornecedor(salvoNome, salvoId);
+    }
+});
 </script>
 </body>
 </html>
