@@ -82,6 +82,49 @@
     return inicio.toISOString();
   }
 
+  /**
+   * Calcula o saldo em aberto de um fornecedor, reconciliando pedidos e movimentos.
+   */
+  async function emAbertoFornecedor(id, numero_compra) {
+    try {
+      // 1. Soma dos Pedidos de Compras (Dívida Bruta)
+      let queryPedidos = global.supabase
+        .from('pedidos_compras')
+        .select('em_aberto')
+        .eq('fornecedor_id', id)
+        .gt('em_aberto', 0);
+
+      // Exceção: Se houver numero_compra, ignora ele no somatório
+      if (numero_compra && numero_compra !== 0 && numero_compra !== "") {
+        queryPedidos = queryPedidos.neq('id', numero_compra);
+      }
+
+      const { data: pedidos, error: errorPedidos } = await queryPedidos;
+      if (errorPedidos) throw errorPedidos;
+
+      const totalPedidos = pedidos.reduce((acc, item) => acc + Number(item.em_aberto || 0), 0);
+
+      // 2. Soma dos Movimentos de Fornecedores (Pagamentos Pendentes)
+      const { data: movimentos, error: errorMovimentos } = await global.supabase
+        .from('movimentos_fornecedores')
+        .select('valor')
+        .eq('fornecedor_id', id)
+        .eq('status', 0)
+        .not('data', 'is', null);
+
+      if (errorMovimentos) throw errorMovimentos;
+
+      const totalMovimentos = movimentos.reduce((acc, item) => acc + Number(item.valor || 0), 0);
+
+      // 3. Retorna apenas o cálculo dos movimentos para validação
+      return totalMovimentos;
+
+    } catch (error) {
+      console.error("Erro ao calcular saldo em aberto:", error.message);
+      return 0;
+    }
+  }
+
   // Namespace global
   global.HHUtils = {
     formatarDataBR,
@@ -90,7 +133,8 @@
     getAgoraLocalISO,
     toLocalInputValue,
     getRangeOntemAteHoje,
-    getInicioAntesDeOntem
+    getInicioAntesDeOntem,
+    emAbertoFornecedor // Injetada aqui
   };
 
 })(window);
