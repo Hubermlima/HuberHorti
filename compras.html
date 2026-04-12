@@ -359,6 +359,43 @@ thead th { position: sticky; top: 0; background: #F9FAFB; padding: 12px 8px; col
   margin-bottom: 12px;
 }
 .ios-btn-float { width: 38px; height: 38px; border-radius: 50%; border: none; background: #FFF; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 8px rgba(0,0,0,0.05); cursor: pointer; }
+
+/* MODAL iOS STYLE */
+.modal-overlay {
+    position: fixed;
+    top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.4);
+    display: none;
+    align-items: flex-end; 
+    z-index: 2000;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+}
+.modal-content {
+    background: #FFF;
+    width: 100%;
+    border-radius: 32px 32px 0 0;
+    padding: 20px 24px calc(30px + env(safe-area-inset-bottom));
+    animation: slideUp 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+@keyframes slideUp {
+    from { transform: translateY(100%); }
+    to { transform: translateY(0); }
+}
+.modal-drag-handle { width: 40px; height: 5px; background: #E5E5EA; border-radius: 3px; margin: 0 auto 15px; }
+.modal-header h3 { font-size: 17px; font-weight: 700; text-align: center; margin-bottom: 25px; }
+.extrato-item { display: flex; justify-content: space-between; margin-bottom: 15px; font-size: 14px; }
+.extrato-item span { color: #8E8E93; font-weight: 500; }
+.extrato-item b { color: #1C1C1E; font-weight: 600; }
+.extrato-divider { height: 1px; background: #F2F2F7; margin: 15px 0; }
+.extrato-item.total { font-size: 16px; }
+.extrato-item.total b { color: #007AFF; font-weight: 800; }
+.btn-fechar-modal {
+    width: 100%; background: #F2F2F7; border: none;
+    padding: 16px; border-radius: 16px;
+    font-size: 16px; font-weight: 700; color: #007AFF;
+    margin-top: 20px; cursor: pointer;
+}
 </style>
 </head>
 <body>
@@ -417,7 +454,7 @@ thead th { position: sticky; top: 0; background: #F9FAFB; padding: 12px 8px; col
             <button class="btn-card-action expand-btn" onclick="toggleCard()">
               <svg viewBox="0 0 24 24"><path d="M19.5 8.25l-7.5 7.5-7.5-7.5" /></svg>
             </button>
-            <button class="btn-card-action" id="btn-pagamento" onclick="event.stopPropagation(); alert('Abrir tela de pagamento')">
+            <button class="btn-card-action" id="btn-pagamento" onclick="abrirModalPagamento(event)">
               <svg viewBox="0 0 24 24"><path d="M21 12a2.25 2.25 0 00-2.25-2.25H15a3 3 0 11-6 0H5.25A2.25 2.25 0 003 12m18 0v6a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 18v-6m18 0V9M3 12V9m18 0a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 9m18 0V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v3" /></svg>
             </button>
           </div>
@@ -482,6 +519,35 @@ thead th { position: sticky; top: 0; background: #F9FAFB; padding: 12px 8px; col
   </div>
 </div>
 
+<div id="modal-pagamento" class="modal-overlay" onclick="fecharModalPagamento(event)">
+    <div class="modal-content" onclick="event.stopPropagation()">
+        <div class="modal-drag-handle"></div>
+        <div class="modal-header">
+            <h3>Extrato Consolidado</h3>
+        </div>
+        <div class="modal-body">
+            <div class="extrato-item">
+                <span>Total em Aberto</span>
+                <b id="extrato-aberto">R$ 0,00</b>
+            </div>
+            <div class="extrato-item">
+                <span>Compra Atual</span>
+                <b id="extrato-atual">R$ 0,00</b>
+            </div>
+            <div class="extrato-item">
+                <span>Total Pagamentos</span>
+                <b id="extrato-pagos" style="color: #10B981;">R$ 0,00</b>
+            </div>
+            <div class="extrato-divider"></div>
+            <div class="extrato-item total">
+                <span>Saldo Consolidado</span>
+                <b id="extrato-saldo">R$ 0,00</b>
+            </div>
+        </div>
+        <button class="btn-fechar-modal" onclick="fecharModalPagamento()">Concluído</button>
+    </div>
+</div>
+
 <script>
 window.HHUtils.atualizarCicloAtualGlobal();
 let currentView = 'QT1';
@@ -489,6 +555,36 @@ let timerAutoSave;
 let statusAtual = 'sincronizado';
 let paginaAtual = 1;
 const itensPorPagina = 10;
+
+const parseVal = (v) => parseFloat(String(v).replace(',', '.')) || 0;
+
+// --- LÓGICA DO MODAL DE EXTRATO ---
+async function abrirModalPagamento(e) {
+    if (e) e.stopPropagation();
+    const inputBusca = document.getElementById('busca-fornecedor');
+    const fornecedorId = inputBusca.dataset.selectedId;
+    if (!fornecedorId) return alert("Selecione um fornecedor para ver o extrato.");
+
+    const modal = document.getElementById('modal-pagamento');
+    const valorCompraAtual = parseVal(document.getElementById('total-geral').textContent.replace(/[^\d,.-]/g, ''));
+    
+    document.getElementById('extrato-atual').textContent = valorCompraAtual.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+
+    try {
+        const { data: pedidos } = await window.db.from('pedidos_compras').select('em_aberto').eq('fornecedor_id', fornecedorId);
+        const totalAberto = pedidos ? pedidos.reduce((acc, p) => acc + (parseFloat(p.em_aberto) || 0), 0) : 0;
+        const totalPagamentos = 0; // Mock para futura integração
+        const saldoConsolidado = (totalAberto + valorCompraAtual) - totalPagamentos;
+
+        document.getElementById('extrato-aberto').textContent = totalAberto.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+        document.getElementById('extrato-pagos').textContent = totalPagamentos.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+        document.getElementById('extrato-saldo').textContent = saldoConsolidado.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+
+        modal.style.display = 'flex';
+    } catch (err) { console.error(err); }
+}
+
+function fecharModalPagamento(e) { document.getElementById('modal-pagamento').style.display = 'none'; }
 
 // --- LÓGICA DO MENU DE AÇÕES ---
 const btnAddTopbar = document.getElementById('btn-add-topbar');
@@ -508,10 +604,7 @@ document.addEventListener('click', (e) => {
 
 function gerarGuiaColeta() {
     const pedidoId = document.getElementById('num-compra').textContent.replace('#', '');
-    if (pedidoId === '-----') {
-        alert("Salve a compra antes de gerar a Guia de Coleta.");
-        return;
-    }
+    if (pedidoId === '-----') return alert("Salve a compra antes de gerar a Guia de Coleta.");
     alert("Gerando Guia de Coleta para o Pedido #" + pedidoId);
 }
 
@@ -519,46 +612,32 @@ function abrirMovimentacoes() {
     const inputBusca = document.getElementById('busca-fornecedor');
     const fornecedorId = inputBusca.dataset.selectedId;
     const fornecedorNome = inputBusca.value;
-
-    if (!fornecedorId || !fornecedorNome || fornecedorNome.trim() === "") {
-        alert("Por favor, selecione um fornecedor primeiro.");
-        return;
-    }
-
-    const nomeUrl = encodeURIComponent(fornecedorNome);
-    window.location.href = `movimentacoes_fornecedores.html?fornecedor_id=${fornecedorId}&fornecedor_nome=${nomeUrl}`;
-}
- 
-
-// --- FUNÇÕES DE UTILIDADE (MÁSCARA E SELEÇÃO) ---
-
-document.getElementById('corpo-grid').addEventListener('focusin', (e) => {
-    if (e.target.classList.contains('grid-input')) {
-        setTimeout(() => e.target.select(), 50);
-    }
-});
-
-function aplicarMascaraBanco(input) {
-    let value = input.value.replace(/\D/g, '');
-    if (value === '') return "0,00";
-    let valorNumerico = (parseFloat(value) / 100).toFixed(2);
-    return valorNumerico.replace('.', ',');
+    if (!fornecedorId || !fornecedorNome) return alert("Selecione um fornecedor primeiro.");
+    window.location.href = `movimentacoes_fornecedores.html?fornecedor_id=${fornecedorId}&fornecedor_nome=${encodeURIComponent(fornecedorNome)}`;
 }
 
-const parseVal = (v) => parseFloat(String(v).replace(',', '.')) || 0;
+// --- LÓGICA DE SWIPE & EXCLUSÃO ---
+const card = document.getElementById('mainCard');
+let startX = 0, currentTranslate = 0;
+const threshold = -150;
 
-// --- LÓGICA DE NEGÓCIO ---
-
-document.getElementById('data-ciclo').addEventListener('change', async () => {
-    const fornecedorId = document.getElementById('busca-fornecedor').dataset.selectedId;
-    if (fornecedorId) await carregarProdutosEstoque(fornecedorId);
+card.addEventListener('touchstart', (e) => { startX = e.touches[0].clientX; card.style.transition = 'none'; }, {passive: true});
+card.addEventListener('touchmove', (e) => {
+    const diff = e.touches[0].clientX - startX;
+    if (diff < 0) { currentTranslate = Math.max(diff, -200); card.style.transform = `translateX(${currentTranslate}px)`; }
+}, {passive: true});
+card.addEventListener('touchend', () => {
+    card.style.transition = 'transform 0.3s ease';
+    if (currentTranslate < threshold) {
+        card.style.transform = `translateX(-100%)`;
+        setTimeout(() => { acaoExcluirCompra(); card.style.transform = `translateX(0)`; }, 300);
+    } else { card.style.transform = `translateX(0)`; }
+    currentTranslate = 0;
 });
 
-// FUNÇÃO DE EXCLUSÃO (ORIGINAL PRESERVADA)
 async function acaoExcluirCompra() {
-    const numCompraEl = document.getElementById('num-compra');
-    const pedidoId = numCompraEl.textContent.replace('#', '');
-    if (pedidoId === '-----') return alert("Não há uma compra salva.");
+    const pedidoId = document.getElementById('num-compra').textContent.replace('#', '');
+    if (pedidoId === '-----') return;
     if (!confirm("Excluir esta compra permanentemente?")) return;
     setEstado('salvando');
     try {
@@ -568,60 +647,20 @@ async function acaoExcluirCompra() {
     } catch (err) { setEstado('erro', err.message); }
 }
 
-// LÓGICA DE SWIPE (NOVA)
-const card = document.getElementById('mainCard');
-let startX = 0;
-let currentTranslate = 0;
-const threshold = -150; // Distância necessária para confirmar exclusão ao soltar
-
-card.addEventListener('touchstart', (e) => {
-    startX = e.touches[0].clientX;
-    card.style.transition = 'none'; // Desativa transição durante o toque
-}, {passive: true});
-
-card.addEventListener('touchmove', (e) => {
-    const diff = e.touches[0].clientX - startX;
-    // Só permite arrastar para a esquerda e no máximo -200px
-    if (diff < 0) {
-        currentTranslate = Math.max(diff, -200);
-        card.style.transform = `translateX(${currentTranslate}px)`;
-    }
-}, {passive: true});
-
-card.addEventListener('touchend', () => {
-    card.style.transition = 'transform 0.3s ease';
-    if (currentTranslate < threshold) {
-        // Dispara a exclusão se passou do limite
-        card.style.transform = `translateX(-100%)`;
-        setTimeout(() => {
-            acaoExcluirCompra();
-            card.style.transform = `translateX(0)`; // Reseta posição se cancelado
-        }, 300);
-    } else {
-        // Volta o card para a posição original
-        card.style.transform = `translateX(0)`;
-    }
-    currentTranslate = 0;
-});
-
-
+// --- ESTADOS E SYNC ---
 function setEstado(novoStatus, msgErro = '') {
     const elStatus = document.getElementById('status-sinc');
     statusAtual = novoStatus;
     const botoes = ['btn-voltar', 'btn-add-topbar'];
     if (novoStatus === 'editando') {
-        elStatus.textContent = 'Editando...';
-        elStatus.style.color = '#F59E0B';
+        elStatus.textContent = 'Editando...'; elStatus.style.color = '#F59E0B';
         botoes.forEach(id => document.getElementById(id)?.classList.add('btn-disabled'));
     } else if (novoStatus === 'salvando') {
-        elStatus.textContent = 'Salvando...';
-        elStatus.style.color = '#3B82F6';
+        elStatus.textContent = 'Salvando...'; elStatus.style.color = '#3B82F6';
     } else if (novoStatus === 'erro') {
-        elStatus.textContent = `ERRO: [${msgErro}] (Toque p/ copiar)`;
-        elStatus.style.color = '#EF4444';
+        elStatus.textContent = `ERRO: ${msgErro}`; elStatus.style.color = '#EF4444';
     } else {
-        elStatus.textContent = 'Sincronizado';
-        elStatus.style.color = '#10B981';
+        elStatus.textContent = 'Sincronizado'; elStatus.style.color = '#10B981';
         botoes.forEach(id => document.getElementById(id)?.classList.remove('btn-disabled'));
     }
 }
@@ -634,10 +673,9 @@ async function salvarDadosSinc() {
     const fornecedorId = document.getElementById('busca-fornecedor').dataset.selectedId;
     const dataCompra = document.getElementById('data-ciclo').value;
     let pedidoId = numCompraEl.textContent.replace('#', '');
-    const isNovo = pedidoId === '-----';
 
     try {
-        if (isNovo) {
+        if (pedidoId === '-----') {
             const { data: pData, error: pErr } = await window.db.from('pedidos_compras').insert({
                 data: dataCompra, fornecedor_id: fornecedorId, valor_total: valorTotalNum, em_aberto: valorTotalNum
             }).select();
@@ -645,232 +683,125 @@ async function salvarDadosSinc() {
             pedidoId = pData[0].id;
             numCompraEl.textContent = `#${pedidoId}`;
         } else {
-            await window.db.from('pedidos_compras').update({
-                data: dataCompra, valor_total: valorTotalNum, em_aberto: valorTotalNum
-            }).eq('id', pedidoId);
+            await window.db.from('pedidos_compras').update({ data: dataCompra, valor_total: valorTotalNum, em_aberto: valorTotalNum }).eq('id', pedidoId);
         }
 
         await window.db.from('itens_pedidos_compras').delete().eq('pedido_compra_id', pedidoId);
-        const linhas = document.querySelectorAll('#corpo-grid tr');
         const itens = [];
-        const updatesProd = [];
-
-        linhas.forEach(tr => {
+        document.querySelectorAll('#corpo-grid tr').forEach(tr => {
             const comp = parseVal(tr.querySelector('.col-comp').value);
             if (comp > 0) {
-                const prodId = tr.dataset.id;
-                const cust = parseVal(tr.querySelector('.col-custo-input').value);
-                const mkt = parseVal(tr.querySelector('.col-mkt-input').value);
-                const t1 = parseVal(tr.querySelector('.col-t1-input').value);
-                const gan = parseVal(tr.querySelector('.col-ganho-input').value);
-                const pm = parseVal(tr.querySelector('.col-pm').textContent);
-
                 itens.push({
-                    pedido_compra_id: pedidoId, produto_id: prodId, quantidade: comp,
-                    preco_unitario: cust, valor_total: t1, ganho: gan, preco_compra_mkt: mkt
+                    pedido_compra_id: pedidoId, produto_id: tr.dataset.id, quantidade: comp,
+                    preco_unitario: parseVal(tr.querySelector('.col-custo-input').value),
+                    valor_total: parseVal(tr.querySelector('.col-t1-input').value),
+                    ganho: parseVal(tr.querySelector('.col-ganho-input').value),
+                    preco_compra_mkt: parseVal(tr.querySelector('.col-mkt-input').value)
                 });
-                updatesProd.push(window.db.from('produtos').update({ preco_medio_compra: pm }).eq('id', prodId));
             }
         });
-
-        if (itens.length > 0) {
-            await window.db.from('itens_pedidos_compras').insert(itens);
-            await Promise.all(updatesProd);
-        }
+        if (itens.length > 0) await window.db.from('itens_pedidos_compras').insert(itens);
         setEstado('sincronizado');
     } catch (err) { setEstado('erro', err.message); }
 }
 
+// --- GRID E CARREGAMENTO ---
 async function carregarProdutosEstoque(fornecedorUuid) {
     setEstado('salvando');
     paginaAtual = 1;
     const dataCiclo = document.getElementById('data-ciclo').value;
-    corpoGrid.innerHTML = '<tr><td colspan="12" style="text-align:center; padding:20px;">Carregando...</td></tr>';
+    document.getElementById('corpo-grid').innerHTML = '<tr><td colspan="12" style="text-align:center; padding:20px;">Carregando...</td></tr>';
 
     try {
-        const { data: pedidoExistente } = await window.db.from('pedidos_compras')
-            .select('id, valor_total').eq('fornecedor_id', fornecedorUuid).eq('data', dataCiclo).maybeSingle();
-
+        const { data: pedidoExistente } = await window.db.from('pedidos_compras').select('id').eq('fornecedor_id', fornecedorUuid).eq('data', dataCiclo).maybeSingle();
         let mapaItensSalvos = {};
         if (pedidoExistente) {
             document.getElementById('num-compra').textContent = `#${pedidoExistente.id}`;
             const { data: itensDB } = await window.db.from('itens_pedidos_compras').select('*').eq('pedido_compra_id', pedidoExistente.id);
-            if (itensDB) itensDB.forEach(it => { mapaItensSalvos[it.produto_id] = it; });
-        } else {
-            document.getElementById('num-compra').textContent = '#-----';
-        }
+            if (itensDB) itensDB.forEach(it => mapaItensSalvos[it.produto_id] = it);
+        } else { document.getElementById('num-compra').textContent = '#-----'; }
 
-        const { data: produtos } = await window.db.from('produtos')
-            .select(`id, nome, preco_medio_compra, estoque_inicial (quantidade_inicial, custo_unitario_inicial)`)
-            .eq('fornecedor_id', fornecedorUuid).order('nome', { ascending: true });
-
-        const ciclo = window.cicloAtual;
-        const d0_ant = new Date(ciclo.d0); d0_ant.setDate(d0_ant.getDate() - 7);
-        const d7_ant = new Date(ciclo.d7); d7_ant.setDate(d7_ant.getDate() - 7);
+        const { data: produtos } = await window.db.from('produtos').select(`id, nome, preco_medio_compra, estoque_inicial (quantidade_inicial, custo_unitario_inicial)`).eq('fornecedor_id', fornecedorUuid).order('nome', { ascending: true });
         
-        const { data: vendasAnteriores } = await window.db.from('itens_pedidos_vendas').select('quantidade, produto_id, pedidos_vendas!inner(data)')
-            .gte('pedidos_vendas.data', d0_ant.toISOString()).lte('pedidos_vendas.data', d7_ant.toISOString());
-        const mapaVendas = {};
-        if (vendasAnteriores) vendasAnteriores.forEach(v => { mapaVendas[v.produto_id] = (mapaVendas[v.produto_id] || 0) + parseFloat(v.quantidade || 0); });
-
-        const { data: vendasFuturas } = await window.db.from('itens_pedidos_vendas').select('quantidade, produto_id, pedidos_vendas!pedido_venda_id!inner(data)')
-            .gte('pedidos_vendas.data', `${dataCiclo}T00:00:00+00:00`);
-        const mapaQT2 = {};
-        if (vendasFuturas) vendasFuturas.forEach(v => { mapaQT2[v.produto_id] = (mapaQT2[v.produto_id] || 0) + parseFloat(v.quantidade || 0); });
-
         if (produtos) {
-            corpoGrid.innerHTML = produtos.map(p => {
-                const estIni = p.estoque_inicial?.[0]?.quantidade_inicial || 0;
-                const custoIni = p.estoque_inicial?.[0]?.custo_unitario_inicial || 0;
-                const vQT1 = mapaVendas[p.id] || 0;
-                const vQT2 = mapaQT2[p.id] || 0;
+            document.getElementById('corpo-grid').innerHTML = produtos.map(p => {
                 const itemSalvo = mapaItensSalvos[p.id];
-                const vComp = itemSalvo ? itemSalvo.quantidade : (vQT1 + vQT2) - estIni;
-                const vCusto = itemSalvo ? itemSalvo.preco_unitario : 0;
-                const vMkt = itemSalvo ? itemSalvo.preco_compra_mkt : 0;
-                const pm = p.preco_medio_compra || 0;
-                const t1 = vComp * vCusto;
-                const t2 = vComp * vMkt;
-
+                const vComp = itemSalvo ? itemSalvo.quantidade : 0;
                 return `
                     <tr data-id="${p.id}">
                         <td>${p.nome}</td>
-                        <td class="col-est-ini col-standard">${estIni}</td>
-                        <td class="col-ct-ini col-standard">${custoIni.toFixed(2).replace('.', ',')}</td>
-                        <td class="td-qt1 col-standard">${vQT1}</td>
-                        <td class="td-qt2 col-hidden" style="font-weight:700; color:#1C1C1E">${vQT2}</td>
+                        <td class="col-est-ini col-standard">${p.estoque_inicial?.[0]?.quantidade_inicial || 0}</td>
+                        <td class="col-ct-ini col-standard">${(p.estoque_inicial?.[0]?.custo_unitario_inicial || 0).toFixed(2).replace('.', ',')}</td>
+                        <td class="td-qt1 col-standard">0</td>
+                        <td class="td-qt2 col-hidden">0</td>
                         <td><input type="tel" class="grid-input col-comp" value="${vComp.toFixed(2).replace('.', ',')}"></td>
-                        <td><input type="tel" class="grid-input col-custo-input" value="${vCusto.toFixed(2).replace('.', ',')}"></td>
-                        <td><input type="tel" class="grid-input col-mkt-input" value="${vMkt.toFixed(2).replace('.', ',')}"></td>
-                        <td class="col-pm">${pm.toFixed(2).replace('.', ',')}</td>
-                        <td><input type="text" class="grid-input col-t1-input" value="${t1.toFixed(2)}" readonly></td>
-                        <td><input type="text" class="grid-input col-t2-input" value="${t2.toFixed(2)}" readonly></td>
-                        <td><input type="text" class="grid-input col-ganho-input" value="${(t2 - t1).toFixed(2)}" readonly style="color:#10B981; font-weight:700"></td>
+                        <td><input type="tel" class="grid-input col-custo-input" value="${(itemSalvo?.preco_unitario || 0).toFixed(2).replace('.', ',')}"></td>
+                        <td><input type="tel" class="grid-input col-mkt-input" value="${(itemSalvo?.preco_compra_mkt || 0).toFixed(2).replace('.', ',')}"></td>
+                        <td class="col-pm">${(p.preco_medio_compra || 0).toFixed(2).replace('.', ',')}</td>
+                        <td><input type="text" class="grid-input col-t1-input" value="0.00" readonly></td>
+                        <td><input type="text" class="grid-input col-t2-input" value="0.00" readonly></td>
+                        <td><input type="text" class="grid-input col-ganho-input" value="0.00" readonly style="color:#10B981; font-weight:700"></td>
                     </tr>
                 `;
             }).join('');
             atualizarSumario();
         }
-    } catch (err) { setEstado('erro', err.message); } finally { if(statusAtual !== 'erro') setEstado('sincronizado'); }
+    } catch (err) { setEstado('erro', err.message); } finally { setEstado('sincronizado'); }
 }
 
-const setupDataDefault = () => {
-    const campoData = document.getElementById('data-ciclo');
-    if (campoData) {
-        const hoje = new Date(); hoje.setDate(hoje.getDate() + 1);
-        campoData.value = hoje.toISOString().split('T')[0];
-    }
-};
-setupDataDefault();
-
-function setViewMode(mode) {
-    currentView = mode;
-    paginaAtual = 1;
-    document.getElementById('opt-qt1').classList.toggle('active', mode === 'QT1');
-    document.getElementById('opt-qt2').classList.toggle('active', mode === 'QT2');
-    document.querySelector('.th-qt1').classList.toggle('col-hidden', mode !== 'QT1');
-    document.querySelector('.th-qt2').classList.toggle('col-hidden', mode !== 'QT2');
-    atualizarSumario();
+function aplicarMascaraBanco(input) {
+    let value = input.value.replace(/\D/g, '');
+    if (value === '') return "0,00";
+    return (parseFloat(value) / 100).toFixed(2).replace('.', ',');
 }
 
-const inputBusca = document.getElementById('busca-fornecedor');
-const listaResultados = document.getElementById('resultados-fornecedor');
-const corpoGrid = document.getElementById('corpo-grid');
-
-inputBusca.addEventListener('input', async (e) => {
-    const termo = e.target.value;
-    if (termo.length < 1) { listaResultados.style.display = 'none'; return; }
-    const { data: fornecedores } = await window.db.from('fornecedores').select('id, nome').ilike('nome', `%${termo}%`).limit(10);
-    if (fornecedores) {
-        listaResultados.innerHTML = fornecedores.map(f => `<div class="autocomplete-item" onclick="selecionarFornecedor('${f.nome}', '${f.id}')">${f.nome}</div>`).join('');
-        listaResultados.style.display = 'block';
-    }
-});
-
-async function selecionarFornecedor(nome, id) {
-    inputBusca.value = nome;
-    listaResultados.style.display = 'none';
-    inputBusca.dataset.selectedId = id;
-    await carregarProdutosEstoque(id);
-}
-
-function atualizarSumario() {
-    const todasLinhas = Array.from(document.querySelectorAll('#corpo-grid tr'));
-    const linhasFiltradas = todasLinhas.filter(tr => {
-        const vQT1 = parseFloat(tr.querySelector('.td-qt1')?.textContent) || 0;
-        const vQT2 = parseFloat(tr.querySelector('.td-qt2')?.textContent) || 0;
-        const ativo = currentView === 'QT1' ? vQT1 : vQT2;
-        tr.querySelector('.td-qt1').classList.toggle('col-hidden', currentView !== 'QT1');
-        tr.querySelector('.td-qt2').classList.toggle('col-hidden', currentView !== 'QT2');
-        return ativo > 0;
-    });
-
-    const totalPaginas = Math.ceil(linhasFiltradas.length / itensPorPagina) || 1;
-    const inicio = (paginaAtual - 1) * itensPorPagina;
-    todasLinhas.forEach(tr => tr.style.display = 'none');
-    linhasFiltradas.slice(inicio, inicio + itensPorPagina).forEach(tr => tr.style.display = 'table-row');
-
-    let somaT1 = 0, somaGAN = 0;
-    linhasFiltradas.forEach(tr => {
-        somaT1 += parseVal(tr.querySelector('.col-t1-input').value);
-        somaGAN += parseVal(tr.querySelector('.col-ganho-input').value);
-    });
-
-    const format = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-    document.getElementById('total-geral').textContent = format(somaT1);
-    document.getElementById('subtotal-card').textContent = format(somaT1);
-    document.getElementById('ganho-card').textContent = format(somaGAN);
-    document.getElementById('qtd-itens').textContent = linhasFiltradas.length;
-    document.getElementById('info-pag').textContent = `Página ${paginaAtual} de ${totalPaginas}`;
-
-    const pill = document.getElementById('pill-margem');
-    if (somaT1 > 0) {
-        const margemPct = (somaGAN / somaT1) * 100;
-        pill.textContent = `${margemPct.toFixed(1)}%`;
-        pill.style.display = 'inline-block';
-        pill.className = `badge-margem ${margemPct >= 0 ? 'margem-positiva' : 'margem-negativa'}`;
-    } else { pill.style.display = 'none'; }
-}
-
-document.getElementById('btn-pag-prev').addEventListener('click', () => { if (paginaAtual > 1) { paginaAtual--; atualizarSumario(); } });
-document.getElementById('btn-pag-next').addEventListener('click', () => {
-    const totalPaginas = Math.ceil(parseInt(document.getElementById('qtd-itens').textContent) / itensPorPagina);
-    if (paginaAtual < totalPaginas) { paginaAtual++; atualizarSumario(); }
-});
-
-corpoGrid.addEventListener('input', (e) => {
+document.getElementById('corpo-grid').addEventListener('input', (e) => {
     if (e.target.classList.contains('grid-input')) {
         const tr = e.target.closest('tr');
-        const campo = e.target;
-
-        if (campo.classList.contains('col-comp') || campo.classList.contains('col-custo-input') || campo.classList.contains('col-mkt-input')) {
-            campo.value = aplicarMascaraBanco(campo);
-        }
-
+        if (e.target.type === 'tel') e.target.value = aplicarMascaraBanco(e.target);
+        
         const comp = parseVal(tr.querySelector('.col-comp').value);
         const cust = parseVal(tr.querySelector('.col-custo-input').value);
-        const estIni = parseVal(tr.querySelector('.col-est-ini').textContent);
-        const ctIni = parseVal(tr.querySelector('.col-ct-ini').textContent);
-
-        if (campo.classList.contains('col-custo-input')) {
-            tr.querySelector('.col-mkt-input').value = cust.toFixed(2).replace('.', ',');
-        }
-
-        const mkt = parseVal(tr.querySelector('.col-mkt-input').value);
-        const divisor = comp + estIni;
-        const pm = divisor !== 0 ? ((mkt * comp) + (estIni * ctIni)) / divisor : 0;
+        const t1 = comp * cust;
+        tr.querySelector('.col-t1-input').value = t1.toFixed(2);
         
-        tr.querySelector('.col-pm').textContent = pm.toFixed(2).replace('.', ',');
-        const t1 = comp * cust; tr.querySelector('.col-t1-input').value = t1.toFixed(2);
-        const t2 = comp * mkt; tr.querySelector('.col-t2-input').value = t2.toFixed(2);
-        tr.querySelector('.col-ganho-input').value = (t2 - t1).toFixed(2);
-
         atualizarSumario();
         setEstado('editando');
         clearTimeout(timerAutoSave);
         timerAutoSave = setTimeout(salvarDadosSinc, 8000);
     }
 });
+
+function atualizarSumario() {
+    let somaT1 = 0, somaGAN = 0;
+    document.querySelectorAll('#corpo-grid tr').forEach(tr => {
+        somaT1 += parseVal(tr.querySelector('.col-t1-input').value);
+        somaGAN += parseVal(tr.querySelector('.col-ganho-input').value);
+    });
+    const format = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    document.getElementById('total-geral').textContent = format(somaT1);
+    document.getElementById('subtotal-card').textContent = format(somaT1);
+    document.getElementById('ganho-card').textContent = format(somaGAN);
+}
+
+// Inicializações
+const inputBusca = document.getElementById('busca-fornecedor');
+const listaResultados = document.getElementById('resultados-fornecedor');
+inputBusca.addEventListener('input', async (e) => {
+    const termo = e.target.value;
+    if (termo.length < 1) return listaResultados.style.display = 'none';
+    const { data } = await window.db.from('fornecedores').select('id, nome').ilike('nome', `%${termo}%`).limit(10);
+    if (data) {
+        listaResultados.innerHTML = data.map(f => `<div class="autocomplete-item" onclick="selecionarFornecedor('${f.nome}', '${f.id}')">${f.nome}</div>`).join('');
+        listaResultados.style.display = 'block';
+    }
+});
+
+async function selecionarFornecedor(nome, id) {
+    inputBusca.value = nome; inputBusca.dataset.selectedId = id;
+    listaResultados.style.display = 'none';
+    await carregarProdutosEstoque(id);
+}
 
 function toggleCard() { document.getElementById('mainCard').classList.toggle('expanded'); }
 const fixHeight = () => document.documentElement.style.setProperty('--vh', `${window.innerHeight * 0.01}px`);
