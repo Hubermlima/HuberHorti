@@ -572,7 +572,7 @@ function aplicarMascaraBanco(input) {
     return valorNumerico.replace('.', ',');
 }
 
-const parseVal = (v) => parseFloat(String(v).replace(',', '.')) || 0;
+const parseVal = (v) => parseFloat(String(v).replace(/[^\d.-]/g, '').replace(',', '.')) || 0;
 
 // --- LÓGICA DE NEGÓCIO ---
 
@@ -657,7 +657,7 @@ async function salvarDadosSinc() {
     if (statusAtual !== 'editando') return;
     setEstado('salvando');
     const numCompraEl = document.getElementById('num-compra');
-    const valorTotalNum = parseVal(document.getElementById('total-geral').textContent.replace(/[^\d,.-]/g, ''));
+    const valorTotalNum = parseVal(document.getElementById('total-geral').textContent);
     const fornecedorId = document.getElementById('busca-fornecedor').dataset.selectedId;
     const dataCompra = document.getElementById('data-ciclo').value;
     let pedidoId = numCompraEl.textContent.replace('#', '');
@@ -814,10 +814,39 @@ inputBusca.addEventListener('input', async (e) => {
     }
 });
 
+// NOVA LÓGICA: SOMA DAS COMPRAS EM ABERTO DO BANCO
+async function atualizarExtratoComprasEmAberto(fornecedorId) {
+    if (!fornecedorId) return;
+    try {
+        const { data, error } = await window.db
+            .from('pedidos_compras')
+            .select('em_aberto')
+            .eq('fornecedor_id', fornecedorId);
+
+        if (error) throw error;
+
+        const totalEmAberto = data.reduce((acc, curr) => acc + (parseFloat(curr.em_aberto) || 0), 0);
+        document.getElementById('extrato-aberto').textContent = totalEmAberto.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+        recalcularSaldoExtrato();
+    } catch (err) {
+        console.error('Erro ao buscar compras em aberto:', err.message);
+    }
+}
+
+function recalcularSaldoExtrato() {
+    const aberto = parseVal(document.getElementById('extrato-aberto').textContent);
+    const atual = parseVal(document.getElementById('extrato-atual').textContent);
+    const pagos = parseVal(document.getElementById('extrato-pagos').textContent);
+
+    const saldoTotal = (aberto + atual) - Math.abs(pagos);
+    document.getElementById('extrato-saldo').textContent = saldoTotal.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+}
+
 async function selecionarFornecedor(nome, id) {
     inputBusca.value = nome;
     listaResultados.style.display = 'none';
     inputBusca.dataset.selectedId = id;
+    await atualizarExtratoComprasEmAberto(id); // Busca o histórico em aberto
     await carregarProdutosEstoque(id);
 }
 
@@ -852,6 +881,7 @@ function atualizarSumario() {
 
     // Atualiza também o extrato consolidado se estiver ativo
     document.getElementById('extrato-atual').textContent = format(somaT1);
+    recalcularSaldoExtrato();
 
     const pill = document.getElementById('pill-margem');
     if (somaT1 > 0) {
