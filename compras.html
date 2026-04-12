@@ -512,21 +512,20 @@ let statusAtual = 'sincronizado';
 let paginaAtual = 1;
 const itensPorPagina = 10;
 
+// --- PERSISTÊNCIA AO VOLTAR ---
+window.onload = () => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const fId = urlParams.get('fornecedor_id');
+    const fNome = urlParams.get('fornecedor_nome');
+    if (fId && fNome) {
+        selecionarFornecedor(decodeURIComponent(fNome), fId);
+    }
+    fixHeight();
+};
+
+// --- LÓGICA DO MENU DE AÇÕES ---
 const btnAddTopbar = document.getElementById('btn-add-topbar');
 const menuDropdown = document.getElementById('menu-dropdown');
-const inputBusca = document.getElementById('busca-fornecedor');
-const listaResultados = document.getElementById('resultados-fornecedor');
-const corpoGrid = document.getElementById('corpo-grid');
-
-// --- PERSISTÊNCIA DE FORNECEDOR (SOLUÇÃO PARA O BUG) ---
-window.addEventListener('pageshow', () => {
-    const salvoId = sessionStorage.getItem('last_fornecedor_id');
-    const salvoNome = sessionStorage.getItem('last_fornecedor_nome');
-    
-    if (salvoId && salvoNome && !inputBusca.dataset.selectedId) {
-        selecionarFornecedor(salvoNome, salvoId);
-    }
-});
 
 btnAddTopbar.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -540,7 +539,17 @@ document.addEventListener('click', (e) => {
     }
 });
 
+function gerarGuiaColeta() {
+    const pedidoId = document.getElementById('num-compra').textContent.replace('#', '');
+    if (pedidoId === '-----') {
+        alert("Salve a compra antes de gerar a Guia de Coleta.");
+        return;
+    }
+    alert("Gerando Guia de Coleta para o Pedido #" + pedidoId);
+}
+
 function abrirMovimentacoes() {
+    const inputBusca = document.getElementById('busca-fornecedor');
     const fornecedorId = inputBusca.dataset.selectedId;
     const fornecedorNome = inputBusca.value;
 
@@ -549,15 +558,11 @@ function abrirMovimentacoes() {
         return;
     }
 
-    // Salva no session antes de sair
-    sessionStorage.setItem('last_fornecedor_id', fornecedorId);
-    sessionStorage.setItem('last_fornecedor_nome', fornecedorNome);
-
     const nomeUrl = encodeURIComponent(fornecedorNome);
     window.location.href = `movimentacoes_fornecedores.html?fornecedor_id=${fornecedorId}&fornecedor_nome=${nomeUrl}`;
 }
 
-// --- FUNÇÕES DE UTILIDADE ---
+// --- FUNÇÕES DE UTILIDADE CORRIGIDAS ---
 document.getElementById('corpo-grid').addEventListener('focusin', (e) => {
     if (e.target.classList.contains('grid-input')) {
         setTimeout(() => e.target.select(), 50);
@@ -581,20 +586,135 @@ const parseVal = (v) => {
 };
 
 // --- LÓGICA DE NEGÓCIO ---
-async function selecionarFornecedor(nome, id) {
-    inputBusca.value = nome;
-    inputBusca.dataset.selectedId = id;
-    listaResultados.style.display = 'none';
-    
-    // Armazena para persistência
-    sessionStorage.setItem('last_fornecedor_id', id);
-    sessionStorage.setItem('last_fornecedor_nome', nome);
+document.getElementById('data-ciclo').addEventListener('change', async () => {
+    const fornecedorId = document.getElementById('busca-fornecedor').dataset.selectedId;
+    if (fornecedorId) {
+        await carregarProdutosEstoque(fornecedorId);
+        await atualizarExtratoComprasEmAberto(fornecedorId); // Atualiza financeiro ao mudar data
+    }
+});
 
-    await Promise.all([
-        atualizarExtratoComprasEmAberto(id),
-        atualizarPagamentosRealizados(id),
-        carregarProdutosEstoque(id)
-    ]);
+async function acaoExcluirCompra() {
+    const numCompraEl = document.getElementById('num-compra');
+    const pedidoId = numCompraEl.textContent.replace('#', '');
+    if (pedidoId === '-----') return alert("Não há uma compra salva.");
+    if (!confirm("Excluir esta compra permanentemente?")) return;
+    setEstado('salvando');
+    try {
+        await window.db.from('itens_pedidos_compras').delete().eq('pedido_compra_id', pedidoId);
+        await window.db.from('pedidos_compras').delete().eq('id', pedidoId);
+        location.reload();
+    } catch (err) { setEstado('erro', err.message); }
+}
+
+// LÓGICA DE SWIPE
+const card = document.getElementById('mainCard');
+let startX = 0;
+let currentTranslate = 0;
+const threshold = -150;
+
+card.addEventListener('touchstart', (e) => {
+    startX = e.touches[0].clientX;
+    card.style.transition = 'none';
+}, {passive: true});
+
+card.addEventListener('touchmove', (e) => {
+    const diff = e.touches[0].clientX - startX;
+    if (diff < 0) {
+        currentTranslate = Math.max(diff, -200);
+        card.style.transform = `translateX(${currentTranslate}px)`;
+    }
+}, {passive: true});
+
+card.addEventListener('touchend', () => {
+    card.style.transition = 'transform 0.3s ease';
+    if (currentTranslate < threshold) {
+        card.style.transform = `translateX(-100%)`;
+        setTimeout(() => {
+            acaoExcluirCompra();
+            card.style.transform = `translateX(0)`;
+        }, 300);
+    } else {
+        card.style.transform = `translateX(0)`;
+    }
+    currentTranslate = 0;
+});
+
+function setEstado(novoStatus, msgErro = '') {
+    const elStatus = document.getElementById('status-sinc');
+    statusAtual = novoStatus;
+    const botoes = ['btn-voltar', 'btn-add-topbar'];
+    if (novoStatus === 'editando') {
+        elStatus.textContent = 'Editando...';
+        elStatus.style.color = '#F59E0B';
+        botoes.forEach(id => document.getElementById(id)?.classList.add('btn-disabled'));
+    } else if (novoStatus === 'salvando') {
+        elStatus.textContent = 'Salvando...';
+        elStatus.style.color = '#3B82F6';
+    } else if (novoStatus === 'erro') {
+        elStatus.textContent = `ERRO: [${msgErro}] (Toque p/ copiar)`;
+        elStatus.style.color = '#EF4444';
+    } else {
+        elStatus.textContent = 'Sincronizado';
+        elStatus.style.color = '#10B981';
+        botoes.forEach(id => document.getElementById(id)?.classList.remove('btn-disabled'));
+    }
+}
+
+async function salvarDadosSinc() {
+    if (statusAtual !== 'editando') return;
+    setEstado('salvando');
+    const numCompraEl = document.getElementById('num-compra');
+    const valorTotalNum = parseVal(document.getElementById('total-geral').textContent);
+    const fornecedorId = document.getElementById('busca-fornecedor').dataset.selectedId;
+    const dataCompra = document.getElementById('data-ciclo').value;
+    let pedidoId = numCompraEl.textContent.replace('#', '');
+    const isNovo = pedidoId === '-----';
+
+    try {
+        if (isNovo) {
+            const { data: pData, error: pErr } = await window.db.from('pedidos_compras').insert({
+                data: dataCompra, fornecedor_id: fornecedorId, valor_total: valorTotalNum, em_aberto: valorTotalNum
+            }).select();
+            if (pErr) throw pErr;
+            pedidoId = pData[0].id;
+            numCompraEl.textContent = `#${pedidoId}`;
+        } else {
+            await window.db.from('pedidos_compras').update({
+                data: dataCompra, valor_total: valorTotalNum, em_aberto: valorTotalNum
+            }).eq('id', pedidoId);
+        }
+
+        await window.db.from('itens_pedidos_compras').delete().eq('pedido_compra_id', pedidoId);
+        const linhas = document.querySelectorAll('#corpo-grid tr');
+        const itens = [];
+        const updatesProd = [];
+
+        linhas.forEach(tr => {
+            const comp = parseVal(tr.querySelector('.col-comp').value);
+            if (comp > 0) {
+                const prodId = tr.dataset.id;
+                const cust = parseVal(tr.querySelector('.col-custo-input').value);
+                const mkt = parseVal(tr.querySelector('.col-mkt-input').value);
+                const t1 = parseVal(tr.querySelector('.col-t1-input').value);
+                const gan = parseVal(tr.querySelector('.col-ganho-input').value);
+                const pm = parseVal(tr.querySelector('.col-pm').textContent);
+
+                itens.push({
+                    pedido_compra_id: pedidoId, produto_id: prodId, quantidade: comp,
+                    preco_unitario: cust, valor_total: t1, ganho: gan, preco_compra_mkt: mkt
+                });
+                updatesProd.push(window.db.from('produtos').update({ preco_medio_compra: pm }).eq('id', prodId));
+            }
+        });
+
+        if (itens.length > 0) {
+            await window.db.from('itens_pedidos_compras').insert(itens);
+            await Promise.all(updatesProd);
+        }
+        await atualizarExtratoComprasEmAberto(fornecedorId); // Atualiza saldo após salvar
+        setEstado('sincronizado');
+    } catch (err) { setEstado('erro', err.message); }
 }
 
 async function carregarProdutosEstoque(fornecedorUuid) {
@@ -670,14 +790,32 @@ async function carregarProdutosEstoque(fornecedorUuid) {
     } catch (err) { setEstado('erro', err.message); } finally { if(statusAtual !== 'erro') setEstado('sincronizado'); }
 }
 
-// O restante das funções (atualizarSumario, setEstado, salvarDadosSinc, etc.) permanece o mesmo.
+const setupDataDefault = () => {
+    const campoData = document.getElementById('data-ciclo');
+    if (campoData) {
+        const hoje = new Date(); hoje.setDate(hoje.getDate() + 1);
+        campoData.value = hoje.toISOString().split('T')[0];
+    }
+};
+setupDataDefault();
+
+function setViewMode(mode) {
+    currentView = mode;
+    paginaAtual = 1;
+    document.getElementById('opt-qt1').classList.toggle('active', mode === 'QT1');
+    document.getElementById('opt-qt2').classList.toggle('active', mode === 'QT2');
+    document.querySelector('.th-qt1').classList.toggle('col-hidden', mode !== 'QT1');
+    document.querySelector('.th-qt2').classList.toggle('col-hidden', mode !== 'QT2');
+    atualizarSumario();
+}
+
+const inputBusca = document.getElementById('busca-fornecedor');
+const listaResultados = document.getElementById('resultados-fornecedor');
+const corpoGrid = document.getElementById('corpo-grid');
 
 inputBusca.addEventListener('input', async (e) => {
     const termo = e.target.value;
-    if (termo.length < 1) { 
-        listaResultados.style.display = 'none'; 
-        return; 
-    }
+    if (termo.length < 1) { listaResultados.style.display = 'none'; return; }
     const { data: fornecedores } = await window.db.from('fornecedores').select('id, nome').ilike('nome', `%${termo}%`).limit(10);
     if (fornecedores) {
         listaResultados.innerHTML = fornecedores.map(f => `<div class="autocomplete-item" onclick="selecionarFornecedor('${f.nome}', '${f.id}')">${f.nome}</div>`).join('');
@@ -685,26 +823,38 @@ inputBusca.addEventListener('input', async (e) => {
     }
 });
 
+// --- LÓGICA FINANCEIRA CORRIGIDA ---
 async function atualizarExtratoComprasEmAberto(fornecedorId) {
     if (!fornecedorId) return;
+    const numCompraEl = document.getElementById('num-compra');
+    const pedidoIdAtual = numCompraEl.textContent.replace('#', '');
+
     try {
-        const { data, error } = await window.db.from('pedidos_compras').select('em_aberto').eq('fornecedor_id', fornecedorId);
+        // Busca todas as compras do fornecedor, excluindo a que está aberta na tela no momento
+        let query = window.db.from('pedidos_compras').select('em_aberto').eq('fornecedor_id', fornecedorId);
+        if (pedidoIdAtual !== '-----') query = query.neq('id', pedidoIdAtual);
+        
+        const { data, error } = await query;
         if (error) throw error;
         const totalEmAberto = data.reduce((acc, curr) => acc + (parseFloat(curr.em_aberto) || 0), 0);
         document.getElementById('extrato-aberto').textContent = totalEmAberto.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
         recalcularSaldoExtrato();
-    } catch (err) { console.error(err); }
+    } catch (err) { console.error('Erro ao buscar compras em aberto:', err.message); }
 }
 
 async function atualizarPagamentosRealizados(fornecedorId) {
     if (!fornecedorId) return;
     try {
-        const { data, error } = await window.db.from('movimentos_fornecedores').select('valor').eq('fornecedor_id', fornecedorId).eq('status', 0);
+        const { data, error } = await window.db
+            .from('movimentos_fornecedores')
+            .select('valor')
+            .eq('fornecedor_id', fornecedorId);
+            // .eq('status', 0); // Se houver status de 'Pago' vs 'Pendente'
         if (error) throw error;
         const totalPagos = data.reduce((acc, curr) => acc + (parseFloat(curr.valor) || 0), 0);
         document.getElementById('extrato-pagos').textContent = `- ${totalPagos.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`;
         recalcularSaldoExtrato();
-    } catch (err) { console.error(err); }
+    } catch (err) { console.error('Erro ao buscar pagamentos:', err.message); }
 }
 
 function recalcularSaldoExtrato() {
@@ -714,6 +864,18 @@ function recalcularSaldoExtrato() {
     const saldoTotal = (aberto + atual) - pagos;
     const elSaldo = document.getElementById('extrato-saldo');
     elSaldo.textContent = saldoTotal.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    elSaldo.style.color = saldoTotal > 0 ? '#EF4444' : '#10B981'; // Vermelho se deve, verde se saldo >= 0
+}
+
+async function selecionarFornecedor(nome, id) {
+    inputBusca.value = nome;
+    listaResultados.style.display = 'none';
+    inputBusca.dataset.selectedId = id;
+    await Promise.all([
+        carregarProdutosEstoque(id),
+        atualizarExtratoComprasEmAberto(id),
+        atualizarPagamentosRealizados(id)
+    ]);
 }
 
 function atualizarSumario() {
@@ -721,7 +883,10 @@ function atualizarSumario() {
     const linhasFiltradas = todasLinhas.filter(tr => {
         const vQT1 = parseFloat(tr.querySelector('.td-qt1')?.textContent) || 0;
         const vQT2 = parseFloat(tr.querySelector('.td-qt2')?.textContent) || 0;
-        return (currentView === 'QT1' ? vQT1 : vQT2) > 0;
+        const ativo = currentView === 'QT1' ? vQT1 : vQT2;
+        tr.querySelector('.td-qt1').classList.toggle('col-hidden', currentView !== 'QT1');
+        tr.querySelector('.td-qt2').classList.toggle('col-hidden', currentView !== 'QT2');
+        return ativo > 0;
     });
 
     const totalPaginas = Math.ceil(linhasFiltradas.length / itensPorPagina) || 1;
@@ -735,46 +900,66 @@ function atualizarSumario() {
         somaGAN += parseVal(tr.querySelector('.col-ganho-input').value);
     });
 
-    document.getElementById('total-geral').textContent = somaT1.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-    document.getElementById('subtotal-card').textContent = somaT1.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-    document.getElementById('ganho-card').textContent = somaGAN.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    const format = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    document.getElementById('total-geral').textContent = format(somaT1);
+    document.getElementById('subtotal-card').textContent = format(somaT1);
+    document.getElementById('ganho-card').textContent = format(somaGAN);
     document.getElementById('qtd-itens').textContent = linhasFiltradas.length;
     document.getElementById('info-pag').textContent = `Página ${paginaAtual} de ${totalPaginas}`;
-    document.getElementById('extrato-atual').textContent = somaT1.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    document.getElementById('extrato-atual').textContent = format(somaT1);
     recalcularSaldoExtrato();
+
+    const pill = document.getElementById('pill-margem');
+    if (somaT1 > 0) {
+        const margemPct = (somaGAN / somaT1) * 100;
+        pill.textContent = `${margemPct.toFixed(1)}%`;
+        pill.style.display = 'inline-block';
+        pill.className = `badge-margem ${margemPct >= 0 ? 'margem-positiva' : 'margem-negativa'}`;
+    } else { pill.style.display = 'none'; }
 }
 
-function setEstado(novoStatus, msgErro = '') {
-    const elStatus = document.getElementById('status-sinc');
-    statusAtual = novoStatus;
-    if (novoStatus === 'editando') {
-        elStatus.textContent = 'Editando...';
-        elStatus.style.color = '#F59E0B';
-    } else if (novoStatus === 'salvando') {
-        elStatus.textContent = 'Salvando...';
-        elStatus.style.color = '#3B82F6';
-    } else if (novoStatus === 'erro') {
-        elStatus.textContent = `ERRO: ${msgErro}`;
-        elStatus.style.color = '#EF4444';
-    } else {
-        elStatus.textContent = 'Sincronizado';
-        elStatus.style.color = '#10B981';
+document.getElementById('btn-pag-prev').addEventListener('click', () => { if (paginaAtual > 1) { paginaAtual--; atualizarSumario(); } });
+document.getElementById('btn-pag-next').addEventListener('click', () => {
+    const totalPaginas = Math.ceil(parseInt(document.getElementById('qtd-itens').textContent) / itensPorPagina);
+    if (paginaAtual < totalPaginas) { paginaAtual++; atualizarSumario(); }
+});
+
+corpoGrid.addEventListener('input', (e) => {
+    if (e.target.classList.contains('grid-input')) {
+        const tr = e.target.closest('tr');
+        const campo = e.target;
+        if (campo.classList.contains('col-comp') || campo.classList.contains('col-custo-input') || campo.classList.contains('col-mkt-input')) {
+            campo.value = aplicarMascaraBanco(campo);
+        }
+        const comp = parseVal(tr.querySelector('.col-comp').value);
+        const cust = parseVal(tr.querySelector('.col-custo-input').value);
+        const estIni = parseVal(tr.querySelector('.col-est-ini').textContent);
+        const ctIni = parseVal(tr.querySelector('.col-ct-ini').textContent);
+
+        if (campo.classList.contains('col-custo-input')) {
+            tr.querySelector('.col-mkt-input').value = cust.toFixed(2).replace('.', ',');
+        }
+        const mkt = parseVal(tr.querySelector('.col-mkt-input').value);
+        const divisor = comp + estIni;
+        const pm = divisor !== 0 ? ((mkt * comp) + (estIni * ctIni)) / divisor : 0;
+        
+        tr.querySelector('.col-pm').textContent = pm.toFixed(2).replace('.', ',');
+        const t1 = comp * cust; tr.querySelector('.col-t1-input').value = t1.toFixed(2);
+        const t2 = comp * mkt; tr.querySelector('.col-t2-input').value = t2.toFixed(2);
+        tr.querySelector('.col-ganho-input').value = (t2 - t1).toFixed(2);
+
+        atualizarSumario();
+        setEstado('editando');
+        clearTimeout(timerAutoSave);
+        timerAutoSave = setTimeout(salvarDadosSinc, 8000);
     }
-}
+});
 
 function toggleCard() { document.getElementById('mainCard').classList.toggle('expanded'); }
 function toggleExtrato() { document.getElementById('extratoCard').classList.toggle('active'); }
-function setViewMode(mode) { 
-    currentView = mode; 
-    document.getElementById('opt-qt1').classList.toggle('active', mode === 'QT1');
-    document.getElementById('opt-qt2').classList.toggle('active', mode === 'QT2');
-    document.querySelector('.th-qt1').classList.toggle('col-hidden', mode !== 'QT1');
-    document.querySelector('.th-qt2').classList.toggle('col-hidden', mode !== 'QT2');
-    atualizarSumario(); 
-}
 
 const fixHeight = () => document.documentElement.style.setProperty('--vh', `${window.innerHeight * 0.01}px`);
-window.addEventListener('resize', fixHeight); fixHeight();
+window.addEventListener('resize', fixHeight);
 </script>
 </body>
 </html>
