@@ -6,6 +6,7 @@
 <title>Movimentações Fornecedores</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="supabase.js"></script>
+<script src="utils.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet"/>
 <style>
 :root { --blue: #2563EB; --red: #FF3B30; --bg: #F2F4F8; }
@@ -104,8 +105,12 @@ body{ font-family:'Inter',sans-serif; background:var(--bg); margin:0; color:#111
   </button>
   <div class="topbar-info">
     <div class="title">Movimentações</div>
-    <div class="sub" id="fornecedor-nome">Selecione um fornecedor</div>
-  </div>
+    <div class="sub" id="fornecedor-nome" style="cursor:pointer">Selecione um fornecedor</div>
+    <div style="position:relative">
+        <input id="fornecedor-input" type="text" placeholder="Buscar fornecedor..." autocomplete="off" style="display:none; width:100%; padding:8px 12px; border:none; border-radius:12px; background:#F2F2F7; font-size:14px; outline:none; box-sizing:border-box; margin-top:6px;"/>
+        <div id="fornecedor-lista" style="display:none; position:absolute; left:0; right:0; background:#fff; border-radius:14px; overflow:hidden; box-shadow:0 10px 25px rgba(0,0,0,.1); z-index:100;"></div>
+    </div>
+</div>
   <button class="btn-nova-top" id="btn-nova">
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
   </button>
@@ -147,6 +152,7 @@ body{ font-family:'Inter',sans-serif; background:var(--bg); margin:0; color:#111
 
 <script>
 document.addEventListener('DOMContentLoaded', async function(){
+window.HHUtils.atualizarCicloAtualGlobal();
   const params = new URLSearchParams(window.location.search);
   let fId = params.get('fornecedor_id');
   let fNome = params.get('fornecedor_nome');
@@ -186,6 +192,31 @@ document.addEventListener('DOMContentLoaded', async function(){
     elSaldo.textContent = saldo.toLocaleString('pt-BR', {style:'currency', currency:'BRL'});
     elSaldo.style.color = saldo > 0 ? '#EF4444' : '#10B981';
   }
+
+async function carregarExtrato(id) {
+    const ciclo = window.cicloAtual;
+    const { data: pedidos } = await window.db
+        .from('pedidos_compras')
+        .select('em_aberto, data')
+        .eq('fornecedor_id', id);
+    
+    if (!pedidos) return;
+    
+    let aberto = 0;
+    let atual = 0;
+    
+    pedidos.forEach(p => {
+        const data = p.data ? p.data.split('T')[0] : null;
+        if (data && data >= ciclo.d0 && data <= ciclo.d7) {
+            atual += parseFloat(p.em_aberto) || 0;
+        } else {
+            aberto += parseFloat(p.em_aberto) || 0;
+        }
+    });
+    
+    document.getElementById('ext-aberto').textContent = aberto.toLocaleString('pt-BR', {style:'currency', currency:'BRL'});
+    document.getElementById('ext-atual').textContent = atual.toLocaleString('pt-BR', {style:'currency', currency:'BRL'});
+}
 
   movValor.addEventListener('input', (e) => {
     let v = e.target.value.replace(/\D/g, '');
@@ -289,6 +320,42 @@ document.addEventListener('DOMContentLoaded', async function(){
     const data = params.get('data') || '';
     window.location.href = `compras.html?fornecedor_id=${fId}&fornecedor_nome=${encodeURIComponent(decodeURIComponent(fNome))}&data=${data}`;
   };
+
+if (!fId) {
+    const inputBusca = document.getElementById('fornecedor-input');
+    const listaSugestoes = document.getElementById('fornecedor-lista');
+    const labelEl = document.getElementById('fornecedor-nome');
+
+    labelEl.onclick = () => {
+        labelEl.style.display = 'none';
+        inputBusca.style.display = 'block';
+        inputBusca.focus();
+    };
+
+    const { data: listF } = await window.db.from('fornecedores').select('id, nome');
+    inputBusca.oninput = () => {
+        const termo = inputBusca.value.toLowerCase();
+        const filtrados = listF.filter(f => f.nome.toLowerCase().includes(termo)).slice(0, 5);
+        listaSugestoes.style.display = 'block';
+        listaSugestoes.innerHTML = filtrados.map(f =>
+            `<div style="padding:12px 14px; border-bottom:1px solid #eee; cursor:pointer; font-size:14px;" onclick="selF('${f.id}','${f.nome}')">${f.nome}</div>`
+        ).join('');
+    };
+
+    window.selF = async (id, nome) => {
+        fId = id;
+        fNome = nome;
+        labelEl.textContent = nome;
+        labelEl.style.display = 'block';
+        inputBusca.style.display = 'none';
+        listaSugestoes.style.display = 'none';
+        await carregarExtrato(id);
+        carregar();
+    };
+}
+
+if(fId) carregar();
+
 
   if(fId) carregar();
 });
