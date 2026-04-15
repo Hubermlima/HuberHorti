@@ -200,9 +200,8 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
 <div class="tag-form" id="tag-form">
   <div class="tag-form-header">
     <span class="tag-form-nome" id="tf-nome"></span>
-    <button class="tag-form-del" id="tf-del-btn" onclick="tagFormDeletar()">
-      <svg viewBox="0 0 24 24"><path d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/></svg>
-    </button>
+        <div style="width:26px;height:26px;flex-shrink:0;"></div>
+
   </div>
   <div class="tf-row">
     <span class="tf-row-label">Quantidade</span>
@@ -227,8 +226,19 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
   </div>
 </div>
 
+<!-- MODAL EXCLUSÃO TAG -->
+<div class="del-modal-overlay" id="del-tag-modal-overlay">
+  <div class="del-modal">
+    <div class="del-modal-title">Remover item?</div>
+    <div class="del-modal-sub" id="del-tag-modal-sub"></div>
+    <button class="del-modal-btn-danger" id="del-tag-modal-confirmar">Remover</button>
+    <button class="del-modal-btn-cancel" onclick="fecharModalDelTag()">Cancelar</button>
+  </div>
+</div>
+
 <!-- MODAL EXCLUSÃO -->
 <div class="del-modal-overlay" id="del-modal-overlay">
+ id="del-modal-overlay">
   <div class="del-modal">
     <div class="del-modal-title">Excluir venda?</div>
     <div class="del-modal-sub" id="del-modal-sub">Esta ação não pode ser desfeita.</div>
@@ -260,6 +270,8 @@ let _pedidoAbertoId = null;
 let _tagFormProduto = null;
 let _tagFormSoLeitura = false;
 let _delPedidoId = null;
+let _delTagProdId = null;
+
 
 // Cópia mutável da ordem de tags — pode receber extras em runtime
 let _nuvemOrdem = [
@@ -492,15 +504,40 @@ function montarNuvemTags(soLeitura) {
     const sl = soLeitura ? 'true' : 'false';
     return `<button class="tag ${classe}" data-id="${prod.id}" data-nome="${prod.nome.replace(/"/g,'&quot;')}" data-custo="${prod.preco_medio_compra||0}" data-sl="${sl}" onclick="tagClick(this)"><span class="tag-nome">${nome}</span>${info}</button>`;
   }).join('');
+  wrap.querySelectorAll('.tag').forEach(bindTagLongPress);
 }
 
+
+let _tagLongPressTimer = null;
+let _tagLongPressTriggered = false;
+
 function tagClick(el) {
+  if (_tagLongPressTriggered) { _tagLongPressTriggered = false; return; }
   const id = el.dataset.id;
   const nome = el.dataset.nome;
   const custo = parseFloat(el.dataset.custo) || 0;
   const sl = el.dataset.sl === 'true';
   abrirTagForm(id, nome, custo, el, sl);
 }
+
+function bindTagLongPress(el) {
+  el.addEventListener('touchstart', () => {
+    _tagLongPressTriggered = false;
+    _tagLongPressTimer = setTimeout(() => {
+      _tagLongPressTriggered = true;
+      const id = el.dataset.id;
+      const nome = el.dataset.nome;
+      const sl = el.dataset.sl === 'true';
+      if (sl) return; // somente leitura, não deleta
+      const item = _itensPedidoAtual[id];
+      if (!item) return; // tag vazia, nada a excluir
+      abrirModalDelTag(id, nome);
+    }, 600);
+  }, {passive:true});
+  el.addEventListener('touchend', () => clearTimeout(_tagLongPressTimer), {passive:true});
+  el.addEventListener('touchmove', () => clearTimeout(_tagLongPressTimer), {passive:true});
+}
+
 
 function atualizarSumarioSheet() {
   const itens = Object.values(_itensPedidoAtual).filter(i => parseFloat(i.quantidade) > 0);
@@ -843,6 +880,29 @@ window.addEventListener('resize', fixHeight); fixHeight();
     await selecionarCliente(decodeURIComponent(nomeSalvo), idSalvo);
   }
 })();
+
+function abrirModalDelTag(prodId, prodNome) {
+  _delTagProdId = prodId;
+  document.getElementById('del-tag-modal-sub').textContent = `"${prodNome}" será removido deste pedido.`;
+  document.getElementById('del-tag-modal-overlay').classList.add('active');
+}
+
+function fecharModalDelTag() {
+  document.getElementById('del-tag-modal-overlay').classList.remove('active');
+  _delTagProdId = null;
+}
+
+document.getElementById('del-tag-modal-confirmar').addEventListener('click', () => {
+  if (!_delTagProdId) return;
+  delete _itensPedidoAtual[_delTagProdId];
+  fecharModalDelTag();
+  montarNuvemTags();
+  atualizarSumarioSheet();
+  setEstado('editando');
+  clearTimeout(timerAutoSave);
+  timerAutoSave = setTimeout(salvarDadosSinc, 8000);
+});
+
 </script>
 </body>
 </html>
