@@ -83,8 +83,6 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
 @keyframes formShow{from{opacity:0;transform:scale(0.95) translateY(-6px)}to{opacity:1;transform:scale(1) translateY(0)}}
 .tag-form-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:0;padding-bottom:16px;border-bottom:1px solid #F0F0F5;}
 .tag-form-nome{font-size:12px;font-weight:600;color:#1C1C1E;flex:1;margin-right:8px;}
-.tag-form-del{width:26px;height:26px;border-radius:50%;border:none;background:#FEE2E2;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;}
-.tag-form-del svg{width:12px;height:12px;stroke:#EF4444;stroke-width:2.5;fill:none;}
 .tf-row{display:flex;align-items:center;gap:8px;padding:10px 0;}
 .tf-row-label{font-size:11px;color:#8E8E93;font-weight:500;flex:1;white-space:nowrap;}
 .tf-row-input{background:#F2F2F7;border:none;border-radius:10px;padding:7px 10px;font-family:'Inter',sans-serif;font-size:15px;color:#1C1C1E;outline:none;width:110px;text-align:right;-webkit-appearance:none;}
@@ -200,8 +198,7 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
 <div class="tag-form" id="tag-form">
   <div class="tag-form-header">
     <span class="tag-form-nome" id="tf-nome"></span>
-        <div style="width:26px;height:26px;flex-shrink:0;"></div>
-
+    <div style="width:26px;height:26px;flex-shrink:0;"></div>
   </div>
   <div class="tf-row">
     <span class="tf-row-label">Quantidade</span>
@@ -221,6 +218,10 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
     <input class="tf-row-input readonly" id="tf-custo" type="text" readonly tabindex="-1">
   </div>
   <div class="tf-row">
+    <span class="tf-row-label">Alíquota</span>
+    <input class="tf-row-input readonly" id="tf-aliquota" type="text" readonly tabindex="-1">
+  </div>
+  <div class="tf-row">
     <span class="tf-row-label">Lucro R$</span>
     <input class="tf-row-input readonly" id="tf-lucro" type="text" readonly tabindex="-1">
   </div>
@@ -238,7 +239,6 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
 
 <!-- MODAL EXCLUSÃO -->
 <div class="del-modal-overlay" id="del-modal-overlay">
-
   <div class="del-modal">
     <div class="del-modal-title">Excluir venda?</div>
     <div class="del-modal-sub" id="del-modal-sub">Esta ação não pode ser desfeita.</div>
@@ -271,9 +271,8 @@ let _tagFormProduto = null;
 let _tagFormSoLeitura = false;
 let _delPedidoId = null;
 let _delTagProdId = null;
+let _clienteAtual = null;
 
-
-// Cópia mutável da ordem de tags — pode receber extras em runtime
 let _nuvemOrdem = [
   'Batata Portuguesa','Cebola Nacional','Tomate','Repolho',
   'Cenoura','Maca No. 180','Pimentao Regional','Limao Taiti',
@@ -281,7 +280,7 @@ let _nuvemOrdem = [
   'Uva S/C Verde 500G','Uva S/C Roxa 250G','Uva S/C Roxa 500G','Alho Roxo','Maracuja',
   'Batata Doce Roxa','Melão','Beterraba','Pera','Cebola Roxa','Repolho roxo'
 ];
-const NUVEM_FAVORITOS = [..._nuvemOrdem]; // lista fixa original
+const NUVEM_FAVORITOS = [..._nuvemOrdem];
 
 function fmtNum(val) {
   if (val === '' || val === null || isNaN(val)) return '';
@@ -298,6 +297,23 @@ function mascaraInput(el) {
   if (!digits) { el.value = ''; return; }
   let num = parseInt(digits, 10) / 100;
   el.value = fmtNum(num);
+}
+
+function calcularPrecoSugerido(prod) {
+  if (!_clienteAtual || !prod) return 0;
+  const custo = parseFloat(prod.preco_medio_compra) || 0;
+  const peso = parseFloat(prod.peso_por_unid) || 1;
+  const tipo = _clienteAtual.margem_tipo;
+  const valor = parseFloat(_clienteAtual.margem_valor) || 0;
+  if (!tipo || valor === 0) return custo;
+  const custoVolume = custo * peso;
+  let vendaVolume;
+  if (tipo === 'porcentagem') {
+    vendaVolume = custoVolume / (1 - valor / 100);
+  } else {
+    vendaVolume = custoVolume + valor;
+  }
+  return vendaVolume / peso;
 }
 
 const btnAddTopbar = document.getElementById('btn-add-topbar');
@@ -324,12 +340,8 @@ document.getElementById('painel-atu').addEventListener('touchstart', e => {
   if (e.target.closest('.tag')) return;
   _longPressTimer = setTimeout(() => { abrirAddProd(); }, 600);
 }, {passive:true});
-document.getElementById('painel-atu').addEventListener('touchend', () => {
-  clearTimeout(_longPressTimer);
-}, {passive:true});
-document.getElementById('painel-atu').addEventListener('touchmove', () => {
-  clearTimeout(_longPressTimer);
-}, {passive:true});
+document.getElementById('painel-atu').addEventListener('touchend', () => { clearTimeout(_longPressTimer); }, {passive:true});
+document.getElementById('painel-atu').addEventListener('touchmove', () => { clearTimeout(_longPressTimer); }, {passive:true});
 
 function abrirAddProd() {
   document.getElementById('add-prod-input').value = '';
@@ -354,9 +366,7 @@ document.getElementById('add-prod-input').addEventListener('input', (e) => {
     p.nome.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').includes(termo)
   ).slice(0, 10);
   if (filtrados.length > 0) {
-    results.innerHTML = filtrados.map(p =>
-      `<div class="add-prod-item" onclick="adicionarProdutoExtra('${p.id}')">${p.nome}</div>`
-    ).join('');
+    results.innerHTML = filtrados.map(p => `<div class="add-prod-item" onclick="adicionarProdutoExtra('${p.id}')">${p.nome}</div>`).join('');
     results.style.display = 'block';
   } else {
     results.innerHTML = '<div class="add-prod-item" style="color:#C7C7CC">Nenhum produto encontrado</div>';
@@ -377,8 +387,6 @@ function adicionarProdutoExtra(prodId) {
   }, 150);
 }
 
-
-
 // ---- JANELINHA FLUTUANTE ----
 function abrirTagForm(prodId, prodNome, custo, tagEl, soLeitura) {
   _tagFormSoLeitura = soLeitura;
@@ -386,18 +394,37 @@ function abrirTagForm(prodId, prodNome, custo, tagEl, soLeitura) {
   document.getElementById('tf-nome').textContent = prodNome;
   const item = _itensPedidoAtual[prodId];
   document.getElementById('tf-quant').value = item ? fmtNum(parseFloat(item.quantidade)) : '';
-  document.getElementById('tf-unit').value  = item ? fmtNum(parseFloat(item.preco_unit)) : '';
   document.getElementById('tf-total').value = item ? fmtNum(parseFloat(item.total_venda)) : '';
   document.getElementById('tf-custo').value = custo > 0 ? fmtNum(custo) : '—';
+
+  // Alíquota
+  if (_clienteAtual && _clienteAtual.margem_tipo && _clienteAtual.margem_valor) {
+    const tipo = _clienteAtual.margem_tipo;
+    const val = parseFloat(_clienteAtual.margem_valor);
+    document.getElementById('tf-aliquota').value = tipo === 'porcentagem' ? `% · ${fmtNum(val)}` : `R$ · ${fmtNum(val)}`;
+  } else {
+    document.getElementById('tf-aliquota').value = '—';
+  }
+
+  // Preço unitário: se item já existe usa o salvo, senão sugere
+  if (item) {
+    document.getElementById('tf-unit').value = fmtNum(parseFloat(item.preco_unit));
+  } else {
+    const prod = _todosProdutos.find(p => p.id === prodId);
+    const sugerido = calcularPrecoSugerido(prod);
+    document.getElementById('tf-unit').value = sugerido > 0 ? fmtNum(sugerido) : '';
+  }
+
   document.getElementById('tf-lucro').value = item ? fmtNum(parseFloat(item.lucro)) : '—';
+
   ['tf-quant','tf-unit','tf-total'].forEach(id => {
     const el = document.getElementById(id);
     el.readOnly = soLeitura;
     el.className = 'tf-row-input' + (soLeitura ? ' readonly' : '');
   });
-  
+
   const rect = tagEl.getBoundingClientRect();
-  const formW = 260, formH = 300;
+  const formW = 260, formH = 320;
   let left = rect.left;
   if (left + formW > window.innerWidth - 8) left = window.innerWidth - formW - 8;
   if (left < 8) left = 8;
@@ -408,12 +435,10 @@ function abrirTagForm(prodId, prodNome, custo, tagEl, soLeitura) {
   form.style.left = left + 'px';
   form.style.top = top + 'px';
   form.style.display = 'flex';
-    if (!soLeitura) {
+  if (!soLeitura) {
     document.getElementById('tf-quant').focus();
     document.getElementById('tf-quant').click();
   }
-
-
 }
 
 function fecharTagForm() {
@@ -514,19 +539,16 @@ function montarNuvemTags(soLeitura) {
       info = `<span class="tag-info">${fmtNum(parseFloat(item.quantidade))} · R$${fmtNum(parseFloat(item.preco_unit))} · R$${fmtNum(total)}</span>`;
     }
     const sl = soLeitura ? 'true' : 'false';
-    return `<button class="tag ${classe}" data-id="${prod.id}" data-nome="${prod.nome.replace(/"/g,'&quot;')}" data-custo="${prod.preco_medio_compra||0}" data-sl="${sl}">
-<span class="tag-nome">${nome}</span>${info}</button>`;
+    return `<button class="tag ${classe}" data-id="${prod.id}" data-nome="${prod.nome.replace(/"/g,'&quot;')}" data-custo="${prod.preco_medio_compra||0}" data-sl="${sl}"><span class="tag-nome">${nome}</span>${info}</button>`;
   }).join('');
   wrap.querySelectorAll('.tag').forEach(bindTagLongPress);
 }
-
 
 let _tagLongPressTimer = null;
 let _tagLongPressTriggered = false;
 
 function tagClick(el) {
   if (_tagLongPressTriggered) return;
-
   const id = el.dataset.id;
   const nome = el.dataset.nome;
   const custo = parseFloat(el.dataset.custo) || 0;
@@ -553,12 +575,8 @@ function bindTagLongPress(el) {
     if (!_tagLongPressTriggered) tagClick(el);
     setTimeout(() => { _tagLongPressTriggered = false; }, 50);
   }, {passive:true});
-  el.addEventListener('touchmove', () => {
-    clearTimeout(_tagLongPressTimer);
-  }, {passive:true});
+  el.addEventListener('touchmove', () => { clearTimeout(_tagLongPressTimer); }, {passive:true});
 }
-
-
 
 function atualizarSumarioSheet() {
   const itens = Object.values(_itensPedidoAtual).filter(i => parseFloat(i.quantidade) > 0);
@@ -647,7 +665,6 @@ async function abrirNotaPorId(pedidoId, readonly) {
     const { data: itensDB } = await window.db.from('itens_pedidos_vendas').select('*').eq('pedido_venda_id', pedidoId);
     if (itensDB) itensDB.forEach(it => { _itensPedidoAtual[it.produto_id] = it; });
     if (!readonly) _pedidoAtualId = pedidoId;
-    // Injeta produtos extras que estão no pedido mas não na lista
     _injetarExtrasNaLista();
     montarNuvemTags(readonly);
     atualizarSumarioSheet();
@@ -658,12 +675,9 @@ async function abrirNotaPorId(pedidoId, readonly) {
 }
 
 function _injetarExtrasNaLista() {
-  // Verifica se há produtos nos itens do pedido que não estão na _nuvemOrdem atual
   Object.values(_itensPedidoAtual).forEach(item => {
     const prod = _todosProdutos.find(p => p.id === item.produto_id);
-    if (prod && !_nuvemOrdem.includes(prod.nome)) {
-      _nuvemOrdem.push(prod.nome);
-    }
+    if (prod && !_nuvemOrdem.includes(prod.nome)) _nuvemOrdem.push(prod.nome);
   });
 }
 
@@ -672,7 +686,6 @@ async function carregarProdutosCliente(clienteUuid) {
   _itensPedidoAtual = {};
   _pedidoAtualId = null;
   _pedidoAbertoId = null;
-  // Reset da lista para os favoritos ao trocar de cliente
   _nuvemOrdem = [...NUVEM_FAVORITOS];
   const dataCiclo = document.getElementById('data-ciclo').value;
   try {
@@ -684,7 +697,6 @@ async function carregarProdutosCliente(clienteUuid) {
       _pedidoAbertoId = pedidoAtual.id;
       const { data: itensDB } = await window.db.from('itens_pedidos_vendas').select('*').eq('pedido_venda_id', pedidoAtual.id);
       if (itensDB) itensDB.forEach(it => { _itensPedidoAtual[it.produto_id] = it; });
-      // Injeta extras do pedido salvo
       _injetarExtrasNaLista();
     }
     montarNuvemTags(false);
@@ -701,13 +713,11 @@ async function carregarExtratoDetalhado(clienteId) {
       .select('valor').eq('cliente_id', clienteId).eq('status', 0);
     const lista = document.getElementById('extrato-lista');
     const footer = document.getElementById('extrato-footer');
-        if (!pedidos || pedidos.length === 0) {
+    if (!pedidos || pedidos.length === 0) {
       lista.innerHTML = `<div class="extrato-item" style="background:#F0F6FF;border-radius:12px;padding:10px 12px;margin-bottom:6px;cursor:pointer;border:1px dashed #C7DCFF;" onclick="iniciarNovaVenda()"><div style="display:flex;align-items:center;gap:8px;"><span style="font-size:18px;color:#007AFF;font-weight:300;">+</span><div><div style="font-size:12px;font-weight:600;color:#007AFF;">Nova venda</div><div style="font-size:10px;color:#8E8E93;">${document.getElementById('data-display').textContent}</div></div></div></div>`;
       footer.style.display = 'none';
       return;
     }
-
-    
     const fmt = v => v.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
     const hoje = new Date();
     let totalPagoDisp = (movimentos || []).reduce((a,m) => a + (parseFloat(m.valor) || 0), 0);
@@ -743,10 +753,10 @@ async function carregarExtratoDetalhado(clienteId) {
       const readonly = !p.ehAtual;
       return `<div class="extrato-swipe-wrap" id="swipe-${p.id}">
         ${p.dentroCiclo ? '<div class="swipe-del-btn"><span>Excluir</span></div>' : ''}
-        <div class="extrato-item ${p.status}">
+        <div class="extrato-item ${p.status}" onclick="abrirNotaPorId('${p.id}',${readonly})" style="cursor:pointer;">
           <div class="extrato-header">
             <div>
-              <span class="extrato-docto" onclick="abrirNotaPorId('${p.id}',${readonly})">#${p.id.substring(0,4).toUpperCase()}</span>
+              <span class="extrato-docto">#${p.id.substring(0,4).toUpperCase()}</span>
               <span style="font-size:10px;color:#8E8E93;margin-left:6px">${p.dataFormatada}<span style="color:#EF4444;font-weight:600">${atrasoStr}</span></span>
             </div>
           </div>
@@ -775,11 +785,7 @@ function aplicarSwipe(wrap, pedidoId, docLabel) {
   const item = wrap.querySelector('.extrato-item');
   let startX = 0, currentX = 0, dragging = false;
   const THRESHOLD = 60;
-  wrap.addEventListener('touchstart', e => {
-    startX = e.touches[0].clientX;
-    currentX = 0;
-    dragging = true;
-  }, {passive:true});
+  wrap.addEventListener('touchstart', e => { startX = e.touches[0].clientX; currentX = 0; dragging = true; }, {passive:true});
   wrap.addEventListener('touchmove', e => {
     if (!dragging) return;
     const dx = e.touches[0].clientX - startX;
@@ -791,11 +797,8 @@ function aplicarSwipe(wrap, pedidoId, docLabel) {
   wrap.addEventListener('touchend', () => {
     dragging = false;
     item.style.transition = '';
-    if (currentX < -THRESHOLD) {
-      item.style.transform = 'translateX(-80px)';
-    } else {
-      item.style.transform = 'translateX(0)';
-    }
+    if (currentX < -THRESHOLD) { item.style.transform = 'translateX(-80px)'; }
+    else { item.style.transform = 'translateX(0)'; }
   });
   wrap.querySelector('.swipe-del-btn').addEventListener('click', () => {
     item.style.transform = 'translateX(0)';
@@ -822,11 +825,7 @@ document.getElementById('del-modal-confirmar').addEventListener('click', async (
   try {
     await window.db.from('itens_pedidos_vendas').delete().eq('pedido_venda_id', idParaDeletar);
     await window.db.from('pedidos_vendas').delete().eq('id', idParaDeletar);
-    if (_pedidoAtualId === idParaDeletar) {
-      _pedidoAtualId = null;
-      _pedidoAbertoId = null;
-      _itensPedidoAtual = {};
-    }
+    if (_pedidoAtualId === idParaDeletar) { _pedidoAtualId = null; _pedidoAbertoId = null; _itensPedidoAtual = {}; }
     setEstado('sincronizado');
     const clienteId = document.getElementById('busca-cliente').dataset.selectedId;
     if (clienteId) await carregarExtratoDetalhado(clienteId);
@@ -866,8 +865,8 @@ document.addEventListener('touchstart', (e) => {
 });
 
 let todosClientes = [];
-window.db.from('clientes').select('id, nome').order('nome').then(({ data }) => { if (data) todosClientes = data; });
-window.db.from('produtos').select('id, nome, preco_medio_compra').order('nome').then(({ data }) => {
+window.db.from('clientes').select('id, nome, margem_tipo, margem_valor').order('nome').then(({ data }) => { if (data) todosClientes = data; });
+window.db.from('produtos').select('id, nome, preco_medio_compra, peso_por_unid').order('nome').then(({ data }) => {
   if (data) { _todosProdutos = data; montarNuvemTags(false); }
 });
 
@@ -887,6 +886,7 @@ async function selecionarCliente(nome, id) {
   inputBusca.value = nome;
   listaResultados.style.display = 'none';
   inputBusca.dataset.selectedId = id;
+  _clienteAtual = todosClientes.find(c => c.id === id) || null;
   await carregarProdutosCliente(id);
 }
 
@@ -925,7 +925,6 @@ document.getElementById('del-tag-modal-confirmar').addEventListener('click', () 
   clearTimeout(timerAutoSave);
   timerAutoSave = setTimeout(salvarDadosSinc, 8000);
 });
-
 </script>
 </body>
 </html>
