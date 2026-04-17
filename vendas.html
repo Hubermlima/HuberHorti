@@ -442,6 +442,9 @@ let _delTagProdId = null;
 let _clienteAtual = null;
 let _ctxPedidoId = null;
 let _ctxDocLabel = null;
+let _extratoPedidos = [];
+let _extratoMovimentos = [];
+
 
 document.getElementById('menu-movimentacoes').style.opacity = '0.3';
 document.getElementById('menu-movimentacoes').style.pointerEvents = 'none';
@@ -675,8 +678,6 @@ async function ctxFatura() {
   const nomeCliente = document.getElementById('busca-cliente').value || '';
   const pedido = _extratoPedidos.find(p => p.id === pedidoId);
   if (!pedido) return;
-
-  // Emissão
   const agora = new Date();
   const diasSemana = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
   const meses = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
@@ -684,8 +685,6 @@ async function ctxFatura() {
   document.getElementById('fatura-emissao').textContent = emissao;
   document.getElementById('fatura-numero').textContent = pedidoId.substring(0,5).toUpperCase();
   document.getElementById('fatura-cliente').textContent = nomeCliente.toUpperCase();
-
-  // Itens do pedido
   const { data: itensDB } = await window.db.from('itens_pedidos_vendas').select('*').eq('pedido_venda_id', pedidoId);
   const itens = itensDB || [];
   const fmt = v => Number(v).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -699,12 +698,9 @@ async function ctxFatura() {
       <span class="fatura-prod-total">${fmt(parseFloat(i.total_venda))}</span>
     </div>`;
   }).join('');
-
   const totalProd = itens.reduce((a,i) => a + parseFloat(i.total_venda), 0);
   document.getElementById('fatura-qtd-itens').textContent = itens.length;
   document.getElementById('fatura-total-prod').textContent = fmt(totalProd);
-
-  // Situação financeira
   const clienteId = document.getElementById('busca-cliente').dataset.selectedId;
   const { data: movs } = await window.db.from('movimentos_clientes')
     .select('valor').eq('cliente_id', clienteId).eq('status', 0).not('data', 'is', null);
@@ -712,14 +708,12 @@ async function ctxFatura() {
   const debitosAnteriores = _extratoPedidos.filter(p => p.id !== pedidoId).reduce((a,p) => a + p.nominal, 0);
   const emAberto = Math.max(0, debitosAnteriores - totalPagamentos);
   const saldo = emAberto + totalProd;
-
   const fmtR = v => 'R$ ' + fmt(v);
   document.getElementById('fatura-debitos').textContent = fmtR(debitosAnteriores);
   document.getElementById('fatura-pagamentos').textContent = fmtR(totalPagamentos);
   document.getElementById('fatura-em-aberto').textContent = fmtR(emAberto);
   document.getElementById('fatura-compra-atual').textContent = fmtR(totalProd);
   document.getElementById('fatura-saldo').textContent = fmt(saldo);
-
   document.getElementById('fatura-sheet').style.display = 'flex';
 }
 
@@ -1195,8 +1189,9 @@ async function carregarExtratoDetalhado(clienteId) {
   try {
     const { data: pedidos } = await window.db.from('pedidos_vendas')
       .select('id, data, total_venda, em_aberto').eq('cliente_id', clienteId).order('data', { ascending: false });
-    const { data: movimentos } = await window.db.from('movimentos_clientes')
-      .select('valor').eq('cliente_id', clienteId).eq('status', 0);
+        const { data: movimentos } = await window.db.from('movimentos_clientes')
+      .select('valor, data, forma, destino, tipo').eq('cliente_id', clienteId).eq('status', 0);
+
     const lista = document.getElementById('extrato-lista');
     if (!pedidos || pedidos.length === 0) {
       lista.innerHTML = `<div class="extrato-item" style="background:#F0F6FF;border-radius:12px;padding:10px 12px;margin-bottom:6px;cursor:pointer;border:1px dashed #C7DCFF;" onclick="iniciarNovaVenda()"><div style="display:flex;align-items:center;gap:8px;"><span style="font-size:18px;color:#007AFF;font-weight:300;">+</span><div><div style="font-size:12px;font-weight:600;color:#007AFF;">Nova venda</div><div style="font-size:10px;color:#8E8E93;">${document.getElementById('data-display').textContent}</div></div></div></div>`;
@@ -1231,6 +1226,9 @@ async function carregarExtratoDetalhado(clienteId) {
     const totalPago = pedidosComCalculo.reduce((a,p) => a + p.pago, 0);
     const totalAberto = pedidosComCalculo.reduce((a,p) => a + p.restante, 0);
     atualizarCarrossel(totalNominal, totalPago, totalAberto);
+        _extratoPedidos = pedidosComCalculo;
+    _extratoMovimentos = movimentos || [];
+
     const temNotaHoje = pedidosComCalculo.some(p => p.ehAtual);
     const novaVendaHtml = !temNotaHoje ? `<div class="extrato-item" style="background:#F0F6FF;border-radius:12px;padding:10px 12px;margin-bottom:6px;cursor:pointer;border:1px dashed #C7DCFF;" onclick="iniciarNovaVenda()"><div style="display:flex;align-items:center;gap:8px;"><span style="font-size:18px;color:#007AFF;font-weight:300;">+</span><div><div style="font-size:12px;font-weight:600;color:#007AFF;">Nova venda</div><div style="font-size:10px;color:#8E8E93;">${document.getElementById('data-display').textContent}</div></div></div></div>` : '';
     lista.innerHTML = novaVendaHtml + pedidosComCalculo.map(p => {
