@@ -48,6 +48,17 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
 .pag-btn:disabled{opacity:0.3;pointer-events:none;}
 .pag-info{font-size:12px;font-weight:500;color:#8E8E93;}
 .pag-vendas{font-size:11px;color:#8E8E93;}
+.filtro-overlay{position:fixed;inset:0;z-index:9990;display:none;}
+.filtro-overlay.active{display:block;}
+.filtro-menu{position:fixed;z-index:9991;width:220px;background:#FFF;border-radius:16px;box-shadow:0 8px 32px rgba(0,0,0,0.14);overflow:hidden;display:none;}
+.filtro-titulo{padding:13px 16px;font-size:12px;font-weight:600;color:#8E8E93;border-bottom:0.5px solid #F2F2F7;}
+.filtro-item{display:flex;align-items:center;justify-content:space-between;padding:13px 16px;font-size:14px;cursor:pointer;border-bottom:0.5px solid #F2F2F7;color:#1C1C1E;}
+.filtro-item:last-of-type{border-bottom:none;}
+.filtro-item:active{background:#F5F5F5;}
+.radio{width:18px;height:18px;border-radius:50%;border:2px solid #D1D1D6;flex-shrink:0;display:flex;align-items:center;justify-content:center;}
+.radio.checked{border-color:#007AFF;}
+.radio.checked::after{content:'';width:9px;height:9px;border-radius:50%;background:#007AFF;}
+.filtro-confirmar{width:calc(100% - 24px);margin:10px 12px 12px;padding:13px;background:#007AFF;border:none;border-radius:12px;font-family:'Inter',sans-serif;font-size:14px;font-weight:600;color:#FFF;cursor:pointer;display:block;}
 </style>
 </head>
 <body>
@@ -60,7 +71,9 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
     <div class="topbar-title">Vendas por Produto</div>
     <div class="topbar-sub" id="status-sub">Carregando...</div>
   </div>
-  <div style="width:38px;"></div>
+  <button class="ios-btn-float" id="btn-filtro" onclick="abrirFiltro(event)">
+    <svg viewBox="0 0 24 24" style="width:17px;height:17px;stroke:#1C1C1E;stroke-width:2;fill:none"><path d="M3 6h18M7 12h10M11 18h2"/></svg>
+  </button>
 </div>
 
 <div class="busca-wrap">
@@ -107,11 +120,28 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
   </div>
 </div>
 
+<div class="filtro-overlay" id="filtro-overlay" onclick="fecharFiltro()"></div>
+<div class="filtro-menu" id="filtro-menu">
+  <div class="filtro-titulo">Período</div>
+  <div class="filtro-item" onclick="selecionarPeriodoTemp('atual')">
+    Ciclo Atual
+    <div class="radio checked" id="radio-atual"></div>
+  </div>
+  <div class="filtro-item" onclick="selecionarPeriodoTemp('anterior')">
+    Ciclo Anterior
+    <div class="radio" id="radio-anterior"></div>
+  </div>
+  <button class="filtro-confirmar" onclick="aplicarFiltroPeriodo()">Confirmar</button>
+</div>
+
 <script>
 const POR_PAGINA = 15;
 const fmtNum = v => Number(v).toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
 
 let _ciclo = null;
+let _cicloAnterior = null;
+let _periodoAtivo = 'atual';
+let _periodoTemp = 'atual';
 let _produtos = [];
 let _itens = [];
 let _paginaAtual = 1;
@@ -120,10 +150,49 @@ let _produtoSelecionado = null;
 async function init() {
   window.HHUtils.atualizarCicloAtualGlobal();
   _ciclo = window.cicloAtual;
-  document.getElementById('status-sub').textContent = `${HHUtils.formatarDataBR(_ciclo.d0)} — ${HHUtils.formatarDataBR(_ciclo.d7)}`;
-
+  _cicloAnterior = {
+    d0: new Date(_ciclo.d0.getTime() - 7 * 24 * 60 * 60 * 1000),
+    d7: new Date(_ciclo.d7.getTime() - 7 * 24 * 60 * 60 * 1000)
+  };
+  atualizarStatus();
   const { data } = await window.db.from('produtos').select('id, nome, unid_venda').order('nome');
   _produtos = data || [];
+}
+
+function atualizarStatus() {
+  const c = _periodoAtivo === 'atual' ? _ciclo : _cicloAnterior;
+  document.getElementById('status-sub').textContent = `${HHUtils.formatarDataBR(c.d0)} — ${HHUtils.formatarDataBR(c.d7)}`;
+}
+
+function abrirFiltro(event) {
+  _periodoTemp = _periodoAtivo;
+  document.querySelectorAll('.radio').forEach(r => r.classList.remove('checked'));
+  document.getElementById(`radio-${_periodoAtivo}`).classList.add('checked');
+  const btn = document.getElementById('btn-filtro');
+  const rect = btn.getBoundingClientRect();
+  const menu = document.getElementById('filtro-menu');
+  menu.style.top = (rect.bottom + 6) + 'px';
+  menu.style.right = '18px';
+  menu.style.display = 'block';
+  document.getElementById('filtro-overlay').classList.add('active');
+}
+
+function fecharFiltro() {
+  document.getElementById('filtro-menu').style.display = 'none';
+  document.getElementById('filtro-overlay').classList.remove('active');
+}
+
+function selecionarPeriodoTemp(p) {
+  _periodoTemp = p;
+  document.querySelectorAll('.radio').forEach(r => r.classList.remove('checked'));
+  document.getElementById(`radio-${p}`).classList.add('checked');
+}
+
+function aplicarFiltroPeriodo() {
+  _periodoAtivo = _periodoTemp;
+  atualizarStatus();
+  fecharFiltro();
+  if (_produtoSelecionado) carregarDados();
 }
 
 document.getElementById('busca-produto').addEventListener('input', e => {
@@ -157,8 +226,9 @@ async function selecionarProduto(id, nome, unid) {
 }
 
 async function carregarDados() {
-  const d0ISO = _ciclo.d0.toISOString();
-  const d7ISO = new Date(_ciclo.d7.getFullYear(), _ciclo.d7.getMonth(), _ciclo.d7.getDate(), 23, 59, 59).toISOString();
+  const c = _periodoAtivo === 'atual' ? _ciclo : _cicloAnterior;
+  const d0ISO = c.d0.toISOString();
+  const d7ISO = new Date(c.d7.getFullYear(), c.d7.getMonth(), c.d7.getDate(), 23, 59, 59).toISOString();
 
   const { data: itensDB } = await window.db
     .from('itens_pedidos_vendas')
@@ -192,7 +262,7 @@ function renderizar() {
   const unid = _produtoSelecionado?.unid || '';
 
   if (pagina.length === 0) {
-    lista.innerHTML = '<div class="empty-state">Nenhuma venda encontrada no ciclo</div>';
+    lista.innerHTML = '<div class="empty-state">Nenhuma venda encontrada no período</div>';
   } else {
     lista.innerHTML = pagina.map(i => {
       const dataFmt = i.data ? i.data.split('T')[0].split('-').reverse().slice(0,2).join('/') : '—';
