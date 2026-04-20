@@ -37,7 +37,8 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
 .pag-btn:disabled{opacity:0.3;pointer-events:none;}
 .pag-btn svg{width:16px;height:16px;stroke:#1C1C1E;stroke-width:2.2;fill:none;}
 .pag-info{font-size:12px;color:#8E8E93;font-weight:500;white-space:nowrap;}
-.rodape{flex-shrink:0;padding:6px 16px 48px;border-top:0.5px solid #E5E5EA;background:#FFF;}
+.rodape{flex-shrink:0;padding:6px 16px 32px;border-top:0.5px solid #E5E5EA;background:#FFF;}
+
 
 
 .rodape-resumo{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
@@ -46,7 +47,11 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
 .rodape-val{font-size:13px;font-weight:600;color:#1C1C1E;}
 .rodape-val.red{color:#EF4444;}
 .rodape-val.green{color:#10B981;}
-.btn-confirmar{width:100%;padding:16px;background:#4A90D9;border:none;border-radius:100px;color:#FFF;font-family:'Inter',sans-serif;font-size:15px;font-weight:500;cursor:pointer;letter-spacing:0.1px;}
+.btn-confirmar{width:100%;padding:16px;background:#4A90D9;border:none;border-radius:100px;color:#FFF;font-family:'Inter',sans-serif;font-size:15px;font-weight:500;cursor:pointer;letter-spacing:0.1px;margin-top:8px;transition:background 0.3s,opacity 0.3s;}
+.btn-confirmar.salvo{background:#10B981;}
+.btn-confirmar.inativo{background:#C7C7CC;pointer-events:none;}
+
+
 .btn-confirmar:active{opacity:0.8;}
 .detalhe-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:999;display:none;align-items:center;justify-content:center;}
 .detalhe-overlay.active{display:flex;}
@@ -235,6 +240,8 @@ function renderLista() {
   }).join('');
 
   lista.scrollTop = 0;
+    setBtnEstado('inativo');
+
 
   const pagEl = document.getElementById('paginacao');
   if (totalPags > 1) {
@@ -256,7 +263,9 @@ function mudarPagina(dir) {
 function atualizarFisico(idx, valor) {
   _itens[idx].fisico = parseNum(valor) || _itens[idx].sist;
   atualizarRodape();
+  setBtnEstado('pendente');
 }
+
 
 function abrirDetalhe(idx) {
   const i = _itens[idx];
@@ -281,20 +290,44 @@ function fecharDetalhe() {
 }
 
 async function confirmarConferencia() {
-  if (!confirm('Confirmar conferência? O estoque inicial de cada produto será atualizado com o valor físico informado.')) return;
   try {
+    setBtnEstado('salvando');
     for (const item of _itens) {
       const inputEl = document.getElementById(`fisico-${_itens.indexOf(item)}`);
       const fisico = inputEl ? (parseNum(inputEl.value) || item.sist) : item.fisico;
       await window.db.from('estoque_inicial')
-        .update({ quantidade_inicial: fisico })
+        .update({ quantidade_inicial: fisico, custo_unitario_inicial: item.custoUni })
         .eq('produto_id', item.produto_id);
     }
-    alert('Conferência confirmada! Estoque atualizado.');
+    setBtnEstado('salvo');
   } catch(err) {
+    setBtnEstado('pendente');
     alert('Erro ao salvar: ' + err.message);
   }
 }
+
+function setBtnEstado(estado) {
+  const btn = document.querySelector('.btn-confirmar');
+  btn.className = 'btn-confirmar';
+  if (estado === 'pendente') {
+    btn.textContent = 'Confirmar Conferência';
+    btn.style.background = '#4A90D9';
+    btn.style.pointerEvents = 'all';
+  } else if (estado === 'salvando') {
+    btn.textContent = 'Salvando...';
+    btn.style.background = '#C7C7CC';
+    btn.style.pointerEvents = 'none';
+  } else if (estado === 'salvo') {
+    btn.textContent = 'Conferência Realizada';
+    btn.style.background = '#10B981';
+    btn.style.pointerEvents = 'none';
+  } else if (estado === 'inativo') {
+    btn.textContent = 'Confirmar Conferência';
+    btn.style.background = '#C7C7CC';
+    btn.style.pointerEvents = 'none';
+  }
+}
+
 
 async function carregarDados() {
   const { d0, d7 } = window.cicloAtual;
@@ -305,7 +338,8 @@ async function carregarDados() {
   document.getElementById('topbar-ciclo').textContent =
     `${window.HHUtils.formatarDataBR(d0)} — ${window.HHUtils.formatarDataBR(d7)}`;
 
-  const { data: produtos } = await window.db.from('produtos').select('id, nome, unid_venda').order('nome');
+  const { data: produtos } = await window.db.from('produtos').select('id, nome, unid_venda, preco_medio_compra').order('nome');
+
   const { data: estoqueIni } = await window.db.from('estoque_inicial').select('produto_id, quantidade_inicial');
 
   const { data: pedidosCompra } = await window.db.from('pedidos_compras')
@@ -342,7 +376,8 @@ async function carregarDados() {
     const entradas = compras.filter(c => c.produto_id === prodId).reduce((a,c) => a + (parseFloat(c.quantidade)||0), 0);
     const saidas = vendas.filter(v => v.produto_id === prodId).reduce((a,v) => a + (parseFloat(v.quantidade)||0), 0);
     const sist = estIni + entradas - saidas;
-    _itens.push({ produto_id: prodId, nome: prod.nome, unid_venda: prod.unid_venda || '', estIni, entradas, saidas, sist, fisico: sist });
+    _itens.push({ produto_id: prodId, nome: prod.nome, unid_venda: prod.unid_venda || '', estIni, entradas, saidas, sist, fisico: sist, custoUni: parseFloat(prod.preco_medio_compra) || 0 });
+
   });
 
   _itens.sort((a, b) => a.nome.localeCompare(b.nome));
