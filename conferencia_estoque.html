@@ -310,48 +310,62 @@ function fecharDetalhe() {
 }
 
 async function confirmarConferencia() {
-  console.log("Iniciando salvamento...");
+  console.log("Iniciando Fechamento de Estoque...");
   setBtnEstado('salvando');
 
   try {
-    // Criamos uma lista de promessas para salvar tudo em paralelo (mais rápido)
-    const promises = _itens.map(item => {
-      return window.db
+    // 1. LIMPEZA: Remove tudo do estoque inicial para garantir que não sobre "lixo"
+    const { error: errDelete } = await window.db
+      .from('estoque_inicial')
+      .delete()
+      .neq('produto_id', '00000000-0000-0000-0000-000000000000'); 
+
+    if (errDelete) throw errDelete;
+
+    // 2. FILTRAGEM: Pega apenas os produtos que você contou como maior que zero
+    const dadosParaInserir = _itens
+      .filter(item => item.fisico > 0)
+      .map(item => ({
+        produto_id: item.produto_id,
+        quantidade_inicial: item.fisico,
+        custo_unitario_inicial: item.custoUni || 0
+      }));
+
+    // 3. GRAVAÇÃO DOS ITENS: Insere a nova contagem física
+    if (dadosParaInserir.length > 0) {
+      const { error: errInsert } = await window.db
         .from('estoque_inicial')
-        .update({ 
-          quantidade_inicial: item.fisico, 
-          custo_unitario_inicial: item.custoUni || 0 
-        })
-        .eq('produto_id', item.produto_id);
-    });
+        .insert(dadosParaInserir);
 
-    // Espera todas as atualizações terminarem
-    const results = await Promise.all(promises);
-
-    // Verifica se alguma deu erro
-    const erroEncontrado = results.find(r => r.error);
-    if (erroEncontrado) {
-      throw new Error(erroEncontrado.error.message);
+      if (errInsert) throw errInsert;
     }
 
-        const difTotal = _itens.reduce((acc, item) => acc + (item.fisico - item.sist) * item.custoUni, 0);
-    await window.db.from('consolidacao_ciclo')
-      .update({ diferenca_estoque: difTotal })
-      .eq('id', 1);
-
-    console.log("Salvo com sucesso!");
-    setBtnEstado('salvo');
-
+    // 4. CONSOLIDAÇÃO: Atualiza o resumo financeiro com o nome sugerido
+    const difTotal = _itens.reduce((acc, item) => acc + (item.fisico - item.sist) * item.custoUni, 0);
     
-    // Feedback visual para o usuário
-    alert('Conferência salva com sucesso!');
+    const { error: errConsolidacao } = await window.db
+      .from('consolidacao')
+      .upsert({ 
+        id: 1, 
+        operacao: 'Fechamento Estoque', // Nome sugestivo atualizado
+        valor1: difTotal,               // Diferença total
+        valor2: 0,                      // v2 zerado (reservado para outros fechamentos)
+        data: new Date().toISOString() 
+      }, { onConflict: 'id' });
+
+    if (errConsolidacao) throw errConsolidacao;
+
+    console.log("Processo concluído com sucesso!");
+    setBtnEstado('salvo');
+    alert('Sucesso! Estoque inicial atualizado e Fechamento de Estoque registrado.');
 
   } catch (err) {
-    console.error("Erro ao salvar:", err);
-    alert('Ocorreu um erro ao salvar, mas alguns itens podem ter sido atualizados: ' + err.message);
-    setBtnEstado('pendente'); // Volta o botão para permitir tentar de novo
+    console.error("Erro no processo:", err);
+    alert('Erro ao processar fechamento: ' + err.message);
+    setBtnEstado('pendente');
   }
 }
+
 
 
 async function carregarDados() {
