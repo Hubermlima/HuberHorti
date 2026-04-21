@@ -36,10 +36,9 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
 .lanc-val{font-size:13px;font-weight:500;text-align:right;flex-shrink:0;}
 .lanc-val.e{color:#10B981;}
 .lanc-val.s{color:#EF4444;}
-.saldos-finais{display:flex;gap:10px;padding:10px 16px;border-top:0.5px solid #E5E5EA;flex-shrink:0;}
+.saldos-finais{display:flex;gap:10px;padding:10px 16px;border-top:0.5px solid #E5E5EA;flex-shrink:0;align-items:center;}
 .paginacao{display:flex;align-items:center;justify-content:center;gap:12px;padding:10px 16px 16px;flex-shrink:0;}
 .pag-btn{width:32px;height:32px;border-radius:50%;border:none;background:#007AFF;display:flex;align-items:center;justify-content:center;box-shadow:0 1px 4px rgba(0,0,0,0.08);cursor:pointer;}
-
 .pag-btn:disabled{opacity:0.3;pointer-events:none;}
 .pag-info{font-size:12px;font-weight:500;color:#8E8E93;}
 .empty-state{flex:1;display:flex;align-items:center;justify-content:center;font-size:12px;color:#C7C7CC;}
@@ -87,6 +86,9 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
 .conta-item:active{background:#F5F5F5;}
 .conta-item.ativa{color:#007AFF;font-weight:600;}
 .conta-item.especial{color:#6366F1;}
+.btn-cadeado{width:36px;height:36px;border-radius:50%;border:none;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;transition:background 0.3s;}
+.btn-cadeado.aberto{background:#FEE2E2;}
+.btn-cadeado.fechado{background:#D1FAE5;}
 </style>
 </head>
 <body>
@@ -133,20 +135,23 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
       <div class="saldo-label">Dinheiro</div>
       <div class="saldo-val" id="saldo-final-dinheiro">R$ 0,00</div>
     </div>
+    <button class="btn-cadeado aberto" id="btn-cadeado" onclick="consolidarSaldos()">
+      <svg id="icon-cadeado" viewBox="0 0 24 24" style="width:18px;height:18px;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;">
+        <rect x="5" y="11" width="14" height="10" rx="2"/>
+        <path d="M8 11V7a4 4 0 0 1 8 0"/>
+      </svg>
+    </button>
   </div>
   <div class="paginacao" id="paginacao" style="border-top:0.5px solid #E0E0E0;padding:10px 16px 16px;">
     <button class="pag-btn" id="btn-prev" onclick="mudarPagina(-1)">
       <svg viewBox="0 0 24 24" style="width:14px;height:14px;stroke:#FFF;stroke-width:2.5;fill:none"><path d="M15.75 19.5L8.25 12l7.5-7.5"/></svg>
-
     </button>
     <span class="pag-info" id="pag-info">1 / 1</span>
     <button class="pag-btn" id="btn-next" onclick="mudarPagina(1)">
       <svg viewBox="0 0 24 24" style="width:14px;height:14px;stroke:#FFF;stroke-width:2.5;fill:none"><path d="M8.25 4.5l7.5 7.5-7.5 7.5"/></svg>
-
     </button>
   </div>
 </div>
-
 
 <div class="filtro-overlay" id="filtro-overlay" onclick="fecharFiltro()"></div>
 <div class="filtro-menu" id="filtro-menu">
@@ -234,7 +239,6 @@ const POR_PAGINA = 15;
 const fmt = v => Number(v).toLocaleString('pt-BR', {style:'currency', currency:'BRL'});
 const fmtNum = v => Number(v).toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
 
-// Contas especiais fixas (não vêm do banco)
 const CONTA_DEPOSITO_BRADESCO = '__deposito_bradesco_ex__';
 const CONTA_ORIGEM_BRADESCO = '__origem_bradesco_ex__';
 const CONTAS_ESPECIAIS = [
@@ -263,11 +267,7 @@ function getContaDescricao(id) {
 
 function abrirModalContas() {
   const lista = document.getElementById('contas-lista');
-  const opcoes = [
-    { id: '', descricao: '— Sem categoria —', especial: false },
-    ..._contas,
-    ...CONTAS_ESPECIAIS
-  ];
+  const opcoes = [{ id: '', descricao: '— Sem categoria —', especial: false }, ..._contas, ...CONTAS_ESPECIAIS];
   lista.innerHTML = opcoes.map(c => `
     <div class="conta-item${_contaIdSelecionada === c.id ? ' ativa' : ''}${c.especial ? ' especial' : ''}"
       onclick="selecionarConta('${c.id}','${c.descricao.replace(/'/g,"\\'")}')">
@@ -282,9 +282,7 @@ function selecionarConta(id, descricao) {
   fecharModalContas();
 }
 
-function fecharModalContas() {
-  document.getElementById('modal-contas').classList.remove('active');
-}
+function fecharModalContas() { document.getElementById('modal-contas').classList.remove('active'); }
 
 function setStatus(msg, cor='#8E8E93') {
   const el = document.getElementById('status-sub');
@@ -296,6 +294,36 @@ function setAtualizado() {
   setStatus(`Atualizado ${String(agora.getHours()).padStart(2,'0')}:${String(agora.getMinutes()).padStart(2,'0')}`);
 }
 
+async function verificarConsolidacaoCaixa() {
+  const { d0 } = _ciclo;
+  const { data } = await window.db.from('consolidacao').select('data').eq('id', 3).single();
+  const feito = data?.data && new Date(data.data) >= d0;
+  const btn = document.getElementById('btn-cadeado');
+  const icon = document.getElementById('icon-cadeado');
+  if (feito) {
+    btn.className = 'btn-cadeado fechado';
+    icon.innerHTML = `<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>`;
+    icon.style.stroke = '#059669';
+  } else {
+    btn.className = 'btn-cadeado aberto';
+    icon.innerHTML = `<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0"/>`;
+    icon.style.stroke = '#DC2626';
+  }
+}
+
+async function consolidarSaldos() {
+  let banco = 0, dinheiro = 0;
+  _todosLancamentos.forEach(l => {
+    const v = l.tipo === 'entrada' ? l.valor : -l.valor;
+    if (l.forma === 'deposito') banco += v;
+    else dinheiro += v;
+  });
+  await window.db.from('consolidacao')
+    .update({ valor1: banco, valor2: dinheiro, data: new Date().toISOString() })
+    .eq('id', 3);
+  await verificarConsolidacaoCaixa();
+}
+
 async function init() {
   window.HHUtils.atualizarCicloAtualGlobal();
   _ciclo = window.cicloAtual;
@@ -305,6 +333,7 @@ async function init() {
   const { data: contas } = await window.db.from('contas_contabeis').select('id, codigo, descricao').order('codigo');
   _contas = contas || [];
   await carregarDados();
+  await verificarConsolidacaoCaixa();
 }
 
 async function carregarDados() {
@@ -312,11 +341,7 @@ async function carregarDados() {
   const d7Fim = new Date(_ciclo.d7); d7Fim.setHours(23,59,59);
   const d7 = d7Fim.toISOString();
 
-  const [
-    { data: movsClientes },
-    { data: movsFornecedores },
-    { data: manuais }
-  ] = await Promise.all([
+  const [{ data: movsClientes }, { data: movsFornecedores }, { data: manuais }] = await Promise.all([
     window.db.from('movimentos_clientes').select('id, cliente_id, data, forma, tipo, valor').eq('status', 0).not('data', 'is', null).gte('data', d0).lte('data', d7),
     window.db.from('movimentos_fornecedores').select('id, fornecedor_id, data, forma, valor').eq('status', 0).not('data', 'is', null).gte('data', d0).lte('data', d7),
     window.db.from('livro_caixa').select('*, contas_contabeis(codigo, descricao)').gte('data', d0).lte('data', d7)
@@ -332,7 +357,6 @@ async function carregarDados() {
 
   const clienteMap = Object.fromEntries((clientes||[]).map(c => [c.id, c.nome]));
   const fornecedorMap = Object.fromEntries((fornecedores||[]).map(f => [f.id, f.nome]));
-
   const lista = [];
 
   (movsClientes||[]).forEach(m => {
@@ -355,13 +379,10 @@ async function carregarDados() {
   });
 
   (manuais||[]).forEach(m => {
-    // Detectar contas especiais pelo campo descricao
-            let contaLabel = m.contas_contabeis ? m.contas_contabeis.descricao : '—';
+    let contaLabel = m.contas_contabeis ? m.contas_contabeis.descricao : '—';
     if (m.descricao === 'Importação Conta Corrente') contaLabel = 'Origem: Bradesco Ex';
     else if (!m.conta_id && contaLabel === '—') contaLabel = 'Depósito Bradesco Ex';
-
-
-    lista.push({ id: m.id, origem: 'manual', data: m.data, descricao: m.descricao || '', tipo: m.tipo, forma: m.forma, valor: parseFloat(m.valor), conta: contaLabel, conta_id: m.conta_id, conta_especial: m.conta_id === null ? m.descricao : null, manual: true });
+    lista.push({ id: m.id, origem: 'manual', data: m.data, descricao: m.descricao || '', tipo: m.tipo, forma: m.forma, valor: parseFloat(m.valor), conta: contaLabel, conta_id: m.conta_id, manual: true });
   });
 
   lista.sort((a, b) => new Date(a.data) - new Date(b.data));
@@ -404,7 +425,6 @@ function renderizarLista() {
     return `<div class="swipe-wrap" id="swipe-${l.id}">
       ${l.manual ? `<div class="swipe-actions"><div class="swipe-btn excluir" onclick="abrirDel('${l.id}')">Excluir</div></div>` : ''}
       <div class="lanc-row" onclick="${l.conta === 'Depósito Bradesco Ex' ? `abrirRecibo(${l.valor},'${l.data ? l.data.split('T')[0] : ''}')` : `abrirDetalhe('${l.id}')`}">
-
         <span class="lanc-data">${dataFmt}</span>
         <span class="lanc-desc">${l.descricao}</span>
         <span class="lanc-val ${l.tipo === 'entrada' ? 'e' : 's'}">${fmt(l.valor)}</span>
@@ -426,11 +446,9 @@ function renderizarLista() {
   document.getElementById('saldo-final-dinheiro').textContent = fmt(saldoDinheiro);
   document.getElementById('saldo-final-dinheiro').className = 'saldo-val ' + (saldoDinheiro >= 0 ? 'verde' : 'vermelho');
   document.getElementById('saldos-finais').style.display = 'flex';
-
-    document.getElementById('pag-info').textContent = `${_paginaAtual} / ${totalPags}`;
+  document.getElementById('pag-info').textContent = `${_paginaAtual} / ${totalPags}`;
   document.getElementById('btn-prev').disabled = _paginaAtual === 1;
   document.getElementById('btn-next').disabled = _paginaAtual === totalPags;
-
 }
 
 function aplicarSwipe(id) {
@@ -511,9 +529,7 @@ function abrirSheet(id) {
   document.getElementById('sheet-overlay').classList.add('active');
 }
 
-function fecharSheet() {
-  document.getElementById('sheet-overlay').classList.remove('active');
-}
+function fecharSheet() { document.getElementById('sheet-overlay').classList.remove('active'); }
 
 document.querySelectorAll('#seg-tipo .seg-opt').forEach(o => {
   o.onclick = () => { _shTipo = o.dataset.value; document.querySelectorAll('#seg-tipo .seg-opt').forEach(x => x.classList.toggle('active', x === o)); };
@@ -540,56 +556,29 @@ async function gravarLancamento() {
   const isEspecial = contaId === CONTA_DEPOSITO_BRADESCO;
   const isOrigemBradesco = contaId === CONTA_ORIGEM_BRADESCO;
 
-  // Para contas especiais, gravar sem conta_id mas com descricao identificadora
   let payload;
   if (isEspecial || isOrigemBradesco) {
     const descEspecial = isEspecial ? 'Depósito Bradesco Ex' : 'Origem: Bradesco Ex';
-        payload = {
-      data: new Date(data + 'T00:00:00').toISOString(),
-      tipo: _shTipo,
-      forma: _shForma,
-      valor,
-      descricao: descricao || descEspecial,
-      conta_id: null
-    };
-
+    payload = { data: new Date(data + 'T00:00:00').toISOString(), tipo: _shTipo, forma: _shForma, valor, descricao: descricao || descEspecial, conta_id: null };
   } else {
     if (!contaId && !descricao) return alert('Informe a descrição para lançamentos sem conta contábil');
-    payload = {
-      data: new Date(data + 'T00:00:00').toISOString(),
-      tipo: _shTipo,
-      forma: _shForma,
-      valor,
-      descricao: descricao || null,
-      conta_id: contaId || null
-    };
+    payload = { data: new Date(data + 'T00:00:00').toISOString(), tipo: _shTipo, forma: _shForma, valor, descricao: descricao || null, conta_id: contaId || null };
   }
 
   if (_editandoId) {
     await window.db.from('livro_caixa').update(payload).eq('id', _editandoId);
   } else {
     await window.db.from('livro_caixa').insert([payload]);
-
-    // Se for Depósito Bradesco Ex, criar automaticamente a entrada equivalente
-      if (isEspecial) {
-    const payloadEntrada = {
-      data: new Date(data + 'T00:00:00').toISOString(),
-      tipo: 'entrada',
-      forma: 'deposito',
-      valor,
-      descricao: 'Importação Conta Corrente',
-      conta_id: null
-    };
-            await window.db.from('livro_caixa').insert([payloadEntrada]);
-    fecharSheet();
-    await carregarDados();
-    sessionStorage.setItem('recibo_valor', valor);
-    sessionStorage.setItem('recibo_data', data);
-    window.location.href = 'recibo.html';
-    return;
-
-  }
-
+    if (isEspecial) {
+      const payloadEntrada = { data: new Date(data + 'T00:00:00').toISOString(), tipo: 'entrada', forma: 'deposito', valor, descricao: 'Importação Conta Corrente', conta_id: null };
+      await window.db.from('livro_caixa').insert([payloadEntrada]);
+      fecharSheet();
+      await carregarDados();
+      sessionStorage.setItem('recibo_valor', valor);
+      sessionStorage.setItem('recibo_data', data);
+      window.location.href = 'recibo.html';
+      return;
+    }
   }
 
   fecharSheet();
@@ -636,17 +625,16 @@ async function confirmarExclusao() {
   await carregarDados();
 }
 
-const fixHeight = () => document.documentElement.style.setProperty('--vh', `${window.innerHeight * 0.01}px`);
-window.addEventListener('resize', fixHeight);
-fixHeight();
-init();
-
 function abrirRecibo(valor, data) {
   sessionStorage.setItem('recibo_valor', valor);
   sessionStorage.setItem('recibo_data', data);
   window.location.href = 'recibo.html';
 }
 
+const fixHeight = () => document.documentElement.style.setProperty('--vh', `${window.innerHeight * 0.01}px`);
+window.addEventListener('resize', fixHeight);
+fixHeight();
+init();
 </script>
 </body>
 </html>
