@@ -428,19 +428,21 @@ function renderizarLista() {
   lista.innerHTML = pagina.map(l => {
     const dataFmt = l.data ? l.data.split('T')[0].split('-').reverse().slice(0,2).join('/') : '—';
     
-    // LÓGICA DE CLIQUE À PROVA DE ERRO
-    // Assumimos que TUDO abre detalhes por padrão
-    let acao = `abrirDetalhe('${l.id}')`;
-
-    // SÓ abre recibo se a conta existir E for exatamente o texto abaixo
-    if (l.manual === false && l.conta === 'Depósito Bradesco Ex') {
-       acao = `abrirRecibo(${l.valor},'${l.data ? l.data.split('T')[0] : ''}')`;
+    // Forçamos o ID para string para evitar erros no telemóvel
+    const idLimpo = String(l.id);
+    const contaNome = l.conta ? String(l.conta).trim() : "";
+    
+    let acao;
+    if (contaNome === 'Depósito Bradesco Ex') {
+      acao = `abrirRecibo(${l.valor},'${l.data ? l.data.split('T')[0] : ''}')`;
+    } else {
+      acao = `abrirDetalhe('${idLimpo}')`;
     }
 
     if (l.manual) {
       return `
-        <div class="swipe-wrap" id="swipe-${l.id}">
-          <div class="swipe-actions"><div class="swipe-btn excluir" onclick="abrirDel('${l.id}')">Excluir</div></div>
+        <div class="swipe-wrap" id="swipe-${idLimpo}">
+          <div class="swipe-actions"><div class="swipe-btn excluir" onclick="abrirDel('${idLimpo}')">Excluir</div></div>
           <div class="lanc-row" onclick="${acao}">
             <span class="lanc-data">${dataFmt}</span>
             <span class="lanc-desc">${l.descricao}</span>
@@ -449,7 +451,6 @@ function renderizarLista() {
         </div>`;
     } 
     
-    // Lançamento automático (como o do dia 23) - Sem caixa de swipe para não travar o touch
     return `
       <div class="lanc-row" style="background:white; border-bottom:1px solid #eee;" onclick="${acao}">
         <span class="lanc-data">${dataFmt}</span>
@@ -459,29 +460,24 @@ function renderizarLista() {
   }).join('');
 
   pagina.filter(l => l.manual).forEach(l => {
-    try { aplicarSwipe(l.id); } catch(e) {}
+    try { aplicarSwipe(String(l.id)); } catch(e) {}
   });
 
-  // Cálculo de saldos finais
+  // Atualização de saldos
   let saldoBanco = window.saldoInicialBanco || 0;
   let saldoDinheiro = window.saldoInicialDinheiro || 0;
   _filtrados.forEach(l => {
     const v = l.tipo === 'entrada' ? l.valor : -l.valor;
-    if (l.forma === 'deposito') saldoBanco += v;
-    else saldoDinheiro += v;
+    if (l.forma === 'deposito') saldoBanco += v; else saldoDinheiro += v;
   });
 
   document.getElementById('saldo-final-banco').textContent = fmt(saldoBanco);
-  document.getElementById('saldo-final-banco').className = 'saldo-val ' + (saldoBanco >= 0 ? 'verde' : 'vermelho');
   document.getElementById('saldo-final-dinheiro').textContent = fmt(saldoDinheiro);
-  document.getElementById('saldo-final-dinheiro').className = 'saldo-val ' + (saldoDinheiro >= 0 ? 'verde' : 'vermelho');
-  
   document.getElementById('saldos-finais').style.display = 'flex';
   document.getElementById('paginacao').style.display = 'flex';
   document.getElementById('pag-info').textContent = `${_paginaAtual} / ${totalPags}`;
-  document.getElementById('btn-prev').disabled = _paginaAtual === 1;
-  document.getElementById('btn-next').disabled = _paginaAtual === totalPags;
 }
+
 
 
 
@@ -627,34 +623,26 @@ async function gravarLancamento() {
 }
 
 function abrirDetalhe(id) {
-  // 1. Procura no array de filtrados (o que está na tela agora)
-  let l = _filtrados.find(item => String(item.id) === String(id));
-  
-  // 2. Se não achou, procura no array global
-  if (!l) {
-    l = _todosLancamentos.find(item => String(item.id) === String(id));
-  }
-
-  // Se mesmo assim não achou, o dado não foi carregado corretamente
+  const l = _todosLancamentos.find(x => x.id === id);
   if (!l) return;
-
-  const modal = document.getElementById('modal-detalhe');
-  const corpo = document.getElementById('detalhe-corpo');
-  
-  const dataFmt = l.data ? l.data.split('T')[0].split('-').reverse().join('/') : '—';
-  
-  corpo.innerHTML = `
-    <div class="det-item"><strong>Data:</strong> <span>${dataFmt}</span></div>
-    <div class="det-item"><strong>Descrição:</strong> <span>${l.descricao || '—'}</span></div>
-    <div class="det-item"><strong>Valor:</strong> <span style="color:${l.tipo==='entrada'?'#28a745':'#dc3545'}">${fmt(l.valor)}</span></div>
-    <div class="det-item"><strong>Forma:</strong> <span>${l.forma === 'deposito' ? 'Banco' : 'Dinheiro'}</span></div>
-    <div class="det-item"><strong>Conta:</strong> <span>${l.conta || 'Não informada'}</span></div>
-    <div class="det-item"><strong>Origem:</strong> <span>${l.manual ? 'Manual' : 'Automático'}</span></div>
-  `;
-  
-  modal.classList.add('active');
+  const dataFmt = l.data ? new Date(l.data).toLocaleDateString('pt-BR') : '—';
+  const tipoLabel = l.tipo === 'entrada' ? 'Entrada' : 'Saída';
+  const tipoColor = l.tipo === 'entrada' ? '#10B981' : '#EF4444';
+  const formaLabel = l.forma === 'deposito' ? 'Depósito' : 'Dinheiro';
+  let html = `
+    <div class="modal-row"><span class="modal-key">Data</span><span class="modal-val">${dataFmt}</span></div>
+    <div class="modal-row"><span class="modal-key">Descrição</span><span class="modal-val">${l.descricao || '—'}</span></div>
+    <div class="modal-row"><span class="modal-key">Tipo</span><span class="modal-val" style="color:${tipoColor}">${tipoLabel}</span></div>
+    <div class="modal-row"><span class="modal-key">Forma</span><span class="modal-val">${formaLabel}</span></div>
+    <div class="modal-row"><span class="modal-key">Conta</span><span class="modal-val">${l.conta || '—'}</span></div>
+    <div class="modal-row"><span class="modal-key">Valor</span><span class="modal-val" style="color:${tipoColor}">${fmt(l.valor)}</span></div>
+    <div class="modal-row"><span class="modal-key">Origem</span><span class="modal-val">${l.manual ? 'Manual' : l.origem === 'fornecedor' ? 'Fornecedor' : 'Cliente'}</span></div>`;
+  if (l.manual) {
+    html += `<button style="width:100%;margin-top:10px;padding:13px;background:#EFF6FF;border:none;border-radius:14px;color:#007AFF;font-size:15px;font-weight:500;font-family:Inter,sans-serif;cursor:pointer;" onclick="fecharModal();abrirSheet('${l.id}')">Editar</button>`;
+  }
+  document.getElementById('modal-body').innerHTML = html;
+  document.getElementById('modal-detalhe').classList.add('active');
 }
-
 
 function fecharModal() { document.getElementById('modal-detalhe').classList.remove('active'); }
 
