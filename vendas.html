@@ -1203,84 +1203,40 @@ function setEstado(novoStatus, msgErro = '') {
 }
 
 async function salvarDadosSinc() {
+  if (statusAtual !== 'editando') return;
+  const itens = Object.values(_itensPedidoAtual).filter(i => parseFloat(i.quantidade) > 0);
+  if (itens.length === 0) { setEstado('sincronizado'); return; }
+  setEstado('salvando');
+  const valorTotalNum = itens.reduce((a,i) => a + parseFloat(i.total_venda), 0);
+  const valorTotalNum = itens.reduce((a,i) => a + parseFloat(i.total_venda), 0);
+
+
+
+  const clienteId = document.getElementById('busca-cliente').dataset.selectedId;
+  const dataVenda = document.getElementById('data-ciclo').value;
+  const isNovo = !_pedidoAtualId;
   try {
-    const clienteId = document.getElementById("cliente").value || null;
-
-    const dataVenda = document.getElementById("dataVenda").value;
-    const horaAgora = new Date().toLocaleTimeString("pt-BR", {
-      hour: "2-digit",
-      minute: "2-digit"
-    });
-    const dataComHora = `${dataVenda} ${horaAgora}`;
-
-    const valorTotalNum = itens.reduce(
-      (a, i) => a + parseFloat(i.total_venda || 0),
-      0
-    );
-
-    const totalCustoNum = itens.reduce(
-      (a, i) => a + parseFloat(i.total_custo || 0),
-      0
-    );
-
-    const totalLucroNum = valorTotalNum - totalCustoNum;
-
-    const margemPctNum =
-      valorTotalNum > 0
-        ? (totalLucroNum / valorTotalNum) * 100
-        : 0;
-
-    let pedidoId = pedidoEditandoId;
-
-console.log("ITENS:", itens);
-
-console.log({
-  valorTotalNum,
-  totalCustoNum,
-  totalLucroNum,
-  margemPctNum
-});
-
-    if (!pedidoId) {
-      const { data, error } = await supabase
-        .from("pedidos_vendas")
-        .insert({
-          data: dataComHora,
-          cliente_id: clienteId,
-          total_venda: valorTotalNum,
-          total_custo: totalCustoNum,
-          total_lucro: totalLucroNum,
-          margem_pct: margemPctNum,
-          em_aberto: valorTotalNum
-        })
-        .select()
-        .single();
-
-      if (error) throw error;
-
-      pedidoId = data.id;
+    if (isNovo) {
+      const agora = new Date();
+      const hh = String(agora.getHours()).padStart(2,'0');
+      const mi = String(agora.getMinutes()).padStart(2,'0');
+      const dataComHora = `${dataVenda}T${hh}:${mi}:00`;
+      const { data: pData, error: pErr } = await window.db.from('pedidos_vendas').insert({
+        data: dataComHora, cliente_id: clienteId, total_venda: valorTotalNum, em_aberto: valorTotalNum
+      }).select();
+      if (pErr) throw pErr;
+      _pedidoAtualId = pData[0].id;
+      _pedidoAbertoId = _pedidoAtualId;
     } else {
-      const { error } = await supabase
-        .from("pedidos_vendas")
-        .update({
-          data: dataVenda,
-          total_venda: valorTotalNum,
-          total_custo: totalCustoNum,
-          total_lucro: totalLucroNum,
-          margem_pct: margemPctNum,
-          em_aberto: valorTotalNum
-        })
-        .eq("id", pedidoId);
-
-      if (error) throw error;
+      await window.db.from('pedidos_vendas').update({ data: dataVenda, total_venda: valorTotalNum, em_aberto: valorTotalNum }).eq('id', _pedidoAtualId);
     }
-
-    return pedidoId;
-
-  } catch (erro) {
-    console.error("Erro ao salvar venda:", erro);
-    throw erro;
-  }
+    await window.db.from('itens_pedidos_vendas').delete().eq('pedido_venda_id', _pedidoAtualId);
+    const rows = itens.map(i => ({ pedido_venda_id: _pedidoAtualId, produto_id: i.produto_id, quantidade: i.quantidade, preco_unit: i.preco_unit, custo_unit: i.custo_unit, total_venda: i.total_venda, total_custo: i.total_custo, lucro: i.lucro }));
+    await window.db.from('itens_pedidos_vendas').insert(rows);
+    setEstado('sincronizado');
+    const clienteIdAtual = document.getElementById('busca-cliente').dataset.selectedId;
+    if (clienteIdAtual) await carregarExtratoDetalhado(clienteIdAtual);
+  } catch (err) { setEstado('erro', err.message); }
 }
 
 async function abrirNotaPorId(pedidoId, readonly) {
