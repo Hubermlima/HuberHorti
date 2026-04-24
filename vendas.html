@@ -110,6 +110,15 @@ background:#FFF;border-radius:28px 28px 0 0;box-shadow:0 -8px 30px rgba(0,0,0,0.
 .tf-row-input:focus{background:#EBF2FF;}
 .tf-row-input.readonly{color:#8E8E93;background:transparent;padding-right:0;font-size:14px;font-weight:400;}
 .tf-divider{height:1px;background:#F0F0F5;margin:4px 0;}
+.tf-unit-wrap{position:relative;display:flex;align-items:center;}
+.tf-unit-wrap .tf-row-input{flex:1;}
+.tf-sugestoes{position:absolute;top:calc(100% + 6px);right:0;background:#FFF;border-radius:14px;box-shadow:0 8px 24px rgba(0,0,0,0.14),0 2px 8px rgba(0,0,0,0.06);display:none;flex-direction:column;overflow:hidden;z-index:99999;min-width:170px;border:1px solid #F0F0F5;}
+.tf-sugestoes.open{display:flex;}
+.tf-sug-item{padding:10px 14px;display:flex;justify-content:space-between;align-items:center;gap:16px;cursor:pointer;-webkit-tap-highlight-color:transparent;}
+.tf-sug-item:not(:last-child){border-bottom:1px solid #F5F5F5;}
+.tf-sug-item:active{background:#F5F5F5;}
+.tf-sug-margem{font-size:11px;color:#8E8E93;font-weight:500;}
+.tf-sug-preco{font-size:15px;font-weight:600;color:#007AFF;}
 .extrato-swipe-wrap{position:relative;overflow:hidden;border-radius:12px;margin-bottom:6px;-webkit-user-select:none;user-select:none;}
 
 .extrato-swipe-wrap .extrato-item{position:relative;z-index:1;transition:transform 0.25s cubic-bezier(0.4,0,0.2,1);}
@@ -377,7 +386,10 @@ border-radius:10px;padding:2px 6px;}
   </div>
   <div class="tf-row">
     <span class="tf-row-label">Preço Unitário</span>
-    <input class="tf-row-input" id="tf-unit" type="text" inputmode="decimal" enterkeyhint="next" placeholder="0,00" autocomplete="off">
+    <div class="tf-unit-wrap">
+      <input class="tf-row-input" id="tf-unit" type="text" inputmode="decimal" enterkeyhint="next" placeholder="0,00" autocomplete="off">
+      <div class="tf-sugestoes" id="tf-sugestoes"></div>
+    </div>
   </div>
   <div class="tf-row">
     <span class="tf-row-label">Preço Total</span>
@@ -950,11 +962,7 @@ document.getElementById('add-prod-input').addEventListener('input', (e) => {
 function adicionarProdutoExtra(prodId) {
   const prod = _todosProdutos.find(p => p.id === prodId);
   if (!prod) return;
-    if (!_nuvemOrdem.includes(prod.nome)) {
-    _nuvemOrdem.push(prod.nome);
-    _nuvemOrdem.sort((a, b) => a.localeCompare(b, 'pt-BR'));
-  }
-
+  if (!_nuvemOrdem.includes(prod.nome)) _nuvemOrdem.push(prod.nome);
   fecharAddProd();
   _tagFormSoLeitura = false;
   montarNuvemTags(false);
@@ -1005,8 +1013,46 @@ function abrirTagForm(prodId, prodNome, custo, tagEl, soLeitura) {
 
 function fecharTagForm() {
   document.getElementById('tag-form').style.display = 'none';
+  document.getElementById('tf-sugestoes').classList.remove('open');
   _tagFormProduto = null;
 }
+
+const MARGENS_FIXAS = [20, 30, 40];
+
+function montarSugestoes(prod) {
+  const el = document.getElementById('tf-sugestoes');
+  if (!_clienteAtual || !prod) { el.classList.remove('open'); return; }
+  const ancoraMargem = parseFloat(_clienteAtual.margem_valor) || 0;
+  if (_clienteAtual.margem_tipo !== 'reais') { el.classList.remove('open'); return; }
+  const custo = parseFloat(prod.preco_medio_compra) || 0;
+  const peso = parseFloat(prod.peso_por_unid) || 1;
+  const outras = MARGENS_FIXAS.filter(m => m !== ancoraMargem);
+  if (!outras.length || custo === 0) { el.classList.remove('open'); return; }
+  el.innerHTML = outras.map(m => {
+    const precoUnit = (custo * peso + m) / peso;
+    return `<div class="tf-sug-item" onmousedown="event.preventDefault()" onclick="aplicarSugestao(${precoUnit})">
+      <span class="tf-sug-margem">+R$ ${m.toFixed(0)}/cx</span>
+      <span class="tf-sug-preco">${fmtNum(precoUnit)}</span>
+    </div>`;
+  }).join('');
+}
+
+function aplicarSugestao(precoUnit) {
+  document.getElementById('tf-unit').value = fmtNum(precoUnit);
+  document.getElementById('tf-sugestoes').classList.remove('open');
+  tfCalc('unit');
+  document.getElementById('tf-unit').focus();
+}
+
+document.getElementById('tf-unit').addEventListener('focus', () => {
+  if (_tagFormSoLeitura) return;
+  const prod = _tagFormProduto ? _todosProdutos.find(p => p.id === _tagFormProduto.id) : null;
+  montarSugestoes(prod);
+  document.getElementById('tf-sugestoes').classList.add('open');
+});
+document.getElementById('tf-unit').addEventListener('blur', () => {
+  setTimeout(() => document.getElementById('tf-sugestoes').classList.remove('open'), 150);
+});
 
 function tagFormDeletar() {
   if (!_tagFormProduto) return;
@@ -1060,10 +1106,9 @@ function tfCalc(campo) {
   }
 }
 
-['tf-unit','tf-total'].forEach(id => {
+['tf-quant','tf-unit','tf-total'].forEach(id => {
   document.getElementById(id).addEventListener('input', () => mascaraInput(document.getElementById(id)));
 });
-
 document.getElementById('tf-quant').addEventListener('keydown', e => {
   if (e.key === 'Enter') { e.preventDefault(); tfCalc('quant'); document.getElementById('tf-unit').focus(); }
 });
@@ -1077,17 +1122,15 @@ document.getElementById('tf-total').addEventListener('blur', () => {
   tfCalc('total');
   setTimeout(() => { if (_tagFormProduto && document.getElementById('tag-form').style.display !== 'none') tagFormConfirmar(); }, 150);
 });
-document.getElementById('tf-quant').addEventListener('input', () => { tfCalc('quant'); });
-document.getElementById('tf-unit').addEventListener('input', () => { tfCalc('unit'); });
-
+document.getElementById('tf-quant').addEventListener('blur', () => { tfCalc('quant'); });
+document.getElementById('tf-unit').addEventListener('blur', () => { tfCalc('unit'); });
 ['tf-quant','tf-unit','tf-total'].forEach(id => {
   document.getElementById(id).addEventListener('focus', (e) => { setTimeout(() => e.target.select(), 50); });
 });
 
 function montarNuvemTags(soLeitura) {
   const wrap = document.getElementById('tags-wrap');
-  wrap.innerHTML = [..._nuvemOrdem].sort((a, b) => a.localeCompare(b, 'pt-BR')).map((nome) => {
-
+  wrap.innerHTML = _nuvemOrdem.map((nome) => {
     const prod = _todosProdutos.find(p => p.nome === nome);
         if (!prod) return '';
     const item = _itensPedidoAtual[prod.id];
@@ -1215,8 +1258,7 @@ async function salvarDadosSinc() {
   if (itens.length === 0) { setEstado('sincronizado'); return; }
   setEstado('salvando');
   
-  const valorTotalNum = Math.floor(itens.reduce((a,i) => a + parseFloat(i.total_venda), 0));
-
+  const valorTotalNum = itens.reduce((a,i) => a + parseFloat(i.total_venda), 0);
 
 const totalCustoNum = itens.reduce((a,i) => a + parseFloat(i.total_custo || 0), 0);
 const totalLucroNum = valorTotalNum - totalCustoNum;
@@ -1230,17 +1272,14 @@ const margemPctNum = valorTotalNum > 0 ? (totalLucroNum / valorTotalNum) * 100 :
       const hh = String(agora.getHours()).padStart(2,'0');
       const mi = String(agora.getMinutes()).padStart(2,'0');
       const dataComHora = `${dataVenda}T${hh}:${mi}:00`;
-            const { data: pData, error: pErr } = await window.db.from('pedidos_vendas').insert({
-        data: dataComHora, cliente_id: clienteId, total_venda: valorTotalNum, em_aberto: valorTotalNum,
-        total_custo: totalCustoNum, total_lucro: totalLucroNum, margem_pct: margemPctNum
+      const { data: pData, error: pErr } = await window.db.from('pedidos_vendas').insert({
+        data: dataComHora, cliente_id: clienteId, total_venda: valorTotalNum, em_aberto: valorTotalNum
       }).select();
-
       if (pErr) throw pErr;
       _pedidoAtualId = pData[0].id;
       _pedidoAbertoId = _pedidoAtualId;
     } else {
-      await window.db.from('pedidos_vendas').update({ data: dataVenda, total_venda: valorTotalNum, em_aberto: valorTotalNum, total_custo: totalCustoNum, total_lucro: totalLucroNum, margem_pct: margemPctNum }).eq('id', _pedidoAtualId);
-
+      await window.db.from('pedidos_vendas').update({ data: dataVenda, total_venda: valorTotalNum, em_aberto: valorTotalNum }).eq('id', _pedidoAtualId);
     }
     await window.db.from('itens_pedidos_vendas').delete().eq('pedido_venda_id', _pedidoAtualId);
     const rows = itens.map(i => ({ pedido_venda_id: _pedidoAtualId, produto_id: i.produto_id, quantidade: i.quantidade, preco_unit: i.preco_unit, custo_unit: i.custo_unit, total_venda: i.total_venda, total_custo: i.total_custo, lucro: i.lucro }));
@@ -1277,11 +1316,7 @@ async function abrirNotaPorId(pedidoId, readonly) {
 function _injetarExtrasNaLista() {
   Object.values(_itensPedidoAtual).forEach(item => {
     const prod = _todosProdutos.find(p => p.id === item.produto_id);
-        if (prod && !_nuvemOrdem.includes(prod.nome)) {
-      _nuvemOrdem.push(prod.nome);
-      _nuvemOrdem.sort((a, b) => a.localeCompare(b, 'pt-BR'));
-    }
-
+    if (prod && !_nuvemOrdem.includes(prod.nome)) _nuvemOrdem.push(prod.nome);
   });
 }
 
