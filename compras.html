@@ -371,6 +371,30 @@ body{
 }
 .ios-btn-float { width: 38px; height: 38px; border-radius: 50%; border: none; background: #FFF; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 8px rgba(0,0,0,0.05); cursor: pointer; }
 
+/* Dropdown de compras */
+.compra-select-wrap {
+    padding: 0 14px 12px 14px;
+    display: none;
+}
+.compra-select {
+    width: 100%;
+    padding: 10px 14px;
+    border: 1.5px solid #E5E5EA;
+    border-radius: 14px;
+    font-size: 14px;
+    font-family: 'Inter', sans-serif;
+    font-weight: 600;
+    color: #1C1C1E;
+    background: #F9FAFB;
+    outline: none;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238E8E93' stroke-width='2.5'%3E%3Cpath d='M19.5 8.25l-7.5 7.5-7.5-7.5'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 14px center;
+    padding-right: 36px;
+}
+
 /* Modal edição produto */
 .modal-nav {
     display: flex;
@@ -635,6 +659,11 @@ body{
             </div>
             <div id="resultados-fornecedor" class="autocomplete-results"></div>
           </div>
+        </div>
+        <div class="compra-select-wrap" id="compra-select-wrap">
+          <select class="compra-select" id="compra-select" onchange="selecionarCompra(this.value)">
+            <option value="novo">+ Novo</option>
+          </select>
         </div>
     
         <div class="total-info-section">
@@ -1063,20 +1092,7 @@ const parseVal = (v) => {
 };
 
 document.getElementById('data-ciclo').addEventListener('change', async () => {
-    const fornecedorId = document.getElementById('busca-fornecedor').dataset.selectedId;
-    if (fornecedorId) {
-        await carregarProdutosEstoque(fornecedorId);
-        const pedidoAtual = document.getElementById('num-compra').textContent.replace('#', '');
-        let valorAtual = 0;
-        if (pedidoAtual && pedidoAtual !== '-----') {
-            const { data: pd } = await window.db.from('pedidos_compras').select('em_aberto').eq('id', pedidoAtual).maybeSingle();
-            if (pd) valorAtual = parseFloat(pd.em_aberto) || 0;
-        }
-        await Promise.all([
-            atualizarExtratoComprasEmAberto(fornecedorId, valorAtual),
-            atualizarPagamentosRealizados(fornecedorId)
-        ]);
-    }
+    // data-ciclo agora é só referência para vendas futuras (QT2), não carrega pedido
 });
 
 async function acaoExcluirCompra() {
@@ -1166,6 +1182,15 @@ async function salvarDadosSinc() {
             if (error) throw error;
             pedidoId = pData[0].id;
             numCompraEl.textContent = `#${pedidoId}`;
+            // Adiciona ao dropdown e seleciona
+            const select = document.getElementById('compra-select');
+            const [aa, mm, dd] = dataCompra.split('-');
+            const label = `#${pedidoId} — ${dd}/${mm}/${aa.substring(2)}`;
+            const opt = document.createElement('option');
+            opt.value = pedidoId;
+            opt.textContent = label;
+            select.insertBefore(opt, select.options[1]);
+            select.value = pedidoId;
         } else {
             const { error } = await window.db.from('pedidos_compras')
                 .update({ data: dataCompra, valor_total: valorTotalNum, em_aberto: valorTotalNum })
@@ -1202,7 +1227,7 @@ async function salvarDadosSinc() {
     } catch (err) { setEstado('erro', err.message); }
 }
 
-async function carregarProdutosEstoque(fornecedorUuid) {
+async function carregarProdutosEstoque(fornecedorUuid, pedidoId) {
     setEstado('salvando');
     paginaAtual = 1;
     _dadosProdutos = [];
@@ -1215,13 +1240,10 @@ async function carregarProdutosEstoque(fornecedorUuid) {
     const dataCiclo = document.getElementById('data-ciclo').value;
 
     try {
-        const { data: pedidoExistente } = await window.db.from('pedidos_compras')
-            .select('id, valor_total').eq('fornecedor_id', fornecedorUuid).eq('data', dataCiclo).maybeSingle();
-
         let mapaItensSalvos = {};
-        if (pedidoExistente) {
-            document.getElementById('num-compra').textContent = `#${pedidoExistente.id}`;
-            const { data: itensDB } = await window.db.from('itens_pedidos_compras').select('*').eq('pedido_compra_id', pedidoExistente.id);
+        if (pedidoId) {
+            document.getElementById('num-compra').textContent = `#${pedidoId}`;
+            const { data: itensDB } = await window.db.from('itens_pedidos_compras').select('*').eq('pedido_compra_id', pedidoId);
             if (itensDB) itensDB.forEach(it => { mapaItensSalvos[it.produto_id] = it; });
         } else {
             document.getElementById('num-compra').textContent = '#-----';
@@ -1371,16 +1393,55 @@ async function selecionarFornecedor(nome, id) {
     inputBusca.value = nome;
     listaResultados.style.display = 'none';
     inputBusca.dataset.selectedId = id;
-    await carregarProdutosEstoque(id);
-    const pedidoAtual = document.getElementById('num-compra').textContent.replace('#', '');
+
+    // Reseta dropdown e lista
+    _dadosProdutos = [];
+    atualizarSumario();
+    document.getElementById('num-compra').textContent = '#-----';
+
+    // Popula dropdown com compras do fornecedor
+    const select = document.getElementById('compra-select');
+    const wrap = document.getElementById('compra-select-wrap');
+    select.innerHTML = '<option value="novo">+ Novo</option>';
+    wrap.style.display = 'block';
+
+    const { data: compras } = await window.db.from('pedidos_compras')
+        .select('id, data').eq('fornecedor_id', id).order('data', { ascending: false });
+
+    if (compras && compras.length > 0) {
+        compras.forEach(c => {
+            const [aa, mm, dd] = c.data.split('-');
+            const label = `#${c.id} — ${dd}/${mm}/${aa.substring(2)}`;
+            const opt = document.createElement('option');
+            opt.value = c.id;
+            opt.textContent = label;
+            select.appendChild(opt);
+        });
+    }
+
+    // Seleciona "Novo" por default e limpa
+    select.value = 'novo';
+    await carregarProdutosEstoque(id, null);
+
+    await Promise.all([
+        atualizarExtratoComprasEmAberto(id, 0),
+        atualizarPagamentosRealizados(id)
+    ]);
+}
+
+async function selecionarCompra(valor) {
+    const fornecedorId = document.getElementById('busca-fornecedor').dataset.selectedId;
+    if (!fornecedorId) return;
+    const pedidoId = valor === 'novo' ? null : parseInt(valor);
+    await carregarProdutosEstoque(fornecedorId, pedidoId);
     let valorAtual = 0;
-    if (pedidoAtual && pedidoAtual !== '-----') {
-        const { data: pd } = await window.db.from('pedidos_compras').select('em_aberto').eq('id', pedidoAtual).maybeSingle();
+    if (pedidoId) {
+        const { data: pd } = await window.db.from('pedidos_compras').select('em_aberto').eq('id', pedidoId).maybeSingle();
         if (pd) valorAtual = parseFloat(pd.em_aberto) || 0;
     }
     await Promise.all([
-        atualizarExtratoComprasEmAberto(id, valorAtual),
-        atualizarPagamentosRealizados(id)
+        atualizarExtratoComprasEmAberto(fornecedorId, valorAtual),
+        atualizarPagamentosRealizados(fornecedorId)
     ]);
 }
 
@@ -1468,9 +1529,7 @@ function toggleExtrato() { document.getElementById('extratoCard').classList.togg
     const params = new URLSearchParams(window.location.search);
     const idSalvo = params.get('fornecedor_id');
     const nomeSalvo = params.get('fornecedor_nome');
-    const dataSalva = params.get('data');
     if (idSalvo && nomeSalvo) {
-        if (dataSalva) document.getElementById('data-ciclo').value = dataSalva;
         await selecionarFornecedor(decodeURIComponent(nomeSalvo), idSalvo);
     }
 })();
