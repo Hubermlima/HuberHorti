@@ -388,16 +388,29 @@ async function carregarConsolidacao() {
   const d0ISO = d0.toISOString();
   const d7ISO = new Date(d7.getFullYear(), d7.getMonth(), d7.getDate(), 23, 59, 59).toISOString();
 
-  const [consolRes, caixaRes] = await Promise.all([
+    const [consolRes, caixaRes, movsClientesRes, movsFornecedoresRes] = await Promise.all([
     db.from('consolidacao').select('id, data, valor1, valor2'),
-    db.from('livro_caixa').select('tipo, forma, valor').gte('data', d0ISO).lte('data', d7ISO)
+    db.from('livro_caixa').select('tipo, forma, valor').gte('data', d0ISO).lte('data', d7ISO),
+    db.from('movimentos_clientes').select('valor, forma').eq('status', 0).not('data', 'is', null).gte('data', d0ISO).lte('data', d7ISO).neq('tipo', 'Desconto'),
+    db.from('movimentos_fornecedores').select('valor, forma').not('data', 'is', null).gte('data', d0ISO).lte('data', d7ISO)
   ]);
 
   const data = consolRes.data || [];
   const caixa = caixaRes.data || [];
+  const movsClientes = movsClientesRes.data || [];
+  const movsFornecedores = movsFornecedoresRes.data || [];
 
-  const calc = (forma) => caixa.filter(r => r.forma === forma).reduce((a, r) =>
-    a + (r.tipo === 'entrada' ? 1 : -1) * (parseFloat(r.valor) || 0), 0);
+  const calc = (forma) => {
+    const doCaixa = caixa.filter(r => r.forma === forma).reduce((a, r) =>
+      a + (r.tipo === 'entrada' ? 1 : -1) * (parseFloat(r.valor) || 0), 0);
+    const formaMovs = forma === 'deposito' ? 'Depósito' : 'Dinheiro';
+    const deClientes = movsClientes.filter(r => r.forma === formaMovs).reduce((a, r) =>
+      a + (parseFloat(r.valor) || 0), 0);
+    const deFornecedores = movsFornecedores.filter(r => r.forma === formaMovs).reduce((a, r) =>
+      a - (parseFloat(r.valor) || 0), 0);
+    return doCaixa + deClientes + deFornecedores;
+  };
+
 
   const mapa = { 1: 'estoque', 2: 'movimentos', 3: 'caixa' };
 
