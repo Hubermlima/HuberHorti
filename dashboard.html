@@ -237,26 +237,38 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:#F8FAFC;color:#1E293B
       <span class="m-label">Faturamento</span>
       <span class="m-value" id="metric-faturamento" style="color:#2563EB">—</span>
     </div>
-        <div class="metric-cell">
-      <span class="m-label">Despesas</span>
-      <div style="display:flex;align-items:center;gap:6px;margin-top:2px;">
-        <span class="m-value" id="metric-despesas" style="color:#EF4444">—</span>
-        <span id="metric-margem-despesas" style="font-size:10px;font-weight:600;padding:2px 7px;border-radius:100px;background:#FEF2F2;color:#EF4444;">—</span>
-      </div>
-    </div>
-
     <div class="metric-cell">
-      <span class="m-label">Lucro Bruto</span>
+      <span class="m-label">Margem de Venda</span>
       <div style="display:flex;align-items:center;gap:6px;margin-top:2px;">
         <span class="m-value" id="metric-lucro" style="color:#10B981">—</span>
         <span id="metric-margem-bruto" style="font-size:10px;font-weight:600;padding:2px 7px;border-radius:100px;background:#ECFDF5;color:#10B981;">—</span>
       </div>
     </div>
     <div class="metric-cell">
-      <span class="m-label">Lucro Líquido</span>
+      <span class="m-label">Ganhos nas Compras</span>
+      <div style="display:flex;align-items:center;gap:6px;margin-top:2px;">
+        <span class="m-value" id="metric-ganho-compras" style="color:#10B981">—</span>
+      </div>
+    </div>
+    <div class="metric-cell">
+      <span class="m-label">Lucro Bruto</span>
       <div style="display:flex;align-items:center;gap:6px;margin-top:2px;">
         <span class="m-value" id="metric-lucro-liquido" style="color:#10B981">—</span>
         <span id="metric-margem-liquido" style="font-size:10px;font-weight:600;padding:2px 7px;border-radius:100px;background:#ECFDF5;color:#10B981;">—</span>
+      </div>
+    </div>
+    <div class="metric-cell">
+      <span class="m-label">Despesas</span>
+      <div style="display:flex;align-items:center;gap:6px;margin-top:2px;">
+        <span class="m-value" id="metric-despesas" style="color:#EF4444">—</span>
+        <span id="metric-margem-despesas" style="font-size:10px;font-weight:600;padding:2px 7px;border-radius:100px;background:#FEF2F2;color:#EF4444;">—</span>
+      </div>
+    </div>
+    <div class="metric-cell">
+      <span class="m-label">Lucro Líquido</span>
+      <div style="display:flex;align-items:center;gap:6px;margin-top:2px;">
+        <span class="m-value" id="metric-lucro-liquido-final" style="color:#10B981">—</span>
+        <span id="metric-margem-liquido-final" style="font-size:10px;font-weight:600;padding:2px 7px;border-radius:100px;background:#ECFDF5;color:#10B981;">—</span>
       </div>
     </div>
   </div>
@@ -352,42 +364,59 @@ async function carregarMetricas() {
   const d0ISO = d0.toISOString();
   const d7ISO = new Date(d7.getFullYear(), d7.getMonth(), d7.getDate(), 23, 59, 59).toISOString();
 
-  const [vendasRes, despesasRes, consumosRes] = await Promise.all([
+  const [vendasRes, despesasRes, consumosRes, comprasRes] = await Promise.all([
     db.from('pedidos_vendas').select('total_venda, total_lucro').gte('data', d0ISO).lte('data', d7ISO),
     db.from('livro_caixa').select('valor, contas_contabeis!inner(is_despesa)').eq('tipo', 'saida').eq('contas_contabeis.is_despesa', true).gte('data', d0ISO).lte('data', d7ISO),
-    db.from('movimentos_clientes').select('valor').eq('tipo', 'Consumo').not('data', 'is', null).gte('data', d0ISO).lte('data', d7ISO)
+    db.from('movimentos_clientes').select('valor').eq('tipo', 'Consumo').not('data', 'is', null).gte('data', d0ISO).lte('data', d7ISO),
+    db.from('pedidos_compras').select('itens_pedidos_compras(ganho)').gte('data', d0ISO.split('T')[0]).lte('data', d7ISO.split('T')[0])
   ]);
 
   const vendas = vendasRes.data || [];
   const faturamento = vendas.reduce((a, r) => a + (parseFloat(r.total_venda) || 0), 0);
-  const lucroBruto = vendas.reduce((a, r) => a + (parseFloat(r.total_lucro) || 0), 0);
+  const margemVenda = vendas.reduce((a, r) => a + (parseFloat(r.total_lucro) || 0), 0);
   const despesasCaixa = (despesasRes.data || []).reduce((a, r) => a + (parseFloat(r.valor) || 0), 0);
   const despesasConsumo = (consumosRes.data || []).reduce((a, r) => a + (parseFloat(r.valor) || 0), 0);
   const despesas = despesasCaixa + despesasConsumo;
+  const ganhoCompras = (comprasRes.data || []).reduce((a, p) =>
+    a + (p.itens_pedidos_compras || []).reduce((b, i) => b + (parseFloat(i.ganho) || 0), 0), 0);
 
+  const lucroBruto = margemVenda + ganhoCompras;
   const lucroLiquido = lucroBruto - despesas;
 
-    document.getElementById('metric-faturamento').textContent = fmt(faturamento);
-  document.getElementById('metric-despesas').textContent = fmt(despesas);
-  const margemDesp = faturamento > 0 ? (despesas / faturamento * 100) : 0;
-  document.getElementById('metric-margem-despesas').textContent = `${margemDesp.toFixed(1)}%`;
+  document.getElementById('metric-faturamento').textContent = fmt(faturamento);
 
-  document.getElementById('metric-lucro').textContent = fmt(lucroBruto);
-
-  const margemBruta = faturamento > 0 ? (lucroBruto / faturamento * 100) : 0;
+  document.getElementById('metric-lucro').textContent = fmt(margemVenda);
+  const margemBruta = faturamento > 0 ? (margemVenda / faturamento * 100) : 0;
   const elMB = document.getElementById('metric-margem-bruto');
   elMB.textContent = `${margemBruta.toFixed(1)}%`;
   elMB.style.background = margemBruta >= 0 ? '#ECFDF5' : '#FEF2F2';
   elMB.style.color = margemBruta >= 0 ? '#10B981' : '#EF4444';
 
-  const margemLiquida = faturamento > 0 ? (lucroLiquido / faturamento * 100) : 0;
+  const elGC = document.getElementById('metric-ganho-compras');
+  elGC.textContent = fmt(ganhoCompras);
+  elGC.style.color = ganhoCompras >= 0 ? '#10B981' : '#EF4444';
+
+  const margemLB = faturamento > 0 ? (lucroBruto / faturamento * 100) : 0;
   const elLL = document.getElementById('metric-lucro-liquido');
-  elLL.textContent = fmt(lucroLiquido);
-  elLL.style.color = lucroLiquido >= 0 ? '#2563EB' : '#EF4444';
+  elLL.textContent = fmt(lucroBruto);
+  elLL.style.color = lucroBruto >= 0 ? '#2563EB' : '#EF4444';
   const elML = document.getElementById('metric-margem-liquido');
-  elML.textContent = `${margemLiquida.toFixed(1)}%`;
-  elML.style.background = margemLiquida >= 0 ? '#ECFDF5' : '#FEF2F2';
-  elML.style.color = margemLiquida >= 0 ? '#10B981' : '#EF4444';
+  elML.textContent = `${margemLB.toFixed(1)}%`;
+  elML.style.background = margemLB >= 0 ? '#ECFDF5' : '#FEF2F2';
+  elML.style.color = margemLB >= 0 ? '#10B981' : '#EF4444';
+
+  document.getElementById('metric-despesas').textContent = fmt(despesas);
+  const margemDesp = faturamento > 0 ? (despesas / faturamento * 100) : 0;
+  document.getElementById('metric-margem-despesas').textContent = `${margemDesp.toFixed(1)}%`;
+
+  const margemLL = faturamento > 0 ? (lucroLiquido / faturamento * 100) : 0;
+  const elLLF = document.getElementById('metric-lucro-liquido-final');
+  elLLF.textContent = fmt(lucroLiquido);
+  elLLF.style.color = lucroLiquido >= 0 ? '#2563EB' : '#EF4444';
+  const elMLF = document.getElementById('metric-margem-liquido-final');
+  elMLF.textContent = `${margemLL.toFixed(1)}%`;
+  elMLF.style.background = margemLL >= 0 ? '#ECFDF5' : '#FEF2F2';
+  elMLF.style.color = margemLL >= 0 ? '#10B981' : '#EF4444';
 
 
 }
