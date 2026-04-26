@@ -403,17 +403,20 @@ async function carregarConsolidacao() {
   const d0ISO = d0.toISOString();
   const d7ISO = new Date(d7.getFullYear(), d7.getMonth(), d7.getDate(), 23, 59, 59).toISOString();
 
-    const [consolRes, caixaRes, movsClientesRes, movsFornecedoresRes] = await Promise.all([
+      const [consolRes, caixaRes, movsClientesRes, movsFornecedoresRes, contasRes] = await Promise.all([
     db.from('consolidacao').select('id, data, valor1, valor2'),
-    db.from('livro_caixa').select('tipo, forma, valor').gte('data', d0ISO).lte('data', d7ISO),
+    db.from('livro_caixa').select('id, tipo, forma, valor, conta_id').gte('data', d0ISO).lte('data', d7ISO),
     db.from('movimentos_clientes').select('valor, forma').eq('status', 0).not('data', 'is', null).gte('data', d0ISO).lte('data', d7ISO).neq('tipo', 'Desconto'),
-    db.from('movimentos_fornecedores').select('valor, forma').not('data', 'is', null).gte('data', d0ISO).lte('data', d7ISO)
+    db.from('movimentos_fornecedores').select('valor, forma').eq('status', 0).not('data', 'is', null).gte('data', d0ISO).lte('data', d7ISO),
+    db.from('contas_contabeis').select('id, is_despesa')
   ]);
 
   const data = consolRes.data || [];
   const caixa = caixaRes.data || [];
   const movsClientes = movsClientesRes.data || [];
   const movsFornecedores = movsFornecedoresRes.data || [];
+  const contas = contasRes.data || [];
+
 
   const calc = (forma) => {
     const doCaixa = caixa.filter(r => r.forma === forma).reduce((a, r) =>
@@ -446,15 +449,17 @@ async function carregarConsolidacao() {
       const saiDin = movsFornecedores.filter(r => r.forma === 'Dinheiro').reduce((a,r) => a + (parseFloat(r.valor)||0), 0);
       const saiBan = movsFornecedores.filter(r => r.forma === 'Depósito').reduce((a,r) => a + (parseFloat(r.valor)||0), 0);
 
-      const caixaDin = caixa.filter(r => r.forma === 'dinheiro' && !_contas?.find(c => c.id === r.conta_id)?.is_despesa).reduce((a,r) => a + (r.tipo==='entrada'?1:-1)*(parseFloat(r.valor)||0), 0);
-      const caixaBan = caixa.filter(r => r.forma === 'deposito' && !_contas?.find(c => c.id === r.conta_id)?.is_despesa).reduce((a,r) => a + (r.tipo==='entrada'?1:-1)*(parseFloat(r.valor)||0), 0);
+            const caixaDin = caixa.filter(r => r.forma === 'dinheiro' && !contas.find(c => c.id === r.conta_id)?.is_despesa).reduce((a,r) => a + (r.tipo==='entrada'?1:-1)*(parseFloat(r.valor)||0), 0);
+      const caixaBan = caixa.filter(r => r.forma === 'deposito' && !contas.find(c => c.id === r.conta_id)?.is_despesa).reduce((a,r) => a + (r.tipo==='entrada'?1:-1)*(parseFloat(r.valor)||0), 0);
 
       const despDin = caixa.filter(r => r.forma === 'dinheiro' && r.tipo === 'saida').reduce((a,r) => {
-        const c = _contas?.find(x => x.id === r.conta_id); return c?.is_despesa ? a + (parseFloat(r.valor)||0) : a;
+        const c = contas.find(x => x.id === r.conta_id); return c?.is_despesa ? a + (parseFloat(r.valor)||0) : a;
       }, 0);
       const despBan = caixa.filter(r => r.forma === 'deposito' && r.tipo === 'saida').reduce((a,r) => {
-        const c = _contas?.find(x => x.id === r.conta_id); return c?.is_despesa ? a + (parseFloat(r.valor)||0) : a;
+        const c = contas.find(x => x.id === r.conta_id); return c?.is_despesa ? a + (parseFloat(r.valor)||0) : a;
       }, 0);
+
+      
 
       const finDin = antDin + entDin - saiDin + caixaDin - despDin;
       const finBan = antBan + entBan - saiBan + caixaBan - despBan;
