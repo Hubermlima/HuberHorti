@@ -98,7 +98,20 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:#F2F4F8;color:#1C1C1E
 .modal-btn-salvar{flex:1;padding:13px;background:#007AFF;color:#FFF;border:none;border-radius:100px;font-size:15px;font-weight:700;font-family:'Plus Jakarta Sans',sans-serif;cursor:pointer;}
 .modal-btn-salvar:disabled{opacity:0.4;pointer-events:none}
 
-/* Detalhe readonly */
+/* Slider */
+.slider-wrap{margin-bottom:16px;}
+.slider-header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;}
+.slider-label{font-size:11px;font-weight:600;color:#8E8E93;}
+.slider-pct{font-size:16px;font-weight:800;color:#007AFF;}
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:6px;border-radius:100px;background:#E5E5EA;outline:none;cursor:pointer;}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:24px;height:24px;border-radius:50%;background:#007AFF;box-shadow:0 2px 8px rgba(0,122,255,0.35);cursor:pointer;}
+input[type=range]::-webkit-slider-runnable-track{border-radius:100px;}
+.slider-ref{display:flex;justify-content:space-between;margin-top:4px;}
+.slider-ref span{font-size:10px;color:#C7C7CC;font-weight:500;}
+.cotacao-badge{background:#F2F2F7;border-radius:10px;padding:8px 12px;display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;}
+.cotacao-badge-label{font-size:11px;color:#8E8E93;font-weight:600;}
+.cotacao-badge-val{font-size:14px;font-weight:800;color:#007AFF;}
+.modal-input[type=date]{font-size:13px;min-width:0;}
 .detalhe-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:0.5px solid #F2F2F7;}
 .detalhe-row:last-child{border-bottom:none;}
 .detalhe-label{font-size:13px;color:#8E8E93;font-weight:500;}
@@ -159,12 +172,38 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:#F2F4F8;color:#1C1C1E
 <div class="modal-overlay" id="modal-nova" onclick="fecharModalFora(event,'modal-nova')">
     <div class="modal-sheet">
         <div class="modal-title">Nova Transação</div>
+
+        <!-- Cotação -->
+        <div class="cotacao-badge">
+            <span class="cotacao-badge-label">Cotação Atual</span>
+            <span class="cotacao-badge-val" id="nova-cotacao">—</span>
+        </div>
+
+        <!-- Segmented -->
         <div class="seg-track" id="seg-track-nova">
             <div class="seg-thumb"></div>
             <button class="seg-opt selected" id="seg-c" onclick="setTipoNova('C')">Compra</button>
             <button class="seg-opt" id="seg-v" onclick="setTipoNova('V')">Venda</button>
         </div>
-        <div class="modal-grid">
+
+        <!-- Slider -->
+        <div class="slider-wrap">
+            <div class="slider-header">
+                <span class="slider-label" id="slider-label">% do Saldo Disponível</span>
+                <span class="slider-pct" id="slider-pct-val">0%</span>
+            </div>
+            <input type="range" id="nova-slider" min="0" max="100" value="0" step="1" oninput="onSlider(this.value)">
+            <div class="slider-ref">
+                <span>0%</span>
+                <span id="slider-ref-max">Saldo: —</span>
+                <span>100%</span>
+            </div>
+        </div>
+
+        <div class="modal-divider"></div>
+
+        <!-- Campos calculados -->
+        <div class="modal-grid" style="gap:12px;margin-bottom:14px;">
             <div>
                 <label class="modal-label">Quantidade</label>
                 <input id="nova-qtd" class="modal-input" type="tel" inputmode="decimal" placeholder="0,00000000">
@@ -173,17 +212,16 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:#F2F4F8;color:#1C1C1E
                 <label class="modal-label">Valor Total USD</label>
                 <input id="nova-valor" class="modal-input" type="tel" inputmode="decimal" placeholder="0,00">
             </div>
-        </div>
-        <div class="modal-grid">
             <div>
                 <label class="modal-label">Taxa</label>
                 <input id="nova-taxa" class="modal-input" type="tel" inputmode="decimal" placeholder="0,00000000">
             </div>
             <div>
                 <label class="modal-label">Data</label>
-                <input id="nova-data" class="modal-input" type="date">
+                <input id="nova-data" class="modal-input" type="date" style="font-size:13px;min-width:0;">
             </div>
         </div>
+
         <div class="modal-actions">
             <button class="modal-btn-cancelar" onclick="fecharModal('modal-nova')">Cancelar</button>
             <button class="modal-btn-salvar" id="btn-salvar-nova" onclick="salvarNova()">Salvar</button>
@@ -223,6 +261,7 @@ let _precoAtual = 0;
 let _varPct = 0;
 let _transacoes = [];
 let _tipoNova = 'C';
+let _saldoCorretora = 0;
 
 const parseVal = v => parseFloat(String(v || '0').replace(/\./g,'').replace(',','.')) || 0;
 const mascara8 = input => {
@@ -249,6 +288,7 @@ async function init() {
     _nome      = params.get('nome') || '';
     _precoAtual = parseFloat(params.get('preco') || '0');
     _varPct    = parseFloat(params.get('var_pct') || '0');
+    _saldoCorretora = parseFloat(params.get('saldo') || '0');
 
     // Header
     document.getElementById('topbar-title').textContent = _ticker;
@@ -265,6 +305,19 @@ async function init() {
     document.getElementById('nova-data').value = `${aa}-${mm}-${dd}`;
 
     await carregarTransacoes();
+
+    // Busca saldo da corretora do ativo
+    if (_ativoId && _saldoCorretora === 0) {
+        const { data: ativo } = await db.from('ativos').select('corretora_id').eq('id', _ativoId).single();
+        if (ativo?.corretora_id) {
+            const { data: transfs } = await db.from('transferencias').select('tipo, valor_origem, valor_destino').eq('corretora_id', ativo.corretora_id);
+            const { data: txs } = await db.from('transacoes').select('tipo_operacao, valor_total_usd, ativos!inner(corretora_id)').eq('ativos.corretora_id', ativo.corretora_id);
+            let saldo = 0;
+            (transfs||[]).forEach(t => { saldo += t.tipo === 'D' ? parseFloat(t.valor_destino)||0 : -(parseFloat(t.valor_origem)||0); });
+            (txs||[]).forEach(t => { saldo += t.tipo_operacao === 'V' ? parseFloat(t.valor_total_usd)||0 : -(parseFloat(t.valor_total_usd)||0); });
+            _saldoCorretora = Math.max(0, saldo);
+        }
+    }
 }
 
 async function carregarTransacoes() {
@@ -384,12 +437,45 @@ function setTipoNova(tipo) {
     document.getElementById('seg-c').classList.toggle('selected', tipo === 'C');
     document.getElementById('seg-v').classList.toggle('selected', tipo === 'V');
     document.getElementById('seg-track-nova').classList.toggle('venda', tipo === 'V');
+    // Atualiza contexto do slider
+    const c = calcularConsolidado();
+    if (tipo === 'C') {
+        document.getElementById('slider-label').textContent = '% do Saldo Disponível';
+        document.getElementById('slider-ref-max').textContent = `Saldo: USD ${fmtUSD(_saldoCorretora)}`;
+    } else {
+        document.getElementById('slider-label').textContent = '% da Qtd. em Aberto';
+        document.getElementById('slider-ref-max').textContent = `Aberto: ${fmtQtd(c.qtdAberta)}`;
+    }
+    document.getElementById('nova-slider').value = 0;
+    document.getElementById('slider-pct-val').textContent = '0%';
+    document.getElementById('nova-qtd').value = '';
+    document.getElementById('nova-valor').value = '';
+}
+
+function onSlider(pct) {
+    document.getElementById('slider-pct-val').textContent = pct + '%';
+    const cotacao = _precoAtual;
+    if (_tipoNova === 'C') {
+        const valorUSD = (_saldoCorretora * pct / 100);
+        const qtd = cotacao > 0 ? valorUSD / cotacao : 0;
+        document.getElementById('nova-valor').value = fmtUSD(valorUSD).replace(',','');
+        document.getElementById('nova-qtd').value = qtd.toFixed(8).replace('.',',');
+    } else {
+        const c = calcularConsolidado();
+        const qtd = c.qtdAberta * pct / 100;
+        const valorUSD = qtd * cotacao;
+        document.getElementById('nova-qtd').value = qtd.toFixed(8).replace('.',',');
+        document.getElementById('nova-valor').value = fmtUSD(valorUSD).replace(',','');
+    }
 }
 
 function abrirModalNova() {
     document.getElementById('nova-qtd').value = '';
     document.getElementById('nova-valor').value = '';
     document.getElementById('nova-taxa').value = '';
+    document.getElementById('nova-slider').value = 0;
+    document.getElementById('slider-pct-val').textContent = '0%';
+    document.getElementById('nova-cotacao').textContent = fmtUSD(_precoAtual) + ' USD';
     setTipoNova('C');
     document.getElementById('modal-nova').classList.add('active');
 }
