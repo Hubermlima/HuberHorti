@@ -54,7 +54,6 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:#F2F4F8;color:#1C1C1E
 .modal-overlay.active{display:flex}
 @keyframes pop{from{opacity:0;transform:scale(0.88)}to{opacity:1;transform:scale(1)}}
 .modal-card{background:#FFF;border-radius:24px;width:100%;max-width:420px;max-height:75vh;display:flex;flex-direction:column;box-shadow:0 24px 60px rgba(0,0,0,0.2);animation:pop 0.25s cubic-bezier(0.34,1.56,0.64,1);}
-
 .modal-top{padding:22px 20px 0;flex-shrink:0;}
 .modal-nome{font-size:18px;font-weight:800;color:#111827;}
 .modal-sub{font-size:13px;color:#374151;font-weight:600;margin-top:3px;}
@@ -109,7 +108,7 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:#F2F4F8;color:#1C1C1E
 </div>
 
 <div class="topbar">
-    <button class="ios-btn" id="btn-voltar" onclick="window.location.href='vendas.html'" style="display:none">
+    <button class="ios-btn" id="btn-voltar" style="display:none">
         <svg viewBox="0 0 24 24" style="width:16px;height:16px;stroke:#1C1C1E;stroke-width:2.5;fill:none"><path d="M15.75 19.5L8.25 12l7.5-7.5"/></svg>
     </button>
     <div style="width:36px" id="spacer-left"></div>
@@ -121,7 +120,6 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:#F2F4F8;color:#1C1C1E
         <svg viewBox="0 0 24 24" style="width:16px;height:16px;stroke:#475569;stroke-width:2.2;fill:none"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
     </button>
 </div>
-
 
 <div class="seg-wrap">
     <div class="seg-track" id="seg-track">
@@ -166,11 +164,42 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:#F2F4F8;color:#1C1C1E
 </div>
 
 <script>
+// ─── FIX BUG 1: expor funções do PIN no escopo global ───────────────────────
+// Os botões do teclado usam onclick="pinDigit(...)" no HTML, fora do
+// DOMContentLoaded. As funções precisam estar em window para serem acessíveis.
+function pinDigit(d) {
+    if (!window._pinReady) return;
+    if (window._pin.length >= 4) return;
+    window._pin += d; _renderDots();
+    if (window._pin.length === 4) setTimeout(_checkPin, 150);
+}
+function pinDel() {
+    if (!window._pinReady) return;
+    window._pin = window._pin.slice(0,-1);
+    _renderDots();
+    document.getElementById('pin-error').textContent = '';
+}
+function _renderDots() {
+    for (let i=0;i<4;i++) document.getElementById('d'+i).classList.toggle('filled', i < window._pin.length);
+}
+function _checkPin() {
+    if (window._pin === window._PIN) {
+        document.getElementById('pin-screen').classList.add('hidden');
+        _carregarApp();
+    } else {
+        document.getElementById('pin-error').textContent = 'PIN incorreto';
+        window._pin = ''; _renderDots();
+    }
+}
+// ────────────────────────────────────────────────────────────────────────────
+
+// Referência para carregarApp acessível pelo bloco admin abaixo
+let _carregarApp;
+
 document.addEventListener('DOMContentLoaded', function() {
 const PIN = '1234';
 const db = window.db;
 
-// Detecta modo admin via URL
 const _params = new URLSearchParams(window.location.search);
 const _isAdmin = _params.get('admin') === 'true';
 let _estado = 'pendentes';
@@ -185,51 +214,31 @@ let _pin = '';
 let _pedidos = [], _filtrados = [], _conf = {};
 let _idx = 0, _pedidoAberto = null;
 
-function pinDigit(d) {
-    if (_pin.length >= 4) return;
-    _pin += d; renderDots();
-    if (_pin.length === 4) setTimeout(checkPin, 150);
-}
-function pinDel() { _pin = _pin.slice(0,-1); renderDots(); document.getElementById('pin-error').textContent = ''; }
-function renderDots() { for(let i=0;i<4;i++) document.getElementById('d'+i).classList.toggle('filled', i<_pin.length); }
-function checkPin() {
-    if (_pin === PIN) { document.getElementById('pin-screen').classList.add('hidden'); carregarApp(); }
-    else { document.getElementById('pin-error').textContent = 'PIN incorreto'; _pin = ''; renderDots(); }
-}
-function voltarPin() { _pin=''; renderDots(); document.getElementById('pin-error').textContent=''; document.getElementById('pin-screen').classList.remove('hidden'); }
+// Expor estado do PIN no escopo global para as funções globais acima
+window._PIN = PIN;
+window._pin = _pin;
+window._pinReady = false; // será true após DOMContentLoaded
 
-function setEstado(estado, el) {
-    _estado = estado;
-    document.querySelectorAll('.seg-opt').forEach(b=>b.classList.remove('active'));
-    el.classList.add('active');
-    document.getElementById('seg-track').classList.toggle('confirmados', estado === 'confirmados');
-    _idx = 0;
-    const chipAtivo = document.querySelector('.filtro-chip.active');
-    const cidadeAtiva = chipAtivo ? chipAtivo.textContent.trim() : null;
-    const cidade = cidadeAtiva === 'Todas' ? null : cidadeAtiva;
-    const base = cidade ? _pedidos.filter(p=>p.clientes?.cidade===cidade) : [..._pedidos];
-    _filtrados = base.filter(p => {
-        const temConf = Object.values(_conf[p.id]||{}).some(c => c.confirmado_operador === true);
-        return _estado === 'confirmados' ? temConf : !temConf;
-    });
-    renderLista(); renderNav();
-}
+// Sincronizar _pin local com window._pin
+Object.defineProperty(window, '_pin', {
+    get() { return _pin; },
+    set(v) { _pin = v; },
+    configurable: true
+});
+window._pinReady = true;
 
-
-async function recarregar() {
-    const btn = document.getElementById('btn-refresh');
-    btn.style.opacity = '0.4';
-    _conf = {};
-    _pedidos = [];
-    await carregarApp();
-    btn.style.opacity = '1';
-}
-
+// ─── FIX BUG 3: carregarApp com guard para cicloAtual ───────────────────────
 async function carregarApp() {
     await carregarProdutos();
     await window.HHUtils.atualizarCicloAtualGlobal();
 
     const ciclo = window.cicloAtual;
+    if (!ciclo || !ciclo.d0 || !ciclo.d7) {
+        document.getElementById('empty').style.display = 'block';
+        document.getElementById('empty').textContent = 'Erro: ciclo atual não configurado.';
+        return;
+    }
+
     const { data } = await db.from('pedidos_vendas')
         .select('id, data, clientes(id, nome, cidade)')
         .gte('data', ciclo.d0.toISOString()).lte('data', ciclo.d7.toISOString())
@@ -248,12 +257,41 @@ async function carregarApp() {
     document.getElementById('topbar-sub').textContent = `${_pedidos.length} pedidos · ciclo atual`;
     filtrar(null, wrap.querySelector('.active'));
 }
+// ────────────────────────────────────────────────────────────────────────────
+
+// Expor carregarApp para o bloco global de inicialização admin
+_carregarApp = carregarApp;
+
+async function recarregar() {
+    const btn = document.getElementById('btn-refresh');
+    btn.style.opacity = '0.4';
+    _conf = {};
+    _pedidos = [];
+    await carregarApp();
+    btn.style.opacity = '1';
+}
+
+function setEstado(estado, el) {
+    _estado = estado;
+    document.querySelectorAll('.seg-opt').forEach(b=>b.classList.remove('active'));
+    el.classList.add('active');
+    document.getElementById('seg-track').classList.toggle('confirmados', estado === 'confirmados');
+    _idx = 0;
+    const chipAtivo = document.querySelector('.filtro-chip.active');
+    const cidadeAtiva = chipAtivo ? chipAtivo.textContent.trim() : null;
+    const cidade = cidadeAtiva === 'Todas' ? null : cidadeAtiva;
+    const base = cidade ? _pedidos.filter(p=>p.clientes?.cidade===cidade) : [..._pedidos];
+    _filtrados = base.filter(p => {
+        const temConf = Object.values(_conf[p.id]||{}).some(c => c.confirmado_operador === true);
+        return _estado === 'confirmados' ? temConf : !temConf;
+    });
+    renderLista(); renderNav();
+}
 
 function filtrar(cidade, el) {
     document.querySelectorAll('.filtro-chip').forEach(c=>c.classList.remove('active'));
     el.classList.add('active');
     const base = cidade ? _pedidos.filter(p=>p.clientes?.cidade===cidade) : [..._pedidos];
-    // Filtra por estado
     _filtrados = base.filter(p => {
         const temConf = Object.values(_conf[p.id]||{}).some(c => c.confirmado_operador === true);
         return _estado === 'confirmados' ? temConf : !temConf;
@@ -313,8 +351,6 @@ async function abrirPedido(i) {
     document.getElementById('modal-body').innerHTML = '<p style="padding:20px;text-align:center;color:#475569;">Carregando itens...</p>';
     document.getElementById('modal').classList.add('active');
 
-    if (_todosProdutos.length === 0) await carregarProdutos();
-
     const { data: itens } = await db.from('itens_pedidos_vendas').select('id, quantidade, produto_id').eq('pedido_venda_id', p.id);
     const conf = _conf[p.id]||{};
 
@@ -367,8 +403,8 @@ async function salvar() {
         else ins.push({pedido_venda_id:p.id, item_id:iid, produto_id:pid, quantidade_conferida:qtd, unidade_conferida:unid});
     });
 
-        if (_isAdmin) {
-        // Admin: insere E atualiza mas SEM marcar confirmado_operador
+    if (_isAdmin) {
+        // Admin: insere e atualiza SEM marcar confirmado_operador
         if (ins.length) {
             const insAdm = ins.map(i=>({...i, confirmado_operador: false}));
             const {data} = await db.from('conferencia_entrega').insert(insAdm).select();
@@ -386,7 +422,7 @@ async function salvar() {
         btn.disabled = false;
         return;
     } else {
-        // Conferente: cria e atualiza — gera ✓ com confirmado_operador: true
+        // Conferente: confirma com confirmado_operador: true
         if (ins.length) {
             const insOp = ins.map(i=>({...i, confirmado_operador: true}));
             const {data} = await db.from('conferencia_entrega').insert(insOp).select();
@@ -411,7 +447,7 @@ async function salvar() {
 const fixHeight = () => document.documentElement.style.setProperty('--vh', `${window.innerHeight*0.01}px`);
 window.addEventListener('resize', fixHeight); fixHeight();
 
-// Inicialização admin — depois de tudo definido
+// Inicialização admin
 if (_isAdmin) {
     document.getElementById('pin-screen').classList.add('hidden');
     document.getElementById('btn-voltar').style.display = 'flex';
@@ -424,6 +460,7 @@ if (_isAdmin) {
     };
     carregarApp();
 }
+
 }); // fim DOMContentLoaded
 </script>
 </body>
