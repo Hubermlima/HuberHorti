@@ -72,6 +72,12 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:#F2F4F8;color:#1C1C1E
 .btn-fechar{flex:1;padding:13px;background:#F2F2F7;color:#1C1C1E;border:none;border-radius:100px;font-size:14px;font-weight:600;font-family:'Plus Jakarta Sans',sans-serif;cursor:pointer;}
 .btn-confirmar{flex:1;padding:13px;background:#007AFF;color:#FFF;border:none;border-radius:100px;font-size:14px;font-weight:700;font-family:'Plus Jakarta Sans',sans-serif;cursor:pointer;}
 .btn-confirmar:disabled{opacity:0.4;pointer-events:none}
+.seg-wrap{padding:0 16px 10px;flex-shrink:0;}
+.seg-track{position:relative;display:flex;background:#E5E5EA;border-radius:100px;padding:3px;height:36px;}
+.seg-thumb{position:absolute;top:3px;left:3px;width:calc(50% - 3px);height:calc(100% - 6px);background:#FFF;border-radius:100px;box-shadow:0 1px 4px rgba(0,0,0,0.12);transition:transform 0.25s cubic-bezier(0.34,1.2,0.64,1);pointer-events:none;}
+.seg-track.confirmados .seg-thumb{transform:translateX(100%)}
+.seg-opt{flex:1;z-index:1;background:transparent;border:none;font-size:12px;font-weight:700;color:#8E8E93;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;transition:color 0.2s;border-radius:100px;}
+.seg-opt.active{color:#1C1C1E}
 </style>
 </head>
 <body>
@@ -108,9 +114,17 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:#F2F4F8;color:#1C1C1E
         <div class="topbar-title">Pedidos de Entrega</div>
         <div class="topbar-sub" id="topbar-sub">—</div>
     </div>
-    <button class="ios-btn" onclick="voltarPin()">
-        <svg viewBox="0 0 24 24" style="width:16px;height:16px;stroke:#475569;stroke-width:2.2;fill:none"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+    <button class="ios-btn" id="btn-refresh" onclick="recarregar()">
+        <svg viewBox="0 0 24 24" style="width:16px;height:16px;stroke:#475569;stroke-width:2.2;fill:none"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
     </button>
+</div>
+
+<div class="seg-wrap">
+    <div class="seg-track" id="seg-track">
+        <div class="seg-thumb"></div>
+        <button class="seg-opt active" onclick="setEstado('pendentes',this)">Pendentes</button>
+        <button class="seg-opt" onclick="setEstado('confirmados',this)">Confirmados</button>
+    </div>
 </div>
 
 <div class="filtro-wrap" id="filtro-wrap">
@@ -151,13 +165,22 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:#F2F4F8;color:#1C1C1E
 const PIN = '1234';
 const db = window.db;
 
-// Igual ao vendas.html — carrega todos os produtos uma vez
+// Detecta modo admin via URL
+const _params = new URLSearchParams(window.location.search);
+const _isAdmin = _params.get('admin') === 'true';
+let _estado = 'pendentes'; // pendentes | confirmados
+
+// Se admin, pula PIN
+if (_isAdmin) {
+    document.getElementById('pin-screen').classList.add('hidden');
+    carregarApp();
+}
+
 let _todosProdutos = [];
 async function carregarProdutos() {
     const { data } = await db.from('produtos').select('id, nome, unid_venda').order('nome');
     if (data) _todosProdutos = data;
 }
-
 
 let _pin = '';
 let _pedidos = [], _filtrados = [], _conf = {};
@@ -176,10 +199,26 @@ function checkPin() {
 }
 function voltarPin() { _pin=''; renderDots(); document.getElementById('pin-error').textContent=''; document.getElementById('pin-screen').classList.remove('hidden'); }
 
+function setEstado(estado, el) {
+    _estado = estado;
+    document.querySelectorAll('.seg-opt').forEach(b=>b.classList.remove('active'));
+    el.classList.add('active');
+    document.getElementById('seg-track').classList.toggle('confirmados', estado === 'confirmados');
+    _idx = 0; renderLista(); renderNav();
+}
+
+async function recarregar() {
+    const btn = document.getElementById('btn-refresh');
+    btn.style.opacity = '0.4';
+    _conf = {};
+    _pedidos = [];
+    await carregarApp();
+    btn.style.opacity = '1';
+}
+
 async function carregarApp() {
     await carregarProdutos();
     await window.HHUtils.atualizarCicloAtualGlobal();
-
     const ciclo = window.cicloAtual;
     const { data } = await db.from('pedidos_vendas')
         .select('id, data, clientes(id, nome, cidade)')
@@ -189,6 +228,7 @@ async function carregarApp() {
     if (_pedidos.length) {
         const ids = _pedidos.map(p=>p.id);
         const { data: conf } = await db.from('conferencia_entrega').select('*').in('pedido_venda_id', ids);
+        _conf = {};
         (conf||[]).forEach(c => { if(!_conf[c.pedido_venda_id]) _conf[c.pedido_venda_id]={}; _conf[c.pedido_venda_id][c.item_id]=c; });
     }
     const cidades = [...new Set(_pedidos.map(p=>p.clientes?.cidade).filter(Boolean).sort())];
@@ -202,26 +242,38 @@ async function carregarApp() {
 function filtrar(cidade, el) {
     document.querySelectorAll('.filtro-chip').forEach(c=>c.classList.remove('active'));
     el.classList.add('active');
-    _filtrados = cidade ? _pedidos.filter(p=>p.clientes?.cidade===cidade) : [..._pedidos];
+    const base = cidade ? _pedidos.filter(p=>p.clientes?.cidade===cidade) : [..._pedidos];
+    // Filtra por estado
+    _filtrados = base.filter(p => {
+        const temConf = Object.keys(_conf[p.id]||{}).length > 0;
+        return _estado === 'confirmados' ? temConf : !temConf;
+    });
     _idx = 0; renderLista(); renderNav();
 }
 
 function renderLista() {
     const empty = document.getElementById('empty');
     const card = document.getElementById('lista-card');
-    if (!_filtrados.length) { empty.style.display='block'; empty.textContent='Nenhum pedido encontrado'; card.innerHTML=''; return; }
+    if (!_filtrados.length) {
+        empty.style.display='block';
+        empty.textContent = _estado === 'confirmados' ? 'Nenhum pedido confirmado' : 'Nenhum pedido pendente';
+        card.innerHTML=''; return;
+    }
     empty.style.display = 'none';
     card.innerHTML = `<div class="section-card">` + _filtrados.map((p,i) => {
-        const n = Object.keys(_conf[p.id]||{}).length;
+        const temConf = Object.keys(_conf[p.id]||{}).length > 0;
         const ini = (p.clientes?.nome||'?').substring(0,2).toUpperCase();
         const dt = p.data ? p.data.substring(0,10).split('-').slice(1).reverse().join('/') : '—';
+        const icone = temConf
+            ? `<svg viewBox="0 0 24 24" style="width:18px;height:18px;stroke:#10B981;stroke-width:2.5;fill:none"><polyline points="20 6 9 17 4 12"/></svg>`
+            : `<svg viewBox="0 0 24 24" style="width:18px;height:18px;stroke:#F59E0B;stroke-width:2;fill:none"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>`;
         return `<div class="pedido-item" onclick="abrirPedido(${i})">
             <div class="avatar">${ini}</div>
             <div class="pedido-info">
                 <div class="pedido-nome">${p.clientes?.nome||'—'}</div>
                 <div class="pedido-sub">${p.clientes?.cidade||'—'} · ${dt}</div>
             </div>
-            <div class="pedido-status ${n>0?'status-ok':'status-pend'}">${n>0?'✓':'⏳'}</div>
+            <div class="pedido-status">${icone}</div>
         </div>`;
     }).join('') + `</div>`;
 }
@@ -251,15 +303,11 @@ async function abrirPedido(i) {
     document.getElementById('modal-body').innerHTML = '<p style="padding:20px;text-align:center;color:#475569;">Carregando itens...</p>';
     document.getElementById('modal').classList.add('active');
 
-    // Garante produtos carregados
-    if (_todosProdutos.length === 0) {
-        await carregarProdutos();
-    }
+    if (_todosProdutos.length === 0) await carregarProdutos();
 
     const { data: itens } = await db.from('itens_pedidos_vendas').select('id, quantidade, produto_id').eq('pedido_venda_id', p.id);
     const conf = _conf[p.id]||{};
 
-    // Igual ao vendas.html — busca no array já carregado
     const rows = (itens||[]).map(it => {
         const prod = _todosProdutos.find(pr => pr.id === it.produto_id);
         const nome = prod ? prod.nome : it.produto_id;
@@ -270,12 +318,11 @@ async function abrirPedido(i) {
             : parseFloat(it.quantidade||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
         const unidVal = c ? c.unidade_conferida : (unid||'');
         const ok = c ? 'ok' : '';
-                return `<div class="lista-row" data-item-id="${it.id}" data-produto-id="${it.produto_id}">
+        return `<div class="lista-row" data-item-id="${it.id}" data-produto-id="${it.produto_id}">
             <div class="prod-nome">${nome}</div>
             <input class="campo ${ok} qtd-campo" type="tel" inputmode="decimal" value="${qtd}" placeholder="0,00" oninput="mascaraQtd(this)">
             <input class="campo ${ok} unid-campo" type="text" value="${unidVal}" placeholder="un">
         </div>`;
-
     }).join('');
 
     document.getElementById('modal-body').innerHTML =
@@ -289,14 +336,10 @@ function mascaraQtd(input) {
 }
 
 document.addEventListener('focusin', e => {
-    if (e.target.classList.contains('campo')) {
-        e.target.select();
-    }
+    if (e.target.classList.contains('campo')) e.target.select();
 });
 
-
 function fecharModal() { document.getElementById('modal').classList.remove('active'); }
-
 
 async function salvar() {
     const btn = document.getElementById('btn-confirmar');
@@ -313,18 +356,32 @@ async function salvar() {
         if (ex) upd.push({id:ex.id, quantidade_conferida:qtd, unidade_conferida:unid, item_id:iid});
         else ins.push({pedido_venda_id:p.id, item_id:iid, produto_id:pid, quantidade_conferida:qtd, unidade_conferida:unid});
     });
-    if (ins.length) {
-        const {data} = await db.from('conferencia_entrega').insert(ins).select();
-        if (!_conf[p.id]) _conf[p.id]={};
-        (data||[]).forEach(c=>{ _conf[p.id][c.item_id]=c; });
-    }
-    for (const u of upd) {
-        await db.from('conferencia_entrega').update({quantidade_conferida:u.quantidade_conferida, unidade_conferida:u.unidade_conferida}).eq('id',u.id);
-        if (_conf[p.id]?.[u.item_id]) {
-            _conf[p.id][u.item_id].quantidade_conferida = u.quantidade_conferida;
-            _conf[p.id][u.item_id].unidade_conferida = u.unidade_conferida;
+
+    if (_isAdmin) {
+        // Admin: só atualiza registros existentes, não cria novos (não gera ✓)
+        for (const u of upd) {
+            await db.from('conferencia_entrega').update({quantidade_conferida:u.quantidade_conferida, unidade_conferida:u.unidade_conferida}).eq('id',u.id);
+            if (_conf[p.id]?.[u.item_id]) {
+                _conf[p.id][u.item_id].quantidade_conferida = u.quantidade_conferida;
+                _conf[p.id][u.item_id].unidade_conferida = u.unidade_conferida;
+            }
+        }
+    } else {
+        // Conferente: cria e atualiza — gera ✓
+        if (ins.length) {
+            const {data} = await db.from('conferencia_entrega').insert(ins).select();
+            if (!_conf[p.id]) _conf[p.id]={};
+            (data||[]).forEach(c=>{ _conf[p.id][c.item_id]=c; });
+        }
+        for (const u of upd) {
+            await db.from('conferencia_entrega').update({quantidade_conferida:u.quantidade_conferida, unidade_conferida:u.unidade_conferida}).eq('id',u.id);
+            if (_conf[p.id]?.[u.item_id]) {
+                _conf[p.id][u.item_id].quantidade_conferida = u.quantidade_conferida;
+                _conf[p.id][u.item_id].unidade_conferida = u.unidade_conferida;
+            }
         }
     }
+
     btn.disabled = false;
     fecharModal();
     renderLista();
