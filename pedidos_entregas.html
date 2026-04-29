@@ -176,7 +176,7 @@ const _isAdmin = _params.get('admin') === 'true';
 let _estado = 'pendentes';
 let _todosProdutos = [];
 let _pin = '';
-let _pedidos = [], _filtrados = [], _conf = {};
+let _pedidos = [], _filtrados = [], _pedidosConfirmados = new Set();
 let _idx = 0, _pedidoAberto = null;
 let _pollingTimer = null;
 // Snapshot dos itens do pedido aberto para detectar mudanças
@@ -241,11 +241,30 @@ async function carregarApp() {
 
     if (_pedidos.length) {
         const ids = _pedidos.map(p => p.id);
-        const { data: conf } = await window.db.from('conferencia_entrega').select('*').in('pedido_venda_id', ids);
-        _conf = {};
-        (conf || []).forEach(c => {
-            if (!_conf[c.pedido_venda_id]) _conf[c.pedido_venda_id] = {};
-            _conf[c.pedido_venda_id][c.item_id] = c;
+        const { data: itensConf } = await window.db.from('itens_pedidos_vendas')
+            .select('pedido_venda_id, produto_id, quant_despacho, unid_despacho')
+            .in('pedido_venda_id', ids);
+
+        // Agrupa itens por pedido
+        const itensPorPedido = {};
+        (itensConf || []).forEach(it => {
+            if (!itensPorPedido[it.pedido_venda_id]) itensPorPedido[it.pedido_venda_id] = [];
+            itensPorPedido[it.pedido_venda_id].push(it);
+        });
+
+        // Um pedido é confirmado se todos os itens com unid_despacho diferente de unid_venda têm quant_despacho preenchido
+        _pedidosConfirmados = new Set();
+        _pedidos.forEach(p => {
+            const itens = itensPorPedido[p.id] || [];
+            const produtosMap = {};
+            _todosProdutos.forEach(pr => { produtosMap[pr.id] = pr; });
+            const itensAlternativos = itens.filter(it => {
+                const unidOficial = produtosMap[it.produto_id]?.unid_venda || '';
+                return it.unid_despacho && it.unid_despacho !== unidOficial;
+            });
+            if (itensAlternativos.length > 0 && itensAlternativos.every(it => it.quant_despacho != null)) {
+                _pedidosConfirmados.add(p.id);
+            }
         });
     }
 
@@ -260,9 +279,12 @@ async function carregarApp() {
 async function recarregar() {
     const btn = document.getElementById('btn-refresh');
     btn.style.opacity = '0.4';
-    _conf = {};
     _pedidos = [];
     await carregarApp();
+    if (_pedidoAberto && document.getElementById('modal').classList.contains('active')) {
+        const idx = _filtrados.findIndex(p => p.id === _pedidoAberto.id);
+        if (idx !== -1) await abrirPedido(idx);
+    }
     btn.style.opacity = '1';
 }
 
@@ -275,7 +297,6 @@ function iniciarPolling() {
 
 async function pollAtualizar() {
     try {
-        // Atualiza lista de pedidos silenciosamente
         const ciclo = window.cicloAtual;
         if (!ciclo) return;
 
@@ -287,25 +308,15 @@ async function pollAtualizar() {
         if (!pedidosNovos) return;
         _pedidos = pedidosNovos;
 
-        const ids = _pedidos.map(p => p.id);
-        const { data: conf } = await window.db.from('conferencia_entrega').select('*').in('pedido_venda_id', ids);
-        _conf = {};
-        (conf || []).forEach(c => {
-            if (!_conf[c.pedido_venda_id]) _conf[c.pedido_venda_id] = {};
-            _conf[c.pedido_venda_id][c.item_id] = c;
-        });
-
-        // Se o modal está aberto, verifica se os itens mudaram
         const modalAberto = document.getElementById('modal').classList.contains('active');
         if (modalAberto && _pedidoAberto) {
             const { data: itensNovos } = await window.db.from('itens_pedidos_vendas')
-                .select('id, quantidade, produto_id')
+                .select('id, quantidade, produto_id, quant_despacho, unid_despacho')
                 .eq('pedido_venda_id', _pedidoAberto.id);
 
-            const snapshotAtual = JSON.stringify((itensNovos || []).map(i => ({ id: i.id, quantidade: i.quantidade, produto_id: i.produto_id })).sort((a,b) => a.id.localeCompare(b.id)));
+            const snapshotAtual = JSON.stringify((itensNovos || []).map(i => ({ produto_id: i.produto_id, quantidade: i.quantidade, quant_despacho: i.quant_despacho, unid_despacho: i.unid_despacho })).sort((a,b) => a.produto_id.localeCompare(b.produto_id)));
 
             if (_itensSnapshot && snapshotAtual !== _itensSnapshot) {
-                // Houve mudança — recarrega o modal silenciosamente
                 const idx = _filtrados.findIndex(p => p.id === _pedidoAberto.id);
                 if (idx !== -1) await abrirPedido(idx);
                 mostrarToast('Pedido atualizado pelo administrador');
@@ -313,19 +324,15 @@ async function pollAtualizar() {
             _itensSnapshot = snapshotAtual;
         } else {
             _itensSnapshot = null;
-            // Atualiza a lista visualmente
             const chipAtivo = document.querySelector('.filtro-chip.active');
             const cidadeAtiva = chipAtivo ? chipAtivo.textContent.trim() : null;
             const cidade = cidadeAtiva === 'Todas' ? null : cidadeAtiva;
             const base = cidade ? _pedidos.filter(p => p.clientes?.cidade === cidade) : [..._pedidos];
-            _filtrados = base.filter(p => {
-                const temConf = Object.values(_conf[p.id] || {}).some(c => c.confirmado_operador === true);
-                return _estado === 'confirmados' ? temConf : !temConf;
-            });
+            _filtrados = base;
             renderLista(); renderNav();
         }
     } catch(e) {
-        // polling silencioso — ignora erros
+        // polling silencioso
     }
 }
 
@@ -341,8 +348,8 @@ function setEstado(estado, el) {
     const cidade = cidadeAtiva === 'Todas' ? null : cidadeAtiva;
     const base = cidade ? _pedidos.filter(p => p.clientes?.cidade === cidade) : [..._pedidos];
     _filtrados = base.filter(p => {
-        const temConf = Object.values(_conf[p.id] || {}).some(c => c.confirmado_operador === true);
-        return _estado === 'confirmados' ? temConf : !temConf;
+        const confirmado = _pedidosConfirmados.has(p.id);
+        return _estado === 'confirmados' ? confirmado : !confirmado;
     });
     renderLista(); renderNav();
 }
@@ -352,8 +359,8 @@ function filtrar(cidade, el) {
     el.classList.add('active');
     const base = cidade ? _pedidos.filter(p => p.clientes?.cidade === cidade) : [..._pedidos];
     _filtrados = base.filter(p => {
-        const temConf = Object.values(_conf[p.id] || {}).some(c => c.confirmado_operador === true);
-        return _estado === 'confirmados' ? temConf : !temConf;
+        const confirmado = _pedidosConfirmados.has(p.id);
+        return _estado === 'confirmados' ? confirmado : !confirmado;
     });
     _idx = 0; renderLista(); renderNav();
 }
@@ -368,10 +375,10 @@ function renderLista() {
     }
     empty.style.display = 'none';
     card.innerHTML = `<div class="section-card">` + _filtrados.map((p, i) => {
-        const temConf = Object.values(_conf[p.id] || {}).some(c => c.confirmado_operador === true);
+        const confirmado = _pedidosConfirmados.has(p.id);
         const ini = (p.clientes?.nome || '?').substring(0, 2).toUpperCase();
         const dt = p.data ? p.data.substring(0, 10).split('-').slice(1).reverse().join('/') : '—';
-        const icone = temConf
+        const icone = confirmado
             ? `<svg viewBox="0 0 24 24" style="width:18px;height:18px;stroke:#10B981;stroke-width:2.5;fill:none"><polyline points="20 6 9 17 4 12"/></svg>`
             : `<svg viewBox="0 0 24 24" style="width:18px;height:18px;stroke:#F59E0B;stroke-width:2;fill:none"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>`;
         return `<div class="pedido-item" onclick="abrirPedido(${i})">
@@ -411,31 +418,38 @@ async function abrirPedido(i) {
     document.getElementById('modal-body').innerHTML = '<p style="padding:20px;text-align:center;color:#475569;">Carregando itens...</p>';
     document.getElementById('modal').classList.add('active');
 
-    const { data: itens } = await window.db.from('itens_pedidos_vendas').select('id, quantidade, produto_id').eq('pedido_venda_id', p.id);
-    const conf = _conf[p.id] || {};
+    const { data: itens } = await window.db.from('itens_pedidos_vendas')
+        .select('id, quantidade, produto_id, quant_despacho, unid_despacho')
+        .eq('pedido_venda_id', p.id);
 
-    // Tira snapshot para o polling comparar
-    _itensSnapshot = JSON.stringify((itens || []).map(i => ({ id: i.id, quantidade: i.quantidade, produto_id: i.produto_id })).sort((a,b) => a.id.localeCompare(b.id)));
+    // Snapshot para polling
+    _itensSnapshot = JSON.stringify((itens || []).map(i => ({ produto_id: i.produto_id, quantidade: i.quantidade, quant_despacho: i.quant_despacho, unid_despacho: i.unid_despacho })).sort((a,b) => a.produto_id.localeCompare(b.produto_id)));
 
     const rows = (itens || []).map(it => {
         const prod = _todosProdutos.find(pr => pr.id === it.produto_id);
         const nome = prod ? prod.nome : it.produto_id;
-        const unid = prod ? prod.unid_venda : '';
-        const c = conf[it.id];
-        const qtd = c
-            ? parseFloat(c.quantidade_conferida).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+        const unidOficial = prod ? (prod.unid_venda || '') : '';
+        // Operador edita quant_despacho e unid_despacho
+        // Se unid_despacho === unid_venda → só consulta (não pode editar)
+        const temDespachoAlternativo = it.unid_despacho && it.unid_despacho !== unidOficial;
+        const qtdVal = it.quant_despacho != null
+            ? parseFloat(it.quant_despacho).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
             : parseFloat(it.quantidade || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        const unidVal = c ? c.unidade_conferida : (unid || '');
-        const ok = c ? 'ok' : '';
+        const unidVal = it.unid_despacho || unidOficial;
+        const preenchido = it.quant_despacho != null;
+        const ok = preenchido ? 'ok' : '';
+        const podeEditar = !_isAdmin && temDespachoAlternativo;
+        const readonlyAttr = podeEditar ? '' : 'readonly';
+        const readonlyClass = podeEditar ? '' : ' readonly';
         return `<div class="lista-row" data-item-id="${it.id}" data-produto-id="${it.produto_id}">
             <div class="prod-nome">${nome}</div>
-            <input class="campo ${ok} qtd-campo" type="tel" inputmode="decimal" value="${qtd}" placeholder="0,00" oninput="mascaraQtd(this)">
-            <input class="campo ${ok} unid-campo" type="text" value="${unidVal}" placeholder="un">
+            <input class="campo ${ok} qtd-campo" type="tel" inputmode="decimal" value="${qtdVal}" placeholder="0,00" oninput="mascaraQtd(this)" ${readonlyAttr} style="${readonlyAttr ? 'color:#8E8E93;background:#F9F9F9;' : ''}">
+            <input class="campo${readonlyClass} unid-campo" type="text" value="${unidVal}" placeholder="un" ${readonlyAttr} style="${readonlyAttr ? 'color:#8E8E93;background:#F9F9F9;' : ''}">
         </div>`;
     }).join('');
 
     document.getElementById('modal-body').innerHTML =
-        `<div class="lista-head"><span>Produto</span><span style="text-align:center">Qtd</span><span style="text-align:center">Unid</span></div>` + rows;
+        `<div class="lista-head"><span>Produto</span><span style="text-align:center">Qtd despacho</span><span style="text-align:center">Unid</span></div>` + rows;
 }
 
 function mascaraQtd(input) {
@@ -458,51 +472,27 @@ async function salvar() {
     const btn = document.getElementById('btn-confirmar');
     btn.disabled = true;
     const p = _pedidoAberto;
-    const conf = _conf[p.id] || {};
-    const ins = [], upd = [];
+
+    const updates = [];
     document.querySelectorAll('#modal-body .lista-row').forEach(row => {
-        const iid = row.dataset.itemId, pid = row.dataset.produtoId;
-        const qtd = parseFloat(row.querySelector('.qtd-campo').value.replace(/\./g, '').replace(',', '.')) || 0;
-        const unid = row.querySelector('.unid-campo').value.trim();
-        if (!qtd && !unid) return;
-        const ex = conf[iid];
-        if (ex) upd.push({ id: ex.id, quantidade_conferida: qtd, unidade_conferida: unid, item_id: iid });
-        else ins.push({ pedido_venda_id: p.id, item_id: iid, produto_id: pid, quantidade_conferida: qtd, unidade_conferida: unid });
+        const iid = row.dataset.itemId;
+        const qtdInput = row.querySelector('.qtd-campo');
+        const unidInput = row.querySelector('.unid-campo');
+        if (qtdInput.readOnly) return; // só atualiza campos editáveis
+        const qtd = parseFloat(qtdInput.value.replace(/\./g, '').replace(',', '.')) || 0;
+        const unid = unidInput.value.trim();
+        if (!qtd) return;
+        updates.push({ id: iid, quant_despacho: qtd, unid_despacho: unid });
     });
 
-    if (_isAdmin) {
-        if (ins.length) {
-            const insAdm = ins.map(i => ({ ...i, confirmado_operador: false }));
-            const { data } = await window.db.from('conferencia_entrega').insert(insAdm).select();
-            if (!_conf[p.id]) _conf[p.id] = {};
-            (data || []).forEach(c => { _conf[p.id][c.item_id] = c; });
-        }
-        for (const u of upd) {
-            await window.db.from('conferencia_entrega').update({ quantidade_conferida: u.quantidade_conferida, unidade_conferida: u.unidade_conferida }).eq('id', u.id);
-            if (_conf[p.id]?.[u.item_id]) {
-                _conf[p.id][u.item_id].quantidade_conferida = u.quantidade_conferida;
-                _conf[p.id][u.item_id].unidade_conferida = u.unidade_conferida;
-            }
-        }
-        fecharModal();
-        btn.disabled = false;
-        return;
-    } else {
-        if (ins.length) {
-            const insOp = ins.map(i => ({ ...i, confirmado_operador: true }));
-            const { data } = await window.db.from('conferencia_entrega').insert(insOp).select();
-            if (!_conf[p.id]) _conf[p.id] = {};
-            (data || []).forEach(c => { _conf[p.id][c.item_id] = c; });
-        }
-        for (const u of upd) {
-            await window.db.from('conferencia_entrega').update({ quantidade_conferida: u.quantidade_conferida, unidade_conferida: u.unidade_conferida, confirmado_operador: true }).eq('id', u.id);
-            if (_conf[p.id]?.[u.item_id]) {
-                _conf[p.id][u.item_id].quantidade_conferida = u.quantidade_conferida;
-                _conf[p.id][u.item_id].unidade_conferida = u.unidade_conferida;
-                _conf[p.id][u.item_id].confirmado_operador = true;
-            }
-        }
+    for (const u of updates) {
+        await window.db.from('itens_pedidos_vendas')
+            .update({ quant_despacho: u.quant_despacho, unid_despacho: u.unid_despacho })
+            .eq('id', u.id);
     }
+
+    // Marca pedido como confirmado localmente
+    if (updates.length > 0) _pedidosConfirmados.add(p.id);
 
     btn.disabled = false;
     fecharModal();

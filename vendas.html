@@ -440,12 +440,21 @@ border-radius:10px;padding:2px 6px;}
 </div>
 
 
-  <div class="tf-row">
+    <div class="tf-row">
     <span class="tf-row-label">Quantidade</span>
     <input class="tf-row-input" id="tf-quant" type="text" inputmode="none" placeholder="0,00" autocomplete="off" readonly>
   </div>
   <div class="tf-row">
+    <span class="tf-row-label">Unid. Alternativa</span>
+    <select id="tf-unid-alt" style="background:#F2F2F7;border:none;border-radius:10px;padding:5px 10px;font-family:'Inter',sans-serif;font-size:15px;color:#1C1C1E;outline:none;width:110px;text-align:right;-webkit-appearance:none;font-weight:400;">
+      <option value="">—</option>
+      <option value="Unids">Unids</option>
+      <option value="Cabs">Cabs</option>
+    </select>
+  </div>
+  <div class="tf-row">
     <span class="tf-row-label">Preço Unitário</span>
+
     <div class="tf-unit-wrap">
       <input class="tf-row-input" id="tf-unit" type="text" inputmode="none" placeholder="0,00" autocomplete="off" readonly>
       <div class="tf-sugestoes" id="tf-sugestoes"></div>
@@ -1093,6 +1102,8 @@ function abrirTagForm(prodId, prodNome, custo, tagEl, soLeitura) {
   document.getElementById('tf-nome').textContent = prodNome;
   const item = _itensPedidoAtual[prodId];
   document.getElementById('tf-quant').value = item ? fmtNum(parseFloat(item.quantidade)) : '';
+  document.getElementById('tf-unid-alt').value = item ? (item.unid_despacho_alt || '') : '';
+
   document.getElementById('tf-total').value = item ? fmtNum(parseFloat(item.total_venda)) : '';
   document.getElementById('tf-custo').value = custo > 0 ? fmtNum(custo) : '—';
   const prodParaCx = _todosProdutos.find(p => p.id === prodId);
@@ -1155,10 +1166,15 @@ function tagFormCompletarEConfirmar() {
   else if (u > 0 && t > 0) { fq = t / u; }
   const custo = _tagFormProduto.preco_medio_compra || 0;
   const lucro = ft - (custo * fq);
+    const unidAlt = document.getElementById('tf-unid-alt').value;
+  const prod = _todosProdutos.find(p => p.id === _tagFormProduto.id);
+  const unidOficial = prod ? (prod.unid_venda || '') : '';
   _itensPedidoAtual[_tagFormProduto.id] = {
     produto_id: _tagFormProduto.id, quantidade: fq, preco_unit: fu,
-    custo_unit: custo, total_venda: ft, total_custo: custo * fq, lucro
+    custo_unit: custo, total_venda: ft, total_custo: custo * fq, lucro,
+    quant_despacho: fq, unid_despacho: unidAlt || unidOficial, unid_despacho_alt: unidAlt
   };
+
   montarNuvemTags(); atualizarSumarioSheet();
   setEstado('editando'); clearTimeout(timerAutoSave);
   timerAutoSave = setTimeout(salvarDadosSinc, 8000);
@@ -1236,10 +1252,17 @@ function tagFormConfirmar() {
   const prTotal = t > 0 ? t : q * prUnit;
   const custo = _tagFormProduto.preco_medio_compra || 0;
   const lucro = prTotal - (custo * q);
+    const unidAlt = document.getElementById('tf-unid-alt').value;
+  const prod = _todosProdutos.find(p => p.id === _tagFormProduto.id);
+  const unidOficial = prod ? (prod.unid_venda || '') : '';
+  const quantDespacho = q;
+  const unidDespacho = unidAlt || unidOficial;
   _itensPedidoAtual[_tagFormProduto.id] = {
     produto_id: _tagFormProduto.id, quantidade: q, preco_unit: prUnit, custo_unit: custo,
-    total_venda: prTotal, total_custo: custo * q, lucro
+    total_venda: prTotal, total_custo: custo * q, lucro,
+    quant_despacho: quantDespacho, unid_despacho: unidDespacho, unid_despacho_alt: unidAlt
   };
+
   fecharTagForm(); montarNuvemTags(); atualizarSumarioSheet();
   setEstado('editando'); clearTimeout(timerAutoSave);
   timerAutoSave = setTimeout(salvarDadosSinc, 8000);
@@ -1448,7 +1471,8 @@ const margemPctNum = valorTotalNum > 0 ? (totalLucroNum / valorTotalNum) * 100 :
 
     }
     await window.db.from('itens_pedidos_vendas').delete().eq('pedido_venda_id', _pedidoAtualId);
-    const rows = itens.map(i => ({ pedido_venda_id: _pedidoAtualId, produto_id: i.produto_id, quantidade: i.quantidade, preco_unit: i.preco_unit, custo_unit: i.custo_unit, total_venda: i.total_venda, total_custo: i.total_custo, lucro: i.lucro }));
+    const rows = itens.map(i => ({ pedido_venda_id: _pedidoAtualId, produto_id: i.produto_id, quantidade: i.quantidade, preco_unit: i.preco_unit, custo_unit: i.custo_unit, total_venda: i.total_venda, total_custo: i.total_custo, lucro: i.lucro, quant_despacho: i.quant_despacho || i.quantidade, unid_despacho: i.unid_despacho || '' }));
+
     await window.db.from('itens_pedidos_vendas').insert(rows);
     setEstado('sincronizado');
     const clienteIdAtual = document.getElementById('busca-cliente').dataset.selectedId;
@@ -1461,7 +1485,13 @@ async function abrirNotaPorId(pedidoId, readonly) {
   _itensPedidoAtual = {};
   try {
     const { data: itensDB } = await window.db.from('itens_pedidos_vendas').select('*').eq('pedido_venda_id', pedidoId);
-    if (itensDB) itensDB.forEach(it => { _itensPedidoAtual[it.produto_id] = it; });
+    if (itensDB) itensDB.forEach(it => {
+    const prod = _todosProdutos.find(p => p.id === it.produto_id);
+    const unidOficial = prod ? (prod.unid_venda || '') : '';
+    it.unid_despacho_alt = (it.unid_despacho && it.unid_despacho !== unidOficial) ? it.unid_despacho : '';
+    _itensPedidoAtual[it.produto_id] = it;
+});
+
     if (!readonly) _pedidoAtualId = pedidoId;
     _injetarExtrasNaLista(); montarNuvemTags(readonly); atualizarSumarioSheet();
         const nomeCliente = document.getElementById('busca-cliente').value || 'Pedido';
@@ -1498,7 +1528,13 @@ async function carregarProdutosCliente(clienteUuid) {
     if (pedidoAtual) {
       _pedidoAtualId = pedidoAtual.id; _pedidoAbertoId = pedidoAtual.id;
       const { data: itensDB } = await window.db.from('itens_pedidos_vendas').select('*').eq('pedido_venda_id', pedidoAtual.id);
-      if (itensDB) itensDB.forEach(it => { _itensPedidoAtual[it.produto_id] = it; });
+      if (itensDB) itensDB.forEach(it => {
+    const prod = _todosProdutos.find(p => p.id === it.produto_id);
+    const unidOficial = prod ? (prod.unid_venda || '') : '';
+    it.unid_despacho_alt = (it.unid_despacho && it.unid_despacho !== unidOficial) ? it.unid_despacho : '';
+    _itensPedidoAtual[it.produto_id] = it;
+});
+
       _injetarExtrasNaLista();
     }
     montarNuvemTags(false); atualizarSumarioSheet();
