@@ -1470,10 +1470,45 @@ const margemPctNum = valorTotalNum > 0 ? (totalLucroNum / valorTotalNum) * 100 :
             await window.db.from('pedidos_vendas').update({ data: dataVenda, total_venda: valorTotalNum, em_aberto: valorTotalNum, total_custo: totalCustoNum, total_lucro: totalLucroNum, margem_pct: margemPctNum }).eq('id', _pedidoAtualId);
 
     }
-    await window.db.from('itens_pedidos_vendas').delete().eq('pedido_venda_id', _pedidoAtualId);
-    const rows = itens.map(i => ({ pedido_venda_id: _pedidoAtualId, produto_id: i.produto_id, quantidade: i.quantidade, preco_unit: i.preco_unit, custo_unit: i.custo_unit, total_venda: i.total_venda, total_custo: i.total_custo, lucro: i.lucro, quant_despacho: i.quant_despacho || i.quantidade, unid_despacho: i.unid_despacho || '' }));
+        // Busca itens existentes para preservar ids e quant_despacho do operador
+    const { data: itensExistentes } = await window.db.from('itens_pedidos_vendas')
+      .select('id, produto_id, quant_despacho, unid_despacho')
+      .eq('pedido_venda_id', _pedidoAtualId);
+    const mapaExistentes = {};
+    (itensExistentes || []).forEach(e => { mapaExistentes[e.produto_id] = e; });
 
-    await window.db.from('itens_pedidos_vendas').insert(rows);
+    // Deleta apenas itens removidos do pedido
+    const produtosAtivos = itens.map(i => i.produto_id);
+    const idsParaDeletar = (itensExistentes || []).filter(e => !produtosAtivos.includes(e.produto_id)).map(e => e.id);
+    if (idsParaDeletar.length) await window.db.from('itens_pedidos_vendas').delete().in('id', idsParaDeletar);
+
+    // Atualiza existentes ou insere novos — preserva quant_despacho e unid_despacho do operador
+    for (const i of itens) {
+      const ex = mapaExistentes[i.produto_id];
+      const payload = {
+        pedido_venda_id: _pedidoAtualId,
+        produto_id: i.produto_id,
+        quantidade: i.quantidade,
+        preco_unit: i.preco_unit,
+        custo_unit: i.custo_unit,
+        total_venda: i.total_venda,
+        total_custo: i.total_custo,
+        lucro: i.lucro,
+        quant_despacho: i.quant_despacho != null ? i.quant_despacho : i.quantidade,
+        unid_despacho: i.unid_despacho || null
+      };
+      if (ex) {
+        // Preserva o que o operador já gravou se o admin não alterou o despacho
+        if (ex.quant_despacho != null && i.quant_despacho == null) {
+          payload.quant_despacho = ex.quant_despacho;
+          payload.unid_despacho = ex.unid_despacho;
+        }
+        await window.db.from('itens_pedidos_vendas').update(payload).eq('id', ex.id);
+      } else {
+        await window.db.from('itens_pedidos_vendas').insert(payload);
+      }
+    }
+
     setEstado('sincronizado');
     const clienteIdAtual = document.getElementById('busca-cliente').dataset.selectedId;
     if (clienteIdAtual) await carregarExtratoDetalhado(clienteIdAtual);
