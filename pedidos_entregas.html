@@ -77,6 +77,9 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:#F2F4F8;color:#1C1C1E
 .seg-track.confirmados .seg-thumb{transform:translateX(100%)}
 .seg-opt{flex:1;z-index:1;background:transparent;border:none;font-size:12px;font-weight:700;color:#8E8E93;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;transition:color 0.2s;border-radius:100px;}
 .seg-opt.active{color:#1C1C1E}
+/* ── Toast ── */
+.toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%) translateY(20px);background:#1C1C1E;color:#FFF;font-size:13px;font-weight:600;font-family:'Plus Jakarta Sans',sans-serif;padding:10px 20px;border-radius:100px;box-shadow:0 4px 16px rgba(0,0,0,0.2);opacity:0;transition:opacity 0.3s,transform 0.3s;pointer-events:none;white-space:nowrap;z-index:9999;}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
 </style>
 </head>
 <body>
@@ -163,6 +166,8 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:#F2F4F8;color:#1C1C1E
     </div>
 </div>
 
+<div class="toast" id="toast"></div>
+
 <script>
 // ─── Estado global ────────────────────────────────────────────────────────────
 const PIN = '1234';
@@ -173,6 +178,17 @@ let _todosProdutos = [];
 let _pin = '';
 let _pedidos = [], _filtrados = [], _conf = {};
 let _idx = 0, _pedidoAberto = null;
+let _pollingTimer = null;
+// Snapshot dos itens do pedido aberto para detectar mudanças
+let _itensSnapshot = null;
+
+// ─── Toast ────────────────────────────────────────────────────────────────────
+function mostrarToast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 3000);
+}
 
 // ─── PIN ──────────────────────────────────────────────────────────────────────
 function pinDigit(d) {
@@ -193,6 +209,7 @@ function _checkPin() {
     if (_pin === PIN) {
         document.getElementById('pin-screen').classList.add('hidden');
         carregarApp();
+        iniciarPolling();
     } else {
         document.getElementById('pin-error').textContent = 'PIN incorreto';
         _pin = ''; _renderDots();
@@ -220,7 +237,6 @@ async function carregarApp() {
         .select('id, data, clientes(id, nome, cidade)')
         .gte('data', ciclo.d0.toISOString()).lte('data', ciclo.d7.toISOString())
         .order('data', { ascending: false });
-;
     _pedidos = data || [];
 
     if (_pedidos.length) {
@@ -248,6 +264,69 @@ async function recarregar() {
     _pedidos = [];
     await carregarApp();
     btn.style.opacity = '1';
+}
+
+// ─── Polling (só operador) ────────────────────────────────────────────────────
+function iniciarPolling() {
+    if (_isAdmin) return; // admin não faz polling
+    _pollingTimer = setInterval(pollAtualizar, 60000);
+
+}
+
+async function pollAtualizar() {
+    try {
+        // Atualiza lista de pedidos silenciosamente
+        const ciclo = window.cicloAtual;
+        if (!ciclo) return;
+
+        const { data: pedidosNovos } = await window.db.from('pedidos_vendas')
+            .select('id, data, clientes(id, nome, cidade)')
+            .gte('data', ciclo.d0.toISOString()).lte('data', ciclo.d7.toISOString())
+            .order('data', { ascending: false });
+
+        if (!pedidosNovos) return;
+        _pedidos = pedidosNovos;
+
+        const ids = _pedidos.map(p => p.id);
+        const { data: conf } = await window.db.from('conferencia_entrega').select('*').in('pedido_venda_id', ids);
+        _conf = {};
+        (conf || []).forEach(c => {
+            if (!_conf[c.pedido_venda_id]) _conf[c.pedido_venda_id] = {};
+            _conf[c.pedido_venda_id][c.item_id] = c;
+        });
+
+        // Se o modal está aberto, verifica se os itens mudaram
+        const modalAberto = document.getElementById('modal').classList.contains('active');
+        if (modalAberto && _pedidoAberto) {
+            const { data: itensNovos } = await window.db.from('itens_pedidos_vendas')
+                .select('id, quantidade, produto_id')
+                .eq('pedido_venda_id', _pedidoAberto.id);
+
+            const snapshotAtual = JSON.stringify((itensNovos || []).map(i => ({ id: i.id, quantidade: i.quantidade, produto_id: i.produto_id })).sort((a,b) => a.id.localeCompare(b.id)));
+
+            if (_itensSnapshot && snapshotAtual !== _itensSnapshot) {
+                // Houve mudança — recarrega o modal silenciosamente
+                const idx = _filtrados.findIndex(p => p.id === _pedidoAberto.id);
+                if (idx !== -1) await abrirPedido(idx);
+                mostrarToast('Pedido atualizado pelo administrador');
+            }
+            _itensSnapshot = snapshotAtual;
+        } else {
+            _itensSnapshot = null;
+            // Atualiza a lista visualmente
+            const chipAtivo = document.querySelector('.filtro-chip.active');
+            const cidadeAtiva = chipAtivo ? chipAtivo.textContent.trim() : null;
+            const cidade = cidadeAtiva === 'Todas' ? null : cidadeAtiva;
+            const base = cidade ? _pedidos.filter(p => p.clientes?.cidade === cidade) : [..._pedidos];
+            _filtrados = base.filter(p => {
+                const temConf = Object.values(_conf[p.id] || {}).some(c => c.confirmado_operador === true);
+                return _estado === 'confirmados' ? temConf : !temConf;
+            });
+            renderLista(); renderNav();
+        }
+    } catch(e) {
+        // polling silencioso — ignora erros
+    }
 }
 
 // ─── Filtros e lista ──────────────────────────────────────────────────────────
@@ -335,6 +414,9 @@ async function abrirPedido(i) {
     const { data: itens } = await window.db.from('itens_pedidos_vendas').select('id, quantidade, produto_id').eq('pedido_venda_id', p.id);
     const conf = _conf[p.id] || {};
 
+    // Tira snapshot para o polling comparar
+    _itensSnapshot = JSON.stringify((itens || []).map(i => ({ id: i.id, quantidade: i.quantidade, produto_id: i.produto_id })).sort((a,b) => a.id.localeCompare(b.id)));
+
     const rows = (itens || []).map(it => {
         const prod = _todosProdutos.find(pr => pr.id === it.produto_id);
         const nome = prod ? prod.nome : it.produto_id;
@@ -366,7 +448,11 @@ document.addEventListener('focusin', e => {
     if (e.target.classList.contains('campo')) e.target.select();
 });
 
-function fecharModal() { document.getElementById('modal').classList.remove('active'); }
+function fecharModal() {
+    document.getElementById('modal').classList.remove('active');
+    _pedidoAberto = null;
+    _itensSnapshot = null;
+}
 
 async function salvar() {
     const btn = document.getElementById('btn-confirmar');
@@ -437,7 +523,6 @@ document.addEventListener('DOMContentLoaded', function () {
         const _data = _params.get('data') || '';
         document.getElementById('btn-voltar').onclick = () => {
             window.location.href = `vendas.html?cliente_id=${_cid}&cliente_nome=${encodeURIComponent(_cnome)}&data=${_data}`;
-
         };
         carregarApp();
     }
