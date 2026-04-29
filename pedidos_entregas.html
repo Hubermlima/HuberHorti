@@ -242,7 +242,7 @@ async function carregarApp() {
     if (_pedidos.length) {
         const ids = _pedidos.map(p => p.id);
         const { data: itensConf } = await window.db.from('itens_pedidos_vendas')
-            .select('pedido_venda_id, produto_id, quant_despacho, unid_despacho')
+            .select('pedido_venda_id, operador_confirmou')
             .in('pedido_venda_id', ids);
 
         // Agrupa itens por pedido
@@ -252,17 +252,11 @@ async function carregarApp() {
             itensPorPedido[it.pedido_venda_id].push(it);
         });
 
-        // Um pedido é confirmado se todos os itens com unid_despacho diferente de unid_venda têm quant_despacho preenchido
+        // Um pedido é confirmado se todos os seus itens têm operador_confirmou = true
         _pedidosConfirmados = new Set();
         _pedidos.forEach(p => {
             const itens = itensPorPedido[p.id] || [];
-            const produtosMap = {};
-            _todosProdutos.forEach(pr => { produtosMap[pr.id] = pr; });
-            const itensAlternativos = itens.filter(it => {
-                const unidOficial = produtosMap[it.produto_id]?.unid_venda || '';
-                return it.unid_despacho && it.unid_despacho !== unidOficial;
-            });
-            if (itensAlternativos.length > 0 && itensAlternativos.every(it => it.quant_despacho != null)) {
+            if (itens.length > 0 && itens.every(it => it.operador_confirmou === true)) {
                 _pedidosConfirmados.add(p.id);
             }
         });
@@ -419,7 +413,7 @@ async function abrirPedido(i) {
     document.getElementById('modal').classList.add('active');
 
     const { data: itens } = await window.db.from('itens_pedidos_vendas')
-        .select('id, quantidade, produto_id, quant_despacho, unid_despacho')
+        .select('id, quantidade, produto_id, quant_despacho, unid_despacho, operador_confirmou')
         .eq('pedido_venda_id', p.id);
 
     // Snapshot para polling
@@ -429,22 +423,20 @@ async function abrirPedido(i) {
         const prod = _todosProdutos.find(pr => pr.id === it.produto_id);
         const nome = prod ? prod.nome : it.produto_id;
         const unidOficial = prod ? (prod.unid_venda || '') : '';
-        // Operador edita quant_despacho e unid_despacho
-        // Se unid_despacho === unid_venda → só consulta (não pode editar)
+        const jaConfirmado = it.operador_confirmou === true;
         const temDespachoAlternativo = it.unid_despacho && it.unid_despacho !== unidOficial;
         const qtdVal = it.quant_despacho != null
             ? parseFloat(it.quant_despacho).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
             : parseFloat(it.quantidade || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         const unidVal = it.unid_despacho || unidOficial;
-        const preenchido = it.quant_despacho != null;
-        const ok = preenchido ? 'ok' : '';
-        const podeEditar = !_isAdmin && temDespachoAlternativo;
+        const ok = jaConfirmado ? 'ok' : '';
+        // Operador pode editar se: não é admin, tem despacho alternativo, e ainda não confirmou
+        const podeEditar = !_isAdmin && temDespachoAlternativo && !jaConfirmado;
         const readonlyAttr = podeEditar ? '' : 'readonly';
-        const readonlyClass = podeEditar ? '' : ' readonly';
         return `<div class="lista-row" data-item-id="${it.id}" data-produto-id="${it.produto_id}">
             <div class="prod-nome">${nome}</div>
             <input class="campo ${ok} qtd-campo" type="tel" inputmode="decimal" value="${qtdVal}" placeholder="0,00" oninput="mascaraQtd(this)" ${readonlyAttr} style="${readonlyAttr ? 'color:#8E8E93;background:#F9F9F9;' : ''}">
-            <input class="campo${readonlyClass} unid-campo" type="text" value="${unidVal}" placeholder="un" ${readonlyAttr} style="${readonlyAttr ? 'color:#8E8E93;background:#F9F9F9;' : ''}">
+            <input class="campo ${ok} unid-campo" type="text" value="${unidVal}" placeholder="un" ${readonlyAttr} style="${readonlyAttr ? 'color:#8E8E93;background:#F9F9F9;' : ''}">
         </div>`;
     }).join('');
 
@@ -487,11 +479,11 @@ async function salvar() {
 
     for (const u of updates) {
         await window.db.from('itens_pedidos_vendas')
-            .update({ quant_despacho: u.quant_despacho, unid_despacho: u.unid_despacho })
+            .update({ quant_despacho: u.quant_despacho, unid_despacho: u.unid_despacho, operador_confirmou: true })
             .eq('id', u.id);
     }
 
-    // Marca pedido como confirmado localmente
+    // Marca pedido como confirmado localmente se todos os editáveis foram preenchidos
     if (updates.length > 0) _pedidosConfirmados.add(p.id);
 
     btn.disabled = false;
