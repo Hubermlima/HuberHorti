@@ -310,10 +310,12 @@ async function pollAtualizar() {
         const modalAberto = document.getElementById('modal').classList.contains('active');
         if (modalAberto && _pedidoAberto) {
             const { data: itensNovos } = await window.db.from('itens_pedidos_vendas')
-                .select('id, quantidade, produto_id, quant_despacho, unid_despacho')
+                .select('id, quantidade, produto_id, quant_despacho, unid_despacho, operador_confirmou')
+
                 .eq('pedido_venda_id', _pedidoAberto.id);
 
-            const snapshotAtual = JSON.stringify((itensNovos || []).map(i => ({ produto_id: i.produto_id, quantidade: i.quantidade, quant_despacho: i.quant_despacho, unid_despacho: i.unid_despacho })).sort((a,b) => a.produto_id.localeCompare(b.produto_id)));
+            const snapshotAtual = JSON.stringify((itensNovos || []).map(i => ({ produto_id: i.produto_id, quantidade: i.quantidade, quant_despacho: i.quant_despacho, unid_despacho: i.unid_despacho, operador_confirmou: i.operador_confirmou })).sort((a,b) => a.produto_id.localeCompare(b.produto_id)));
+
 
             if (_itensSnapshot && snapshotAtual !== _itensSnapshot) {
                 const idx = _filtrados.findIndex(p => p.id === _pedidoAberto.id);
@@ -321,14 +323,37 @@ async function pollAtualizar() {
                 mostrarToast('Pedido atualizado pelo administrador');
             }
             _itensSnapshot = snapshotAtual;
-        } else {
-            _itensSnapshot = null;
-            const chipAtivo = document.querySelector('.filtro-chip.active');
-            const cidadeAtiva = chipAtivo ? chipAtivo.textContent.trim() : null;
-            const cidade = cidadeAtiva === 'Todas' ? null : cidadeAtiva;
-            const base = cidade ? _pedidos.filter(p => p.clientes?.cidade === cidade) : [..._pedidos];
-            _filtrados = base;
-            renderLista(); renderNav();
+       } else {
+    _itensSnapshot = null;
+    const ids = _pedidos.map(p => p.id);
+    if (ids.length) {
+        const { data: itensConf } = await window.db.from('itens_pedidos_vendas')
+            .select('pedido_venda_id, operador_confirmou')
+            .in('pedido_venda_id', ids);
+        const itensPorPedido = {};
+        (itensConf || []).forEach(it => {
+            if (!itensPorPedido[it.pedido_venda_id]) itensPorPedido[it.pedido_venda_id] = [];
+            itensPorPedido[it.pedido_venda_id].push(it);
+        });
+        _pedidosConfirmados = new Set();
+        _pedidos.forEach(p => {
+            const itens = itensPorPedido[p.id] || [];
+            if (itens.length > 0 && itens.every(it => it.operador_confirmou === true)) {
+                _pedidosConfirmados.add(p.id);
+            }
+        });
+    }
+    const chipAtivo = document.querySelector('.filtro-chip.active');
+    const cidadeAtiva = chipAtivo ? chipAtivo.textContent.trim() : null;
+    const cidade = cidadeAtiva === 'Todas' ? null : cidadeAtiva;
+    const base = cidade ? _pedidos.filter(p => p.clientes?.cidade === cidade) : [..._pedidos];
+    _filtrados = base.filter(p => {
+        const confirmado = _pedidosConfirmados.has(p.id);
+        return _estado === 'confirmados' ? confirmado : !confirmado;
+    });
+    renderLista(); renderNav();
+}
+
         }
     } catch(e) {
         // polling silencioso
