@@ -339,6 +339,26 @@ border-radius:10px;padding:2px 6px;}
 .numpad-key.virgula{font-size:22px;font-weight:700;}
 
 #sheet-itens{font-size:13px;font-weight:500;color:#8E8E93;}
+
+.save-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.35);z-index:99999;display:none;align-items:center;justify-content:center;}
+.save-modal-overlay.active{display:flex;}
+.save-modal{width:calc(100% - 48px);max-width:360px;border-radius:24px;padding:24px 20px 28px;box-shadow:0 24px 64px rgba(0,0,0,0.18);display:flex;flex-direction:column;gap:16px;transition:background 0.4s;}
+.save-modal.sucesso{background:#F0FDF4;}
+.save-modal.erro{background:#FEF2F2;}
+.save-modal.salvando{background:#F8F8FA;}
+.save-modal-titulo{font-size:17px;font-weight:700;color:#1C1C1E;}
+.save-modal-lista{display:flex;flex-direction:column;gap:6px;max-height:260px;overflow-y:auto;}
+.save-modal-item{display:flex;align-items:center;gap:10px;font-size:14px;color:#1C1C1E;}
+.save-modal-item-icone{width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+.save-modal-item-icone.pendente{background:#E5E5EA;}
+.save-modal-item-icone.ok{background:#10B981;}
+.save-modal-item-icone.falhou{background:#EF4444;}
+.save-modal-progress{height:6px;background:#E5E5EA;border-radius:3px;overflow:hidden;}
+.save-modal-progress-bar{height:100%;background:#007AFF;border-radius:3px;transition:width 0.3s ease;}
+.save-modal-erro-msg{font-size:13px;color:#EF4444;font-weight:500;}
+.save-modal-btn{width:100%;padding:15px;border:none;border-radius:100px;font-family:'Inter',sans-serif;font-size:15px;font-weight:600;cursor:pointer;background:#007AFF;color:#FFF;}
+.save-modal-btn.erro{background:#EF4444;}
+
 #sheet-total{font-size:15px;font-weight:600;color:#1C1C1E;}
 #sheet-lucro{font-size:15px;}
 #sheet-margem{font-size:20px;font-weight:700;}
@@ -1108,9 +1128,10 @@ function closeSheet() {
   document.getElementById('sheet').classList.remove('open');
   document.getElementById('overlay').classList.remove('active');
   fecharTagForm();
-  const lock = document.getElementById('lock-overlay');
-  if (lock && (statusAtual === 'editando' || statusAtual === 'salvando')) lock.style.display = 'block';
+  clearTimeout(timerAutoSave);
+  if (statusAtual === 'editando') { salvarDadosSincComModal(); return; }
 }
+
 
 
 
@@ -1521,13 +1542,10 @@ async function salvarDadosSinc() {
   const itens = Object.values(_itensPedidoAtual).filter(i => parseFloat(i.quantidade) > 0);
   if (itens.length === 0) { setEstado('sincronizado'); return; }
   setEstado('salvando');
-  
   const valorTotalNum = Math.floor(itens.reduce((a,i) => a + parseFloat(i.total_venda), 0));
-
-
-const totalCustoNum = itens.reduce((a,i) => a + parseFloat(i.total_custo || 0), 0);
-const totalLucroNum = valorTotalNum - totalCustoNum;
-const margemPctNum = valorTotalNum > 0 ? (totalLucroNum / valorTotalNum) * 100 : 0;
+  const totalCustoNum = itens.reduce((a,i) => a + parseFloat(i.total_custo || 0), 0);
+  const totalLucroNum = valorTotalNum - totalCustoNum;
+  const margemPctNum = valorTotalNum > 0 ? (totalLucroNum / valorTotalNum) * 100 : 0;
   const clienteId = document.getElementById('busca-cliente').dataset.selectedId;
   const dataVenda = document.getElementById('data-ciclo').value;
   const isNovo = !_pedidoAtualId;
@@ -1537,32 +1555,24 @@ const margemPctNum = valorTotalNum > 0 ? (totalLucroNum / valorTotalNum) * 100 :
       const hh = String(agora.getHours()).padStart(2,'0');
       const mi = String(agora.getMinutes()).padStart(2,'0');
       const dataComHora = `${dataVenda}T${hh}:${mi}:00-04:00`;
-
-            const { data: pData, error: pErr } = await window.db.from('pedidos_vendas').insert({
+      const { data: pData, error: pErr } = await window.db.from('pedidos_vendas').insert({
         data: dataComHora, cliente_id: clienteId, total_venda: valorTotalNum, em_aberto: valorTotalNum,
         total_custo: totalCustoNum, total_lucro: totalLucroNum, margem_pct: margemPctNum
       }).select();
-
       if (pErr) throw pErr;
       _pedidoAtualId = pData[0].id;
       _pedidoAbertoId = _pedidoAtualId;
     } else {
-            await window.db.from('pedidos_vendas').update({ data: dataVenda, total_venda: valorTotalNum, em_aberto: valorTotalNum, total_custo: totalCustoNum, total_lucro: totalLucroNum, margem_pct: margemPctNum }).eq('id', _pedidoAtualId);
-
+      await window.db.from('pedidos_vendas').update({ data: dataVenda, total_venda: valorTotalNum, em_aberto: valorTotalNum, total_custo: totalCustoNum, total_lucro: totalLucroNum, margem_pct: margemPctNum }).eq('id', _pedidoAtualId);
     }
-        // Busca itens existentes para preservar ids e quant_despacho do operador
     const { data: itensExistentes } = await window.db.from('itens_pedidos_vendas')
       .select('id, produto_id, quant_despacho, unid_despacho')
       .eq('pedido_venda_id', _pedidoAtualId);
     const mapaExistentes = {};
     (itensExistentes || []).forEach(e => { mapaExistentes[e.produto_id] = e; });
-
-    // Deleta apenas itens removidos do pedido
     const produtosAtivos = itens.map(i => i.produto_id);
     const idsParaDeletar = (itensExistentes || []).filter(e => !produtosAtivos.includes(e.produto_id)).map(e => e.id);
     if (idsParaDeletar.length) await window.db.from('itens_pedidos_vendas').delete().in('id', idsParaDeletar);
-
-    // Atualiza existentes ou insere novos — preserva quant_despacho e unid_despacho do operador
     for (const i of itens) {
       const ex = mapaExistentes[i.produto_id];
       const payload = {
@@ -1578,7 +1588,6 @@ const margemPctNum = valorTotalNum > 0 ? (totalLucroNum / valorTotalNum) * 100 :
         unid_despacho: i.unid_despacho || null
       };
       if (ex) {
-        // Preserva o que o operador já gravou se o admin não alterou o despacho
         if (ex.quant_despacho != null && i.quant_despacho == null) {
           payload.quant_despacho = ex.quant_despacho;
           payload.unid_despacho = ex.unid_despacho;
@@ -1588,12 +1597,83 @@ const margemPctNum = valorTotalNum > 0 ? (totalLucroNum / valorTotalNum) * 100 :
         await window.db.from('itens_pedidos_vendas').insert(payload);
       }
     }
-
     setEstado('sincronizado');
     const clienteIdAtual = document.getElementById('busca-cliente').dataset.selectedId;
     if (clienteIdAtual) await carregarExtratoDetalhado(clienteIdAtual);
   } catch (err) { setEstado('erro', err.message); }
 }
+
+async function salvarDadosSincComModal() {
+  const itens = Object.values(_itensPedidoAtual).filter(i => parseFloat(i.quantidade) > 0);
+  if (itens.length === 0) { window.location.href = 'central_vendas.html'; return; }
+  abrirSaveModal(itens);
+  const valorTotalNum = Math.floor(itens.reduce((a,i) => a + parseFloat(i.total_venda), 0));
+  const totalCustoNum = itens.reduce((a,i) => a + parseFloat(i.total_custo || 0), 0);
+  const totalLucroNum = valorTotalNum - totalCustoNum;
+  const margemPctNum = valorTotalNum > 0 ? (totalLucroNum / valorTotalNum) * 100 : 0;
+  const clienteId = document.getElementById('busca-cliente').dataset.selectedId;
+  const dataVenda = document.getElementById('data-ciclo').value;
+  const isNovo = !_pedidoAtualId;
+  try {
+    if (isNovo) {
+      const agora = new Date();
+      const hh = String(agora.getHours()).padStart(2,'0');
+      const mi = String(agora.getMinutes()).padStart(2,'0');
+      const dataComHora = `${dataVenda}T${hh}:${mi}:00-04:00`;
+      const { data: pData, error: pErr } = await window.db.from('pedidos_vendas').insert({
+        data: dataComHora, cliente_id: clienteId, total_venda: valorTotalNum, em_aberto: valorTotalNum,
+        total_custo: totalCustoNum, total_lucro: totalLucroNum, margem_pct: margemPctNum
+      }).select();
+      if (pErr) throw pErr;
+      _pedidoAtualId = pData[0].id;
+      _pedidoAbertoId = _pedidoAtualId;
+    } else {
+      await window.db.from('pedidos_vendas').update({ data: dataVenda, total_venda: valorTotalNum, em_aberto: valorTotalNum, total_custo: totalCustoNum, total_lucro: totalLucroNum, margem_pct: margemPctNum }).eq('id', _pedidoAtualId);
+    }
+    const { data: itensExistentes } = await window.db.from('itens_pedidos_vendas')
+      .select('id, produto_id, quant_despacho, unid_despacho')
+      .eq('pedido_venda_id', _pedidoAtualId);
+    const mapaExistentes = {};
+    (itensExistentes || []).forEach(e => { mapaExistentes[e.produto_id] = e; });
+    const produtosAtivos = itens.map(i => i.produto_id);
+    const idsParaDeletar = (itensExistentes || []).filter(e => !produtosAtivos.includes(e.produto_id)).map(e => e.id);
+    if (idsParaDeletar.length) await window.db.from('itens_pedidos_vendas').delete().in('id', idsParaDeletar);
+    for (let idx = 0; idx < itens.length; idx++) {
+      const i = itens[idx];
+      const ex = mapaExistentes[i.produto_id];
+      const payload = {
+        pedido_venda_id: _pedidoAtualId,
+        produto_id: i.produto_id,
+        quantidade: i.quantidade,
+        preco_unit: i.preco_unit,
+        custo_unit: i.custo_unit,
+        total_venda: i.total_venda,
+        total_custo: i.total_custo,
+        lucro: i.lucro,
+        quant_despacho: i.quant_despacho != null ? i.quant_despacho : i.quantidade,
+        unid_despacho: i.unid_despacho || null
+      };
+      if (ex) {
+        if (ex.quant_despacho != null && i.quant_despacho == null) {
+          payload.quant_despacho = ex.quant_despacho;
+          payload.unid_despacho = ex.unid_despacho;
+        }
+        await window.db.from('itens_pedidos_vendas').update(payload).eq('id', ex.id);
+      } else {
+        await window.db.from('itens_pedidos_vendas').insert(payload);
+      }
+      saveModalMarcarItem(idx, itens.length);
+    }
+    setEstado('sincronizado');
+    saveModalSucesso();
+  } catch (err) {
+    setEstado('erro', err.message);
+    const online = navigator.onLine;
+    const msgErro = online ? `Erro: ${err.message}` : 'Sem conexão com a internet';
+    saveModalErro(msgErro);
+  }
+}
+
 
 async function abrirNotaPorId(pedidoId, readonly) {
   setEstado('salvando');
@@ -2247,7 +2327,80 @@ let _numpadLimparProxima = false;
 
 
 
+function abrirSaveModal(itens) {
+  const overlay = document.getElementById('save-modal-overlay');
+  const modal = document.getElementById('save-modal');
+  const lista = document.getElementById('save-modal-lista');
+  const bar = document.getElementById('save-modal-bar');
+  const titulo = document.getElementById('save-modal-titulo');
+  const btn = document.getElementById('save-modal-btn');
+  const erroMsg = document.getElementById('save-modal-erro');
+  modal.className = 'save-modal salvando';
+  titulo.textContent = 'Salvando pedido...';
+  btn.style.display = 'none';
+  btn.className = 'save-modal-btn';
+  erroMsg.style.display = 'none';
+  bar.style.width = '0%';
+  lista.innerHTML = itens.map((i,idx) => {
+    const prod = _todosProdutos.find(p => p.id === i.produto_id);
+    const nome = prod ? prod.nome : i.produto_id;
+    return `<div class="save-modal-item" id="save-item-${idx}">
+      <div class="save-modal-item-icone pendente" id="save-icone-${idx}"></div>
+      <span>${nome}</span>
+    </div>`;
+  }).join('');
+  overlay.classList.add('active');
+}
+
+function saveModalMarcarItem(idx, total) {
+  const icone = document.getElementById(`save-icone-${idx}`);
+  const bar = document.getElementById('save-modal-bar');
+  if (icone) { icone.className = 'save-modal-item-icone ok'; icone.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#FFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>'; }
+  bar.style.width = `${Math.round(((idx + 1) / total) * 100)}%`;
+}
+
+function saveModalSucesso() {
+  const modal = document.getElementById('save-modal');
+  const titulo = document.getElementById('save-modal-titulo');
+  const btn = document.getElementById('save-modal-btn');
+  const bar = document.getElementById('save-modal-bar');
+  bar.style.width = '100%';
+  bar.style.background = '#10B981';
+  modal.className = 'save-modal sucesso';
+  titulo.textContent = 'Pedido salvo com sucesso ✓';
+  btn.style.display = 'block';
+  btn.className = 'save-modal-btn';
+}
+
+function saveModalErro(msg) {
+  const modal = document.getElementById('save-modal');
+  const titulo = document.getElementById('save-modal-titulo');
+  const btn = document.getElementById('save-modal-btn');
+  const erroMsg = document.getElementById('save-modal-erro');
+  const bar = document.getElementById('save-modal-bar');
+  bar.style.background = '#EF4444';
+  modal.className = 'save-modal erro';
+  titulo.textContent = 'Erro ao salvar';
+  erroMsg.textContent = msg;
+  erroMsg.style.display = 'block';
+  btn.style.display = 'block';
+  btn.className = 'save-modal-btn erro';
+  btn.textContent = 'Tentar novamente';
+}
+
+function saveModalConfirmar() {
+  const btn = document.getElementById('save-modal-btn');
+  if (btn.textContent === 'Tentar novamente') {
+    document.getElementById('save-modal-overlay').classList.remove('active');
+    closeSheet();
+    return;
+  }
+  document.getElementById('save-modal-overlay').classList.remove('active');
+  window.location.href = 'central_vendas.html';
+}
+
 function numpadNavegar(dir) {
+
   const ordem = ['tf-quant', 'tf-unit', 'tf-total'];
   const idx = ordem.indexOf(_numpadCampoAtivo);
   if (idx === -1) return;
@@ -2270,7 +2423,17 @@ function numpadNavegar(dir) {
 
 
 
+<div class="save-modal-overlay" id="save-modal-overlay">
+  <div class="save-modal salvando" id="save-modal">
+    <div class="save-modal-titulo" id="save-modal-titulo">Salvando pedido...</div>
+    <div class="save-modal-progress"><div class="save-modal-progress-bar" id="save-modal-bar" style="width:0%"></div></div>
+    <div class="save-modal-lista" id="save-modal-lista"></div>
+    <div class="save-modal-erro-msg" id="save-modal-erro" style="display:none"></div>
+    <button class="save-modal-btn" id="save-modal-btn" style="display:none" onclick="saveModalConfirmar()">OK</button>
+  </div>
+</div>
 <div id="lock-overlay" style="display:none;position:fixed;inset:0;z-index:99999;background:transparent;"></div>
+
 </body>
 </html>
 
