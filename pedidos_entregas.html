@@ -82,6 +82,9 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:#F2F4F8;color:#1C1C1E
 .seg-track.confirmados .seg-thumb{transform:translateX(100%)}
 .seg-opt{flex:1;z-index:1;background:transparent;border:none;font-size:12px;font-weight:700;color:#8E8E93;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;transition:color 0.2s;border-radius:100px;}
 .seg-opt.active{color:#1C1C1E}
+/* ── Status atualização ── */
+@keyframes pulso{0%,100%{color:#475569}50%{color:#F59E0B}}
+.topbar-sub.pulsando{animation:pulso 1s ease-in-out infinite;}
 /* ── Toast ── */
 .toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%) translateY(20px);background:#1C1C1E;color:#FFF;font-size:13px;font-weight:600;font-family:'Plus Jakarta Sans',sans-serif;padding:10px 20px;border-radius:100px;box-shadow:0 4px 16px rgba(0,0,0,0.2);opacity:0;transition:opacity 0.3s,transform 0.3s;pointer-events:none;white-space:nowrap;z-index:9999;}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
@@ -122,7 +125,7 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:#F2F4F8;color:#1C1C1E
     <div style="width:36px" id="spacer-left"></div>
     <div class="topbar-center">
         <div class="topbar-title">Pedidos de Entrega</div>
-        <div class="topbar-sub" id="topbar-sub">—</div>
+        <div class="topbar-sub" id="topbar-sub">Aguardando atualizações</div>
     </div>
     <button class="ios-btn" id="btn-refresh" onclick="recarregar()">
         <svg viewBox="0 0 24 24" style="width:16px;height:16px;stroke:#475569;stroke-width:2.2;fill:none"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
@@ -186,6 +189,8 @@ let _idx = 0, _pedidoAberto = null;
 let _pollingTimer = null;
 // Snapshot dos itens do pedido aberto para detectar mudanças
 let _itensSnapshot = null;
+let _checkboxesMarcados = new Set(); // produto_id marcados pelo operador
+
 
 // ─── Toast ────────────────────────────────────────────────────────────────────
 function mostrarToast(msg) {
@@ -195,7 +200,18 @@ function mostrarToast(msg) {
     setTimeout(() => t.classList.remove('show'), 3000);
 }
 
-// ─── PIN ──────────────────────────────────────────────────────────────────────
+// ─── Status de atualização ───────────────────────────────────────────────────
+let _pulsoTimer = null;
+function mostrarStatusAtualizado() {
+    const sub = document.getElementById('topbar-sub');
+    const agora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Manaus' });
+    sub.textContent = `Atualizado pelo adm · ${agora}`;
+    sub.classList.add('pulsando');
+    if (_pulsoTimer) clearTimeout(_pulsoTimer);
+    _pulsoTimer = setTimeout(() => sub.classList.remove('pulsando'), 15000);
+}
+
+
 function pinDigit(d) {
     if (_pin.length >= 4) return;
     _pin += d; _renderDots();
@@ -271,7 +287,6 @@ async function carregarApp() {
     const wrap = document.getElementById('filtro-wrap');
     wrap.innerHTML = `<button class="filtro-chip active" onclick="filtrar(null,this)">Todas</button>` +
         cidades.map(c => `<button class="filtro-chip" onclick="filtrar('${c}',this)">${c}</button>`).join('');
-    document.getElementById('topbar-sub').textContent = `${_pedidos.length} pedidos · ciclo atual`;
     filtrar(null, wrap.querySelector('.active'));
 }
 
@@ -318,10 +333,37 @@ async function pollAtualizar() {
 
 
             if (_itensSnapshot && snapshotAtual !== _itensSnapshot) {
-                const idx = _filtrados.findIndex(p => p.id === _pedidoAberto.id);
-                if (idx !== -1) await abrirPedido(idx);
-                mostrarToast('Pedido atualizado pelo administrador');
-            }
+    // Salva quais estavam marcados
+    _checkboxesMarcados = new Set();
+    document.querySelectorAll('#modal-body .lista-row').forEach(row => {
+        const check = row.querySelector('.check-btn');
+        if (check && check.classList.contains('marcado')) {
+            _checkboxesMarcados.add(row.dataset.produtoId);
+        }
+    });
+
+    // Descobre quais produto_id foram alterados comparando snapshots
+    const snapAnterior = JSON.parse(_itensSnapshot);
+    const snapNovo = JSON.parse(snapshotAtual);
+    const alterados = new Set();
+    snapNovo.forEach(itemNovo => {
+        const itemAnterior = snapAnterior.find(a => a.produto_id === itemNovo.produto_id);
+        if (itemAnterior && (
+            itemAnterior.quant_despacho !== itemNovo.quant_despacho ||
+            itemAnterior.unid_despacho !== itemNovo.unid_despacho
+        )) {
+            alterados.add(itemNovo.produto_id);
+        }
+    });
+
+    // Remove do Set os que foram alterados
+    alterados.forEach(pid => _checkboxesMarcados.delete(pid));
+
+    const idx = _filtrados.findIndex(p => p.id === _pedidoAberto.id);
+    if (idx !== -1) await abrirPedido(idx, true);
+    mostrarStatusAtualizado();
+}
+
             _itensSnapshot = snapshotAtual;
        } else {
     _itensSnapshot = null;
@@ -335,6 +377,7 @@ async function pollAtualizar() {
             if (!itensPorPedido[it.pedido_venda_id]) itensPorPedido[it.pedido_venda_id] = [];
             itensPorPedido[it.pedido_venda_id].push(it);
         });
+        const confirmadosAntes = new Set(_pedidosConfirmados);
         _pedidosConfirmados = new Set();
         _pedidos.forEach(p => {
             const itens = itensPorPedido[p.id] || [];
@@ -342,6 +385,9 @@ async function pollAtualizar() {
                 _pedidosConfirmados.add(p.id);
             }
         });
+        // Se algum pedido saiu de confirmado para pendente, mostrar status
+        const desconfirmados = [...confirmadosAntes].filter(id => !_pedidosConfirmados.has(id));
+        if (desconfirmados.length > 0) mostrarStatusAtualizado();
     }
     const chipAtivo = document.querySelector('.filtro-chip.active');
     const cidadeAtiva = chipAtivo ? chipAtivo.textContent.trim() : null;
@@ -431,14 +477,16 @@ function navegar(dir) {
 }
 
 // ─── Modal ────────────────────────────────────────────────────────────────────
-async function abrirPedido(i) {
+async function abrirPedido(i, silencioso = false) {
     _idx = i; renderNav();
     const p = _filtrados[i];
     _pedidoAberto = p;
     document.getElementById('modal-nome').textContent = p.clientes?.nome || '—';
     const dt = p.data ? p.data.substring(0, 10).split('-').reverse().join('/') : '—';
     document.getElementById('modal-sub').textContent = dt + ' · ' + (p.clientes?.cidade || '');
-    document.getElementById('modal-body').innerHTML = '<p style="padding:20px;text-align:center;color:#475569;">Carregando itens...</p>';
+    if (!silencioso) {
+        document.getElementById('modal-body').innerHTML = '<p style="padding:20px;text-align:center;color:#475569;">Carregando itens...</p>';
+    }
     document.getElementById('modal').classList.add('active');
 
     const { data: itens } = await window.db.from('itens_pedidos_vendas')
@@ -475,11 +523,24 @@ async function abrirPedido(i) {
 
     }).join('');
 
-    document.getElementById('modal-body').innerHTML =
+        document.getElementById('modal-body').innerHTML =
         `<div class="lista-head"><span></span><span></span><span></span><span></span></div>`
-
 + rows;
+
+    // Reaplicar checkboxes que estavam marcados e não foram alterados
+    if (_checkboxesMarcados.size > 0) {
+        document.querySelectorAll('#modal-body .lista-row').forEach(row => {
+            if (_checkboxesMarcados.has(row.dataset.produtoId)) {
+                const check = row.querySelector('.check-btn');
+                const nome = row.querySelector('.prod-nome');
+                if (check) check.classList.add('marcado');
+                if (nome) nome.classList.add('marcado');
+            }
+        });
+        _checkboxesMarcados = new Set(); // limpa após aplicar
+    }
 }
+
 
 function mascaraQtd(input) {
     let v = input.value.replace(/\D/g, '');
