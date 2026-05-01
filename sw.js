@@ -26,3 +26,31 @@ self.addEventListener('fetch', e => {
     fetch(e.request).catch(() => caches.match(e.request))
   );
 });
+
+self.addEventListener('push', e => {
+  const data = e.data ? e.data.json() : {};
+  e.waitUntil(
+    self.registration.showNotification(data.title || 'HuberHorti', {
+      body: data.body || 'Pedido atualizado',
+      icon: '/icon-192.png',
+      badge: '/icon-192.png',
+      tag: 'huberhorti-update',
+      renotify: true
+    })
+  );
+});
+
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  e.waitUntil(
+    clients.matchAll({ type: 'window' }).then(list => {
+      for (const client of list) {
+        if (client.url.includes('pedidos_entregas') && 'focus' in client)
+          return client.focus();
+      }
+      if (clients.openWindow)
+        return clients.openWindow('/pedidos_entregas.html');
+    })
+  );
+});
+
