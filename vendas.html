@@ -670,7 +670,9 @@ let _tagFormSoLeitura = false;
 let _delPedidoId = null;
 let _delTagProdId = null;
 let _clienteAtual = null;
+let _houveMudancaParaOperador = false;
 let _ctxPedidoId = null;
+
 let _ctxDocLabel = null;
 let _extratoPedidos = [];
 let _extratoMovimentos = [];
@@ -1537,7 +1539,28 @@ function setEstado(novoStatus, msgErro = '') {
 
  
  
+async function dispararPushOperador() {
+    try {
+        const { data: subs } = await window.db.from('push_subscriptions').select('subscription');
+        if (!subs || !subs.length) return;
+        for (const row of subs) {
+            await fetch('https://huberhorti-push.huber-produtos.workers.dev', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    subscription: row.subscription,
+                    title: 'HuberHorti',
+                    body: 'Pedido atualizado pelo administrador'
+                })
+            });
+        }
+    } catch(e) {
+        console.error('Push error:', e);
+    }
+}
+
 async function salvarDadosSinc() {
+
   if (statusAtual !== 'editando') return;
   const itens = Object.values(_itensPedidoAtual).filter(i => parseFloat(i.quantidade) > 0);
   if (itens.length === 0) { setEstado('sincronizado'); return; }
@@ -1594,14 +1617,17 @@ async function salvarDadosSinc() {
         }
         const qtdMudou = parseFloat(ex.quant_despacho) !== parseFloat(payload.quant_despacho);
         const unidMudou = (ex.unid_despacho || '') !== (payload.unid_despacho || '');
-        if (qtdMudou || unidMudou) payload.operador_confirmou = false;
+                if (qtdMudou || unidMudou) { payload.operador_confirmou = false; _houveMudancaParaOperador = true; }
         await window.db.from('itens_pedidos_vendas').update(payload).eq('id', ex.id);
 
       } else {
         await window.db.from('itens_pedidos_vendas').insert(payload);
       }
     }
+    if (idsParaDeletar.length > 0 || _houveMudancaParaOperador) dispararPushOperador();
+    _houveMudancaParaOperador = false;
     setEstado('sincronizado');
+
     const clienteIdAtual = document.getElementById('busca-cliente').dataset.selectedId;
     if (clienteIdAtual) await carregarExtratoDetalhado(clienteIdAtual);
   } catch (err) { setEstado('erro', err.message); }
@@ -1670,7 +1696,7 @@ async function salvarDadosSincComModal() {
         }
         const qtdMudou = parseFloat(ex.quant_despacho) !== parseFloat(payload.quant_despacho);
         const unidMudou = (ex.unid_despacho || '') !== (payload.unid_despacho || '');
-        if (qtdMudou || unidMudou) payload.operador_confirmou = false;
+                if (qtdMudou || unidMudou) { payload.operador_confirmou = false; _houveMudancaParaOperador = true; }
         await window.db.from('itens_pedidos_vendas').update(payload).eq('id', ex.id);
 
       } else {
@@ -1678,8 +1704,11 @@ async function salvarDadosSincComModal() {
       }
       saveModalMarcarItem(idx, itens.length);
     }
+    if (idsParaDeletar.length > 0 || _houveMudancaParaOperador) dispararPushOperador();
+    _houveMudancaParaOperador = false;
     setEstado('sincronizado');
     saveModalSucesso();
+
   } catch (err) {
     setEstado('erro', err.message);
     const online = navigator.onLine;
