@@ -1,5 +1,6 @@
 const CACHE_NAME = 'huberhorti-v3';
 
+
 const ASSETS = [
   '/dashboard.html',
   '/supabase.js',
@@ -29,7 +30,9 @@ self.addEventListener('fetch', e => {
 });
 
 self.addEventListener('push', e => {
+  console.log('PUSH RECEBIDO', e.data ? e.data.text() : 'sem dados');
   const data = e.data ? e.data.json() : {};
+
   e.waitUntil(
     self.registration.showNotification(data.title || 'HuberHorti', {
       body: data.body || 'Pedido atualizado',
