@@ -1,4 +1,5 @@
-const CACHE_NAME = 'huberhorti-v1';
+const CACHE_NAME = 'huberhorti-v2';
+
 const ASSETS = [
   '/dashboard.html',
   '/supabase.js',
@@ -53,4 +54,3 @@ self.addEventListener('notificationclick', e => {
     })
   );
 });
-
