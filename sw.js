@@ -1,4 +1,4 @@
-const CACHE_NAME = 'huberhorti-v2';
+const CACHE_NAME = 'huberhorti-v3';
 
 const ASSETS = [
   '/dashboard.html',
