@@ -2,11 +2,8 @@
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8"/>
-<script src="https://cdn.jsdelivr.net/npm/eruda"></script>
-<script>eruda.init();</script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"/>
 <title>HuberHorti - Entrega</title>
-
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="supabase.js"></script>
@@ -86,11 +83,6 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:#F2F4F8;color:#1C1C1E
 .seg-track.confirmados .seg-thumb{transform:translateX(100%)}
 .seg-opt{flex:1;z-index:1;background:transparent;border:none;font-size:12px;font-weight:700;color:#8E8E93;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;transition:color 0.2s;border-radius:100px;}
 .seg-opt.active{color:#1C1C1E}
-/* ── Botão notificação ── */
-.btn-notif{width:36px;height:36px;border-radius:50%;border:none;background:#FFF3CD;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,0.08);cursor:pointer;flex-shrink:0;}
-/* ── Status atualização ── */
-@keyframes pulso{0%,100%{color:#475569}50%{color:#F59E0B}}
-.topbar-sub.pulsando{animation:pulso 1s ease-in-out infinite;}
 /* ── Toast ── */
 .toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%) translateY(20px);background:#1C1C1E;color:#FFF;font-size:13px;font-weight:600;font-family:'Plus Jakarta Sans',sans-serif;padding:10px 20px;border-radius:100px;box-shadow:0 4px 16px rgba(0,0,0,0.2);opacity:0;transition:opacity 0.3s,transform 0.3s;pointer-events:none;white-space:nowrap;z-index:9999;}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
@@ -131,14 +123,10 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:#F2F4F8;color:#1C1C1E
     <div style="width:36px" id="spacer-left"></div>
     <div class="topbar-center">
         <div class="topbar-title">Pedidos de Entrega</div>
-        <div class="topbar-sub" id="topbar-sub">Aguardando atualizações</div>
+        <div class="topbar-sub" id="topbar-sub">—</div>
     </div>
     <button class="ios-btn" id="btn-refresh" onclick="recarregar()">
         <svg viewBox="0 0 24 24" style="width:16px;height:16px;stroke:#475569;stroke-width:2.2;fill:none"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-    </button>
-    <button class="btn-notif" id="btn-notif" onclick="Notification.requestPermission().then(p=>{ if(p==='granted') registrarPush(); })" style="display:none" title="Ativar notificações">
-
-        <svg viewBox="0 0 24 24" style="width:16px;height:16px;stroke:#F59E0B;stroke-width:2.2;fill:none"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 01-3.46 0"/></svg>
     </button>
 </div>
 
@@ -200,6 +188,7 @@ let _pollingTimer = null;
 // Snapshot dos itens do pedido aberto para detectar mudanças
 let _itensSnapshot = null;
 let _checkboxesMarcados = new Set();
+let _itensAlterados = new Set(); // produto_id alterados pelo admin
 
 
 // ─── Toast ────────────────────────────────────────────────────────────────────
@@ -208,17 +197,6 @@ function mostrarToast(msg) {
     t.textContent = msg;
     t.classList.add('show');
     setTimeout(() => t.classList.remove('show'), 3000);
-}
-
-// ─── Status de atualização ───────────────────────────────────────────────────
-let _pulsoTimer = null;
-function mostrarStatusAtualizado() {
-    const sub = document.getElementById('topbar-sub');
-    const agora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Manaus' });
-    sub.textContent = `Atualizado pelo adm · ${agora}`;
-    sub.classList.add('pulsando');
-    if (_pulsoTimer) clearTimeout(_pulsoTimer);
-    _pulsoTimer = setTimeout(() => sub.classList.remove('pulsando'), 15000);
 }
 
 // ─── PIN ──────────────────────────────────────────────────────────────────────
@@ -236,68 +214,16 @@ function _renderDots() {
     for (let i = 0; i < 4; i++)
         document.getElementById('d' + i).classList.toggle('filled', i < _pin.length);
 }
-
 function _checkPin() {
     if (_pin === PIN) {
         document.getElementById('pin-screen').classList.add('hidden');
         carregarApp();
         iniciarPolling();
-        // Mostra botão só se permissão ainda não foi concedida
-        // Mostra sino se permissão não concedida OU se ainda não tem subscription salva
-        if ('Notification' in window) {
-            const temSubscription = !!localStorage.getItem('hh_subscription_salva');
-            if (Notification.permission !== 'granted' || !temSubscription) {
-                document.getElementById('btn-notif').style.display = 'flex';
-            }
-        }
     } else {
-
         document.getElementById('pin-error').textContent = 'PIN incorreto';
         _pin = ''; _renderDots();
     }
 }
-
-// ─── Push Notifications ───────────────────────────────────────────────────────
-async function registrarPush() {
-    console.log('registrarPush iniciado');
-    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-        console.log('SW ou PushManager não disponível');
-        return;
-    }
-    try {
-        console.log('aguardando SW ready...');
-        const reg = await navigator.serviceWorker.ready;
-        console.log('SW ready, estado:', reg.active?.state);
-        console.log('subscribing...');
-                const vapidKey = 'BN6BagMOHyb3GTsTiVM9vzMROjQ5413zZgPEmCfDWK-sc1F4NiNmgW3aXOSuuF8imD0MbrRUrhj99y78qbTxVdQ';
-        const keyBytes = Uint8Array.from(atob(vapidKey.replace(/-/g,'+').replace(/_/g,'/')), c => c.charCodeAt(0));
-
-const subscription = await reg.pushManager.subscribe({
-    userVisibleOnly: true,
-    applicationServerKey: keyBytes.buffer
-});
-
-
-        console.log('subscription ok:', subscription.endpoint);
-        let dispositivoId = localStorage.getItem('hh_device_id');
-        if (!dispositivoId) {
-            dispositivoId = crypto.randomUUID();
-            localStorage.setItem('hh_device_id', dispositivoId);
-        }
-        console.log('salvando no supabase, deviceId:', dispositivoId);
-        const { error } = await window.db.from('push_subscriptions').upsert({
-            operador_id: dispositivoId,
-            subscription: subscription.toJSON()
-        }, { onConflict: 'operador_id' });
-        if (error) { console.error('Supabase error:', error); return; }
-        console.log('subscription salva com sucesso');
-        localStorage.setItem('hh_subscription_salva', '1');
-        document.getElementById('btn-notif').style.display = 'none';
-    } catch(e) {
-        console.error('Push registration error:', e);
-    }
-}
-
 
 // ─── Dados ────────────────────────────────────────────────────────────────────
 async function carregarProdutos() {
@@ -349,6 +275,7 @@ async function carregarApp() {
     const wrap = document.getElementById('filtro-wrap');
     wrap.innerHTML = `<button class="filtro-chip active" onclick="filtrar(null,this)">Todas</button>` +
         cidades.map(c => `<button class="filtro-chip" onclick="filtrar('${c}',this)">${c}</button>`).join('');
+    document.getElementById('topbar-sub').textContent = `${_pedidos.length} pedidos · ciclo atual`;
     filtrar(null, wrap.querySelector('.active'));
 }
 
@@ -418,61 +345,16 @@ async function pollAtualizar() {
         }
     });
 
-    // Detecta itens deletados (estavam no snap anterior mas não estão no novo)
-    const produtosNovos = new Set(snapNovo.map(i => i.produto_id));
-    snapAnterior.forEach(itemAnt => {
-        if (!produtosNovos.has(itemAnt.produto_id)) {
-            const row = document.querySelector(`#modal-body .lista-row[data-produto-id="${itemAnt.produto_id}"]`);
-            if (row) row.remove();
-        }
-    });
-
     // Remove do Set os que foram alterados
     alterados.forEach(pid => _checkboxesMarcados.delete(pid));
+    _itensAlterados = alterados;
 
-    // Refresh silencioso — atualiza só os valores no DOM sem reconstruir HTML
-    (itensNovos || []).forEach(it => {
-        const row = document.querySelector(`#modal-body .lista-row[data-item-id="${it.id}"]`);
-        if (!row) return;
-        const qtdInput = row.querySelector('.qtd-campo');
-        const unidInput = row.querySelector('.unid-campo');
-        const nomeEl = row.querySelector('.prod-nome');
-        const checkBtn = row.querySelector('.check-btn');
-        const prod = _todosProdutos.find(pr => pr.id === it.produto_id);
-        const unidOficial = prod ? (prod.unid_venda || '') : '';
-        const qtdVal = it.quant_despacho != null
-            ? parseFloat(it.quant_despacho).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-            : parseFloat(it.quantidade || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        const unidVal = it.unid_despacho || unidOficial;
-        if (qtdInput) qtdInput.value = qtdVal;
-        if (unidInput) unidInput.value = unidVal;
-        // Se foi alterado pelo admin: vermelho e desmarcado
-        if (alterados.has(it.produto_id)) {
-            if (nomeEl) { nomeEl.classList.remove('marcado'); nomeEl.classList.add('alterado'); }
-            if (checkBtn) checkBtn.classList.remove('marcado');
-        }
-        // Se estava marcado e não foi alterado: mantém marcado
-        if (_checkboxesMarcados.has(it.produto_id)) {
-            if (nomeEl) nomeEl.classList.add('marcado');
-            if (checkBtn) checkBtn.classList.add('marcado');
-        }
-    });
-    _checkboxesMarcados = new Set();
-
-    // Recalcula se pedido ainda está confirmado e move para Pendentes se necessário
-    const estaConfirmadoAntes = _pedidosConfirmados.has(_pedidoAberto.id);
-    const todosConfirmados = (itensNovos || []).length > 0 && (itensNovos || []).every(it => it.operador_confirmou === true);
-    if (!todosConfirmados) {
-        _pedidosConfirmados.delete(_pedidoAberto.id);
-        if (estaConfirmadoAntes && _estado === 'confirmados') {
-            mostrarToast('Pedido voltou para Pendentes');
-        }
-    }
-
-    // Atualiza snapshot com os dados novos
-    _itensSnapshot = snapshotAtual;
-    mostrarStatusAtualizado();
+    const idx = _filtrados.findIndex(p => p.id === _pedidoAberto.id);
+    if (idx !== -1) await abrirPedido(idx);
+    mostrarToast('Pedido atualizado pelo administrador');
 }
+
+            _itensSnapshot = snapshotAtual;
        } else {
     _itensSnapshot = null;
     const ids = _pedidos.map(p => p.id);
@@ -596,7 +478,7 @@ async function abrirPedido(i) {
         .eq('pedido_venda_id', p.id);
 
     // Snapshot para polling
-    _itensSnapshot = JSON.stringify((itens || []).map(i => ({ produto_id: i.produto_id, quantidade: i.quantidade, quant_despacho: i.quant_despacho, unid_despacho: i.unid_despacho, operador_confirmou: i.operador_confirmou })).sort((a,b) => a.produto_id.localeCompare(b.produto_id)));
+    _itensSnapshot = JSON.stringify((itens || []).map(i => ({ produto_id: i.produto_id, quantidade: i.quantidade, quant_despacho: i.quant_despacho, unid_despacho: i.unid_despacho })).sort((a,b) => a.produto_id.localeCompare(b.produto_id)));
 
     const rows = (itens || []).map(it => {
         const prod = _todosProdutos.find(pr => pr.id === it.produto_id);
@@ -640,6 +522,17 @@ async function abrirPedido(i) {
             }
         });
         _checkboxesMarcados = new Set();
+    }
+
+    // Marcar em vermelho os itens alterados pelo admin
+    if (_itensAlterados.size > 0) {
+        document.querySelectorAll('#modal-body .lista-row').forEach(row => {
+            if (_itensAlterados.has(row.dataset.produtoId)) {
+                const nome = row.querySelector('.prod-nome');
+                if (nome) nome.classList.add('alterado');
+            }
+        });
+        _itensAlterados = new Set();
     }
 }
 
@@ -713,12 +606,6 @@ document.addEventListener('DOMContentLoaded', function () {
 function toggleCheck(btn) {
     btn.classList.toggle('marcado');
     btn.closest('.lista-row').querySelector('.prod-nome').classList.toggle('marcado');
-}
-</script>
-
-<script>
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/sw.js');
 }
 </script>
 
