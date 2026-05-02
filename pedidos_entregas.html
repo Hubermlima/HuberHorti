@@ -308,8 +308,8 @@ async function carregarApp() {
     const wrap = document.getElementById('filtro-wrap');
     wrap.innerHTML = `<button class="filtro-chip active" onclick="filtrar(null,this)">Todas</button>` +
         cidades.map(c => `<button class="filtro-chip" onclick="filtrar('${c}',this)">${c}</button>`).join('');
-    document.getElementById('topbar-sub').textContent = `${_pedidos.length} pedidos · ciclo atual`;
-    filtrar(null, wrap.querySelector('.active'));
+        filtrar(null, wrap.querySelector('.active'));
+
 }
 
 async function recarregar() {
@@ -337,26 +337,81 @@ function mostrarStatusAtualizado() {
         sub.classList.remove('alerta');
         sub.classList.add('alerta-fixo');
     }, 15000);
-    document.addEventListener('touchstart', function limparAlerta() {
-        sub.classList.remove('alerta', 'alerta-fixo');
-        sub.textContent = 'Aguardando atualizações';
-        document.removeEventListener('touchstart', limparAlerta);
-    }, { once: true });
+    }
+
+
+async function refreshSilencioso() {
+    if (!_pedidoAberto) return;
+    const { data: itensNovos } = await window.db.from('itens_pedidos_vendas')
+        .select('id, quantidade, produto_id, quant_despacho, unid_despacho, operador_confirmou')
+        .eq('pedido_venda_id', _pedidoAberto.id);
+
+    const snapAnterior = _itensSnapshot ? JSON.parse(_itensSnapshot) : [];
+    const snapNovo = (itensNovos || []).map(i => ({ produto_id: i.produto_id, quantidade: i.quantidade, quant_despacho: i.quant_despacho, unid_despacho: i.unid_despacho })).sort((a,b) => a.produto_id.localeCompare(b.produto_id));
+
+    // Detecta alterados
+    const alterados = new Set();
+    snapNovo.forEach(itemNovo => {
+        const itemAnterior = snapAnterior.find(a => a.produto_id === itemNovo.produto_id);
+        if (itemAnterior && (itemAnterior.quant_despacho !== itemNovo.quant_despacho || itemAnterior.unid_despacho !== itemNovo.unid_despacho)) {
+            alterados.add(itemNovo.produto_id);
+        }
+    });
+
+    // Detecta excluídos
+    const produtosNovos = new Set(snapNovo.map(i => i.produto_id));
+    snapAnterior.forEach(itemAnt => {
+        if (!produtosNovos.has(itemAnt.produto_id)) {
+            const row = document.querySelector(`#modal-body .lista-row[data-produto-id="${itemAnt.produto_id}"]`);
+            if (row) row.remove();
+        }
+    });
+
+    // Atualiza valores no DOM e marca alterados em vermelho
+    (itensNovos || []).forEach(it => {
+        let row = document.querySelector(`#modal-body .lista-row[data-item-id="${it.id}"]`);
+        if (!row) {
+            // Item novo — recarrega o modal completo
+            abrirPedido(_filtrados.findIndex(p => p.id === _pedidoAberto.id));
+            return;
+        }
+        const qtdInput = row.querySelector('.qtd-campo');
+        const unidInput = row.querySelector('.unid-campo');
+        const nomeEl = row.querySelector('.prod-nome');
+        const checkBtn = row.querySelector('.check-btn');
+        const prod = _todosProdutos.find(pr => pr.id === it.produto_id);
+        const qtdVal = it.quant_despacho != null
+            ? parseFloat(it.quant_despacho).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+            : parseFloat(it.quantidade || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const unidVal = it.unid_despacho || (prod ? prod.unid_venda || '' : '');
+        if (qtdInput) qtdInput.value = qtdVal;
+        if (unidInput) unidInput.value = unidVal;
+        if (alterados.has(it.produto_id)) {
+            if (nomeEl) { nomeEl.classList.remove('marcado'); nomeEl.classList.add('alterado'); }
+            if (checkBtn) checkBtn.classList.remove('marcado');
+        }
+    });
+
+    _itensSnapshot = JSON.stringify(snapNovo);
+    await carregarApp();
+    atualizarContador();
 }
+
 
 // ─── Polling (só operador) ────────────────────────────────────────────────────
 function iniciarPolling() {
     if (_isAdmin) return;
         navigator.serviceWorker.addEventListener('message', function(e) {
-        if (e.data && e.data.type === 'PUSH_RECEBIDO') {
+                if (e.data && e.data.type === 'PUSH_RECEBIDO') {
             mostrarStatusAtualizado();
-            carregarApp();
             const modalAberto = document.getElementById('modal').classList.contains('active');
             if (modalAberto && _pedidoAberto) {
-                const idx = _filtrados.findIndex(p => p.id === _pedidoAberto.id);
-                if (idx !== -1) abrirPedido(idx);
+                refreshSilencioso();
+            } else {
+                carregarApp();
             }
         }
+
     });
 
 }
@@ -436,7 +491,13 @@ function navegar(dir) {
 
 // ─── Modal ────────────────────────────────────────────────────────────────────
 async function abrirPedido(i) {
+    const sub = document.getElementById('topbar-sub');
+    if (sub.classList.contains('alerta') || sub.classList.contains('alerta-fixo')) {
+        sub.classList.remove('alerta', 'alerta-fixo');
+        sub.textContent = 'Aguardando atualizações';
+    }
     _idx = i; renderNav();
+
     const p = _filtrados[i];
     _pedidoAberto = p;
     document.getElementById('modal-nome').textContent = p.clientes?.nome || '—';
