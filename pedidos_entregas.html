@@ -86,6 +86,9 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:#F2F4F8;color:#1C1C1E
 /* ── Toast ── */
 .toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%) translateY(20px);background:#1C1C1E;color:#FFF;font-size:13px;font-weight:600;font-family:'Plus Jakarta Sans',sans-serif;padding:10px 20px;border-radius:100px;box-shadow:0 4px 16px rgba(0,0,0,0.2);opacity:0;transition:opacity 0.3s,transform 0.3s;pointer-events:none;white-space:nowrap;z-index:9999;}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+
+.btn-notif{width:36px;height:36px;border-radius:50%;border:none;background:#FFF3CD;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,0.08);cursor:pointer;flex-shrink:0;}
+
 </style>
 </head>
 <body>
@@ -125,10 +128,14 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:#F2F4F8;color:#1C1C1E
         <div class="topbar-title">Pedidos de Entrega</div>
         <div class="topbar-sub" id="topbar-sub">—</div>
     </div>
-    <button class="ios-btn" id="btn-refresh" onclick="recarregar()">
+        <button class="ios-btn" id="btn-refresh" onclick="recarregar()">
         <svg viewBox="0 0 24 24" style="width:16px;height:16px;stroke:#475569;stroke-width:2.2;fill:none"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
     </button>
+    <button class="btn-notif" id="btn-notif" onclick="Notification.requestPermission().then(p=>{ if(p==='granted') registrarPush(); })" style="display:none" title="Ativar notificações">
+        <svg viewBox="0 0 24 24" style="width:16px;height:16px;stroke:#F59E0B;stroke-width:2.2;fill:none"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 01-3.46 0"/></svg>
+    </button>
 </div>
+
 
 <div class="seg-wrap">
     <div class="seg-track" id="seg-track">
@@ -219,7 +226,14 @@ function _checkPin() {
         document.getElementById('pin-screen').classList.add('hidden');
         carregarApp();
         iniciarPolling();
+        if ('Notification' in window) {
+            const temSubscription = !!localStorage.getItem('hh_subscription_salva');
+            if (Notification.permission !== 'granted' || !temSubscription) {
+                document.getElementById('btn-notif').style.display = 'flex';
+            }
+        }
     } else {
+
         document.getElementById('pin-error').textContent = 'PIN incorreto';
         _pin = ''; _renderDots();
     }
@@ -607,7 +621,41 @@ function toggleCheck(btn) {
     btn.classList.toggle('marcado');
     btn.closest('.lista-row').querySelector('.prod-nome').classList.toggle('marcado');
 }
+async function registrarPush() {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+    try {
+        const reg = await navigator.serviceWorker.ready;
+        const vapidKey = 'BA_0xwI2B5MjD8ojcPew-j6-jZ3zdPXaK8qNS3DkXNIED7Hia1THsR_1Nb8XcsAg_qIpdr1U72vmt5aInVOB6WE';
+        const keyBytes = Uint8Array.from(atob(vapidKey.replace(/-/g,'+').replace(/_/g,'/')), c => c.charCodeAt(0));
+        const subscription = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: keyBytes.buffer
+        });
+        let dispositivoId = localStorage.getItem('hh_device_id');
+        if (!dispositivoId) {
+            dispositivoId = crypto.randomUUID();
+            localStorage.setItem('hh_device_id', dispositivoId);
+        }
+        const { error } = await window.db.from('push_subscriptions').upsert({
+            operador_id: dispositivoId,
+            subscription: subscription.toJSON()
+        }, { onConflict: 'operador_id' });
+        if (error) { console.error('Supabase error:', error); return; }
+        localStorage.setItem('hh_subscription_salva', '1');
+        document.getElementById('btn-notif').style.display = 'none';
+    } catch(e) {
+        console.error('Push registration error:', e);
+    }
+}
 </script>
 
+
+<script>
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js');
+}
+</script>
 </body>
+
+
 </html>
