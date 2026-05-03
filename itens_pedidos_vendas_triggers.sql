@@ -2,12 +2,12 @@
 CREATE OR REPLACE FUNCTION atualizar_quantidade_despacho()
 RETURNS TRIGGER AS $$
 BEGIN
-  IF NEW.quant_despacho IS NOT NULL AND NEW.quant_despacho > 0 THEN
+  
     NEW.quantidade := NEW.quant_despacho;
     NEW.total_venda := FLOOR(NEW.quantidade * NEW.preco_unit);
     NEW.total_custo := NEW.quantidade * NEW.custo_unit;
     NEW.lucro := NEW.total_venda - NEW.total_custo;
-  END IF;
+  
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
