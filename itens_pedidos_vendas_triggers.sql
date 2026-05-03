@@ -52,6 +52,6 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE TRIGGER trigger_totais_pedido
-AFTER UPDATE ON itens_pedidos_vendas
+AFTER UPDATE OR INSERT ON itens_pedidos_vendas
 FOR EACH ROW
 EXECUTE FUNCTION atualizar_totais_pedido();
