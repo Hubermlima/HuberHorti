@@ -4,7 +4,7 @@ RETURNS TRIGGER AS $$
 BEGIN
   IF NEW.quant_despacho IS NOT NULL AND NEW.quant_despacho > 0 THEN
     NEW.quantidade := NEW.quant_despacho;
-    NEW.total_venda := NEW.quantidade * NEW.preco_unit;
+    NEW.total_venda := FLOOR(NEW.quantidade * NEW.preco_unit);
     NEW.total_custo := NEW.quantidade * NEW.custo_unit;
     NEW.lucro := NEW.total_venda - NEW.total_custo;
   END IF;
@@ -26,16 +26,16 @@ DECLARE
   v_total_lucro numeric;
   v_margem_pct numeric;
 BEGIN
-  SELECT 
-    COALESCE(SUM(total_venda), 0),
+  SELECT
+    FLOOR(COALESCE(SUM(total_venda), 0)),
     COALESCE(SUM(total_custo), 0),
-    COALESCE(SUM(lucro), 0)
+    FLOOR(COALESCE(SUM(total_venda), 0)) - COALESCE(SUM(total_custo), 0)
   INTO v_total_venda, v_total_custo, v_total_lucro
   FROM itens_pedidos_vendas
   WHERE pedido_venda_id = NEW.pedido_venda_id;
 
-  v_margem_pct := CASE WHEN v_total_venda > 0 
-    THEN ROUND((v_total_lucro / v_total_venda) * 100, 2)
+  v_margem_pct := CASE WHEN v_total_venda > 0
+    THEN (v_total_lucro / v_total_venda) * 100
     ELSE 0 END;
 
   UPDATE pedidos_vendas SET
