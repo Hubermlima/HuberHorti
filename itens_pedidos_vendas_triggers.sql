@@ -4,7 +4,7 @@ RETURNS TRIGGER AS $$
 BEGIN
   
     NEW.quantidade := NEW.quant_despacho;
-    NEW.total_venda := FLOOR(NEW.quantidade * NEW.preco_unit);
+    NEW.total_venda := NEW.quantidade * NEW.preco_unit;
     NEW.total_custo := NEW.quantidade * NEW.custo_unit;
     NEW.lucro := NEW.total_venda - NEW.total_custo;
   
@@ -29,7 +29,7 @@ BEGIN
   SELECT
     FLOOR(COALESCE(SUM(total_venda), 0)),
     COALESCE(SUM(total_custo), 0),
-    FLOOR(COALESCE(SUM(total_venda), 0)) - COALESCE(SUM(total_custo), 0)
+    COALESCE(SUM(total_venda), 0) - COALESCE(SUM(total_custo), 0)
   INTO v_total_venda, v_total_custo, v_total_lucro
   FROM itens_pedidos_vendas
   WHERE pedido_venda_id = NEW.pedido_venda_id;
