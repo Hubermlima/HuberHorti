@@ -41,6 +41,7 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
 .cell-und{width:36px;flex-shrink:0;text-align:center;color:#8E8E93;padding:11px 8px;font-size:11px;}
 .cell-nome{flex:1;padding:11px 8px 11px 12px;font-size:11px;}
 .cell-total{width:52px;flex-shrink:0;padding:6px 4px;text-align:center;}
+.cell-vendas{width:52px;flex-shrink:0;padding:6px 4px;text-align:center;}
 .cell-sobra{width:52px;flex-shrink:0;padding:6px 4px;text-align:center;}
 .cell-faturar{width:56px;flex-shrink:0;padding:6px 4px;text-align:center;}
 .total-wrap{padding:10px 16px;border-top:0.5px solid #E5E5EA;flex-shrink:0;display:flex;justify-content:space-between;align-items:center;}
@@ -99,6 +100,7 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
     <div class="thead-row">
       <div class="th" style="width:36px;">Und</div>
       <div class="th left" style="flex:1;">Produto</div>
+      <div class="th cell-vendas" style="width:52px;">Vendas</div>
       <div class="th cell-total" style="width:52px;">Total</div>
       <div class="th cell-sobra" style="width:52px;">Sobra</div>
       <div class="th" style="width:56px;">Faturar</div>
@@ -151,7 +153,7 @@ document.getElementById('data-sub').textContent = _dataSub;
 
 function toggleColunas() {
   colunasVisiveis = !colunasVisiveis;
-  document.querySelectorAll('.cell-total, .cell-sobra').forEach(el => el.classList.toggle('col-oculta', !colunasVisiveis));
+  document.querySelectorAll('.cell-total, .cell-sobra, .cell-vendas').forEach(el => el.classList.toggle('col-oculta', !colunasVisiveis));
   const btn = document.getElementById('btn-ocultar');
   btn.style.background = colunasVisiveis ? '#FFF' : '#007AFF';
   document.getElementById('icon-ocultar').style.stroke = colunasVisiveis ? '#1C1C1E' : '#FFF';
@@ -160,10 +162,10 @@ function toggleColunas() {
 function recalcular(input) {
   const wrap = input.closest('.swipe-wrap');
   const inputs = wrap.querySelectorAll('.grid-input');
-  const total = parseV(inputs[0].value);
-  const sobra = parseV(inputs[1].value);
+  const total = parseV(inputs[1].value);
+  const sobra = parseV(inputs[2].value);
   const faturar = Math.max(0, total - sobra);
-  inputs[2].value = fmtNum(faturar);
+  inputs[3].value = fmtNum(faturar);
   atualizarTotal();
 }
 
@@ -171,7 +173,7 @@ function atualizarTotal() {
   let totalPeso = 0;
   document.querySelectorAll('#corpo .swipe-wrap').forEach(wrap => {
     const inputs = wrap.querySelectorAll('.grid-input');
-    const faturar = parseV(inputs[2].value);
+    const faturar = parseV(inputs[3].value);
     const peso = parseFloat(wrap.dataset.peso) || 1;
     totalPeso += faturar * peso;
   });
@@ -253,7 +255,6 @@ async function carregarLista() {
   const corpo = document.getElementById('corpo');
   corpo.innerHTML = '<div class="empty-state">Carregando...</div>';
 
-  // Busca produtos do fornecedor com guia_embarque e estoque_inicial
   const { data: produtos } = await window.db.from('produtos')
     .select('id, nome, unid_venda, unid_compra, peso_por_unid, estoque_inicial(quantidade_inicial)')
     .eq('fornecedor_id', _fornecedorId)
@@ -266,12 +267,39 @@ async function carregarLista() {
   if (produtoIds.length === 0) { corpo.innerHTML = '<div class="empty-state">Nenhum produto cadastrado para este fornecedor</div>'; return; }
 
   const { data: guia } = await window.db.from('guia_embarque')
-    .select('id, produto_id, total')
+    .select('id, produto_id, total, faturar')
     .in('produto_id', produtoIds);
 
   if (!guia || guia.length === 0) {
     corpo.innerHTML = '<div class="empty-state">Nenhum item no guia. Use "+ Produto" para adicionar.</div>';
     return;
+  }
+
+  // Calcular d0 e d7 do ciclo atual
+  const hoje = new Date();
+  const diaSemana = hoje.getDay();
+  const diasDesdeQuarta = (diaSemana - 3 + 7) % 7;
+  const d0 = new Date(hoje);
+  d0.setDate(hoje.getDate() - diasDesdeQuarta);
+  const d0Str = d0.toLocaleDateString('en-CA', {timeZone:'America/Manaus'});
+  const d0ISO = `${d0Str}T04:00:00+00:00`;
+  const d7ISO = new Date(new Date(d0ISO).getTime() + 7 * 86400000).toISOString();
+
+  // Buscar pedidos do ciclo
+  const { data: pedidosCiclo } = await window.db.from('pedidos_vendas')
+    .select('id').gte('data', d0ISO).lte('data', d7ISO);
+  const pedidoIds = (pedidosCiclo || []).map(p => p.id);
+
+  // Buscar itens vendidos do ciclo para os produtos do fornecedor
+  const vendasMap = {};
+  if (pedidoIds.length > 0) {
+    const { data: itens } = await window.db.from('itens_pedidos_vendas')
+      .select('produto_id, quantidade')
+      .in('pedido_venda_id', pedidoIds)
+      .in('produto_id', produtoIds);
+    (itens || []).forEach(i => {
+      vendasMap[i.produto_id] = (vendasMap[i.produto_id] || 0) + (parseFloat(i.quantidade) || 0);
+    });
   }
 
   corpo.innerHTML = guia.map(g => {
@@ -281,19 +309,21 @@ async function carregarLista() {
     const totalNum = parseFloat(g.total) || 0;
     const sobraNum = parseFloat(estIni) || 0;
     const faturarNum = Math.max(0, totalNum - sobraNum);
-    return criarLinhaHtml(g.id, g.produto_id, p.nome, p.unid_venda || '', p.unid_compra || '', p.peso_por_unid || 1, totalNum, sobraNum, faturarNum);
+    const vendasNum = vendasMap[g.produto_id] || 0;
+    return criarLinhaHtml(g.id, g.produto_id, p.nome, p.unid_venda || '', p.unid_compra || '', p.peso_por_unid || 1, totalNum, sobraNum, faturarNum, vendasNum);
   }).join('');
 
   document.querySelectorAll('#corpo .swipe-wrap').forEach(wrap => aplicarSwipe(wrap));
   atualizarTotal();
 }
 
-function criarLinhaHtml(guiaId, produtoId, nome, unidVenda, unidCompra, peso, totalNum, sobraNum, faturarNum, totalBranco = false) {
+function criarLinhaHtml(guiaId, produtoId, nome, unidVenda, unidCompra, peso, totalNum, sobraNum, faturarNum, vendasNum = 0, totalBranco = false) {
   return `<div class="swipe-wrap" data-peso="${peso}" data-guia-id="${guiaId || ''}" data-produto-id="${produtoId}" data-unid-compra="${unidCompra || unidVenda}">
     <div class="swipe-del">Excluir</div>
     <div class="swipe-row">
       <div class="cell-und">${unidVenda}</div>
       <div class="cell-nome">${nome}</div>
+      <div class="cell-vendas"><input class="grid-input" value="${fmtNum(vendasNum)}" readonly></div>
       <div class="cell-total"><input class="grid-input" value="${totalBranco ? '' : fmtNum(totalNum)}" placeholder="0,00" oninput="aplicarMascara(this);recalcular(this)"></div>
       <div class="cell-sobra"><input class="grid-input" value="${fmtNum(sobraNum)}" oninput="aplicarMascara(this);recalcular(this)"></div>
       <div class="cell-faturar"><input class="grid-input" value="${fmtNum(faturarNum)}" readonly></div>
@@ -329,7 +359,7 @@ async function incluirProduto(produtoId, nome, unid, unidCompra, peso) {
   const { data: est } = await window.db.from('estoque_inicial').select('quantidade_inicial').eq('produto_id', produtoId).maybeSingle();
   const sobraNum = parseFloat(est?.quantidade_inicial || 0);
   const faturarNum = Math.max(0, 0 - sobraNum);
-  const linha = criarLinhaHtml('', produtoId, nome, unid, unidCompra, peso, 0, sobraNum, faturarNum, true);
+  const linha = criarLinhaHtml('', produtoId, nome, unid, unidCompra, peso, 0, sobraNum, faturarNum, 0, true);
 
   const corpo = document.getElementById('corpo');
   const empty = corpo.querySelector('.empty-state');
@@ -369,8 +399,8 @@ async function gravar() {
       const produtoId = wrap.dataset.produtoId;
       const guiaId = wrap.dataset.guiaId;
       const inputs = wrap.querySelectorAll('.grid-input');
-      const total = parseV(inputs[0].value);
-      const faturar = parseV(inputs[2].value);
+      const total = parseV(inputs[1].value);
+      const faturar = parseV(inputs[3].value);
       if (guiaId) {
         updates.push({ id: guiaId, produto_id: produtoId, total, faturar });
       } else {
@@ -406,9 +436,9 @@ function gerarPDF() {
     const nome = row.querySelector('.cell-nome').textContent.trim();
     const inputs = wrap.querySelectorAll('.grid-input');
     const peso = parseFloat(wrap.dataset.peso) || 1;
-    const totalKg = parseV(inputs[0].value);
-    const sobraKg = parseV(inputs[1].value);
-    const faturarKg = parseV(inputs[2].value);
+    const totalKg = parseV(inputs[1].value);
+    const sobraKg = parseV(inputs[2].value);
+    const faturarKg = parseV(inputs[3].value);
     totalPeso += faturarKg * peso;
     linhas.push({ und, nome, total: fmtNum(totalKg / peso), sobra: fmtNum(sobraKg / peso), faturar: fmtNum(faturarKg / peso) });
   });
