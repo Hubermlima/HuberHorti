@@ -15,22 +15,22 @@
   }
 
   function calcularCicloAtual(base = new Date()) {
-    const hoje = new Date(base);
-    hoje.setUTCHours(0, 0, 0, 0);
+    const manaus = new Date(base.toLocaleString('en-US', {timeZone: 'America/Manaus'}));
 
-    const diaSemana = hoje.getUTCDay();
+    const diaSemana = manaus.getDay();
     const diasDesdeQuarta = (diaSemana - 3 + 7) % 7;
 
-    const d0 = new Date(hoje);
-    d0.setUTCDate(hoje.getUTCDate() - diasDesdeQuarta);
-    d0.setUTCHours(0, 0, 0, 0);
+    const d0 = new Date(manaus);
+    d0.setDate(manaus.getDate() - diasDesdeQuarta);
+    d0.setHours(0, 0, 0, 0);
 
     const d7 = new Date(d0);
-    d7.setUTCDate(d0.getUTCDate() + 6);
-    d7.setUTCHours(23, 59, 59, 999);
+    d7.setDate(d0.getDate() + 6);
+    d7.setHours(23, 59, 59, 999);
 
     return { d0, d7 };
   }
+
 
 
   function atualizarCicloAtualGlobal(base = new Date()) {
