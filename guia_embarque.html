@@ -75,7 +75,7 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
 <body>
 
 <div class="topbar">
-  <button class="ios-btn-float" onclick="window.location.href='compras.html'">
+  <button class="ios-btn-float" onclick="window.location.href='dashboard.html'">
     <svg viewBox="0 0 24 24" style="width:18px;height:18px;stroke:#1C1C1E;stroke-width:2.2;fill:none"><path d="M15.75 19.5L8.25 12l7.5-7.5"/></svg>
   </button>
   <div class="topbar-copy">
@@ -281,21 +281,21 @@ async function carregarLista() {
     const totalNum = parseFloat(g.total) || 0;
     const sobraNum = parseFloat(estIni) || 0;
     const faturarNum = Math.max(0, totalNum - sobraNum);
-    return criarLinhaHtml(g.id, g.produto_id, p.nome, p.unid_venda || '', p.peso_por_unid || 1, totalNum, sobraNum, faturarNum);
+    return criarLinhaHtml(g.id, g.produto_id, p.nome, p.unid_venda || '', p.unid_compra || '', p.peso_por_unid || 1, totalNum, sobraNum, faturarNum);
   }).join('');
 
   document.querySelectorAll('#corpo .swipe-wrap').forEach(wrap => aplicarSwipe(wrap));
   atualizarTotal();
 }
 
-function criarLinhaHtml(guiaId, produtoId, nome, unid, peso, totalNum, sobraNum, faturarNum, totalBranco = false) {
-  return `<div class="swipe-wrap" data-peso="${peso}" data-guia-id="${guiaId || ''}" data-produto-id="${produtoId}">
+function criarLinhaHtml(guiaId, produtoId, nome, unidVenda, unidCompra, peso, totalNum, sobraNum, faturarNum, totalBranco = false) {
+  return `<div class="swipe-wrap" data-peso="${peso}" data-guia-id="${guiaId || ''}" data-produto-id="${produtoId}" data-unid-compra="${unidCompra || unidVenda}">
     <div class="swipe-del">Excluir</div>
     <div class="swipe-row">
-      <div class="cell-und">${unid}</div>
+      <div class="cell-und">${unidVenda}</div>
       <div class="cell-nome">${nome}</div>
       <div class="cell-total"><input class="grid-input" value="${totalBranco ? '' : fmtNum(totalNum)}" placeholder="0,00" oninput="aplicarMascara(this);recalcular(this)"></div>
-      <div class="cell-sobra"><input class="grid-input" value="${fmtNum(sobraNum)}" readonly></div>
+      <div class="cell-sobra"><input class="grid-input" value="${fmtNum(sobraNum)}" oninput="aplicarMascara(this);recalcular(this)"></div>
       <div class="cell-faturar"><input class="grid-input" value="${fmtNum(faturarNum)}" readonly></div>
     </div>
   </div>`;
@@ -321,15 +321,15 @@ document.getElementById('modal-input').addEventListener('input', () => {
     p.nome.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').includes(t)
   ).slice(0, 8);
   document.getElementById('modal-lista').innerHTML = filtrados.map(p =>
-    `<div class="modal-item" onclick="incluirProduto('${p.id}','${p.nome.replace(/'/g,"\\'")}','${p.unid_venda||''}',${p.peso_por_unid||1})">${p.nome}</div>`
+    `<div class="modal-item" onclick="incluirProduto('${p.id}','${p.nome.replace(/'/g,"\\'")}','${p.unid_venda||''}','${p.unid_compra||''}',${p.peso_por_unid||1})">${p.nome}</div>`
   ).join('');
 });
 
-async function incluirProduto(produtoId, nome, unid, peso) {
+async function incluirProduto(produtoId, nome, unid, unidCompra, peso) {
   const { data: est } = await window.db.from('estoque_inicial').select('quantidade_inicial').eq('produto_id', produtoId).maybeSingle();
   const sobraNum = parseFloat(est?.quantidade_inicial || 0);
   const faturarNum = Math.max(0, 0 - sobraNum);
-  const linha = criarLinhaHtml('', produtoId, nome, unid, peso, 0, sobraNum, faturarNum, true);
+  const linha = criarLinhaHtml('', produtoId, nome, unid, unidCompra, peso, 0, sobraNum, faturarNum, true);
 
   const corpo = document.getElementById('corpo');
   const empty = corpo.querySelector('.empty-state');
@@ -362,21 +362,29 @@ async function gravar() {
   btn.disabled = true;
 
   try {
-    const upserts = [];
+    const inserts = [];
+    const updates = [];
+
     document.querySelectorAll('#corpo .swipe-wrap').forEach(wrap => {
       const produtoId = wrap.dataset.produtoId;
       const guiaId = wrap.dataset.guiaId;
       const inputs = wrap.querySelectorAll('.grid-input');
       const total = parseV(inputs[0].value);
       const faturar = parseV(inputs[2].value);
-      const payload = { produto_id: produtoId, total, faturar };
-      if (guiaId) payload.id = guiaId;
-      upserts.push(payload);
+      if (guiaId) {
+        updates.push({ id: guiaId, produto_id: produtoId, total, faturar });
+      } else {
+        inserts.push({ produto_id: produtoId, total, faturar });
+      }
     });
 
-    await window.db.from('guia_embarque').upsert(upserts, {onConflict: 'id'});
+    if (updates.length > 0) {
+      await window.db.from('guia_embarque').upsert(updates, {onConflict: 'id'});
+    }
+    if (inserts.length > 0) {
+      await window.db.from('guia_embarque').insert(inserts);
+    }
 
-    // Atualiza data-guia-id nos wraps novos após gravar
     await carregarLista();
     btn.textContent = 'Gravado ✓';
     setTimeout(() => { btn.textContent = 'Gravar'; btn.disabled = false; }, 1500);
@@ -394,7 +402,7 @@ function gerarPDF() {
 
   document.querySelectorAll('#corpo .swipe-wrap').forEach(wrap => {
     const row = wrap.querySelector('.swipe-row');
-    const und = row.querySelector('.cell-und').textContent.trim();
+    const und = wrap.dataset.unidCompra || row.querySelector('.cell-und').textContent.trim();
     const nome = row.querySelector('.cell-nome').textContent.trim();
     const inputs = wrap.querySelectorAll('.grid-input');
     const peso = parseFloat(wrap.dataset.peso) || 1;
@@ -467,7 +475,9 @@ thead th:nth-child(3),thead th:nth-child(4),thead th:last-child{text-align:right
 }
 
 document.getElementById('corpo').addEventListener('focusin', e => {
-  if (e.target.classList.contains('grid-input')) setTimeout(() => e.target.select(), 50);
+  if (e.target.classList.contains('grid-input') && !e.target.readOnly) {
+    setTimeout(() => e.target.select(), 50);
+  }
 });
 
 const fixHeight = () => document.documentElement.style.setProperty('--vh', `${window.innerHeight * 0.01}px`);
