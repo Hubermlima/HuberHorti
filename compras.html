@@ -660,9 +660,14 @@ body{
             <div id="resultados-fornecedor" class="autocomplete-results"></div>
           </div>
         </div>
-        <div class="compra-select-wrap" id="compra-select-wrap">
-          <select class="compra-select" id="compra-select" onchange="selecionarCompra(this.value)">
+        <div class="compra-select-wrap" id="compra-select-wrap" style="display:flex;gap:8px;">
+          <select class="compra-select" id="compra-select" onchange="selecionarCompra(this.value)" style="flex:1;">
             <option value="novo">+ Novo</option>
+          </select>
+          <select class="compra-select" id="fonte-dados" onchange="trocarFonteDados(this.value)" style="flex:1;">
+            <option value="" disabled selected>Fonte de Dados</option>
+            <option value="vendas_futuras">Vendas Futuras</option>
+            <option value="guia_embarque">Guia Embarque</option>
           </select>
         </div>
     
@@ -819,8 +824,7 @@ body{
             <label class="modal-label">Incluir em</label>
                         <div class="modal-seg-track" id="modal-seg-track">
                 <div class="modal-seg-thumb"></div>
-                <button class="modal-seg-opt selected" id="modal-seg-qt1" onclick="selecionarViewModal('QT1')">QT1</button>
-                <button class="modal-seg-opt" id="modal-seg-qt2" onclick="selecionarViewModal('QT2')">QT2</button>
+                <button class="modal-seg-opt selected" id="modal-seg-qt2" onclick="selecionarViewModal('QT2')">QT2</button>
             </div>
 
         </div>
@@ -842,6 +846,7 @@ const itensPorPagina = 15;
 // Estrutura de dados em memória — substitui as linhas do DOM como fonte de verdade
 let _dadosProdutos = []; // array de objetos com todos os campos
 let _indiceModalAtual = -1;
+let _fonteDados = 'vendas_futuras';
 
 const btnAddTopbar = document.getElementById('btn-add-topbar');
 const menuDropdown = document.getElementById('menu-dropdown');
@@ -869,7 +874,7 @@ function abrirModalIncluir() {
     if (!fornecedorId) { alert('Selecione um fornecedor primeiro.'); return; }
 
     _produtosOcultos = _dadosProdutos
-        .filter(d => d.qt1 === 0 && d.qt2 === 0)
+        .filter(d => d.qt2 === 0)
         .map(d => ({ id: d.id, nome: d.nome }));
 
     if (_produtosOcultos.length === 0) {
@@ -893,7 +898,6 @@ function fecharModalIncluir() {
 
 function selecionarViewModal(view) {
     modalViewSelecionada = view;
-    document.getElementById('modal-seg-qt1').classList.toggle('selected', view === 'QT1');
     document.getElementById('modal-seg-qt2').classList.toggle('selected', view === 'QT2');
     document.getElementById('modal-seg-track').classList.toggle('qt2', view === 'QT2');
 }
@@ -933,7 +937,7 @@ function gravarProdutoModal() {
     if (qtd <= 0) { alert('Informe uma quantidade válida.'); return; }
     const d = _dadosProdutos.find(x => x.id === modalProdutoSelecionado.id);
     if (!d) { alert('Produto não encontrado.'); return; }
-            if (modalViewSelecionada === 'QT1') { d.qt1 = qtd; } else { d.qt2 = qtd; }
+            d.qt2 = qtd;
 d.comp = qtd;
 d.temItemSalvo = true;
 recalcularItem(d);
@@ -947,17 +951,25 @@ recalcularItem(d);
 
 // ──────────────────────────────────────────────────────────────────
 
+async function trocarFonteDados(valor) {
+  _fonteDados = valor;
+  const fornecedorId = document.getElementById('busca-fornecedor').dataset.selectedId;
+  if (!fornecedorId) return;
+  const pedidoVal = document.getElementById('compra-select').value;
+  await carregarProdutosEstoque(fornecedorId, pedidoVal === 'novo' ? null : pedidoVal);
+}
+
 function gerarGuiaColeta() {
     const fornecedor = document.getElementById('busca-fornecedor').value;
     if (!fornecedor) return alert('Selecione um fornecedor primeiro.');
 
     const itens = _dadosProdutos
-        .filter(d => d.comp > 0 && (d.qt1 > 0 || d.qt2 > 0))
+        .filter(d => d.comp > 0 && d.qt2 > 0)
         .map(d => ({
             nome: d.nome,
             unid: d.unid,
             peso: d.peso,
-            total: d.qt1 || d.qt2,
+            total: d.qt2,
             estIni: d.estIni,
             comp: d.comp
         }));
@@ -999,7 +1011,7 @@ function fecharModalProduto() {
 }
 
 function navegarModal(dir) {
-    const ativos = _dadosProdutos.map((d, i) => ({ d, i })).filter(({ d }) => d.qt1 > 0 || d.qt2 > 0 || d.temItemSalvo);
+    const ativos = _dadosProdutos.map((d, i) => ({ d, i })).filter(({ d }) => d.qt2 > 0 || d.temItemSalvo);
 
     const posAtual = ativos.findIndex(({ i }) => i === _indiceModalAtual);
     const novaPosicao = posAtual + dir;
@@ -1009,7 +1021,7 @@ function navegarModal(dir) {
 }
 
 function preencherModalProduto() {
-    const ativos = _dadosProdutos.map((d, i) => ({ d, i })).filter(({ d }) => d.qt1 > 0 || d.qt2 > 0 || d.temItemSalvo);
+    const ativos = _dadosProdutos.map((d, i) => ({ d, i })).filter(({ d }) => d.qt2 > 0 || d.temItemSalvo);
 
     const posAtual = ativos.findIndex(({ i }) => i === _indiceModalAtual);
     const d = _dadosProdutos[_indiceModalAtual];
@@ -1227,7 +1239,7 @@ async function salvarDadosSinc() {
         const updatesProd = [];
 
         _dadosProdutos.forEach(d => {
-    if (d.qt1 <= 0 && d.qt2 <= 0 && !d.temItemSalvo) return;
+    if (d.qt2 <= 0 && !d.temItemSalvo) return;
     itens.push({
 
                 pedido_compra_id: pedidoId,
@@ -1284,12 +1296,6 @@ const d7 = new Date(ciclo.d7);
 const d0p7 = new Date(ciclo.d0); d0p7.setDate(d0p7.getDate() + 7);
 const d7p7 = new Date(ciclo.d7); d7p7.setDate(d7p7.getDate() + 7);
 
-const { data: vendasAnteriores } = await window.db.from('itens_pedidos_vendas')
-    .select('quantidade, produto_id, pedidos_vendas!inner(data)')
-    .gte('pedidos_vendas.data', d0.toISOString()).lte('pedidos_vendas.data', d7.toISOString());
-const mapaVendas = {};
-if (vendasAnteriores) vendasAnteriores.forEach(v => { mapaVendas[v.produto_id] = (mapaVendas[v.produto_id] || 0) + parseFloat(v.quantidade || 0); });
-
 const { data: vendasFuturas } = await window.db.from('itens_pedidos_vendas')
     .select('quantidade, produto_id, pedidos_vendas!pedido_venda_id!inner(data)')
     .gte('pedidos_vendas.data', d0p7.toISOString()).lte('pedidos_vendas.data', d7p7.toISOString());
@@ -1297,17 +1303,32 @@ const { data: vendasFuturas } = await window.db.from('itens_pedidos_vendas')
         const mapaQT2 = {};
         if (vendasFuturas) vendasFuturas.forEach(v => { mapaQT2[v.produto_id] = (mapaQT2[v.produto_id] || 0) + parseFloat(v.quantidade || 0); });
 
-        if (produtos) {
-            _dadosProdutos = produtos.map(p => {
+        // Busca guia_embarque se fonte for guia
+        const mapaGuia = {};
+        if (_fonteDados === 'guia_embarque') {
+          const produtoIds = (produtos || []).map(p => p.id);
+          if (produtoIds.length > 0) {
+            const { data: guia } = await window.db.from('guia_embarque')
+              .select('produto_id, faturar').in('produto_id', produtoIds);
+            (guia || []).forEach(g => { mapaGuia[g.produto_id] = parseFloat(g.faturar) || 0; });
+          }
+        }
+
+        const produtosFiltrados = _fonteDados === 'guia_embarque'
+          ? (produtos || []).filter(p => mapaGuia[p.id] !== undefined || mapaItensSalvos[p.id])
+          : produtos;
+
+        if (produtosFiltrados) {
+            _dadosProdutos = produtosFiltrados.map(p => {
                 const estIni   = p.estoque_inicial?.[0]?.quantidade_inicial || 0;
                 const ctIni    = p.estoque_inicial?.[0]?.custo_unitario_inicial || 0;
-                const qt1      = mapaVendas[p.id] || 0;
                 const qt2      = mapaQT2[p.id] || 0;
                 const itemSalvo = mapaItensSalvos[p.id];
                 const temItemSalvo = !!itemSalvo;
 
                 const peso     = p.peso_por_unid || 1;
-                const comp     = itemSalvo ? itemSalvo.quantidade : Math.abs((qt1 + qt2) - estIni);
+                const compGuia = mapaGuia[p.id] || 0;
+                const comp     = itemSalvo ? itemSalvo.quantidade : _fonteDados === 'guia_embarque' ? compGuia : Math.max(0, qt2 - estIni);
                 const custo    = itemSalvo ? itemSalvo.preco_unitario : 0;
                 const mkt      = itemSalvo ? itemSalvo.preco_compra_mkt : 0;
                 const cpNt     = custo * peso;
@@ -1323,7 +1344,6 @@ const { data: vendasFuturas } = await window.db.from('itens_pedidos_vendas')
                     peso,
                     estIni,
                     ctIni,
-                    qt1,
                     qt2,
                     comp,
                     cpNt,
@@ -1503,7 +1523,7 @@ function recalcularItem(d) {
 }
 
 function atualizarSumario() {
-    const ativos = _dadosProdutos.filter(d => d.qt1 > 0 || d.qt2 > 0 || d.temItemSalvo);
+    const ativos = _dadosProdutos.filter(d => d.qt2 > 0 || d.temItemSalvo);
 
     const totalPaginas = Math.ceil(ativos.length / itensPorPagina) || 1;
     if (paginaAtual > totalPaginas) paginaAtual = totalPaginas;
