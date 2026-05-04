@@ -356,10 +356,32 @@ document.getElementById('modal-input').addEventListener('input', () => {
 });
 
 async function incluirProduto(produtoId, nome, unid, unidCompra, peso) {
-  const { data: est } = await window.db.from('estoque_inicial').select('quantidade_inicial').eq('produto_id', produtoId).maybeSingle();
-  const sobraNum = parseFloat(est?.quantidade_inicial || 0);
+  const hoje = new Date();
+  const diaSemana = hoje.getDay();
+  const diasDesdeQuarta = (diaSemana - 3 + 7) % 7;
+  const d0 = new Date(hoje);
+  d0.setDate(hoje.getDate() - diasDesdeQuarta);
+  const d0Str = d0.toLocaleDateString('en-CA', {timeZone:'America/Manaus'});
+  const d0ISO = `${d0Str}T00:00:00+00:00`;
+  const d7ISO = new Date(new Date(d0ISO).getTime() + 7 * 86400000).toISOString();
+
+  const [estRes, pedidosRes] = await Promise.all([
+    window.db.from('estoque_inicial').select('quantidade_inicial').eq('produto_id', produtoId).maybeSingle(),
+    window.db.from('pedidos_vendas').select('id').gte('data', d0ISO).lt('data', d7ISO)
+  ]);
+
+  const sobraNum = parseFloat(estRes.data?.quantidade_inicial || 0);
+  const pedidoIds = (pedidosRes.data || []).map(p => p.id);
+  let vendasNum = 0;
+  if (pedidoIds.length > 0) {
+    const { data: itens } = await window.db.from('itens_pedidos_vendas')
+      .select('quantidade').eq('produto_id', produtoId).in('pedido_venda_id', pedidoIds);
+    vendasNum = (itens || []).reduce((a, i) => a + (parseFloat(i.quantidade) || 0), 0);
+  }
+
   const faturarNum = Math.max(0, 0 - sobraNum);
-  const linha = criarLinhaHtml('', produtoId, nome, unid, unidCompra, peso, 0, sobraNum, faturarNum, 0, true);
+  const linha = criarLinhaHtml('', produtoId, nome, unid, unidCompra, peso, 0, sobraNum, faturarNum, vendasNum, true);
+
 
   const corpo = document.getElementById('corpo');
   const empty = corpo.querySelector('.empty-state');
