@@ -186,6 +186,7 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
 
 <script>
 
+// ================= ESTADO =================
 let _templates = [];
 let _contas = [];
 let _grupoAtual = 'preparacao';
@@ -194,66 +195,86 @@ let _editandoId = null;
 let _mTipo = 'saida';
 let _mForma = 'dinheiro';
 
+// ================= INIT =================
+document.addEventListener('DOMContentLoaded', init);
+
 async function init() {
-  await window.HHUtils.atualizarCicloAtualGlobal();
+  try {
+    await window.HHUtils.atualizarCicloAtualGlobal();
 
-  const ciclo = window.cicloAtual;
-  const d0Str = ciclo.d0.toLocaleDateString('pt-BR', {timeZone:'America/Manaus', day:'2-digit', month:'2-digit'});
-  const d7Str = ciclo.d7.toLocaleDateString('pt-BR', {timeZone:'America/Manaus', day:'2-digit', month:'2-digit'});
-  document.getElementById('topbar-sub').textContent = `${d0Str} — ${d7Str}`;
+    const ciclo = window.cicloAtual;
+    const d0Str = ciclo.d0.toLocaleDateString('pt-BR', { timeZone:'America/Manaus', day:'2-digit', month:'2-digit' });
+    const d7Str = ciclo.d7.toLocaleDateString('pt-BR', { timeZone:'America/Manaus', day:'2-digit', month:'2-digit' });
+    document.getElementById('topbar-sub').textContent = `${d0Str} — ${d7Str}`;
 
-  const [{ data: templates }, { data: contas }] = await Promise.all([
-    window.db.from('livro_caixa_templates').select('*, contas_contabeis(descricao)').order('created_at'),
-    window.db.from('contas_contabeis').select('id, codigo, descricao').order('codigo')
-  ]);
+    const [{ data: templates }, { data: contas }] = await Promise.all([
+      window.db.from('livro_caixa_templates').select('*, contas_contabeis(descricao)').order('created_at'),
+      window.db.from('contas_contabeis').select('id, codigo, descricao').order('codigo')
+    ]);
 
-  _templates = templates || [];
-  _contas = contas || [];
+    _templates = templates || [];
+    _contas = contas || [];
 
-  const sel = document.getElementById('m-conta');
-  _contas.forEach(c => {
-    const opt = document.createElement('option');
-    opt.value = c.id;
-    opt.textContent = `${c.codigo} - ${c.descricao}`;
-    sel.appendChild(opt);
-  });
+    const sel = document.getElementById('m-conta');
+    sel.innerHTML = '<option value="">— Sem categoria —</option>';
 
-  renderLista();
+    _contas.forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c.id;
+      opt.textContent = `${c.codigo} - ${c.descricao}`;
+      sel.appendChild(opt);
+    });
+
+    renderLista();
+
+  } catch (e) {
+    console.error(e);
+    alert('Erro ao carregar tela');
+  }
 }
 
+// ================= LISTA =================
+function filtrarGrupo(grupo) {
+  _grupoAtual = grupo;
+  renderLista();
+}
 
 function renderLista() {
   const lista = document.getElementById('lista-templates');
   const filtrados = _templates.filter(t => t.grupo === _grupoAtual);
 
-  if (filtrados.length === 0) {
-    lista.innerHTML = '<div class="empty-state">Nenhum template neste grupo</div>';
+  if (!filtrados.length) {
+    lista.innerHTML = '<div class="empty-state">Nenhum template</div>';
     return;
   }
 
   lista.innerHTML = filtrados.map(t => {
-    const conta = t.contas_contabeis?.descricao || 'Sem categoria';
-    const forma = t.forma === 'deposito' ? 'Depósito' : 'Dinheiro';
-    const val = parseFloat(t.valor || 0).toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
-    return `<div class="template-item" onclick="abrirModalEdicao('${t.id}')">
-      <div class="template-left">
-        <div class="template-nome">${t.descricao}</div>
-        <div class="template-sub">${forma} · ${conta}</div>
+    const val = parseFloat(t.valor || 0).toLocaleString('pt-BR', { minimumFractionDigits:2 });
+    return `
+      <div class="template-item" onclick="abrirModalEdicao('${t.id}')">
+        <div class="template-left">
+          <div class="template-nome">${t.descricao}</div>
+        </div>
+        <div class="template-valor ${t.tipo}">
+          ${t.tipo === 'entrada' ? '+' : '-'} ${val}
+        </div>
       </div>
-      <div class="template-valor ${t.tipo}">${t.tipo === 'entrada' ? '+' : '-'} ${val}</div>
-    </div>`;
+    `;
   }).join('');
 }
 
+// ================= MODAL =================
 function abrirModalNovo() {
   _editandoId = null;
-  document.getElementById('modal-titulo').textContent = 'Novo Template';
+
   document.getElementById('m-descricao').value = '';
   document.getElementById('m-valor').value = '';
-  setTipo('saida');
-  setForma('dinheiro');
   document.getElementById('m-grupo').value = _grupoAtual;
   document.getElementById('m-conta').value = '';
+
+  _mTipo = 'saida';
+  _mForma = 'dinheiro';
+
   document.getElementById('btn-excluir').style.display = 'none';
   document.getElementById('modal-edicao').classList.add('active');
 }
@@ -261,41 +282,42 @@ function abrirModalNovo() {
 function abrirModalEdicao(id) {
   const t = _templates.find(x => x.id === id);
   if (!t) return;
+
   _editandoId = id;
-  document.getElementById('modal-titulo').textContent = 'Editar Template';
+
   document.getElementById('m-descricao').value = t.descricao;
-  document.getElementById('m-valor').value = parseFloat(t.valor||0).toFixed(2).replace('.',',');
-  setTipo(t.tipo);
-  setForma(t.forma);
+  document.getElementById('m-valor').value = t.valor;
   document.getElementById('m-grupo').value = t.grupo;
   document.getElementById('m-conta').value = t.conta_id || '';
+
+  _mTipo = t.tipo;
+  _mForma = t.forma;
+
   document.getElementById('btn-excluir').style.display = 'flex';
   document.getElementById('modal-edicao').classList.add('active');
 }
 
 function fecharModal() {
   document.getElementById('modal-edicao').classList.remove('active');
-  _editandoId = null;
 }
 
-document.getElementById('m-valor').addEventListener('input', function() {
-  const d = this.value.replace(/\D/g,'');
-  if (!d) { this.value = ''; return; }
-  this.value = (parseInt(d)/100).toFixed(2).replace('.',',');
-});
-
+// ================= CRUD =================
 async function salvarTemplate() {
   const descricao = document.getElementById('m-descricao').value.trim();
-  const valor = parseFloat(document.getElementById('m-valor').value.replace(/\./g,'').replace(',','.')) || 0;
-  const tipo = _mTipo;
-  const forma = _mForma;
+  const valor = parseFloat(document.getElementById('m-valor').value.replace(',','.')) || 0;
   const grupo = document.getElementById('m-grupo').value;
   const contaId = document.getElementById('m-conta').value || null;
 
-  if (!descricao) return alert('Informe a descrição');
-  if (!valor) return alert('Informe o valor');
+  if (!descricao || !valor) return alert('Preencha os campos');
 
-  const payload = { descricao, valor, tipo, forma, grupo, conta_id: contaId };
+  const payload = {
+    descricao,
+    valor,
+    tipo: _mTipo,
+    forma: _mForma,
+    grupo,
+    conta_id: contaId
+  };
 
   if (_editandoId) {
     await window.db.from('livro_caixa_templates').update(payload).eq('id', _editandoId);
@@ -304,108 +326,24 @@ async function salvarTemplate() {
   }
 
   fecharModal();
-  await recarregar();
+  await init();
 }
 
 async function excluirTemplate() {
   if (!_editandoId) return;
-  if (!confirm('Excluir este template?')) return;
+
+  if (!confirm('Excluir?')) return;
+
   await window.db.from('livro_caixa_templates').delete().eq('id', _editandoId);
+
   fecharModal();
-  await recarregar();
+  await init();
 }
 
-async function recarregar() {
-  const { data } = await window.db.from('livro_caixa_templates').select('*, contas_contabeis(descricao)').order('created_at');
-  _templates = data || [];
-  renderLista();
-}
+// ================= UI AUX =================
+function setTipo(v){ _mTipo = v; }
+function setForma(v){ _mForma = v; }
 
-// APLICAR TEMPLATE
-function abrirAplicar() {
-  const filtrados = _templates.filter(t => t.grupo === _grupoAtual);
-  if (filtrados.length === 0) return alert('Nenhum template neste grupo');
-
-  const ciclo = window.cicloAtual;
-  const d0Str = ciclo.d0.toLocaleDateString('en-CA', {timeZone:'America/Manaus'});
-  const d1 = new Date(new Date(`${d0Str}T00:00:00-04:00`).getTime() + 86400000);
-  const d1Str = d1.toLocaleDateString('en-CA', {timeZone:'America/Manaus'});
-  const dataDefault = _grupoAtual === 'preparacao' ? d0Str : d1Str;
-
-  const nomeGrupo = {preparacao:'Preparação', execucao:'Execução', conclusao:'Conclusão'}[_grupoAtual];
-  document.getElementById('aplicar-titulo').textContent = `Aplicar — ${nomeGrupo}`;
-  document.getElementById('aplicar-data').value = dataDefault;
-
-  document.getElementById('aplicar-lista').innerHTML = filtrados.map(t => {
-    const val = parseFloat(t.valor||0).toFixed(2).replace('.',',');
-    const conta = t.contas_contabeis?.descricao || 'Sem categoria';
-    const forma = t.forma === 'deposito' ? 'Depósito' : 'Dinheiro';
-    return `<div class="aplicar-item" data-id="${t.id}" data-tipo="${t.tipo}" data-forma="${t.forma}" data-conta="${t.conta_id||''}">
-      <div class="aplicar-check checked" onclick="toggleCheck(this)">
-        <svg viewBox="0 0 24 24" style="width:12px;height:12px;stroke:#FFF;stroke-width:3;fill:none"><path d="M5 13l4 4L19 7"/></svg>
-      </div>
-      <div class="aplicar-item-info">
-        <div class="aplicar-item-nome">${t.descricao}</div>
-        <div class="aplicar-item-sub">${forma} · ${conta}</div>
-      </div>
-      <div class="aplicar-item-valor">
-        <input type="tel" inputmode="decimal" value="${val}" oninput="mascaraValor(this)">
-      </div>
-    </div>`;
-  }).join('');
-
-  document.getElementById('modal-aplicar').classList.add('active');
-}
-
-function fecharAplicar() {
-  document.getElementById('modal-aplicar').classList.remove('active');
-}
-
-function toggleCheck(el) {
-  el.classList.toggle('checked');
-  const svg = el.querySelector('svg');
-  svg.style.display = el.classList.contains('checked') ? 'block' : 'none';
-}
-
-function mascaraValor(input) {
-  const d = input.value.replace(/\D/g,'');
-  if (!d) { input.value = ''; return; }
-  input.value = (parseInt(d)/100).toFixed(2).replace('.',',');
-}
-
-async function confirmarAplicar() {
-  const data = document.getElementById('aplicar-data').value;
-  if (!data) return alert('Informe a data');
-
-  const dataISO = new Date(`${data}T00:00:00-04:00`).toISOString();
-  const itens = document.querySelectorAll('#aplicar-lista .aplicar-item');
-  const inserts = [];
-
-  itens.forEach(item => {
-    const check = item.querySelector('.aplicar-check');
-    if (!check.classList.contains('checked')) return;
-    const valor = parseFloat(item.querySelector('input').value.replace(/\./g,'').replace(',','.')) || 0;
-    if (!valor) return;
-    inserts.push({
-      data: dataISO,
-      tipo: item.dataset.tipo,
-      forma: item.dataset.forma,
-      valor,
-      descricao: item.querySelector('.aplicar-item-nome').textContent,
-      conta_id: item.dataset.conta || null
-    });
-  });
-
-  if (inserts.length === 0) return alert('Selecione pelo menos um item');
-
-  const { error } = await window.db.from('livro_caixa').insert(inserts);
-  if (error) return alert('Erro: ' + error.message);
-
-  fecharAplicar();
-  alert(`${inserts.length} lançamento${inserts.length !== 1 ? 's' : ''} gravado${inserts.length !== 1 ? 's' : ''} com sucesso`);
-}
-
-init();
 </script>
 </body>
 </html>
