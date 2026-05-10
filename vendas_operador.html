@@ -52,11 +52,9 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;min-height:
 .produto-inputs{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;}
 .input-group{display:flex;flex-direction:column;gap:4px;}
 .input-group-label{font-size:10px;font-weight:600;color:#8E8E93;text-transform:uppercase;letter-spacing:0.4px;}
-.input-group input,
-.input-group select{width:100%;background:#F2F2F7;border:none;border-radius:10px;padding:8px 10px;font-family:'Inter',sans-serif;font-size:14px;font-weight:500;color:#1C1C1E;outline:none;-webkit-appearance:none;text-align:right;}
-.input-group input:focus,
-.input-group select:focus{background:#EBF2FF;}
-.input-group select{text-align:left;}
+.input-group input{width:100%;background:#F2F2F7;border:none;border-radius:10px;padding:8px 10px;font-family:'Inter',sans-serif;font-size:14px;font-weight:500;color:#1C1C1E;outline:none;-webkit-appearance:none;text-align:right;}
+.input-group input:focus{background:#EBF2FF;}
+.input-group input.total-input{background:transparent;color:#007AFF;font-weight:700;pointer-events:none;}
 
 /* TOTAL GERAL */
 .total-bar{padding:14px 18px;background:#F8F8FA;border-top:1px solid #EFEFEF;display:flex;align-items:center;justify-content:space-between;}
@@ -92,7 +90,6 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;min-height:
 <div class="main">
 
   <!-- CLIENTE -->
-  <div class="section-label">Cliente</div>
   <div class="autocomplete-wrapper">
     <div class="busca-wrap-ios">
       <svg class="busca-icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -102,7 +99,6 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;min-height:
   </div>
 
   <!-- DATA -->
-  <div class="section-label">Data</div>
   <div class="card" style="padding:14px 18px;">
     <div class="field-row">
       <span class="field-label">Data do pedido</span>
@@ -111,7 +107,6 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;min-height:
   </div>
 
   <!-- PRODUTOS FAVORITOS -->
-  <div class="section-label">Produtos</div>
   <div class="produtos-card" id="produtos-card">
     <div class="produtos-header">
       <span class="produtos-header-title">Produtos favoritos</span>
@@ -154,10 +149,45 @@ function parseNum(str) {
   return parseFloat(String(str).replace(/\./g,'').replace(',','.')) || 0;
 }
 
-function mascaraBRL(el) {
-  const digits = el.value.replace(/\D/g,'');
+// ── Máscara estilo app de banco (centavos acumulando da direita) ─────────────
+function mascaraBanco(el) {
+  const digits = el.value.replace(/\D/g, '');
   if (!digits) { el.value = ''; return; }
-  el.value = fmtBRL(parseInt(digits, 10) / 100);
+  const num = parseInt(digits, 10) / 100;
+  el.value = num.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
+}
+
+function getInput(prodId, campo) {
+  return document.querySelector(`[data-prodid="${prodId}"][data-campo="${campo}"]`);
+}
+
+function calcularItem(prodId) {
+  const qtdStr  = getInput(prodId, 'quantidade').value;
+  const precoStr = getInput(prodId, 'preco').value;
+  const qtd   = parseNum(qtdStr);
+  const preco = parseNum(precoStr);
+  const total = qtd * preco;
+  const totalEl = getInput(prodId, 'total');
+  totalEl.value = total > 0
+    ? total.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2})
+    : '';
+
+  if (qtd > 0 && preco > 0) {
+    _itens[prodId] = { quantidade: qtd, preco_unit: preco, total };
+  } else {
+    delete _itens[prodId];
+  }
+  recalcularTotalGeral();
+  atualizarBotao();
+}
+
+function salvarUnidade(prodId, valor) {
+  if (!_itens[prodId]) _itens[prodId] = {};
+  _itens[prodId].unidade = valor;
+}
+
+function registrarItem(prodId) {
+  calcularItem(prodId);
 }
 
 function showToast(msg, dur = 2200) {
@@ -222,7 +252,7 @@ async function carregarFavoritos() {
   const { data, error } = await window.db
     .from('produtos')
     .select('id, nome, unid_venda')
-    .eq('favorito', true)
+    .eq('favoritos', true)
     .order('nome');
 
   if (error || !data || data.length === 0) {
@@ -237,38 +267,29 @@ async function carregarFavoritos() {
 function renderizarProdutos() {
   const lista = document.getElementById('lista-produtos');
   lista.innerHTML = _produtos.map(p => {
-    const unidPadrao = p.unid_venda || 'kg';
-    const opcoesUnid = UNIDADES.includes(unidPadrao)
-      ? UNIDADES
-      : [unidPadrao, ...UNIDADES];
-    const optionsHtml = opcoesUnid.map(u =>
-      `<option value="${u}" ${u === unidPadrao ? 'selected' : ''}>${u}</option>`
-    ).join('');
-
     return `
       <div class="produto-item">
         <span class="produto-nome">${p.nome}</span>
         <div class="produto-inputs">
           <div class="input-group">
-            <span class="input-group-label">Quantidade</span>
-            <input type="tel" inputmode="decimal" placeholder="0,00"
+            <span class="input-group-label">Qtd</span>
+            <input type="tel" inputmode="numeric" placeholder="0,00"
               data-prodid="${p.id}" data-campo="quantidade"
-              oninput="mascaraBRL(this);calcularTotal('${p.id}')"
+              oninput="mascaraBanco(this);calcularItem('${p.id}')"
               onfocus="this.select()">
           </div>
           <div class="input-group">
-            <span class="input-group-label">Unidade</span>
-            <select data-prodid="${p.id}" data-campo="unidade"
-              onchange="salvarUnidade('${p.id}',this.value)">
-              ${optionsHtml}
-            </select>
+            <span class="input-group-label">Preço unit.</span>
+            <input type="tel" inputmode="numeric" placeholder="0,00"
+              data-prodid="${p.id}" data-campo="preco"
+              oninput="mascaraBanco(this);calcularItem('${p.id}')"
+              onfocus="this.select()">
           </div>
           <div class="input-group">
-            <span class="input-group-label">Total R$</span>
-            <input type="tel" inputmode="decimal" placeholder="0,00"
+            <span class="input-group-label">Total</span>
+            <input class="total-input" type="text" readonly
               data-prodid="${p.id}" data-campo="total"
-              oninput="mascaraBRL(this);registrarItem('${p.id}')"
-              onfocus="this.select()">
+              placeholder="0,00">
           </div>
         </div>
       </div>`;
@@ -277,33 +298,6 @@ function renderizarProdutos() {
 
 function getInput(prodId, campo) {
   return document.querySelector(`[data-prodid="${prodId}"][data-campo="${campo}"]`);
-}
-
-function calcularTotal(prodId) {
-  const qtd = parseNum(getInput(prodId,'quantidade').value);
-  const totalEl = getInput(prodId,'total');
-  // não sobrescreve total se já preenchido pelo usuário diretamente
-  registrarItem(prodId);
-  recalcularTotalGeral();
-}
-
-function salvarUnidade(prodId, valor) {
-  if (!_itens[prodId]) _itens[prodId] = {};
-  _itens[prodId].unidade = valor;
-}
-
-function registrarItem(prodId) {
-  const qtd   = parseNum(getInput(prodId,'quantidade').value);
-  const unid  = getInput(prodId,'unidade').value;
-  const total = parseNum(getInput(prodId,'total').value);
-
-  if (qtd === 0 && total === 0) {
-    delete _itens[prodId];
-  } else {
-    _itens[prodId] = { quantidade: qtd, unidade: unid, total };
-  }
-  recalcularTotalGeral();
-  atualizarBotao();
 }
 
 function recalcularTotalGeral() {
@@ -321,7 +315,7 @@ function atualizarBotao() {
 // ── Gravar pedido ─────────────────────────────────────────────────────────────
 async function gravarPedido() {
   if (!_clienteSelecionado) return showToast('Selecione um cliente');
-  const itensValidos = Object.entries(_itens).filter(([,i]) => i.quantidade > 0 || i.total > 0);
+  const itensValidos = Object.entries(_itens).filter(([,i]) => i.quantidade > 0 && i.preco_unit > 0);
   if (itensValidos.length === 0) return showToast('Adicione ao menos um item');
 
   const dataInput = document.getElementById('data-pedido').value;
@@ -359,20 +353,17 @@ async function gravarPedido() {
     // Inserir itens
     const payloads = itensValidos.map(([prodId, i]) => {
       const prod = _produtos.find(p => p.id === prodId);
-      const qtd = i.quantidade || 0;
-      const total = i.total || 0;
-      const prUnit = qtd > 0 ? total / qtd : 0;
       return {
         pedido_venda_id: pedidoId,
         produto_id: prodId,
-        quantidade: qtd,
-        preco_unit: prUnit,
+        quantidade: i.quantidade,
+        preco_unit: i.preco_unit,
         custo_unit: 0,
-        total_venda: total,
+        total_venda: i.total,
         total_custo: 0,
-        lucro: total,
-        quant_despacho: qtd,
-        unid_despacho: i.unidade || (prod?.unid_venda || 'kg')
+        lucro: i.total,
+        quant_despacho: i.quantidade,
+        unid_despacho: prod?.unid_venda || 'kg'
       };
     });
 
