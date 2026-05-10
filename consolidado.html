@@ -14,7 +14,7 @@
   --card:#FFFFFF;
   --border:#E5E7EB;
   --text:#111827;
-  --muted:#6B7280;
+  --muted:#4B5563;
   --pos:#16A34A;
   --neg:#DC2626;
   --blue:#2563EB;
@@ -65,12 +65,12 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:var(--bg);color:var(-
 .corretora-row{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid #F3F4F6;}
 .corretora-row:last-child{border-bottom:none;}
 .corretora-nome{font-size:13px;font-weight:600;color:var(--text);}
-.corretora-moeda{font-size:11px;color:var(--muted);font-weight:500;}
+.corretora-moeda{font-size:11px;color:#4B5563;font-weight:600;}
 .corretora-saldo{text-align:right;}
 .corretora-saldo-val{font-size:14px;font-weight:800;color:var(--blue);}
 .corretora-saldo-pct{font-size:11px;color:var(--muted);margin-top:1px;}
 .corretora-total{background:#F9FAFB;display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-top:2px solid var(--border);}
-.corretora-total-label{font-size:12px;font-weight:700;color:var(--muted);}
+.corretora-total-label{font-size:12px;font-weight:700;color:#374151;}
 .corretora-total-val{font-size:15px;font-weight:800;color:var(--text);}
 
 /* TABELAS */
@@ -114,7 +114,7 @@ tfoot td:first-child{text-align:left;position:sticky;left:0;background:#F9FAFB;z
 .resumo-list{background:var(--card);border-radius:16px;border:1px solid var(--border);overflow:hidden;}
 .resumo-row{display:flex;align-items:center;justify-content:space-between;padding:13px 16px;border-bottom:1px solid #F3F4F6;}
 .resumo-row:last-child{border-bottom:none;}
-.resumo-label{font-size:13px;color:var(--muted);font-weight:500;}
+.resumo-label{font-size:13px;color:#374151;font-weight:500;}
 .resumo-value{font-size:14px;font-weight:800;}
 .resumo-row.destaque{background:#F9FAFB;}
 .resumo-row.destaque .resumo-label{color:var(--text);font-weight:700;}
@@ -331,7 +331,7 @@ function calcularPosicoes(transacoes) {
   return { abertas, shorts, realizados };
 }
 
-function calcularSaldosCorretoras(corretoras, transferencias, transacoes, posicoesComCotacao) {
+function calcularSaldosCorretoras(corretoras, transferencias, transacoes, posicoesComCotacao, shortsComCotacao) {
   return corretoras.map(c => {
     const movimentos = transferencias.filter(t => t.corretora_id === c.id);
     let saldo = 0;
@@ -343,16 +343,17 @@ function calcularSaldosCorretoras(corretoras, transferencias, transacoes, posico
     const ativosCorretora = transacoes.filter(t => t.ativos?.corretora_id === c.id);
     ativosCorretora.forEach(t => {
       const valor = parseFloat(t.valor_total_usd)||0;
-      // Só LA/LF mexem no saldo; SA/SF usam margem já na conta futuros
-      if (t.tipo_operacao === 'LA') saldo -= valor;
-      else if (t.tipo_operacao === 'LF') saldo += valor;
+      // LA/SA debitam spot; LF/SF creditam spot
+      if (t.tipo_operacao === 'LA' || t.tipo_operacao === 'SA') saldo -= valor;
+      else if (t.tipo_operacao === 'LF' || t.tipo_operacao === 'SF') saldo += valor;
     });
 
-    // Posições long abertas desta corretora
     const idsAtivosCorretora = [...new Set(ativosCorretora.map(t => t.ativo_id))];
     const longAbertos = (posicoesComCotacao || []).filter(p => idsAtivosCorretora.includes(p.id));
+    const futurosAbertos = (shortsComCotacao || []).filter(p => idsAtivosCorretora.includes(p.id));
+    const totalFuturos = futurosAbertos.reduce((s, p) => s + p.custoShort, 0);
 
-    return { ...c, saldo, longAbertos };
+    return { ...c, saldo, longAbertos, futurosAbertos, totalFuturos };
   });
 }
 
@@ -435,7 +436,7 @@ async function init() {
     return { ...a, cotacao, valorMercado, resultadoAberto, drawdown, exposicao };
   });
 
-  const corretorasComSaldo = calcularSaldosCorretoras(corretoras, transferencias, transacoes, posicoesComCotacao);
+  const corretorasComSaldo = calcularSaldosCorretoras(corretoras, transferencias, transacoes, posicoesComCotacao, shortsComCotacao);
   const totalSaldo = corretorasComSaldo.reduce((s, c) => s + c.saldo, 0);
 
   // Recalcular exposição com totalSaldo correto
@@ -484,7 +485,6 @@ function renderizar(d) {
 
     <!-- RESUMO CARTEIRA -->
     <div>
-      <div class="section-label">Carteira</div>
       <div class="cards-grid">
         <div class="card highlight full">
           <div class="card-label">Saldo Total da Carteira</div>
@@ -509,13 +509,12 @@ function renderizar(d) {
 
     <!-- CORRETORAS -->
     <div>
-      <div class="section-label">Corretoras</div>
       <div class="corretoras-list">
         ${d.corretorasComSaldo.map(c => `
           <div class="corretora-row">
             <div>
               <div class="corretora-nome">${c.nome}</div>
-              <div class="corretora-moeda">${c.moeda_base}</div>
+              <div class="corretora-moeda">Spot</div>
             </div>
             <div class="corretora-saldo">
               <div class="corretora-saldo-val">${c.moeda_base} ${fmtUSD(c.saldo)}</div>
@@ -526,13 +525,23 @@ function renderizar(d) {
           <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 16px 7px 28px;border-bottom:1px solid #F3F4F6;background:#FAFAFA;">
             <div style="display:flex;align-items:center;gap:6px;">
               <span style="width:6px;height:6px;border-radius:50%;background:${tickerColor(p.ticker)};display:inline-block;flex-shrink:0;"></span>
-              <span style="font-size:12px;font-weight:600;color:#6B7280;">${p.ticker}</span>
+              <span style="font-size:12px;font-weight:700;color:#374151;">${p.ticker}</span>
             </div>
             <div style="text-align:right;">
               <div style="font-size:12px;font-weight:700;color:#111827;">${c.moeda_base} ${fmtUSD(p.valorMercado)}</div>
-              <div style="font-size:10px;color:#6B7280;">${fmtQtd(p.qtdAberta)} un.</div>
+              <div style="font-size:10px;color:#4B5563;">${fmtQtd(p.qtdAberta)} un.</div>
             </div>
           </div>`).join('') : ''}
+          ${c.totalFuturos > 0 ? `
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 16px 10px 16px;border-bottom:1px solid #F3F4F6;background:#F5F3FF;">
+            <div>
+              <div style="font-size:13px;font-weight:600;color:#374151;">Futuros</div>
+              <div style="font-size:11px;color:#6B7280;">${c.futurosAbertos.map(p => p.ticker).join(', ')}</div>
+            </div>
+            <div style="text-align:right;">
+              <div style="font-size:14px;font-weight:800;color:#7C3AED;">${c.moeda_base} ${fmtUSD(c.totalFuturos)}</div>
+            </div>
+          </div>` : ''}
         `).join('')}
         <div class="corretora-total">
           <span class="corretora-total-label">Total Disponível</span>
@@ -544,8 +553,7 @@ function renderizar(d) {
     <!-- POSIÇÕES LONG EM ABERTO -->
     ${d.posicoesComCotacao.length > 0 ? `
     <div>
-      <div class="section-label">Posições Long em Aberto (${d.posicoesComCotacao.length})</div>
-      <div class="table-wrap">
+            <div class="table-wrap">
         <table>
           <thead>
             <tr>
@@ -596,8 +604,7 @@ function renderizar(d) {
     <!-- POSIÇÕES SHORT EM ABERTO -->
     ${d.shortsComCotacao.length > 0 ? `
     <div>
-      <div class="section-label">Posições Short em Aberto (${d.shortsComCotacao.length})</div>
-      <div class="table-wrap">
+            <div class="table-wrap">
         <table>
           <thead>
             <tr>
@@ -640,8 +647,7 @@ function renderizar(d) {
 
     <!-- RESUMO FINANCEIRO -->
     <div>
-      <div class="section-label">Resumo Financeiro</div>
-      <div class="resumo-list">
+            <div class="resumo-list">
         <div class="resumo-row">
           <span class="resumo-label">Resultado Aberto Long</span>
           <span class="resumo-value ${colorCls(d.totalResultadoAbertoLong)}">${colorSign(d.totalResultadoAbertoLong)}USD ${fmtUSD(d.totalResultadoAbertoLong)}</span>
@@ -666,8 +672,7 @@ function renderizar(d) {
 
     <!-- OPERAÇÕES MENSAIS -->
     <div>
-      <div class="section-label">Operações Mensais</div>
-      <div class="table-wrap">
+            <div class="table-wrap">
         <table>
           <thead>
             <tr>
@@ -731,8 +736,7 @@ function renderizar(d) {
 
     <!-- OPERAÇÕES POR ATIVO -->
     <div>
-      <div class="section-label">Operações por Ativo</div>
-      <div class="table-wrap">
+            <div class="table-wrap">
         <table>
           <thead>
             <tr>
