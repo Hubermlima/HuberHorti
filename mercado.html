@@ -139,6 +139,51 @@ body{
     animation:spin 0.8s linear infinite;
 }
 @keyframes spin{to{transform:rotate(360deg)}}
+
+/* Abas estilo GitHub */
+.tabs{
+    display:flex;border-bottom:1px solid #E5E7EB;
+    padding:0 20px;gap:0;margin-bottom:0;
+}
+.tab-btn{
+    padding:10px 16px;font-size:13px;font-weight:600;
+    color:#4B5563;background:transparent;border:none;
+    border-bottom:2px solid transparent;cursor:pointer;
+    font-family:'Plus Jakarta Sans',sans-serif;
+    margin-bottom:-1px;transition:color 0.15s;
+}
+.tab-btn.active{color:#1C1C1E;border-bottom-color:#1C1C1E;}
+.tab-btn:active{opacity:0.7}
+.tab-pane{display:none;}
+.tab-pane.active{display:block;}
+
+/* Sinais */
+.sinais-wrap{padding:16px 20px;display:flex;flex-direction:column;gap:10px;}
+.sinal-row{display:flex;align-items:center;justify-content:space-between;}
+.sinal-nome{font-size:13px;font-weight:600;color:#1C1C1E;}
+.sinal-val{font-size:12px;font-weight:600;color:#4B5563;margin-top:1px;}
+.sinal-badge{padding:4px 10px;border-radius:100px;font-size:11px;font-weight:800;}
+.badge-alta{background:#D1FAE5;color:#065F46;}
+.badge-baixa{background:#FEE2E2;color:#991B1B;}
+.badge-neutro{background:#F3F4F6;color:#374151;}
+.sinal-consolidado{
+    margin:4px 0 0;padding:14px 16px;border-radius:16px;
+    display:flex;align-items:center;justify-content:space-between;
+}
+.sc-alta{background:#D1FAE5;}
+.sc-baixa{background:#FEE2E2;}
+.sc-neutro{background:#F3F4F6;}
+.sc-label{font-size:12px;font-weight:700;color:#374151;}
+.sc-valor{font-size:16px;font-weight:800;}
+.sc-alta .sc-valor{color:#065F46;}
+.sc-baixa .sc-valor{color:#991B1B;}
+.sc-neutro .sc-valor{color:#374151;}
+.sinais-loading{text-align:center;padding:30px;font-size:13px;color:#4B5563;}
+.spinner-sinais{
+    width:20px;height:20px;border:2px solid #E5E7EB;
+    border-top-color:#007AFF;border-radius:50%;
+    animation:spin 0.7s linear infinite;margin:0 auto 8px;
+}
 </style>
 </head>
 <body>
@@ -185,6 +230,14 @@ body{
 
         <div class="card-divider"></div>
 
+        <!-- Abas -->
+        <div class="tabs">
+            <button class="tab-btn active" onclick="setTab('overview',this)">Overview</button>
+            <button class="tab-btn" onclick="setTab('indicadores',this)">Indicadores</button>
+        </div>
+
+        <!-- Aba Overview -->
+        <div class="tab-pane active" id="tab-overview">
         <div class="card-stats">
                         <div class="stat-item">
                 <div class="stat-label">Abertura</div>
@@ -212,6 +265,15 @@ body{
             </div>
 
         </div>
+
+        </div><!-- /tab-overview -->
+
+        <!-- Aba Indicadores -->
+        <div class="tab-pane" id="tab-indicadores">
+            <div class="sinais-wrap" id="sinais-wrap">
+                <div class="sinais-loading"><div class="spinner-sinais"></div>Buscando indicadores...</div>
+            </div>
+        </div><!-- /tab-indicadores -->
 
         <div class="card-divider"></div>
 
@@ -422,6 +484,111 @@ function renderGrafico(labels, precos, positivo) {
             }
         }
     });
+}
+
+function setTab(tab, el) {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+    el.classList.add('active');
+    document.getElementById('tab-' + tab).classList.add('active');
+    if (tab === 'indicadores' && _ativoAtual) carregarIndicadores();
+}
+
+async function carregarIndicadores() {
+    const wrap = document.getElementById('sinais-wrap');
+    wrap.innerHTML = '<div class="sinais-loading"><div class="spinner-sinais"></div>Buscando indicadores...</div>';
+    const tk = _ativoAtual.ticker;
+    const key = API_KEY;
+    const interval = '4h';
+
+    try {
+        const [rsiRes, ema50Res, ema200Res, macdRes, bbRes] = await Promise.all([
+            fetch(`https://api.twelvedata.com/rsi?symbol=${tk}&interval=${interval}&time_period=14&apikey=${key}&outputsize=1`),
+            fetch(`https://api.twelvedata.com/ema?symbol=${tk}&interval=${interval}&time_period=50&apikey=${key}&outputsize=1`),
+            fetch(`https://api.twelvedata.com/ema?symbol=${tk}&interval=${interval}&time_period=200&apikey=${key}&outputsize=1`),
+            fetch(`https://api.twelvedata.com/macd?symbol=${tk}&interval=${interval}&apikey=${key}&outputsize=1`),
+            fetch(`https://api.twelvedata.com/bbands?symbol=${tk}&interval=${interval}&time_period=20&apikey=${key}&outputsize=1`),
+        ]);
+
+        const [rsiD, ema50D, ema200D, macdD, bbD] = await Promise.all([
+            rsiRes.json(), ema50Res.json(), ema200Res.json(), macdRes.json(), bbRes.json()
+        ]);
+
+        const preco = parseFloat(document.getElementById('card-preco').textContent.replace(' USD','').replace(/,/g,'')) || 0;
+        const rsi = parseFloat(rsiD.values?.[0]?.rsi);
+        const ema50 = parseFloat(ema50D.values?.[0]?.ema);
+        const ema200 = parseFloat(ema200D.values?.[0]?.ema);
+        const macdVal = parseFloat(macdD.values?.[0]?.macd);
+        const macdSig = parseFloat(macdD.values?.[0]?.macd_signal);
+        const bbUpper = parseFloat(bbD.values?.[0]?.upper_band);
+        const bbLower = parseFloat(bbD.values?.[0]?.lower_band);
+
+        const sinais = [];
+        let pontosAlta = 0, pontosBaixa = 0;
+
+        // RSI
+        if (!isNaN(rsi)) {
+            const s = rsi > 70 ? 'baixa' : rsi < 30 ? 'alta' : 'neutro';
+            const label = rsi > 70 ? 'Sobrecomprado' : rsi < 30 ? 'Sobrevendido' : 'Neutro';
+            sinais.push({ nome: 'RSI 14', val: rsi.toFixed(1), sinal: s, label });
+            if (s === 'alta') pontosAlta++; else if (s === 'baixa') pontosBaixa++;
+        }
+
+        // EMA 50
+        if (!isNaN(ema50) && preco > 0) {
+            const s = preco > ema50 ? 'alta' : 'baixa';
+            sinais.push({ nome: 'EMA 50', val: fmtUSD(ema50), sinal: s, label: preco > ema50 ? 'Acima' : 'Abaixo' });
+            if (s === 'alta') pontosAlta++; else pontosBaixa++;
+        }
+
+        // EMA 200
+        if (!isNaN(ema200) && preco > 0) {
+            const s = preco > ema200 ? 'alta' : 'baixa';
+            sinais.push({ nome: 'EMA 200', val: fmtUSD(ema200), sinal: s, label: preco > ema200 ? 'Acima' : 'Abaixo' });
+            if (s === 'alta') pontosAlta++; else pontosBaixa++;
+        }
+
+        // MACD
+        if (!isNaN(macdVal) && !isNaN(macdSig)) {
+            const s = macdVal > macdSig ? 'alta' : 'baixa';
+            sinais.push({ nome: 'MACD', val: macdVal.toFixed(2), sinal: s, label: s === 'alta' ? 'Cruzamento ↑' : 'Cruzamento ↓' });
+            if (s === 'alta') pontosAlta++; else pontosBaixa++;
+        }
+
+        // Bollinger
+        if (!isNaN(bbUpper) && !isNaN(bbLower) && preco > 0) {
+            const s = preco > bbUpper ? 'baixa' : preco < bbLower ? 'alta' : 'neutro';
+            const label = preco > bbUpper ? 'Acima da banda' : preco < bbLower ? 'Abaixo da banda' : 'Dentro das bandas';
+            sinais.push({ nome: 'Bollinger', val: `${fmtUSD(bbLower)} – ${fmtUSD(bbUpper)}`, sinal: s, label });
+            if (s === 'alta') pontosAlta++; else if (s === 'baixa') pontosBaixa++;
+        }
+
+        // Consolidado
+        const total = pontosAlta + pontosBaixa;
+        const consolidado = pontosAlta > pontosBaixa ? 'alta' : pontosBaixa > pontosAlta ? 'baixa' : 'neutro';
+        const consolidadoLabel = consolidado === 'alta' ? 'Viés de alta' : consolidado === 'baixa' ? 'Viés de baixa' : 'Neutro';
+        const pctAlta = total > 0 ? Math.round(pontosAlta/total*100) : 50;
+
+        wrap.innerHTML = sinais.map(s => `
+            <div class="sinal-row">
+                <div>
+                    <div class="sinal-nome">${s.nome}</div>
+                    <div class="sinal-val">${s.val}</div>
+                </div>
+                <span class="sinal-badge badge-${s.sinal}">${s.label}</span>
+            </div>
+            <div style="height:1px;background:#F3F4F6;"></div>`).join('') +
+        `<div class="sinal-consolidado sc-${consolidado}">
+            <div>
+                <div class="sc-label">Sinal consolidado</div>
+                <div style="font-size:11px;color:#6B7280;margin-top:2px;">${pontosAlta} alta · ${pontosBaixa} baixa</div>
+            </div>
+            <div class="sc-valor">${consolidadoLabel}</div>
+        </div>`;
+
+    } catch(e) {
+        wrap.innerHTML = '<div class="sinais-loading">Erro ao buscar indicadores</div>';
+    }
 }
 
 function setTimeframe(tf, el) {
