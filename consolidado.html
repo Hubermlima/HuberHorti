@@ -331,7 +331,7 @@ function calcularPosicoes(transacoes) {
   return { abertas, shorts, realizados };
 }
 
-function calcularSaldosCorretoras(corretoras, transferencias, transacoes) {
+function calcularSaldosCorretoras(corretoras, transferencias, transacoes, posicoesComCotacao) {
   return corretoras.map(c => {
     const movimentos = transferencias.filter(t => t.corretora_id === c.id);
     let saldo = 0;
@@ -344,12 +344,15 @@ function calcularSaldosCorretoras(corretoras, transferencias, transacoes) {
     ativosCorretora.forEach(t => {
       const valor = parseFloat(t.valor_total_usd)||0;
       // Só LA/LF mexem no saldo; SA/SF usam margem já na conta futuros
-if (t.tipo_operacao === 'LA') saldo -= valor;
-else if (t.tipo_operacao === 'LF') saldo += valor;
-
+      if (t.tipo_operacao === 'LA') saldo -= valor;
+      else if (t.tipo_operacao === 'LF') saldo += valor;
     });
 
-    return { ...c, saldo };
+    // Posições long abertas desta corretora
+    const idsAtivosCorretora = [...new Set(ativosCorretora.map(t => t.ativo_id))];
+    const longAbertos = (posicoesComCotacao || []).filter(p => idsAtivosCorretora.includes(p.id));
+
+    return { ...c, saldo, longAbertos };
   });
 }
 
@@ -422,17 +425,22 @@ async function init() {
   const tickersTodos = [...new Set([...tickersLong, ...tickersShort])];
   const cotacoes = await fetchCotacoes(tickersTodos);
 
-  const corretorasComSaldo = calcularSaldosCorretoras(corretoras, transferencias, transacoes);
-  const totalSaldo = corretorasComSaldo.reduce((s, c) => s + c.saldo, 0);
-
-  // Posições long com cotação
+  // Posições long com cotação (antes de calcular saldos)
   const posicoesComCotacao = abertas.map(a => {
     const cotacao = cotacoes[a.ticker] || 0;
     const valorMercado = a.qtdAberta * cotacao;
     const resultadoAberto = valorMercado - a.custoAberto;
     const drawdown = a.pm > 0 ? (cotacao - a.pm) / a.pm : 0;
-    const exposicao = totalSaldo + valorMercado > 0 ? valorMercado / (totalSaldo + valorMercado) : 0;
+    const exposicao = valorMercado > 0 ? valorMercado / (valorMercado + 1) : 0; // placeholder, recalculado abaixo
     return { ...a, cotacao, valorMercado, resultadoAberto, drawdown, exposicao };
+  });
+
+  const corretorasComSaldo = calcularSaldosCorretoras(corretoras, transferencias, transacoes, posicoesComCotacao);
+  const totalSaldo = corretorasComSaldo.reduce((s, c) => s + c.saldo, 0);
+
+  // Recalcular exposição com totalSaldo correto
+  posicoesComCotacao.forEach(p => {
+    p.exposicao = totalSaldo + p.valorMercado > 0 ? p.valorMercado / (totalSaldo + p.valorMercado) : 0;
   });
 
   // Posições short com cotação
