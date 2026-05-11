@@ -82,8 +82,10 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;min-height:
   <button class="ios-btn-float" onclick="history.back()">
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
   </button>
-  <span class="topbar-title">Novo Pedido</span>
-  <div style="width:38px;"></div>
+  <span class="topbar-title">Pedido Venda Express</span>
+  <button class="ios-btn-float" id="btn-sessao" onclick="abrirSessao()">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+  </button>
 </div>
 
 <!-- CONTEÚDO -->
@@ -152,6 +154,7 @@ let _clienteSelecionado = null; // { id, nome }
 let _produtos = [];             // produtos favoritos carregados
 let _itens = {};                // { produto_id: { quantidade, preco_unit, total, custo_unit, total_custo, lucro } }
 let _pedidoAtualId = null;      // id do pedido em edição
+let _pedidosSessao = [];        // pedidos gravados nesta sessão
 
 const UNIDADES = ['kg','un','cx','pct','dz','frd'];
 
@@ -435,6 +438,14 @@ async function gravarPedido() {
     }
 
     showToast('Pedido gravado com sucesso!');
+
+    // Registra ou atualiza na sessão
+    const dataFormatada = dataInput.split('-').reverse().join('/').substring(0, 5);
+    const idxSessao = _pedidosSessao.findIndex(p => p.id === _pedidoAtualId);
+    const entradaSessao = { id: _pedidoAtualId, clienteId: _clienteSelecionado.id, clienteNome: _clienteSelecionado.nome, data: dataFormatada, dataISO: dataInput };
+    if (idxSessao >= 0) _pedidosSessao[idxSessao] = entradaSessao;
+    else _pedidosSessao.push(entradaSessao);
+
     btn.disabled = false;
     btn.textContent = 'Gravar pedido';
 
@@ -448,5 +459,109 @@ async function gravarPedido() {
 // ── Init ──────────────────────────────────────────────────────────────────────
 carregarFavoritos();
 </script>
+
+<!-- MODAL SESSÃO -->
+<div id="sessao-overlay" onclick="fecharSessao()" style="display:none;position:fixed;inset:0;z-index:9998;background:rgba(0,0,0,0.3);"></div>
+<div id="sessao-modal" style="display:none;position:fixed;top:64px;right:16px;z-index:9999;background:#FFF;border-radius:18px;box-shadow:0 12px 40px rgba(0,0,0,0.18);width:260px;overflow:hidden;animation:floatIn 0.18s cubic-bezier(0.4,0,0.2,1);">
+  <div id="sessao-lista"></div>
+</div>
+<style>
+@keyframes floatIn{from{opacity:0;transform:scale(0.95) translateY(-8px)}to{opacity:1;transform:scale(1) translateY(0)}}
+.sessao-item{padding:14px 18px;font-size:14px;color:#1C1C1E;cursor:pointer;border-bottom:0.5px solid #F2F2F7;display:flex;flex-direction:column;gap:2px;}
+.sessao-item:last-child{border-bottom:none;}
+.sessao-item:active{background:#F2F2F7;}
+.sessao-item-nome{font-weight:600;font-size:14px;color:#1C1C1E;}
+.sessao-item-sub{font-size:12px;color:#8E8E93;}
+.sessao-item-novo{padding:14px 18px;font-size:14px;font-weight:600;color:#007AFF;cursor:pointer;display:flex;align-items:center;gap:8px;}
+.sessao-item-novo:active{background:#F2F2F7;}
+.sessao-item.ativo .sessao-item-nome{color:#007AFF;}
+</style>
+
+<script>
+// ── Sessão ────────────────────────────────────────────────────────────────────
+function abrirSessao() {
+  const lista = document.getElementById('sessao-lista');
+  lista.innerHTML = _pedidosSessao.map((p, i) => `
+    <div class="sessao-item${_pedidoAtualId === p.id ? ' ativo' : ''}" onclick="carregarPedidoSessao(${i})">
+      <span class="sessao-item-nome">${p.clienteNome}</span>
+      <span class="sessao-item-sub">${p.data}</span>
+    </div>`
+  ).join('') + `
+  <div class="sessao-item-novo" onclick="novoPedido()">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#007AFF" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    Novo Pedido
+  </div>`;
+  document.getElementById('sessao-overlay').style.display = 'block';
+  document.getElementById('sessao-modal').style.display = 'block';
+}
+
+function fecharSessao() {
+  document.getElementById('sessao-overlay').style.display = 'none';
+  document.getElementById('sessao-modal').style.display = 'none';
+}
+
+function novoPedido() {
+  fecharSessao();
+  _pedidoAtualId = null;
+  _clienteSelecionado = null;
+  _itens = {};
+  inputBusca.value = '';
+  inputBusca.dataset.selectedId = '';
+  setDataHoje();
+  renderizarProdutos();
+  recalcularTotalGeral();
+  atualizarBotao();
+}
+
+async function carregarPedidoSessao(idx) {
+  fecharSessao();
+  const p = _pedidosSessao[idx];
+  if (!p) return;
+
+  // Restaura cliente
+  _clienteSelecionado = { id: p.clienteId, nome: p.clienteNome };
+  inputBusca.value = p.clienteNome;
+  inputBusca.dataset.selectedId = p.clienteId;
+  _pedidoAtualId = p.id;
+
+  // Restaura data
+  document.getElementById('data-pedido').value = p.dataISO;
+
+  // Busca itens do banco
+  const { data: itens } = await window.db.from('itens_pedidos_vendas')
+    .select('produto_id, quantidade, preco_unit, custo_unit, total_venda, total_custo, lucro, quant_despacho, unid_despacho')
+    .eq('pedido_venda_id', p.id);
+
+  _itens = {};
+  (itens || []).forEach(i => {
+    _itens[i.produto_id] = {
+      produto_id: i.produto_id,
+      quantidade: parseFloat(i.quantidade),
+      preco_unit: parseFloat(i.preco_unit),
+      custo_unit: parseFloat(i.custo_unit),
+      total_venda: parseFloat(i.total_venda),
+      total_custo: parseFloat(i.total_custo),
+      lucro: parseFloat(i.lucro),
+      quant_despacho: i.quant_despacho,
+      unid_despacho: i.unid_despacho
+    };
+  });
+
+  // Re-renderiza e preenche inputs
+  renderizarProdutos();
+  Object.entries(_itens).forEach(([prodId, i]) => {
+    const qtdEl = getInput(prodId, 'quantidade');
+    const precoEl = getInput(prodId, 'preco');
+    const totalEl = getInput(prodId, 'total');
+    if (qtdEl) qtdEl.value = i.quantidade.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
+    if (precoEl) precoEl.value = i.preco_unit.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
+    if (totalEl) totalEl.value = i.total_venda.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
+  });
+
+  recalcularTotalGeral();
+  atualizarBotao();
+}
+</script>
+
 </body>
 </html>
