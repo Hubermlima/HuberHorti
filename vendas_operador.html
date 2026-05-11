@@ -150,7 +150,8 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;min-height:
 // ── Estado ───────────────────────────────────────────────────────────────────
 let _clienteSelecionado = null; // { id, nome }
 let _produtos = [];             // produtos favoritos carregados
-let _itens = {};                // { produto_id: { quantidade, unidade, total } }
+let _itens = {};                // { produto_id: { quantidade, preco_unit, total, custo_unit, total_custo, lucro } }
+let _pedidoAtualId = null;      // id do pedido em edição
 
 const UNIDADES = ['kg','un','cx','pct','dz','frd'];
 
@@ -178,7 +179,7 @@ function getInput(prodId, campo) {
 }
 
 function calcularItem(prodId) {
-  const qtdStr  = getInput(prodId, 'quantidade').value;
+  const qtdStr   = getInput(prodId, 'quantidade').value;
   const precoStr = getInput(prodId, 'preco').value;
   const qtd   = parseNum(qtdStr);
   const preco = parseNum(precoStr);
@@ -188,8 +189,23 @@ function calcularItem(prodId) {
     ? total.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2})
     : '';
 
+  const prod = _produtos.find(p => p.id === prodId);
+  const custoUnit = parseFloat(prod?.preco_medio_compra) || 0;
+  const totalCusto = custoUnit * qtd;
+  const lucro = total - totalCusto;
+
   if (qtd > 0 && preco > 0) {
-    _itens[prodId] = { quantidade: qtd, preco_unit: preco, total };
+    _itens[prodId] = {
+      produto_id: prodId,
+      quantidade: qtd,
+      preco_unit: preco,
+      custo_unit: custoUnit,
+      total_venda: total,
+      total_custo: totalCusto,
+      lucro,
+      quant_despacho: qtd,
+      unid_despacho: prod?.unid_venda || null
+    };
   } else {
     delete _itens[prodId];
   }
@@ -267,7 +283,7 @@ document.addEventListener('touchstart', (e) => {
 async function carregarFavoritos() {
   const { data, error } = await window.db
     .from('produtos')
-    .select('id, nome, unid_venda')
+    .select('id, nome, unid_venda, preco_medio_compra, peso_por_unid')
     .eq('favoritos', true)
     .order('nome');
 
@@ -315,7 +331,7 @@ function getInput(prodId, campo) {
 
 function recalcularTotalGeral() {
   const itens = Object.values(_itens);
-  const soma = itens.reduce((acc, i) => acc + (i.total || 0), 0);
+  const soma = itens.reduce((acc, i) => acc + (i.total_venda || 0), 0);
   document.getElementById('total-geral').textContent =
     soma.toLocaleString('pt-BR', {style:'currency', currency:'BRL'});
   document.getElementById('total-itens').textContent = itens.length;
@@ -330,8 +346,8 @@ function atualizarBotao() {
 // ── Gravar pedido ─────────────────────────────────────────────────────────────
 async function gravarPedido() {
   if (!_clienteSelecionado) return showToast('Selecione um cliente');
-  const itensValidos = Object.entries(_itens).filter(([,i]) => i.quantidade > 0 && i.preco_unit > 0);
-  if (itensValidos.length === 0) return showToast('Adicione ao menos um item');
+  const itens = Object.values(_itens).filter(i => i.quantidade > 0);
+  if (itens.length === 0) return showToast('Adicione ao menos um item');
 
   const dataInput = document.getElementById('data-pedido').value;
   if (!dataInput) return showToast('Informe a data');
@@ -340,64 +356,87 @@ async function gravarPedido() {
   btn.disabled = true;
   btn.textContent = 'Gravando...';
 
+  const valorTotalNum = Math.floor(itens.reduce((a, i) => a + i.total_venda, 0));
+  const totalCustoNum = itens.reduce((a, i) => a + i.total_custo, 0);
+  const totalLucroNum = valorTotalNum - totalCustoNum;
+  const margemPctNum  = valorTotalNum > 0 ? (totalLucroNum / valorTotalNum) * 100 : 0;
+  const isNovo = !_pedidoAtualId;
+
   try {
-    const agora = new Date();
-    const hh = String(agora.getHours()).padStart(2,'0');
-    const mi = String(agora.getMinutes()).padStart(2,'0');
-    const dataComHora = `${dataInput}T${hh}:${mi}:00-04:00`;
-
-    const totalGeral = itensValidos.reduce((a,[,i]) => a + (i.total || 0), 0);
-
-    // Inserir pedido
-    const { data: pData, error: pErr } = await window.db
-      .from('pedidos_vendas')
-      .insert({
+    if (isNovo) {
+      const agora = new Date();
+      const hh = String(agora.getHours()).padStart(2,'0');
+      const mi = String(agora.getMinutes()).padStart(2,'0');
+      const dataComHora = `${dataInput}T${hh}:${mi}:00-04:00`;
+      const { data: pData, error: pErr } = await window.db.from('pedidos_vendas').insert({
         data: dataComHora,
         cliente_id: _clienteSelecionado.id,
-        total_venda: Math.floor(totalGeral),
-        em_aberto: Math.floor(totalGeral),
-        total_custo: 0,
-        total_lucro: 0,
-        margem_pct: 0
-      })
-      .select();
-    if (pErr) throw pErr;
+        total_venda: valorTotalNum,
+        em_aberto: valorTotalNum,
+        total_custo: totalCustoNum,
+        total_lucro: totalLucroNum,
+        margem_pct: margemPctNum
+      }).select();
+      if (pErr) throw pErr;
+      _pedidoAtualId = pData[0].id;
+    } else {
+      const { error: pErr } = await window.db.from('pedidos_vendas').update({
+        total_venda: valorTotalNum,
+        em_aberto: valorTotalNum,
+        total_custo: totalCustoNum,
+        total_lucro: totalLucroNum,
+        margem_pct: margemPctNum
+      }).eq('id', _pedidoAtualId);
+      if (pErr) throw pErr;
+    }
 
-    const pedidoId = pData[0].id;
+    // Itens existentes no banco
+    const { data: itensExistentes } = await window.db.from('itens_pedidos_vendas')
+      .select('id, produto_id, quant_despacho, unid_despacho')
+      .eq('pedido_venda_id', _pedidoAtualId);
 
-    // Inserir itens
-    const payloads = itensValidos.map(([prodId, i]) => {
-      const prod = _produtos.find(p => p.id === prodId);
-      return {
-        pedido_venda_id: pedidoId,
-        produto_id: prodId,
+    const mapaExistentes = {};
+    (itensExistentes || []).forEach(e => { mapaExistentes[e.produto_id] = e; });
+
+    // Deletar itens removidos
+    const produtosAtivos = itens.map(i => i.produto_id);
+    const idsParaDeletar = (itensExistentes || [])
+      .filter(e => !produtosAtivos.includes(e.produto_id))
+      .map(e => e.id);
+    if (idsParaDeletar.length) {
+      await window.db.from('itens_pedidos_vendas').delete().in('id', idsParaDeletar);
+    }
+
+    // Insert ou update de cada item
+    for (const i of itens) {
+      const ex = mapaExistentes[i.produto_id];
+      const payload = {
+        pedido_venda_id: _pedidoAtualId,
+        produto_id: i.produto_id,
         quantidade: i.quantidade,
         preco_unit: i.preco_unit,
-        custo_unit: 0,
-        total_venda: i.total,
-        total_custo: 0,
-        lucro: i.total,
-        quant_despacho: i.quantidade,
-        unid_despacho: prod?.unid_venda || 'kg'
+        custo_unit: i.custo_unit,
+        total_venda: i.total_venda,
+        total_custo: i.total_custo,
+        lucro: i.lucro,
+        quant_despacho: i.quant_despacho != null ? i.quant_despacho : i.quantidade,
+        unid_despacho: i.unid_despacho || null,
+        operador_confirmou: false
       };
-    });
-
-    const { error: iErr } = await window.db.from('itens_pedidos_vendas').insert(payloads);
-    if (iErr) throw iErr;
+      if (ex) {
+        if (ex.quant_despacho != null && i.quant_despacho == null) {
+          payload.quant_despacho = ex.quant_despacho;
+          payload.unid_despacho  = ex.unid_despacho;
+        }
+        await window.db.from('itens_pedidos_vendas').update(payload).eq('id', ex.id);
+      } else {
+        await window.db.from('itens_pedidos_vendas').insert(payload);
+      }
+    }
 
     showToast('Pedido gravado com sucesso!');
-    setTimeout(() => {
-      // Resetar formulário
-      _clienteSelecionado = null;
-      _itens = {};
-      inputBusca.value = '';
-      inputBusca.dataset.selectedId = '';
-      setDataHoje();
-      renderizarProdutos();
-      recalcularTotalGeral();
-      atualizarBotao();
-      btn.textContent = 'Gravar pedido';
-    }, 1800);
+    btn.disabled = false;
+    btn.textContent = 'Gravar pedido';
 
   } catch (err) {
     showToast('Erro: ' + err.message);
