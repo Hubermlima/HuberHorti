@@ -60,6 +60,29 @@ canvas{width:100%!important;height:100%!important;}
 
 .loading{text-align:center;padding:60px;font-size:13px;color:var(--muted);}
 .erro{text-align:center;padding:60px;font-size:13px;color:var(--red);}
+
+/* Abas */
+.tabs{display:flex;gap:8px;margin-bottom:16px;}
+.tab-btn{flex:1;padding:10px;border:1px solid var(--border);border-radius:10px;background:transparent;color:var(--muted);font-size:12px;font-weight:600;font-family:'Syne',sans-serif;cursor:pointer;transition:all .15s;}
+.tab-btn.active{background:var(--accent);border-color:var(--accent);color:#fff;}
+.tab-panel{display:none;}
+.tab-panel.active{display:block;}
+
+/* Pizza */
+.pizza-wrap{display:flex;flex-direction:column;align-items:center;padding:16px 0 8px;}
+.pizza-canvas-wrap{position:relative;width:220px;height:220px;margin:0 auto 24px;}
+.pizza-canvas-wrap canvas{width:100%!important;height:100%!important;}
+.pizza-center{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;pointer-events:none;}
+.pizza-center-val{font-family:'JetBrains Mono',monospace;font-size:15px;font-weight:700;color:var(--text);}
+.pizza-center-label{font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:0.8px;margin-top:2px;}
+.pizza-legenda{width:100%;display:flex;flex-direction:column;gap:8px;}
+.pizza-leg-row{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#0F1219;border-radius:10px;}
+.pizza-leg-left{display:flex;align-items:center;gap:8px;}
+.pizza-leg-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;}
+.pizza-leg-nome{font-size:12px;font-weight:600;color:var(--text);}
+.pizza-leg-right{text-align:right;}
+.pizza-leg-val{font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;color:var(--text);}
+.pizza-leg-pct{font-size:10px;color:var(--muted);margin-top:1px;}
 </style>
 </head>
 <body>
@@ -87,6 +110,12 @@ canvas{width:100%!important;height:100%!important;}
     </div>
   </div>
 
+  <div class="tabs">
+    <button class="tab-btn active" onclick="setTab('evolucao',this)">📈 Evolução</button>
+    <button class="tab-btn" onclick="setTab('pizza',this)">🥧 Alocação</button>
+  </div>
+
+  <div id="tab-evolucao" class="tab-panel active">
   <div class="chart-card">
     <div class="chart-header">
       <div>
@@ -118,6 +147,29 @@ canvas{width:100%!important;height:100%!important;}
       </div>
     </div>
   </div>
+  </div>
+
+  <div id="tab-pizza" class="tab-panel">
+  <div class="chart-card">
+    <div class="chart-header">
+      <div>
+        <div class="chart-title">Alocação de Patrimônio</div>
+        <div class="chart-subtitle">Valor de mercado atual</div>
+      </div>
+    </div>
+    <div id="pizza-loading" class="loading" style="display:none;">Carregando...</div>
+    <div class="pizza-wrap">
+      <div class="pizza-canvas-wrap">
+        <canvas id="pizza-canvas"></canvas>
+        <div class="pizza-center">
+          <div class="pizza-center-val" id="pizza-total">—</div>
+          <div class="pizza-center-label">Total</div>
+        </div>
+      </div>
+      <div class="pizza-legenda" id="pizza-legenda"></div>
+    </div>
+  </div>
+  </div>
 </div>
 
 <script>
@@ -134,6 +186,21 @@ let _pontosBase = [];
 let _custoAberto = 0;
 let _valorMercado = 0;
 let _periodoMeses = 0;
+let _pizzaFatias = []; // [{label, valor, cor}]
+
+const PIZZA_CORES = ['#3B9EFF','#FBBF24','#34D399','#F87171','#A78BFA','#FB923C','#38BDF8','#F472B6'];
+
+function setTab(id, el) {
+  document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('tab-'+id).classList.add('active');
+  if (id === 'pizza' && _pizzaFatias.length > 0) desenharPizza();
+  if (id === 'evolucao') {
+    const wrap = document.getElementById('canvas-wrap');
+    if (wrap._labels) desenharCanvas(wrap._labels, wrap._valores, wrap._deltas, wrap);
+  }
+}
 
 async function carregarDados() {
   try {
@@ -203,6 +270,8 @@ async function carregarDados() {
         tickers.forEach(tk => {
           const p = tickers.length===1 ? parseFloat(d.price)||0 : parseFloat(d[tk]?.price)||0;
           valorMercado += p * (qtdsAbertas[tk]||0);
+          if (!window._cotacoes) window._cotacoes = {};
+          window._cotacoes[tk] = p;
         });
         // Adiciona custo dos shorts (margem não tem preço de mercado separado)
         Object.values(porAtivo).forEach(({txs}) => {
@@ -227,6 +296,37 @@ async function carregarDados() {
     document.getElementById('kpi-custo').textContent = fmtUSD(_custoAberto);
     document.getElementById('kpi-mercado').textContent = fmtUSD(_valorMercado);
     document.getElementById('kpi-mercado').style.color = _valorMercado >= _custoAberto ? '#34D399' : '#F87171';
+
+    // ── Fatias da pizza ──────────────────────────────────────────
+    const saldoAtual = _pontosBase.length>0 ? _pontosBase[_pontosBase.length-1].saldo : 0;
+    const fatias = [{ label: 'USDT Livre', valor: Math.max(0, saldoAtual), cor: '#3B9EFF' }];
+    let ci = 1;
+    // Longs com valor de mercado
+    Object.values(porAtivo).forEach(({ticker, txs}) => {
+      let qtdL=0,custoL=0,pmL=0;
+      [...txs].sort((a,b)=>new Date(a.data)-new Date(b.data)).forEach(t=>{
+        const qtd=parseFloat(t.quantidade_ativo)||0,val=parseFloat(t.valor_total_usd)||0;
+        if(t.tipo_operacao==='LA'){const nq=qtdL+qtd;pmL=nq>0?(custoL+val)/nq:0;qtdL=nq;custoL+=val;}
+        else if(t.tipo_operacao==='LF'){qtdL-=qtd;custoL=qtdL*pmL;}
+      });
+      if(qtdL>0.000001){
+        const vm = window._cotacoes && window._cotacoes[ticker]
+          ? parseFloat(window._cotacoes[ticker])*qtdL
+          : (window._cotacoes?.price ? parseFloat(window._cotacoes.price)*qtdL : custoL);
+        fatias.push({label:ticker, valor:vm>0?vm:custoL, cor:PIZZA_CORES[ci++%PIZZA_CORES.length]});
+      }
+    });
+    // Shorts (margem travada)
+    Object.values(porAtivo).forEach(({ticker, txs}) => {
+      let qtdS=0,custoS=0,pmS=0;
+      [...txs].sort((a,b)=>new Date(a.data)-new Date(b.data)).forEach(t=>{
+        const qtd=parseFloat(t.quantidade_ativo)||0,val=parseFloat(t.valor_total_usd)||0;
+        if(t.tipo_operacao==='SA'){const nq=qtdS+qtd;pmS=nq>0?(custoS+val)/nq:0;qtdS=nq;custoS+=val;}
+        else if(t.tipo_operacao==='SF'){qtdS-=qtd;custoS=qtdS*pmS;}
+      });
+      if(custoS>0.01) fatias.push({label:ticker+' short', valor:custoS, cor:PIZZA_CORES[ci++%PIZZA_CORES.length]});
+    });
+    _pizzaFatias = fatias.filter(f=>f.valor>0.01);
 
     renderizarGrafico();
   } catch(e) {
@@ -388,6 +488,93 @@ function desenharCanvas(labels, valores, deltas, wrap) {
   wrap.ontouchmove=e=>{e.preventDefault();const r=wrap.getBoundingClientRect();onMove(e.touches[0].clientX-r.left);};
   wrap.onmouseleave=wrap.ontouchend=()=>{crosshair.style.display='none';tooltip.style.opacity=0;};
   wrap._labels=labels; wrap._valores=valores; wrap._deltas=deltas;
+}
+
+function desenharPizza() {
+  const canvas = document.getElementById('pizza-canvas');
+  const wrap = canvas.parentElement;
+  const dpr = window.devicePixelRatio||1;
+  const S = wrap.clientWidth;
+  canvas.width = S*dpr; canvas.height = S*dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  const cx = S/2, cy = S/2, R = S/2 - 16, r = R*0.55;
+  const total = _pizzaFatias.reduce((s,f)=>s+f.valor, 0);
+  if (!total) return;
+
+  document.getElementById('pizza-total').textContent = fmtUSD(total);
+
+  let angulo = -Math.PI/2;
+  const hover = { idx: -1 };
+
+  const desenhar = (hIdx) => {
+    ctx.clearRect(0, 0, S, S);
+    let a = -Math.PI/2;
+    _pizzaFatias.forEach((f, i) => {
+      const slice = (f.valor/total)*Math.PI*2;
+      const raio = i===hIdx ? R+6 : R;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, raio, a, a+slice);
+      ctx.closePath();
+      ctx.fillStyle = f.cor;
+      ctx.fill();
+      ctx.strokeStyle = '#111318';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      a += slice;
+    });
+    // Buraco central
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI*2);
+    ctx.fillStyle = '#111318';
+    ctx.fill();
+  };
+
+  desenhar(-1);
+
+  // Touch/hover
+  const getIdx = (mx, my) => {
+    const dx=mx-cx, dy=my-cy, dist=Math.sqrt(dx*dx+dy*dy);
+    if(dist<r||dist>R+8) return -1;
+    let ang = Math.atan2(dy,dx) - (-Math.PI/2);
+    if(ang<0) ang+=Math.PI*2;
+    let a=0;
+    for(let i=0;i<_pizzaFatias.length;i++){
+      const slice=(_pizzaFatias[i].valor/total)*Math.PI*2;
+      if(ang>=a&&ang<a+slice) return i;
+      a+=slice;
+    }
+    return -1;
+  };
+
+  wrap.onmousemove = e => {
+    const rect=wrap.getBoundingClientRect();
+    const idx=getIdx(e.clientX-rect.left, e.clientY-rect.top);
+    if(idx!==hover.idx){hover.idx=idx;desenhar(idx);}
+  };
+  wrap.ontouchmove = e => {
+    e.preventDefault();
+    const rect=wrap.getBoundingClientRect();
+    const idx=getIdx(e.touches[0].clientX-rect.left, e.touches[0].clientY-rect.top);
+    if(idx!==hover.idx){hover.idx=idx;desenhar(idx);}
+  };
+  wrap.onmouseleave = () => { hover.idx=-1; desenhar(-1); };
+
+  // Legenda
+  const leg = document.getElementById('pizza-legenda');
+  leg.innerHTML = _pizzaFatias.map(f => `
+    <div class="pizza-leg-row">
+      <div class="pizza-leg-left">
+        <span class="pizza-leg-dot" style="background:${f.cor}"></span>
+        <span class="pizza-leg-nome">${f.label}</span>
+      </div>
+      <div class="pizza-leg-right">
+        <div class="pizza-leg-val">${fmtUSD(f.valor)}</div>
+        <div class="pizza-leg-pct">${((f.valor/total)*100).toFixed(1)}%</div>
+      </div>
+    </div>`).join('');
 }
 
 document.querySelectorAll('.filter-btn').forEach(btn=>{
