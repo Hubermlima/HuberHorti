@@ -138,93 +138,42 @@ async function carregarDados() {
 
     // Depósitos e saques
     (transferencias || []).forEach(t => {
-      const valor = t.tipo === 'D' ? parseFloat(t.valor_destino) : parseFloat(t.valor_origem);
-      const delta = t.tipo === 'D' ? valor : -valor;
+      const delta = t.tipo === 'D' ? parseFloat(t.valor_destino) : -parseFloat(t.valor_origem);
       eventos.push({
         data: new Date(t.data),
         tipo: t.tipo === 'D' ? 'deposito' : 'saque',
         delta,
-        valor,
         descricao: t.tipo === 'D' ? 'Depósito' : 'Saque'
       });
     });
 
-    // Transações — precisa parear LA→LF e SA→SF com FIFO
-    // Separar por ativo
-    const porAtivo = {};
+    // Transações — só LA e LF movem USDT
     (transacoes || []).forEach(t => {
-      const aid = t.ativo_id || 'geral';
-      if (!porAtivo[aid]) porAtivo[aid] = [];
-      porAtivo[aid].push(t);
+      const valor = parseFloat(t.valor_total_usd) || 0;
+      const ticker = t.ativos?.ticker || '';
+      let delta = 0;
+      let tipo = '';
+
+      if (t.tipo_operacao === 'LA') {
+        delta = -valor;
+        tipo = 'la';
+      } else if (t.tipo_operacao === 'LF') {
+        delta = +valor;
+        tipo = 'lf';
+      }
+      // SA e SF ignorados — não movem saldo USDT na Bitget
+
+      if (delta !== 0) {
+        eventos.push({
+          data: new Date(t.data),
+          tipo,
+          delta,
+          descricao: `${t.tipo_operacao} ${ticker}`
+        });
+      }
     });
 
-    Object.values(porAtivo).forEach(txs => {
-      // Ordenar cronologicamente
-      txs.sort((a,b) => new Date(a.data) - new Date(b.data));
-
-      // Filas FIFO para long e short
-      const filaLA = []; // [{qtd, preco_unit, data}]
-      const filaSA = [];
-
-      txs.forEach(t => {
-        const qtd = parseFloat(t.quantidade_ativo) || 0;
-        const valor = parseFloat(t.valor_total_usd) || 0;
-        const precoUnit = qtd > 0 ? valor / qtd : 0;
-        const ticker = t.ativos?.ticker || '';
-
-        if (t.tipo_operacao === 'LA') {
-          filaLA.push({ qtd, precoUnit });
-
-        } else if (t.tipo_operacao === 'LF') {
-          // Parear com LA usando FIFO
-          let qtdRestante = qtd;
-          let custoTotal = 0;
-          while (qtdRestante > 0.000000001 && filaLA.length > 0) {
-            const entrada = filaLA[0];
-            const usado = Math.min(qtdRestante, entrada.qtd);
-            custoTotal += usado * entrada.precoUnit;
-            entrada.qtd -= usado;
-            qtdRestante -= usado;
-            if (entrada.qtd < 0.000000001) filaLA.shift();
-          }
-          const lucro = valor - custoTotal;
-          eventos.push({
-            data: new Date(t.data),
-            tipo: 'lf',
-            delta: lucro,
-            valor,
-            descricao: `LF ${ticker} · lucro ${lucro >= 0 ? '+' : ''}${fmtUSD(lucro)}`
-          });
-
-        } else if (t.tipo_operacao === 'SA') {
-          filaSA.push({ qtd, precoUnit });
-
-        } else if (t.tipo_operacao === 'SF') {
-          // Parear com SA usando FIFO
-          // No short: lucro = preço_entrada − preço_saída (recompra mais barata = lucro)
-          let qtdRestante = qtd;
-          let receitaShort = 0; // quanto entrou no SA para essa quantidade
-          while (qtdRestante > 0.000000001 && filaSA.length > 0) {
-            const entrada = filaSA[0];
-            const usado = Math.min(qtdRestante, entrada.qtd);
-            receitaShort += usado * entrada.precoUnit;
-            entrada.qtd -= usado;
-            qtdRestante -= usado;
-            if (entrada.qtd < 0.000000001) filaSA.shift();
-          }
-          const lucro = receitaShort - valor; // entrou no SA, saiu no SF
-          eventos.push({
-            data: new Date(t.data),
-            tipo: 'sf',
-            delta: lucro,
-            valor,
-            descricao: `SF ${ticker} · lucro ${lucro >= 0 ? '+' : ''}${fmtUSD(lucro)}`
-          });
-        }
-      });
-    });
-
-    // Ordenar todos os eventos por data
+    // Ordenar por data
     eventos.sort((a,b) => a.data - b.data);
 
     // Acumular saldo
@@ -237,8 +186,8 @@ async function carregarDados() {
     // KPIs
     const saldoAtual = _pontosBase.length > 0 ? _pontosBase[_pontosBase.length-1].saldo : 0;
     const totalDep = (transferencias||[]).filter(t=>t.tipo==='D').reduce((a,t)=>a+parseFloat(t.valor_destino),0);
-    const lucroRealizado = saldoAtual - totalDep +
-      (transferencias||[]).filter(t=>t.tipo==='S').reduce((a,t)=>a+parseFloat(t.valor_origem),0);
+    const totalSaques = (transferencias||[]).filter(t=>t.tipo==='S').reduce((a,t)=>a+parseFloat(t.valor_origem),0);
+    const lucroRealizado = saldoAtual - (totalDep - totalSaques);
 
     document.getElementById('kpis').style.display = 'grid';
     document.getElementById('kpi-saldo').textContent = fmtUSD(saldoAtual);
