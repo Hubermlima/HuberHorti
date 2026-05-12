@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+<title>HuberHorti · Patrimônio</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet"/>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="supabase.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0A0C10;
+  --surface:#111318;
+  --border:#1E2230;
+  --accent:#3B9EFF;
+  --accent2:#7DD3FC;
+  --text:#E8EDF5;
+  --muted:#4A5568;
+  --green:#34D399;
+  --red:#F87171;
+}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Syne',sans-serif;}
+.page{max-width:960px;margin:0 auto;padding:24px 16px 48px;}
+
+.topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:32px;}
+.logo{font-size:16px;font-weight:800;letter-spacing:-0.5px;}
+.logo span{color:var(--accent);}
+.topbar-title{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:1.5px;}
+
+.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:24px;}
+.kpi{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px;}
+.kpi-label{font-size:9px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;}
+.kpi-val{font-family:'JetBrains Mono',monospace;font-size:15px;font-weight:700;color:var(--text);}
+.kpi-val.verde{color:var(--green);}
+.kpi-val.vermelho{color:var(--red);}
+
+.chart-card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:20px 20px 12px;position:relative;}
+.chart-header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:20px;}
+.chart-title{font-size:13px;font-weight:700;color:var(--text);}
+.chart-subtitle{font-size:10px;color:var(--muted);margin-top:2px;}
+.filters{display:flex;gap:6px;}
+.filter-btn{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:500;padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;transition:all .15s;}
+.filter-btn.active,.filter-btn:hover{background:var(--accent);border-color:var(--accent);color:#fff;}
+
+.canvas-wrap{position:relative;width:100%;height:280px;}
+canvas{width:100%!important;height:100%!important;}
+
+.tooltip{position:absolute;pointer-events:none;background:#1A1F2E;border:1px solid var(--border);border-radius:10px;padding:10px 14px;font-size:11px;opacity:0;transition:opacity .1s;z-index:20;white-space:nowrap;}
+.tooltip-date{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--muted);margin-bottom:4px;}
+.tooltip-val{font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:700;color:var(--accent2);}
+.tooltip-delta{font-family:'JetBrains Mono',monospace;font-size:10px;margin-top:2px;}
+
+.crosshair{position:absolute;top:0;bottom:0;width:1px;background:rgba(59,158,255,0.3);pointer-events:none;display:none;}
+.crosshair-dot{position:absolute;width:8px;height:8px;background:var(--accent);border:2px solid #fff;border-radius:50%;left:-3.5px;pointer-events:none;}
+
+.loading{text-align:center;padding:60px;font-size:13px;color:var(--muted);}
+.erro{text-align:center;padding:60px;font-size:13px;color:var(--red);}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="topbar">
+    <div class="logo">Huber<span>Horti</span></div>
+    <div class="topbar-title">Patrimônio Realizado</div>
+  </div>
+
+  <div id="kpis" class="kpis" style="display:none;">
+    <div class="kpi">
+      <div class="kpi-label">Patrimônio Atual</div>
+      <div class="kpi-val" id="kpi-saldo">—</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Total Depositado</div>
+      <div class="kpi-val" id="kpi-dep">—</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Lucro Realizado</div>
+      <div class="kpi-val" id="kpi-lucro">—</div>
+    </div>
+  </div>
+
+  <div class="chart-card">
+    <div class="chart-header">
+      <div>
+        <div class="chart-title">Evolução Patrimonial · Realizado</div>
+        <div class="chart-subtitle" id="chart-range">Apenas lucros/prejuízos realizados (LF e SF) + depósitos/saques</div>
+      </div>
+      <div class="filters">
+        <button class="filter-btn" data-p="3">3M</button>
+        <button class="filter-btn" data-p="6">6M</button>
+        <button class="filter-btn" data-p="12">1A</button>
+        <button class="filter-btn active" data-p="0">Tudo</button>
+      </div>
+    </div>
+    <div id="loading" class="loading">Carregando dados...</div>
+    <div id="erro" class="erro" style="display:none;"></div>
+    <div class="canvas-wrap" id="canvas-wrap" style="display:none;">
+      <canvas id="grafico"></canvas>
+      <div class="crosshair" id="crosshair"><div class="crosshair-dot" id="crosshair-dot"></div></div>
+      <div class="tooltip" id="tooltip">
+        <div class="tooltip-date" id="tt-date"></div>
+        <div class="tooltip-val" id="tt-val"></div>
+        <div class="tooltip-delta" id="tt-delta"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const fmtUSD = v => '$' + Number(v).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+const fmtShort = v => {
+  const a = Math.abs(v);
+  if(a >= 1000000) return '$'+(v/1000000).toFixed(1)+'M';
+  if(a >= 1000) return '$'+(v/1000).toFixed(1)+'K';
+  return '$'+v.toFixed(0);
+};
+
+// Pontos calculados com saldo acumulado ao longo do tempo
+// Cada ponto: { data, saldo, delta, tipo, descricao }
+let _pontosBase = [];
+let _periodoMeses = 0;
+
+async function carregarDados() {
+  try {
+    const [{ data: transacoes, error: e1 }, { data: transferencias, error: e2 }] = await Promise.all([
+      window.db.from('transacoes').select('id,tipo_operacao,data,quantidade_ativo,valor_total_usd,ativos(nome,ticker)').order('data'),
+      window.db.from('transferencias').select('tipo,valor_origem,valor_destino,data,observacao').order('data')
+    ]);
+
+    if (e1 || e2) throw new Error(e1?.message || e2?.message);
+
+    // ── Eventos brutos ordenados por data ────────────────────────
+    const eventos = [];
+
+    // Depósitos e saques
+    (transferencias || []).forEach(t => {
+      const valor = t.tipo === 'D' ? parseFloat(t.valor_destino) : parseFloat(t.valor_origem);
+      const delta = t.tipo === 'D' ? valor : -valor;
+      eventos.push({
+        data: new Date(t.data),
+        tipo: t.tipo === 'D' ? 'deposito' : 'saque',
+        delta,
+        valor,
+        descricao: t.tipo === 'D' ? 'Depósito' : 'Saque'
+      });
+    });
+
+    // Transações — precisa parear LA→LF e SA→SF com FIFO
+    // Separar por ativo
+    const porAtivo = {};
+    (transacoes || []).forEach(t => {
+      const aid = t.ativo_id || 'geral';
+      if (!porAtivo[aid]) porAtivo[aid] = [];
+      porAtivo[aid].push(t);
+    });
+
+    Object.values(porAtivo).forEach(txs => {
+      // Ordenar cronologicamente
+      txs.sort((a,b) => new Date(a.data) - new Date(b.data));
+
+      // Filas FIFO para long e short
+      const filaLA = []; // [{qtd, preco_unit, data}]
+      const filaSA = [];
+
+      txs.forEach(t => {
+        const qtd = parseFloat(t.quantidade_ativo) || 0;
+        const valor = parseFloat(t.valor_total_usd) || 0;
+        const precoUnit = qtd > 0 ? valor / qtd : 0;
+        const ticker = t.ativos?.ticker || '';
+
+        if (t.tipo_operacao === 'LA') {
+          filaLA.push({ qtd, precoUnit });
+
+        } else if (t.tipo_operacao === 'LF') {
+          // Parear com LA usando FIFO
+          let qtdRestante = qtd;
+          let custoTotal = 0;
+          while (qtdRestante > 0.000000001 && filaLA.length > 0) {
+            const entrada = filaLA[0];
+            const usado = Math.min(qtdRestante, entrada.qtd);
+            custoTotal += usado * entrada.precoUnit;
+            entrada.qtd -= usado;
+            qtdRestante -= usado;
+            if (entrada.qtd < 0.000000001) filaLA.shift();
+          }
+          const lucro = valor - custoTotal;
+          eventos.push({
+            data: new Date(t.data),
+            tipo: 'lf',
+            delta: lucro,
+            valor,
+            descricao: `LF ${ticker} · lucro ${lucro >= 0 ? '+' : ''}${fmtUSD(lucro)}`
+          });
+
+        } else if (t.tipo_operacao === 'SA') {
+          filaSA.push({ qtd, precoUnit });
+
+        } else if (t.tipo_operacao === 'SF') {
+          // Parear com SA usando FIFO
+          // No short: lucro = preço_entrada − preço_saída (recompra mais barata = lucro)
+          let qtdRestante = qtd;
+          let receitaShort = 0; // quanto entrou no SA para essa quantidade
+          while (qtdRestante > 0.000000001 && filaSA.length > 0) {
+            const entrada = filaSA[0];
+            const usado = Math.min(qtdRestante, entrada.qtd);
+            receitaShort += usado * entrada.precoUnit;
+            entrada.qtd -= usado;
+            qtdRestante -= usado;
+            if (entrada.qtd < 0.000000001) filaSA.shift();
+          }
+          const lucro = receitaShort - valor; // entrou no SA, saiu no SF
+          eventos.push({
+            data: new Date(t.data),
+            tipo: 'sf',
+            delta: lucro,
+            valor,
+            descricao: `SF ${ticker} · lucro ${lucro >= 0 ? '+' : ''}${fmtUSD(lucro)}`
+          });
+        }
+      });
+    });
+
+    // Ordenar todos os eventos por data
+    eventos.sort((a,b) => a.data - b.data);
+
+    // Acumular saldo
+    let saldo = 0;
+    _pontosBase = eventos.map(e => {
+      saldo += e.delta;
+      return { ...e, saldo };
+    });
+
+    // KPIs
+    const saldoAtual = _pontosBase.length > 0 ? _pontosBase[_pontosBase.length-1].saldo : 0;
+    const totalDep = (transferencias||[]).filter(t=>t.tipo==='D').reduce((a,t)=>a+parseFloat(t.valor_destino),0);
+    const lucroRealizado = saldoAtual - totalDep +
+      (transferencias||[]).filter(t=>t.tipo==='S').reduce((a,t)=>a+parseFloat(t.valor_origem),0);
+
+    document.getElementById('kpis').style.display = 'grid';
+    document.getElementById('kpi-saldo').textContent = fmtUSD(saldoAtual);
+    document.getElementById('kpi-saldo').className = 'kpi-val ' + (saldoAtual >= 0 ? 'verde' : 'vermelho');
+    document.getElementById('kpi-dep').textContent = fmtUSD(totalDep);
+    document.getElementById('kpi-lucro').textContent = (lucroRealizado >= 0 ? '+' : '') + fmtUSD(lucroRealizado);
+    document.getElementById('kpi-lucro').className = 'kpi-val ' + (lucroRealizado >= 0 ? 'verde' : 'vermelho');
+
+    renderizarGrafico();
+
+  } catch(e) {
+    document.getElementById('loading').style.display = 'none';
+    const el = document.getElementById('erro');
+    el.style.display = 'block';
+    el.textContent = 'Erro: ' + e.message;
+  }
+}
+
+function renderizarGrafico() {
+  if (!_pontosBase.length) {
+    document.getElementById('loading').textContent = 'Sem dados suficientes.';
+    return;
+  }
+
+  // Filtrar por período
+  let pontos = _pontosBase;
+  if (_periodoMeses > 0) {
+    const corte = new Date();
+    corte.setMonth(corte.getMonth() - _periodoMeses);
+    const idx = _pontosBase.findIndex(p => p.data >= corte);
+    if (idx > 0) {
+      // Inclui ponto anterior como base
+      pontos = [{ ..._pontosBase[idx-1], data: corte }, ..._pontosBase.slice(idx)];
+    } else if (idx === 0) {
+      pontos = _pontosBase;
+    } else {
+      pontos = _pontosBase.slice(-1);
+    }
+  }
+
+  // Agrupar por dia (último valor do dia)
+  const porDia = {};
+  const deltaDia = {};
+  pontos.forEach(p => {
+    const key = p.data.toISOString().split('T')[0];
+    porDia[key] = p.saldo;
+    deltaDia[key] = (deltaDia[key] || 0) + p.delta;
+  });
+
+  const dias = Object.keys(porDia).sort();
+  const valores = dias.map(k => porDia[k]);
+  const deltas = dias.map(k => deltaDia[k]);
+
+  // Range
+  const d1 = new Date(dias[0]);
+  const d2 = new Date(dias[dias.length-1]);
+  document.getElementById('chart-range').textContent =
+    d1.toLocaleDateString('pt-BR',{day:'numeric',month:'short',year:'numeric'}) + ' – ' +
+    d2.toLocaleDateString('pt-BR',{day:'numeric',month:'short',year:'numeric'});
+
+  document.getElementById('loading').style.display = 'none';
+  const wrap = document.getElementById('canvas-wrap');
+  wrap.style.display = 'block';
+
+  desenharCanvas(dias, valores, deltas, wrap);
+}
+
+function desenharCanvas(labels, valores, deltas, wrap) {
+  const canvas = document.getElementById('grafico');
+  const dpr = window.devicePixelRatio || 1;
+  const W = wrap.clientWidth;
+  const H = wrap.clientHeight;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  const PAD_LEFT = 64;
+  const PAD_RIGHT = 16;
+  const PAD_TOP = 16;
+  const PAD_BOTTOM = 30;
+  const gW = W - PAD_LEFT - PAD_RIGHT;
+  const gH = H - PAD_TOP - PAD_BOTTOM;
+
+  const minV = Math.min(...valores, 0);
+  const maxV = Math.max(...valores);
+  const range = maxV - minV || 1;
+
+  const xOf = i => PAD_LEFT + (i / Math.max(labels.length - 1, 1)) * gW;
+  const yOf = v => PAD_TOP + gH - ((v - minV) / range) * gH;
+
+  // Grid lines
+  const ticks = 5;
+  for(let t = 0; t <= ticks; t++) {
+    const y = PAD_TOP + (t/ticks)*gH;
+    ctx.strokeStyle = '#1E2230';
+    ctx.lineWidth = 0.5;
+    ctx.beginPath(); ctx.moveTo(PAD_LEFT, y); ctx.lineTo(W-PAD_RIGHT, y); ctx.stroke();
+    const val = maxV - (t/ticks)*range;
+    ctx.fillStyle = '#4A5568';
+    ctx.font = '500 9px "JetBrains Mono"';
+    ctx.textAlign = 'right';
+    ctx.fillText(fmtShort(val), PAD_LEFT - 6, y + 3);
+  }
+
+  // Linha zero se houver valores negativos
+  if (minV < 0) {
+    const y0 = yOf(0);
+    ctx.strokeStyle = 'rgba(248,113,113,0.3)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4,4]);
+    ctx.beginPath(); ctx.moveTo(PAD_LEFT, y0); ctx.lineTo(W-PAD_RIGHT, y0); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // X labels
+  ctx.fillStyle = '#4A5568';
+  ctx.font = '500 9px "JetBrains Mono"';
+  ctx.textAlign = 'center';
+  const xStep = Math.ceil(labels.length / 8);
+  for(let i = 0; i < labels.length; i += xStep) {
+    const d = new Date(labels[i]);
+    const lbl = d.toLocaleDateString('pt-BR',{month:'short',year:'2-digit'});
+    ctx.fillText(lbl, xOf(i), H - 8);
+  }
+
+  // Gradiente área
+  const grad = ctx.createLinearGradient(0, PAD_TOP, 0, PAD_TOP + gH);
+  grad.addColorStop(0, 'rgba(59,158,255,0.35)');
+  grad.addColorStop(0.6, 'rgba(59,158,255,0.08)');
+  grad.addColorStop(1, 'rgba(59,158,255,0.0)');
+
+  if (valores.length > 1) {
+    ctx.beginPath();
+    ctx.moveTo(xOf(0), yOf(valores[0]));
+    for(let i = 1; i < valores.length; i++) ctx.lineTo(xOf(i), yOf(valores[i]));
+    ctx.lineTo(xOf(valores.length-1), yOf(Math.max(minV, 0)));
+    ctx.lineTo(xOf(0), yOf(Math.max(minV, 0)));
+    ctx.closePath();
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    // Linha principal
+    ctx.beginPath();
+    ctx.moveTo(xOf(0), yOf(valores[0]));
+    for(let i = 1; i < valores.length; i++) ctx.lineTo(xOf(i), yOf(valores[i]));
+    ctx.strokeStyle = '#3B9EFF';
+    ctx.lineWidth = 1.5;
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+  }
+
+  // Pontos de evento (LF/SF) — marcadores
+  labels.forEach((lbl, i) => {
+    const d = deltas[i];
+    if (Math.abs(d) < 0.01) return;
+    const x = xOf(i);
+    const y = yOf(valores[i]);
+    ctx.beginPath();
+    ctx.arc(x, y, 3.5, 0, Math.PI*2);
+    ctx.fillStyle = d >= 0 ? '#34D399' : '#F87171';
+    ctx.fill();
+  });
+
+  // Interatividade
+  const tooltip = document.getElementById('tooltip');
+  const crosshair = document.getElementById('crosshair');
+  const dot = document.getElementById('crosshair-dot');
+  const ttDate = document.getElementById('tt-date');
+  const ttVal = document.getElementById('tt-val');
+  const ttDelta = document.getElementById('tt-delta');
+
+  const onMove = (mx) => {
+    if(mx < PAD_LEFT || mx > W - PAD_RIGHT) {
+      crosshair.style.display='none'; tooltip.style.opacity=0; return;
+    }
+    const idx = Math.round((mx - PAD_LEFT) / gW * (labels.length - 1));
+    const clamp = Math.max(0, Math.min(labels.length-1, idx));
+    const x = xOf(clamp);
+    const y = yOf(valores[clamp]);
+
+    crosshair.style.display = 'block';
+    crosshair.style.left = x + 'px';
+    dot.style.top = (y - 4) + 'px';
+
+    const d = new Date(labels[clamp]);
+    ttDate.textContent = d.toLocaleDateString('pt-BR',{day:'numeric',month:'long',year:'numeric'});
+    ttVal.textContent = fmtUSD(valores[clamp]);
+
+    const delta = deltas[clamp];
+    if (Math.abs(delta) > 0.01) {
+      ttDelta.textContent = (delta >= 0 ? '▲ +' : '▼ ') + fmtUSD(delta);
+      ttDelta.style.color = delta >= 0 ? '#34D399' : '#F87171';
+    } else {
+      ttDelta.textContent = '';
+    }
+
+    let tx = x + 16;
+    if(tx + 180 > W) tx = x - 185;
+    tooltip.style.left = tx + 'px';
+    tooltip.style.top = Math.max(0, y - 40) + 'px';
+    tooltip.style.opacity = 1;
+  };
+
+  wrap.onmousemove = e => { const r = wrap.getBoundingClientRect(); onMove(e.clientX - r.left); };
+  wrap.ontouchmove = e => { e.preventDefault(); const r = wrap.getBoundingClientRect(); onMove(e.touches[0].clientX - r.left); };
+  wrap.onmouseleave = wrap.ontouchend = () => { crosshair.style.display='none'; tooltip.style.opacity=0; };
+
+  wrap._labels = labels;
+  wrap._valores = valores;
+  wrap._deltas = deltas;
+}
+
+// Filtros
+document.querySelectorAll('.filter-btn').forEach(btn => {
+  btn.addEventListener('click', function() {
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    this.classList.add('active');
+    _periodoMeses = parseInt(this.dataset.p);
+    const canvas = document.getElementById('grafico');
+    canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+    renderizarGrafico();
+  });
+});
+
+window.addEventListener('resize', () => {
+  const wrap = document.getElementById('canvas-wrap');
+  if(wrap._labels) desenharCanvas(wrap._labels, wrap._valores, wrap._deltas, wrap);
+});
+
+carregarDados();
+</script>
+</body>
+</html>
