@@ -24,10 +24,20 @@ self.addEventListener('activate', e => {
 });
 
 self.addEventListener('fetch', e => {
+  const url = e.request.url;
+
+  // Deixa requisições externas (Supabase, APIs) passarem direto
+  if (!url.startsWith(self.location.origin)) {
+    e.respondWith(fetch(e.request));
+    return;
+  }
+
+  // Para arquivos locais: tenta rede, cai no cache
   e.respondWith(
     fetch(e.request).catch(() => caches.match(e.request))
   );
 });
+
 
 self.addEventListener('push', e => {
   const data = e.data ? e.data.json() : {};
