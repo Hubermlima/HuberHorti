@@ -244,7 +244,7 @@ async function carregarDados() {
 
   const { data: itensDB } = await window.db
     .from('itens_pedidos_vendas')
-    .select('quantidade, preco_unit, total_venda, lucro, pedidos_vendas!inner(id, data, clientes(id, nome))')
+    .select('quantidade, preco_unit, total_venda, lucro, pedidos_vendas!inner(id, data, clientes(id, nome, cidade))')
     .eq('produto_id', _produtoSelecionado.id)
     .gte('pedidos_vendas.data', d0ISO)
     .lt('pedidos_vendas.data', d7ISO);
@@ -252,41 +252,57 @@ async function carregarDados() {
 
   _itens = (itensDB || []).map(i => ({
     clienteNome: i.pedidos_vendas?.clientes?.nome || '—',
+    cidade: i.pedidos_vendas?.clientes?.cidade || 'Sem cidade',
     data: i.pedidos_vendas?.data || '',
     pedidoId: i.pedidos_vendas?.id || '',
     quantidade: parseFloat(i.quantidade) || 0,
     precoUnit: parseFloat(i.preco_unit) || 0,
     totalVenda: parseFloat(i.total_venda) || 0,
     lucro: parseFloat(i.lucro) || 0
-  })).sort((a, b) => new Date(a.data) - new Date(b.data));
+  }));
 
   _paginaAtual = 1;
   renderizar();
 }
 
+function agruparPorCidade() {
+  const mapa = {};
+  for (const i of _itens) {
+    const key = i.cidade;
+    if (!mapa[key]) mapa[key] = { cidade: key, quantidade: 0, totalVenda: 0, lucro: 0, clientes: new Set(), vendas: 0 };
+    mapa[key].quantidade  += i.quantidade;
+    mapa[key].totalVenda  += i.totalVenda;
+    mapa[key].lucro       += i.lucro;
+    mapa[key].clientes.add(i.clienteNome);
+    mapa[key].vendas++;
+  }
+  return Object.values(mapa).sort((a, b) => b.quantidade - a.quantidade);
+}
+
 function renderizar() {
-  const total = _itens.length;
+  const grupos = agruparPorCidade();
+  const total = grupos.length;
   const totalPags = Math.max(1, Math.ceil(total / POR_PAGINA));
   if (_paginaAtual > totalPags) _paginaAtual = totalPags;
 
   const inicio = (_paginaAtual - 1) * POR_PAGINA;
-  const pagina = _itens.slice(inicio, inicio + POR_PAGINA);
+  const pagina = grupos.slice(inicio, inicio + POR_PAGINA);
   const lista = document.getElementById('lista-scroll');
   const unid = _produtoSelecionado?.unid || '';
 
   if (pagina.length === 0) {
     lista.innerHTML = '<div class="empty-state">Nenhuma venda encontrada no período</div>';
   } else {
-    lista.innerHTML = pagina.map(i => {
-      const dataFmt = i.data ? new Date(i.data).toLocaleDateString('pt-BR', {timeZone:'America/Manaus', day:'2-digit', month:'2-digit'}) : '—';
-
-      const negativo = i.lucro < 0;
+    lista.innerHTML = pagina.map(g => {
+      const negativo = g.lucro < 0;
+      const nClientes = g.clientes.size;
+      const sub = `${g.vendas} venda${g.vendas !== 1 ? 's' : ''} · ${nClientes} cliente${nClientes !== 1 ? 's' : ''}`;
       return `<div class="item-row${negativo ? ' negativo' : ''}">
         <div class="item-info">
-          <span class="item-nome">${i.clienteNome}</span>
-          <span class="item-sub">${dataFmt}</span>
+          <span class="item-nome">${g.cidade}</span>
+          <span class="item-sub">${sub}</span>
         </div>
-        <span class="item-qtd">${fmtNum(i.quantidade)} ${unid}</span>
+        <span class="item-qtd">${fmtNum(g.quantidade)} ${unid}</span>
       </div>`;
     }).join('');
   }
@@ -300,7 +316,7 @@ function renderizar() {
   document.getElementById('total-fat').textContent = fmtNum(somaFat);
   document.getElementById('total-lucro').textContent = fmtNum(somaLucro);
   document.getElementById('total-margem').textContent = `${margem.toFixed(1)}%`;
-  document.getElementById('pag-vendas').textContent = `${total} venda${total !== 1 ? 's' : ''}`;
+  document.getElementById('pag-vendas').textContent = `${total} cidade${total !== 1 ? 's' : ''}`;
   document.getElementById('pag-info').textContent = `${_paginaAtual} / ${totalPags}`;
   document.getElementById('btn-prev').disabled = _paginaAtual === 1;
   document.getElementById('btn-next').disabled = _paginaAtual === totalPags;
