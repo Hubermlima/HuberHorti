@@ -108,12 +108,17 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;min-height:
     <span class="ext-label">Total em Aberto</span>
     <span class="ext-val red" id="ext-aberto">R$ 0,00</span>
   </div>
-  <div class="ext-row">
+    <div class="ext-row">
     <span class="ext-label">Total Pagamentos</span>
     <span class="ext-val green" id="ext-pagamentos">R$ 0,00</span>
   </div>
   <div class="ext-row">
+    <span class="ext-label">Estoque em Mão</span>
+    <span class="ext-val green" id="ext-estoque">R$ 0,00</span>
+  </div>
+  <div class="ext-row">
     <span class="ext-label">Saldo Devedor</span>
+
     <span class="ext-val red" id="ext-saldo">R$ 0,00</span>
   </div>
 </div>
@@ -246,10 +251,18 @@ async function carregarDados() {
   d7Fim.setHours(23,59,59);
   const d7 = d7Fim.toISOString();
 
-  const [{ data: pedidos }, { data: movs }] = await Promise.all([
+    const [{ data: pedidos }, { data: movs }, { data: produtos }] = await Promise.all([
     window.db.from('pedidos_compras').select('em_aberto, data').eq('fornecedor_id', _fIdSelecionado),
-    window.db.from('movimentos_fornecedores').select('*').eq('fornecedor_id', _fIdSelecionado).eq('status', 0).not('data', 'is', null).gte('data', d0).lte('data', d7).order('data', {ascending: true})
+    window.db.from('movimentos_fornecedores').select('*').eq('fornecedor_id', _fIdSelecionado).eq('status', 0).not('data', 'is', null).gte('data', d0).lte('data', d7).order('data', {ascending: true}),
+    window.db.from('produtos').select('id').eq('fornecedor_id', _fIdSelecionado)
   ]);
+
+  const produtoIds = (produtos||[]).map(p => p.id);
+  let _valorEstoque = 0;
+  if (produtoIds.length > 0) {
+    const { data: estoqueItens } = await window.db.from('estoque_inicial').select('quantidade_inicial, custo_unitario_inicial').in('produto_id', produtoIds);
+    _valorEstoque = (estoqueItens||[]).reduce((a, e) => a + (parseFloat(e.quantidade_inicial)||0) * (parseFloat(e.custo_unitario_inicial)||0), 0);
+  }
 
   // Extrato
   const ciclo = _ciclo;
@@ -260,13 +273,16 @@ async function carregarDados() {
     else aberto += parseFloat(p.em_aberto) || 0;
   });
   const totalAberto = aberto + atual;
-  const totalPagamentos = (movs||[]).reduce((a, m) => a + parseFloat(m.valor), 0);
-  const saldo = totalAberto - totalPagamentos;
+    const totalPagamentos = (movs||[]).reduce((a, m) => a + parseFloat(m.valor), 0);
+  const saldo = totalAberto - totalPagamentos - _valorEstoque;
 
   document.getElementById('ext-aberto').textContent = fmt(totalAberto);
   document.getElementById('ext-pagamentos').textContent = fmt(totalPagamentos);
+  document.getElementById('ext-estoque').textContent = fmt(_valorEstoque);
+
   document.getElementById('ext-saldo').textContent = fmt(saldo);
   document.getElementById('ext-saldo').className = 'ext-val ' + (saldo > 0 ? 'red' : 'green');
+
   document.getElementById('extrato').style.display = 'block';
 
   // Pagamentos com valores default
