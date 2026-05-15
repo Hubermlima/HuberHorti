@@ -321,7 +321,8 @@ const horaFmt = p.data ? new Date(p.data).toLocaleTimeString('pt-BR', {timeZone:
 
                 <div class="item-info">
           <span class="item-nome" style="display:flex;align-items:center;gap:6px;">
-            <div onclick="event.stopPropagation();abrirExtrato('${p.clienteId}','${p.clienteNome.replace(/'/g,"\\'")}')" style="width:18px;height:18px;border:1.5px solid #007AFF;border-radius:4px;display:flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer;">
+            <div onclick="event.stopPropagation();abrirExtrato('${p.clienteId}','${p.clienteNome.replace(/'/g,"\\'")}','${p.id}')
+" style="width:18px;height:18px;border:1.5px solid #007AFF;border-radius:4px;display:flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer;">
               <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="#007AFF" stroke-width="3" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
             </div>
             ${p.clienteNome}
@@ -374,12 +375,69 @@ const fixHeight = () => document.documentElement.style.setProperty('--vh', `${wi
 window.addEventListener('resize', fixHeight);
 fixHeight();
 
-function abrirExtrato(clienteId, clienteNome) {
-  // extrato consolidado — próxima etapa
+async function abrirExtrato(clienteId, clienteNome, pedidoAtualId) {
+  document.getElementById('extrato-cliente-nome').textContent = clienteNome;
+  document.getElementById('extrato-overlay').style.display = 'flex';
+
+  const [{ data: pedidos }, { data: movs }] = await Promise.all([
+    window.db.from('pedidos_vendas').select('id, em_aberto').eq('cliente_id', clienteId).gt('em_aberto', 0),
+    window.db.from('movimentos_clientes').select('valor').eq('cliente_id', clienteId).eq('status', 0)
+  ]);
+
+  const vendaAtual = (pedidos || []).find(p => p.id === pedidoAtualId);
+  const emAbertoAtual = vendaAtual ? parseFloat(vendaAtual.em_aberto) || 0 : 0;
+  const vendasAberto = (pedidos || []).filter(p => p.id !== pedidoAtualId).reduce((a, p) => a + (parseFloat(p.em_aberto) || 0), 0);
+  const pagamentos = (movs || []).reduce((a, m) => a + (parseFloat(m.valor) || 0), 0);
+  const saldo = vendasAberto - pagamentos;
+  const finalDevedor = saldo + emAbertoAtual;
+
+  document.getElementById('ext-aberto').textContent = fmt(vendasAberto);
+  document.getElementById('ext-pagos').textContent = fmt(pagamentos);
+  document.getElementById('ext-saldo').textContent = fmt(Math.abs(saldo));
+  document.getElementById('ext-saldo').style.color = saldo <= 0 ? '#10B981' : '#EF4444';
+  document.getElementById('ext-atual').textContent = fmt(emAbertoAtual);
+  document.getElementById('ext-final').textContent = fmt(Math.abs(finalDevedor));
+  document.getElementById('ext-final').style.color = finalDevedor <= 0 ? '#10B981' : '#EF4444';
 }
+
+function fecharExtrato() {
+  document.getElementById('extrato-overlay').style.display = 'none';
+}
+
 
 init();
 
 </script>
+
+<div id="extrato-overlay" onclick="fecharExtrato()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:9999;align-items:center;justify-content:center;padding:24px;">
+  <div onclick="event.stopPropagation()" style="background:#FFF;border-radius:24px;padding:22px 20px;width:100%;max-width:360px;box-shadow:0 32px 64px rgba(0,0,0,0.22);">
+    <div style="font-size:15px;font-weight:700;color:#1C1C1E;margin-bottom:16px;padding-bottom:12px;border-bottom:0.5px solid #E5E5EA;">Extrato Consolidado</div>
+    <div id="extrato-cliente-nome" style="font-size:13px;font-weight:600;color:#8E8E93;margin-bottom:12px;"></div>
+    <div style="display:flex;flex-direction:column;gap:0;">
+      <div style="display:flex;justify-content:space-between;padding:9px 0;border-bottom:0.5px solid #F5F5F5;">
+        <span style="font-size:12px;color:#8E8E93;">Vendas em Aberto</span>
+        <span style="font-size:12px;font-weight:600;color:#EF4444;" id="ext-aberto"></span>
+      </div>
+      <div style="display:flex;justify-content:space-between;padding:9px 0;border-bottom:0.5px solid #F5F5F5;">
+        <span style="font-size:12px;color:#8E8E93;">Pagamentos Realizados</span>
+        <span style="font-size:12px;font-weight:600;color:#10B981;" id="ext-pagos"></span>
+      </div>
+      <div style="display:flex;justify-content:space-between;padding:9px 0;border-bottom:0.5px solid #F5F5F5;">
+        <span style="font-size:12px;color:#8E8E93;">Saldo em Aberto</span>
+        <span style="font-size:12px;font-weight:600;" id="ext-saldo"></span>
+      </div>
+      <div style="display:flex;justify-content:space-between;padding:9px 0;border-bottom:0.5px solid #F5F5F5;">
+        <span style="font-size:12px;color:#8E8E93;">Venda Atual</span>
+        <span style="font-size:12px;font-weight:600;color:#EF4444;" id="ext-atual"></span>
+      </div>
+      <div style="display:flex;justify-content:space-between;padding:12px 0 0;">
+        <span style="font-size:13px;font-weight:700;color:#1C1C1E;">Final Devedor</span>
+        <span style="font-size:15px;font-weight:800;" id="ext-final"></span>
+      </div>
+    </div>
+    <button onclick="fecharExtrato()" style="width:100%;margin-top:18px;padding:13px;background:#F2F2F7;border:none;border-radius:50px;font-family:'Inter',sans-serif;font-size:15px;font-weight:600;cursor:pointer;">Fechar</button>
+  </div>
+</div>
+
 </body>
 </html>
