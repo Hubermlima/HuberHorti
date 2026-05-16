@@ -717,42 +717,21 @@ function atualizarSumario() {
 
 
 
-let _pesqContaId = null;
-let _pesqContaLabel = '';
+function onPesqValorInput(el) {
+  let digits = el.value.replace(/\D/g,'');
+  if (!digits) { el.value = ''; return; }
+  el.value = (parseInt(digits,10)/100).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+}
 
 function abrirPesquisaLancamento() {
-  _pesqContaId = null;
-  _pesqContaLabel = '';
-  document.getElementById('pesq-conta-label').textContent = 'Selecionar';
   document.getElementById('pesq-valor').value = '';
-  document.getElementById('pesq-resultado').textContent = '';
+  document.getElementById('pesq-resultado').innerHTML = '';
   document.getElementById('pesquisa-overlay').style.display = 'flex';
+  setTimeout(() => document.getElementById('pesq-valor').focus(), 100);
 }
 
 function fecharPesquisaLancamento() {
   document.getElementById('pesquisa-overlay').style.display = 'none';
-}
-
-function abrirModalContasPesq() {
-  const lista = document.getElementById('contas-lista-pesq');
-  const ordenadas = [..._contas].sort((a, b) => a.descricao.localeCompare(b.descricao, 'pt-BR'));
-  lista.innerHTML = ordenadas.map(c => `
-    <div class="conta-item${_pesqContaId === c.id ? ' ativa' : ''}" onclick="selecionarContaPesq('${c.id}','${c.descricao.replace(/'/g,"\\'")}')">
-      ${c.descricao}
-    </div>`).join('');
-  document.getElementById('modal-contas-pesq').style.display = 'flex';
-}
-
-
-function fecharModalContasPesq() {
-  document.getElementById('modal-contas-pesq').style.display = 'none';
-}
-
-function selecionarContaPesq(id, descricao) {
-  _pesqContaId = id;
-  _pesqContaLabel = descricao;
-  document.getElementById('pesq-conta-label').textContent = descricao;
-  fecharModalContasPesq();
 }
 
 function executarPesquisa() {
@@ -760,28 +739,34 @@ function executarPesquisa() {
   const valor = parseFloat(valorStr) || 0;
   const resultado = document.getElementById('pesq-resultado');
 
-  if (!_pesqContaId) { resultado.textContent = 'Selecione uma conta contábil.'; resultado.style.color = '#FF3B30'; return; }
-  if (valor <= 0) { resultado.textContent = 'Informe um valor.'; resultado.style.color = '#FF3B30'; return; }
-
-  const encontrado = _todosLancamentos.some(l =>
-    l.conta_id === _pesqContaId &&
-    Math.abs(parseFloat(l.valor) - valor) < 0.01
-  );
-
-    const lanc = _todosLancamentos.find(l =>
-    l.conta_id === _pesqContaId &&
-    Math.abs(parseFloat(l.valor) - valor) < 0.01
-  );
-
-  if (lanc) {
-    const dataFmt = lanc.data ? new Date(lanc.data).toLocaleDateString('pt-BR', {timeZone:'America/Manaus', day:'2-digit', month:'2-digit', year:'numeric'}) : '—';
-    resultado.textContent = `✓ Lançamento encontrado — ${dataFmt}`;
-    resultado.style.color = '#059669';
-  } else {
-    resultado.textContent = '✗ Nenhum lançamento encontrado.';
-    resultado.style.color = '#FF3B30';
+  if (valor <= 0) {
+    resultado.innerHTML = '<span style="font-size:13px;color:#FF3B30;">Informe um valor.</span>';
+    return;
   }
 
+  const encontrados = _todosLancamentos.filter(l => Math.abs(parseFloat(l.valor) - valor) < 0.01);
+
+  if (encontrados.length === 0) {
+    resultado.innerHTML = '<span style="font-size:13px;color:#FF3B30;">✗ Nenhum lançamento encontrado.</span>';
+    return;
+  }
+
+  if (encontrados.length === 1) {
+    fecharPesquisaLancamento();
+    const l = encontrados[0];
+    l.manual ? abrirSheet(l.id) : abrirDetalhe(l.id);
+    return;
+  }
+
+  resultado.innerHTML = encontrados.map((l, i) => {
+    const dataFmt = l.data ? new Date(l.data).toLocaleDateString('pt-BR', {timeZone:'America/Manaus', day:'2-digit', month:'2-digit'}) : '—';
+    const cor = l.tipo === 'entrada' ? '#059669' : '#EF4444';
+    return `<button onclick="fecharPesquisaLancamento();${l.manual ? `abrirSheet('${l.id}')` : `abrirDetalhe('${l.id}')`}"
+      style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-width:52px;padding:6px 10px;border-radius:12px;border:1.5px solid ${cor};background:#fff;cursor:pointer;font-family:Inter,sans-serif;gap:2px;">
+      <span style="font-size:13px;font-weight:700;color:${cor};">${i+1}</span>
+      <span style="font-size:9px;color:#8E8E93;">${dataFmt}</span>
+    </button>`;
+  }).join('');
 }
 
 document.addEventListener('input', e => {
@@ -1224,24 +1209,19 @@ function fecharSheetDespesas() {
 
 <div class="sheet-overlay" id="pesquisa-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.3);z-index:9996;align-items:center;justify-content:center;padding:24px;" onclick="fecharPesquisaLancamento()">
   <div class="sheet" onclick="event.stopPropagation()" style="width:100%;max-width:360px;">
-    <div class="sheet-title">Pesquisar Lançamento</div>
-    <div class="field-row">
-      <span class="field-label">Conta Contábil</span>
-      <div class="field-right">
-        <div class="field-val" id="pesq-conta-label" onclick="abrirModalContasPesq()">Selecionar</div>
-      </div>
-    </div>
+    <div class="sheet-title">Pesquisar por Valor</div>
     <div class="field-row">
       <span class="field-label">Valor</span>
-      <div class="field-right"><input class="field-input" id="pesq-valor" type="text" inputmode="decimal" placeholder="0,00"/></div>
+      <div class="field-right"><input class="field-input" id="pesq-valor" type="text" inputmode="decimal" placeholder="0,00" oninput="onPesqValorInput(this)"/></div>
     </div>
-    <div id="pesq-resultado" style="margin-top:12px;font-size:13px;color:#8E8E93;text-align:center;min-height:20px;"></div>
-    <div class="sheet-actions">
+    <div id="pesq-resultado" style="margin-top:14px;min-height:24px;display:flex;flex-wrap:wrap;gap:8px;justify-content:center;"></div>
+    <div class="sheet-actions" style="margin-top:14px;">
       <button class="sheet-btn secondary" onclick="fecharPesquisaLancamento()">Cancelar</button>
       <button class="sheet-btn primary" onclick="executarPesquisa()">Pesquisar</button>
     </div>
   </div>
 </div>
+
 
 <div class="modal-overlay" id="modal-contas-pesq" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.3);z-index:9997;align-items:center;justify-content:center;padding:24px;" onclick="fecharModalContasPesq()">
   <div class="modal" onclick="event.stopPropagation()" style="max-height:60vh;display:flex;flex-direction:column;">
