@@ -1960,7 +1960,10 @@ async function carregarProdutosCliente(clienteUuid) {
   } catch (err) { setEstado('erro', err.message); } finally { if (statusAtual !== 'erro') setEstado('sincronizado'); }
 }
 
+let _pedidosSelecionados = new Set();
+
 async function carregarExtratoDetalhado(clienteId) {
+
   try {
     const { data: pedidos } = await window.db.from('pedidos_vendas')
     .select('id, data, total_venda, em_aberto').eq('cliente_id', clienteId).gt('em_aberto', 0).order('data', { ascending: false });
@@ -2045,7 +2048,8 @@ const restante = nominal - pago;
           <div style="display:flex;align-items:center;gap:8px;">
             <div class="val-nominal-btn" onclick="event.stopPropagation();abrirNotaPorId('${p.id}',${readonly})"><span class="val-num" style="font-size:15px;font-weight:700;">${fmt(p.nominal)}</span>
 <svg class="val-nominal-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#007AFF" stroke-width="2.5"><path d="M19.5 8.25l-7.5 7.5-7.5-7.5"/></svg></div>
-            ${p.status === 'pago' ? '<div style="width:22px;height:22px;border-radius:50%;background:#10B981;display:flex;align-items:center;justify-content:center;flex-shrink:0;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#FFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg></div>' : ''}
+            ${p.status === 'pago' ? `<div id="chk-ped-${p.id}" onclick="event.stopPropagation();togglePedidoSel('${p.id}',${p.nominal})" style="width:22px;height:22px;border-radius:50%;background:#10B981;display:flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer;transition:0.15s;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#FFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg></div>` : ''}
+
             ${p.status === 'parcial' ? `<span style="font-size:11px;font-weight:500;color:#10B981;">${fmt(p.pago)}</span><span style="font-size:14px;font-weight:700;color:#EF4444;">${fmt(p.restante)}</span>` : ''}
           </div>
           `}
@@ -2369,7 +2373,66 @@ window.recebFecharOuCancelar = function() {
 
 // ===== FIM RECEBIMENTOS =====
 
+window.togglePedidoSel = function(pedidoId, nominal) {
+  const el = document.getElementById('chk-ped-' + pedidoId);
+  if (_pedidosSelecionados.has(pedidoId)) {
+    _pedidosSelecionados.delete(pedidoId);
+    if (el) el.style.background = '#10B981';
+  } else {
+    _pedidosSelecionados.add(pedidoId);
+    if (el) el.style.background = '#007AFF';
+  }
+  atualizarBtnSel();
+};
+
+function atualizarBtnSel() {
+  let btn = document.getElementById('btn-gravar-sel');
+  if (!btn) {
+    btn = document.createElement('button');
+    btn.id = 'btn-gravar-sel';
+    btn.onclick = gravarSelecaoPedidos;
+    btn.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#007AFF;color:#FFF;border:none;border-radius:50px;padding:13px 28px;font-family:Inter,sans-serif;font-size:15px;font-weight:700;box-shadow:0 8px 24px rgba(0,122,255,0.35);z-index:9990;cursor:pointer;white-space:nowrap;';
+    document.body.appendChild(btn);
+  }
+  if (_pedidosSelecionados.size === 0) {
+    btn.style.display = 'none';
+    return;
+  }
+  const fmt = v => v.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+  const soma = [..._pedidosSelecionados].reduce((a, id) => {
+    const p = _extratoPedidos.find(x => x.id === id);
+    return a + (p ? p.nominal : 0);
+  }, 0);
+  btn.style.display = 'block';
+  btn.textContent = `Gravar ${fmt(soma)} em Movimentações`;
+}
+
+async function gravarSelecaoPedidos() {
+  if (_pedidosSelecionados.size === 0) return;
+  const clienteId = document.getElementById('busca-cliente').dataset.selectedId;
+  if (!clienteId) return;
+  const fmt = v => v.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+  const soma = [..._pedidosSelecionados].reduce((a, id) => {
+    const p = _extratoPedidos.find(x => x.id === id);
+    return a + (p ? p.nominal : 0);
+  }, 0);
+  const { data: movExistente } = await window.db.from('movimentos_clientes')
+    .select('id').eq('cliente_id', clienteId).eq('status', 0).is('data', null).maybeSingle();
+  if (movExistente) {
+    await window.db.from('movimentos_clientes').update({ valor: soma }).eq('id', movExistente.id);
+  } else {
+    await window.db.from('movimentos_clientes').insert([{
+      cliente_id: clienteId, data: null, destino: 'Banco Santander',
+      forma: 'Depósito', valor: soma, tipo: 'Não Consumo', status: 0
+    }]);
+  }
+  _pedidosSelecionados.clear();
+  atualizarBtnSel();
+  mostrarToast(`${fmt(soma)} gravado em Movimentações`);
+}
+
 function aplicarSwipe(wrap, pedidoId, docLabel) {
+
 
   const item = wrap.querySelector('.extrato-item');
   let startX = 0, currentX = 0, dragging = false;
