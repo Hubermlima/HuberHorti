@@ -157,10 +157,14 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
       </div>
     </div>
 
-    <div class="card-footer">
+        <div class="card-footer">
       <button class="btn btn-secundario" id="btn-pre" onclick="preAnalise()">Pré-Análise</button>
       <button class="btn btn-primario" id="btn-exec" disabled onclick="executarConsolidacao()">Executar Consolidação</button>
     </div>
+    <div style="padding:0 16px 14px;display:flex;">
+      <button class="btn btn-secundario" id="btn-abertura" onclick="executarSoAbertura()">Só Abertura</button>
+    </div>
+
   </div>
 </div>
 
@@ -212,12 +216,11 @@ async function preAnalise() {
     const d0ant = _d0ant;
     const d7ant = _d7ant;
 
-    const { data: pedidosAbertos } = await window.db.from('pedidos_vendas')
+        const { data: pedidosAbertos } = await window.db.from('pedidos_vendas')
       .select('id, cliente_id, em_aberto')
-      .gt('em_aberto', 0)
-      .gte('data', d0ant)
-      .lte('data', d7ant);
-    const nAbertura = (pedidosAbertos||[]).length;
+      .gt('em_aberto', 0);
+    const nAbertura = new Set((pedidosAbertos||[]).map(p => p.cliente_id)).size;
+
 
 
     const nCli = new Set((movsCli||[]).map(m=>m.cliente_id)).size;
@@ -234,7 +237,8 @@ async function preAnalise() {
     setSubTexto('sub-limpeza', nPend>0 ? `${nPend} movimento${nPend>1?'s':''} encontrado${nPend>1?'s':''}` : 'Nada a apagar');
 
     setIconEstado('icon-abertura', nAbertura>0?'warn':'done');
-    setSubTexto('sub-abertura', nAbertura>0 ? `${nAbertura} pedido${nAbertura>1?'s':''} encontrado${nAbertura>1?'s':''}` : 'Nenhum pedido em aberto para clientes');
+    setSubTexto('sub-abertura', nAbertura>0 ? `${nAbertura} cliente${nAbertura>1?'s':''} com saldo em aberto` : 'Nenhum saldo em aberto');
+
 
     _dadosVerificados = { movsCli: movsCli||[], movsFor: movsFor||[], nPend, pedidosAbertos: pedidosAbertos||[] };
 
@@ -252,7 +256,48 @@ async function preAnalise() {
   }
 }
 
+async function executarSoAbertura() {
+  const btn = document.getElementById('btn-abertura');
+  btn.disabled = true;
+  btn.textContent = 'Processando...';
+  setIconEstado('icon-abertura','running'); setSubTexto('sub-abertura','Criando movimentos...');
+
+  try {
+    const { data: pedidosAtualizados } = await window.db.from('pedidos_vendas')
+      .select('id, cliente_id, em_aberto')
+      .gt('em_aberto', 0);
+    let nInseridos = 0;
+    if ((pedidosAtualizados||[]).length > 0) {
+      const mapaAbertura = {};
+      pedidosAtualizados.forEach(p => {
+        mapaAbertura[p.cliente_id] = (mapaAbertura[p.cliente_id]||0) + (parseFloat(p.em_aberto)||0);
+      });
+      const inserts = Object.entries(mapaAbertura).map(([cid, total]) => ({
+        cliente_id: cid,
+        data: null,
+        destino: 'Banco Santander',
+        forma: 'Depósito',
+        valor: total,
+        tipo: 'Não Consumo',
+        status: 0
+      }));
+      await window.db.from('movimentos_clientes').insert(inserts);
+      nInseridos = inserts.length;
+    }
+    setIconEstado('icon-abertura','done');
+    setSubTexto('sub-abertura', `${nInseridos} movimento${nInseridos!==1?'s':''} criado${nInseridos!==1?'s':''}`);
+    btn.textContent = 'Concluído ✓';
+    btn.style.background = '#10B981';
+    btn.style.color = '#FFF';
+  } catch(err) {
+    alert('Erro: ' + err.message);
+    btn.disabled = false;
+    btn.textContent = 'Só Abertura';
+  }
+}
+
 async function executarConsolidacao() {
+
   const btnPre = document.getElementById('btn-pre');
   const btnExec = document.getElementById('btn-exec');
   btnPre.disabled = true;
@@ -318,27 +363,30 @@ async function executarConsolidacao() {
     setIconEstado('icon-limpeza','done');
     setSubTexto('sub-limpeza', `${resumo.apagados} movimento${resumo.apagados!==1?'s':''} apagado${resumo.apagados!==1?'s':''}`);
 
-       // ABERTURA
+           // ABERTURA
     setIconEstado('icon-abertura','running'); setSubTexto('sub-abertura','Criando movimentos...');
     const { data: pedidosAtualizados } = await window.db.from('pedidos_vendas')
       .select('id, cliente_id, em_aberto')
-      .gt('em_aberto', 0)
-      .gte('data', _d0ant)
-      .lte('data', _d7ant);
+      .gt('em_aberto', 0);
     let nInseridos = 0;
     if ((pedidosAtualizados||[]).length > 0) {
-      const inserts = pedidosAtualizados.map(p => ({
-        cliente_id: p.cliente_id,
+      const mapaAbertura = {};
+      pedidosAtualizados.forEach(p => {
+        mapaAbertura[p.cliente_id] = (mapaAbertura[p.cliente_id]||0) + (parseFloat(p.em_aberto)||0);
+      });
+      const inserts = Object.entries(mapaAbertura).map(([cid, total]) => ({
+        cliente_id: cid,
         data: null,
         destino: 'Banco Santander',
         forma: 'Depósito',
-        valor: p.em_aberto,
+        valor: total,
         tipo: 'Não Consumo',
         status: 0
       }));
       await window.db.from('movimentos_clientes').insert(inserts);
       nInseridos = inserts.length;
     }
+
 
     setIconEstado('icon-abertura','done');
     setSubTexto('sub-abertura', `${nInseridos} movimento${nInseridos!==1?'s':''} criado${nInseridos!==1?'s':''}`);
