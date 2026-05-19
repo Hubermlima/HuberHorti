@@ -118,15 +118,25 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
 
   <div class="card">
     <div class="status-wrap">
-      <div class="status-item">
-        <div class="status-icon idle" id="icon-clientes">
-          <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+            <div class="status-item">
+        <div class="status-icon idle" id="icon-limpeza">
+          <svg viewBox="0 0 24 24"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
         </div>
         <div class="status-text">
-          <div class="status-label">Movimentos de Clientes</div>
-          <div class="status-sub" id="sub-clientes">Aguardando pré-análise...</div>
+          <div class="status-label">Limpeza de Pendentes</div>
+          <div class="status-sub" id="sub-limpeza">Aguardando pré-análise...</div>
         </div>
       </div>
+      <div class="status-item">
+        <div class="status-icon idle" id="icon-abertura">
+          <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+        </div>
+        <div class="status-text">
+          <div class="status-label">Abertura de Movimentações</div>
+          <div class="status-sub" id="sub-abertura">Aguardando pré-análise...</div>
+        </div>
+      </div>
+
       <div class="status-item">
         <div class="status-icon idle" id="icon-fornecedores">
           <svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
@@ -182,19 +192,32 @@ async function preAnalise() {
   setIconEstado('icon-clientes', 'running'); setSubTexto('sub-clientes', 'Verificando...');
   setIconEstado('icon-fornecedores', 'running'); setSubTexto('sub-fornecedores', 'Verificando...');
   setIconEstado('icon-limpeza', 'running'); setSubTexto('sub-limpeza', 'Verificando...');
+  setIconEstado('icon-abertura', 'running'); setSubTexto('sub-abertura', 'Verificando...');
+
 
   try {
     const { data: movsCli } = await window.db.from('movimentos_clientes')
       .select('id, cliente_id, valor').eq('status', 0).not('data', 'is', null);
     const { data: movsFor } = await window.db.from('movimentos_fornecedores')
       .select('id, fornecedor_id, valor').eq('status', 0).not('data', 'is', null);
-    const { data: pendentes } = await window.db.from('movimentos_clientes')
+        const { data: pendentes } = await window.db.from('movimentos_clientes')
       .select('id').is('data', null);
+
+    const d0ant = new Date(new Date(window.cicloAtual.d0).getTime() - 7*24*60*60*1000).toISOString().split('T')[0];
+    const d7ant = new Date(new Date(window.cicloAtual.d7).getTime() - 7*24*60*60*1000).toISOString().split('T')[0];
+    const { data: pedidosAbertos } = await window.db.from('pedidos_vendas')
+      .select('id, cliente_id, em_aberto')
+      .gt('em_aberto', 0)
+      .gte('data', d0ant)
+      .lte('data', d7ant);
+    const nAbertura = (pedidosAbertos||[]).length;
+
 
     const nCli = new Set((movsCli||[]).map(m=>m.cliente_id)).size;
     const nFor = new Set((movsFor||[]).map(m=>m.fornecedor_id)).size;
     const nPend = (pendentes||[]).length;
-    const tudoZero = nCli===0 && nFor===0 && nPend===0;
+    const tudoZero = nCli===0 && nFor===0 && nPend===0 && nAbertura===0;
+
 
     setIconEstado('icon-clientes', nCli>0?'warn':'done');
     setSubTexto('sub-clientes', nCli>0 ? `${nCli} cliente${nCli>1?'s':''} encontrado${nCli>1?'s':''}` : 'Nenhum movimento encontrado');
@@ -203,7 +226,10 @@ async function preAnalise() {
     setIconEstado('icon-limpeza', nPend>0?'warn':'done');
     setSubTexto('sub-limpeza', nPend>0 ? `${nPend} movimento${nPend>1?'s':''} encontrado${nPend>1?'s':''}` : 'Nada a apagar');
 
-    _dadosVerificados = { movsCli: movsCli||[], movsFor: movsFor||[], nPend };
+    setIconEstado('icon-abertura', nAbertura>0?'warn':'done');
+    setSubTexto('sub-abertura', nAbertura>0 ? `${nAbertura} pedido${nAbertura>1?'s':''} encontrado${nAbertura>1?'s':''}` : 'Nenhum pedido em aberto');
+    _dadosVerificados = { movsCli: movsCli||[], movsFor: movsFor||[], nPend, pedidosAbertos: pedidosAbertos||[] };
+
     btnPre.disabled = false;
     btnPre.textContent = 'Pré-Análise';
     btnExec.disabled = tudoZero;
@@ -284,7 +310,28 @@ async function executarConsolidacao() {
     setIconEstado('icon-limpeza','done');
     setSubTexto('sub-limpeza', `${resumo.apagados} movimento${resumo.apagados!==1?'s':''} apagado${resumo.apagados!==1?'s':''}`);
 
+    // ABERTURA
+    setIconEstado('icon-abertura','running'); setSubTexto('sub-abertura','Criando movimentos...');
+    const { pedidosAbertos } = _dadosVerificados;
+    let nInseridos = 0;
+    if (pedidosAbertos.length > 0) {
+      const inserts = pedidosAbertos.map(p => ({
+        cliente_id: p.cliente_id,
+        data: null,
+        destino: 'Banco Santander',
+        forma: 'Depósito',
+        valor: p.em_aberto,
+        tipo: 'Não Consumo',
+        status: 0
+      }));
+      await window.db.from('movimentos_clientes').insert(inserts);
+      nInseridos = inserts.length;
+    }
+    setIconEstado('icon-abertura','done');
+    setSubTexto('sub-abertura', `${nInseridos} movimento${nInseridos!==1?'s':''} criado${nInseridos!==1?'s':''}`);
+
     await window.db.from('consolidacao').update({data:new Date().toISOString()}).eq('id',2);
+
 
     btnExec.textContent = 'Concluído ✓';
     btnExec.style.background = '#10B981';
