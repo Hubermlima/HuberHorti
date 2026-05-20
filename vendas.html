@@ -1793,8 +1793,10 @@ async function salvarDadosSinc() {
       document.getElementById('save-modal-fatura-url').textContent = url;
       document.getElementById('save-modal-fatura-wrap').style.display = 'block';
     }
-    const clienteIdAtual = document.getElementById('busca-cliente').dataset.selectedId;
+        const clienteIdAtual = document.getElementById('busca-cliente').dataset.selectedId;
+    await upsertMovimentoAVista(clienteIdAtual, valorTotalNum);
     if (clienteIdAtual) await carregarExtratoDetalhado(clienteIdAtual);
+
 
 
   } catch (err) { setEstado('erro', err.message); }
@@ -1883,8 +1885,10 @@ async function salvarDadosSincComModal() {
       document.getElementById('save-modal-fatura-url').textContent = url;
       document.getElementById('save-modal-fatura-wrap').style.display = 'block';
     }
-    const clienteIdAtual = document.getElementById('busca-cliente').dataset.selectedId;
+        const clienteIdAtual = document.getElementById('busca-cliente').dataset.selectedId;
+    await upsertMovimentoAVista(clienteIdAtual, valorTotalNum);
     if (clienteIdAtual) await carregarExtratoDetalhado(clienteIdAtual);
+
 
 
   } catch (err) {
@@ -1897,7 +1901,42 @@ async function salvarDadosSincComModal() {
 }
 
 
+async function upsertMovimentoAVista(clienteId, valorTotal) {
+  if (!clienteId) return;
+  const cliente = todosClientes.find(c => c.id === clienteId);
+  if (!cliente || cliente.prazo_pagamento !== 'A Vista') return;
+
+  const d0Str = window.cicloAtual.d0.toLocaleDateString('en-CA', { timeZone: 'America/Manaus' });
+  const d7Str = window.cicloAtual.d7.toLocaleDateString('en-CA', { timeZone: 'America/Manaus' });
+
+  const { data: existentes } = await window.db.from('movimentos_clientes')
+    .select('id, data')
+    .eq('cliente_id', clienteId)
+    .eq('status', 0)
+    .gte('data', d0Str)
+    .lte('data', d7Str)
+    .limit(1);
+
+  const jaExiste = existentes && existentes.length > 0;
+  const payload = {
+    cliente_id: clienteId,
+    data: jaExiste ? existentes[0].data : null,
+    destino: 'Banco Santander',
+    forma: 'Depósito',
+    valor: valorTotal,
+    tipo: 'Não Consumo',
+    status: 0
+  };
+
+  if (jaExiste) {
+    await window.db.from('movimentos_clientes').update(payload).eq('id', existentes[0].id);
+  } else {
+    await window.db.from('movimentos_clientes').insert([payload]);
+  }
+}
+
 async function abrirNotaPorId(pedidoId, readonly) {
+
   setEstado('salvando');
   _itensPedidoAtual = {};
   try {
@@ -2449,7 +2488,8 @@ const listaResultados = document.getElementById('resultados-cliente');
 
 
 let todosClientes = [];
-window.db.from('clientes').select('id, nome, margem_tipo, margem_valor').order('nome').then(({ data }) => { if (data) todosClientes = data; });
+window.db.from('clientes').select('id, nome, margem_tipo, margem_valor, prazo_pagamento').order('nome').then(({ data }) => { if (data) todosClientes = data; });
+
 window.db.from('produtos').select('id, nome, preco_medio_compra, peso_por_unid, unid_venda').order('nome').then(({ data }) => {
 
   if (data) { _todosProdutos = data; montarNuvemTags(false); }
@@ -2567,7 +2607,8 @@ window.addEventListener('resize', fixHeight); fixHeight();
   if (idSalvo && nomeSalvo) {
     if (dataSalva) { document.getElementById('data-ciclo').value = dataSalva; atualizarDataDisplay(); }
     if (todosClientes.length === 0) {
-      const { data } = await window.db.from('clientes').select('id, nome, margem_tipo, margem_valor').order('nome');
+      const { data } = await window.db.from('clientes').select('id, nome, margem_tipo, margem_valor, prazo_pagamento').order('nome');
+
       if (data) todosClientes = data;
     }
     await selecionarCliente(decodeURIComponent(nomeSalvo), idSalvo);
