@@ -239,6 +239,7 @@ body{
         <div class="tabs">
             <button class="tab-btn active" onclick="setTab('overview',this)">Overview</button>
             <button class="tab-btn" onclick="setTab('indicadores',this)">Indicadores</button>
+            <button class="tab-btn" onclick="setTab('onchain',this)">Onchain</button>
         </div>
 
         <!-- Aba Overview -->
@@ -293,6 +294,13 @@ body{
                 <div class="sinais-loading"><div class="spinner-sinais"></div>Buscando indicadores...</div>
             </div>
         </div><!-- /tab-indicadores -->
+
+        <!-- Aba Onchain -->
+        <div class="tab-pane" id="tab-onchain" style="overflow-y:auto;flex:1;">
+            <div id="onchain-wrap" style="padding:12px 16px;display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                <div class="sinais-loading" style="grid-column:1/-1"><div class="spinner-sinais"></div>Buscando dados onchain...</div>
+            </div>
+        </div><!-- /tab-onchain -->
 
         <div class="card-footer">
             <button class="btn-transacoes" onclick="abrirTransacoes()">Transações</button>
@@ -505,6 +513,7 @@ function setTab(tab, el) {
     el.classList.add('active');
     document.getElementById('tab-' + tab).classList.add('active');
     if (tab === 'indicadores' && _ativoAtual) carregarIndicadores();
+    if (tab === 'onchain') carregarOnchain();
 }
 
 async function carregarIndicadores() {
@@ -659,6 +668,118 @@ function abrirTransacoes() {
 const fixHeight = () => document.documentElement.style.setProperty('--vh', `${window.innerHeight * 0.01}px`);
 window.addEventListener('resize', fixHeight); fixHeight();
 init();
+
+// ── ONCHAIN ────────────────────────────────────────────
+const ONCHAIN_METRICS = [
+    { id:'mvrv',     label:'MVRV Z-Score',    metric:'CapMVRVFF',         color:'#7C3AED', desc:'> 7 topo · < 0 fundo' },
+    { id:'sopr',     label:'SOPR',            metric:'SOPR',              color:'#0891B2', desc:'> 1 bullish · < 1 bearish' },
+    { id:'puell',    label:'Puell Multiple',  metric:'IssPricedUSD',      color:'#D97706', desc:'> 4 topo · < 0.5 fundo' },
+    { id:'realized', label:'Realized Price',  metric:'PriceRealizedUSD',  color:'#059669', desc:'Preço médio pago onchain' },
+    { id:'netflow',  label:'Tx Volume (USD)', metric:'TxTfrValAdjUSD',    color:'#DC2626', desc:'Volume transferido ajustado' },
+    { id:'hashrate', label:'Hash Rate',       metric:'HashRate',          color:'#6366F1', desc:'TH/s — segurança da rede' },
+];
+
+let _onchainCarregado = false;
+let _onchainCharts = {};
+
+async function carregarOnchain() {
+    if (_onchainCarregado) return;
+    const wrap = document.getElementById('onchain-wrap');
+    wrap.innerHTML = '<div class="sinais-loading" style="grid-column:1/-1"><div class="spinner-sinais"></div>Buscando dados onchain...</div>';
+
+    try {
+        const end = new Date();
+        const start = new Date();
+        start.setFullYear(end.getFullYear() - 2);
+        const startStr = start.toISOString().split('T')[0];
+        const endStr   = end.toISOString().split('T')[0];
+
+        const metricsList = ONCHAIN_METRICS.map(m => m.metric).join(',');
+        const url = `https://community-api.coinmetrics.io/v4/timeseries/asset-metrics?assets=btc&metrics=${metricsList}&frequency=1d&start_time=${startStr}&end_time=${endStr}&page_size=730`;
+
+        const res  = await fetch(url);
+        const json = await res.json();
+        const rows = json.data || [];
+
+        // Organiza por métrica
+        const dataMap = {};
+        ONCHAIN_METRICS.forEach(m => dataMap[m.metric] = { labels: [], values: [] });
+        rows.forEach(r => {
+            const label = r.time.split('T')[0];
+            ONCHAIN_METRICS.forEach(m => {
+                if (r[m.metric] != null) {
+                    dataMap[m.metric].labels.push(label);
+                    dataMap[m.metric].values.push(parseFloat(r[m.metric]));
+                }
+            });
+        });
+
+        // Monta grid
+        wrap.innerHTML = ONCHAIN_METRICS.map(m => `
+            <div style="background:#F9FAFB;border-radius:14px;padding:10px 12px;">
+                <div style="font-size:10px;font-weight:700;color:#374151;margin-bottom:1px;">${m.label}</div>
+                <div style="font-size:9px;color:#9CA3AF;margin-bottom:6px;">${m.desc}</div>
+                <div style="position:relative;height:80px;">
+                    <canvas id="oc-${m.id}"></canvas>
+                </div>
+                <div style="margin-top:4px;font-size:12px;font-weight:800;color:#1C1C1E;" id="oc-val-${m.id}">—</div>
+            </div>
+        `).join('');
+
+        // Renderiza cada gráfico
+        ONCHAIN_METRICS.forEach(m => {
+            const d = dataMap[m.metric];
+            if (!d.values.length) return;
+
+            // Valor atual
+            const ultimo = d.values[d.values.length - 1];
+            const fmt = ultimo >= 1e12 ? (ultimo/1e12).toFixed(2)+'T'
+                      : ultimo >= 1e9  ? (ultimo/1e9).toFixed(2)+'B'
+                      : ultimo >= 1e6  ? (ultimo/1e6).toFixed(2)+'M'
+                      : ultimo >= 1000 ? ultimo.toLocaleString('en-US',{maximumFractionDigits:0})
+                      : ultimo.toFixed(2);
+            document.getElementById(`oc-val-${m.id}`).textContent = fmt;
+
+            // Subsample para performance (max 90 pontos)
+            const step = Math.max(1, Math.floor(d.labels.length / 90));
+            const labs = d.labels.filter((_,i) => i % step === 0);
+            const vals = d.values.filter((_,i) => i % step === 0);
+
+            const ctx = document.getElementById(`oc-${m.id}`).getContext('2d');
+            _onchainCharts[m.id] = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labs,
+                    datasets: [{
+                        data: vals,
+                        borderColor: m.color,
+                        borderWidth: 1.5,
+                        backgroundColor: m.color + '18',
+                        fill: true,
+                        tension: 0.3,
+                        pointRadius: 0,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false }, tooltip: { enabled: false } },
+                    scales: {
+                        x: { display: false },
+                        y: { display: false }
+                    }
+                }
+            });
+        });
+
+        _onchainCarregado = true;
+
+    } catch(e) {
+        document.getElementById('onchain-wrap').innerHTML =
+            '<div class="sinais-loading" style="grid-column:1/-1">Erro ao buscar dados onchain</div>';
+    }
+}
+// ── FIM ONCHAIN ─────────────────────────────────────────
 </script>
 </body>
 </html>
