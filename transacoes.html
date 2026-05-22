@@ -651,9 +651,7 @@ function calcularEstadoAte(id) {
     const slice = sorted.slice(0, idx + 1);
 
     let qtdAberta = 0, custoAberto = 0, pm = 0;
-    let lucroRealizado = 0, custoRealizado = 0;
     let qtdShort = 0, custoShort = 0, pmShort = 0;
-    let lucroShort = 0;
 
     slice.forEach(t => {
         const qtd = parseFloat(t.quantidade_ativo) || 0;
@@ -666,9 +664,6 @@ function calcularEstadoAte(id) {
             qtdAberta = novaQtd;
             custoAberto = novoCusto;
         } else if (t.tipo_operacao === 'LF') {
-            const custoVendido = qtd * pm;
-            custoRealizado += custoVendido;
-            lucroRealizado += valor - custoVendido;
             qtdAberta -= qtd;
             custoAberto = qtdAberta * pm;
         } else if (t.tipo_operacao === 'SA') {
@@ -678,15 +673,57 @@ function calcularEstadoAte(id) {
             qtdShort = novaQtd;
             custoShort = novoCusto;
         } else if (t.tipo_operacao === 'SF') {
-            const receitaShort = qtd * pmShort;
-            lucroShort += receitaShort - valor;
             qtdShort -= qtd;
             custoShort = qtdShort * pmShort;
         }
     });
 
-    return { qtdAberta, custoAberto, pm, lucroRealizado, custoRealizado, qtdShort, custoShort, pmShort, lucroShort };
+    // Calcula lucro/custo APENAS da transação clicada
+    const tx = sorted[idx];
+    const txQtd = parseFloat(tx.quantidade_ativo) || 0;
+    const txValor = parseFloat(tx.valor_total_usd) || 0;
+    let lucroRealizado = 0, custoRealizado = 0;
+    let lucroShort = 0, custoShortRealizado = 0;
+
+    if (tx.tipo_operacao === 'LF') {
+        const sliceAntes = slice.slice(0, -1);
+        let pmAntes = 0, qtdAntes = 0, custoAntes = 0;
+        sliceAntes.forEach(x => {
+            const q = parseFloat(x.quantidade_ativo) || 0;
+            const v = parseFloat(x.valor_total_usd) || 0;
+            if (x.tipo_operacao === 'LA') {
+                custoAntes += v;
+                qtdAntes += q;
+                pmAntes = qtdAntes > 0 ? custoAntes / qtdAntes : 0;
+            } else if (x.tipo_operacao === 'LF') {
+                qtdAntes -= q;
+                custoAntes = qtdAntes * pmAntes;
+            }
+        });
+        custoRealizado = txQtd * pmAntes;
+        lucroRealizado = txValor - custoRealizado;
+    } else if (tx.tipo_operacao === 'SF') {
+        const sliceAntes = slice.slice(0, -1);
+        let pmSAntes = 0, qtdSAntes = 0, custoSAntes = 0;
+        sliceAntes.forEach(x => {
+            const q = parseFloat(x.quantidade_ativo) || 0;
+            const v = parseFloat(x.valor_total_usd) || 0;
+            if (x.tipo_operacao === 'SA') {
+                custoSAntes += v;
+                qtdSAntes += q;
+                pmSAntes = qtdSAntes > 0 ? custoSAntes / qtdSAntes : 0;
+            } else if (x.tipo_operacao === 'SF') {
+                qtdSAntes -= q;
+                custoSAntes = qtdSAntes * pmSAntes;
+            }
+        });
+        custoShortRealizado = txQtd * pmSAntes;
+        lucroShort = custoShortRealizado - txValor;
+    }
+
+    return { qtdAberta, custoAberto, pm, qtdShort, custoShort, pmShort, lucroRealizado, custoRealizado, lucroShort, custoShortRealizado };
 }
+
 
 function abrirDetalhe(id) {
     const t = _transacoes.find(x => x.id === id);
@@ -696,13 +733,15 @@ function abrirDetalhe(id) {
     const data = t.data ? new Date(t.data).toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
     const precoUnit = parseFloat(t.quantidade_ativo) > 0 ? parseFloat(t.valor_total_usd)/parseFloat(t.quantidade_ativo) : 0;
 
-    const estado = calcularEstadoAte(id);
+        const estado = calcularEstadoAte(id);
     const isShort = tipo === 'SA' || tipo === 'SF';
     const lucroReal = isShort ? estado.lucroShort : estado.lucroRealizado;
-    const custoReal = isShort ? estado.custoShort : estado.custoRealizado;
+    const custoReal = isShort ? estado.custoShortRealizado : estado.custoRealizado;
     const qtdAberta = isShort ? estado.qtdShort : estado.qtdAberta;
     const custoAberto = isShort ? estado.custoShort : estado.custoAberto;
+    const pmExibir = isShort ? estado.pmShort : estado.pm;
     const corLucro = lucroReal > 0 ? '#16A34A' : lucroReal < 0 ? '#DC2626' : '#6B7280';
+
 
     document.getElementById('detalhe-titulo').textContent = TIPO_LABEL[tipo] || tipo;
     document.getElementById('detalhe-corpo').innerHTML = `
@@ -721,12 +760,14 @@ function abrirDetalhe(id) {
         </div>`).join('')}
         <div style="height:1px;background:#F2F2F7;margin:10px 0 6px;"></div>
         <div style="font-size:9px;font-weight:700;color:#8E8E93;letter-spacing:0.8px;text-transform:uppercase;margin-bottom:4px;">Posição após esta operação</div>
-        ${[
+                ${[
             { label: 'Qtd. em Aberto', value: fmtQtd(qtdAberta) },
+            { label: 'Preço Médio', value: 'USD ' + fmtUSD(pmExibir) },
             { label: 'Custo em Aberto', value: 'USD ' + fmtUSD(custoAberto) },
             { label: 'Custo Realizado', value: 'USD ' + fmtUSD(custoReal) },
             { label: 'Lucro Realizado', value: (lucroReal >= 0 ? '+' : '') + 'USD ' + fmtUSD(lucroReal), color: corLucro },
         ].map(r => `
+
         <div class="detalhe-row">
             <span class="detalhe-label">${r.label}</span>
             <span class="detalhe-value" style="${r.color ? 'color:'+r.color : ''}">${r.value}</span>
