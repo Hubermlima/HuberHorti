@@ -645,6 +645,49 @@ async function salvarNova() {
 // ── Modal detalhe ─────────────────────────────────────────────────
 let _detalheId = null;
 
+function calcularEstadoAte(id) {
+    const sorted = [..._transacoes].sort((a,b) => new Date(a.data) - new Date(b.data));
+    const idx = sorted.findIndex(x => x.id === id);
+    const slice = sorted.slice(0, idx + 1);
+
+    let qtdAberta = 0, custoAberto = 0, pm = 0;
+    let lucroRealizado = 0, custoRealizado = 0;
+    let qtdShort = 0, custoShort = 0, pmShort = 0;
+    let lucroShort = 0;
+
+    slice.forEach(t => {
+        const qtd = parseFloat(t.quantidade_ativo) || 0;
+        const valor = parseFloat(t.valor_total_usd) || 0;
+
+        if (t.tipo_operacao === 'LA') {
+            const novoCusto = custoAberto + valor;
+            const novaQtd = qtdAberta + qtd;
+            pm = novaQtd > 0 ? novoCusto / novaQtd : 0;
+            qtdAberta = novaQtd;
+            custoAberto = novoCusto;
+        } else if (t.tipo_operacao === 'LF') {
+            const custoVendido = qtd * pm;
+            custoRealizado += custoVendido;
+            lucroRealizado += valor - custoVendido;
+            qtdAberta -= qtd;
+            custoAberto = qtdAberta * pm;
+        } else if (t.tipo_operacao === 'SA') {
+            const novoCusto = custoShort + valor;
+            const novaQtd = qtdShort + qtd;
+            pmShort = novaQtd > 0 ? novoCusto / novaQtd : 0;
+            qtdShort = novaQtd;
+            custoShort = novoCusto;
+        } else if (t.tipo_operacao === 'SF') {
+            const receitaShort = qtd * pmShort;
+            lucroShort += receitaShort - valor;
+            qtdShort -= qtd;
+            custoShort = qtdShort * pmShort;
+        }
+    });
+
+    return { qtdAberta, custoAberto, pm, lucroRealizado, custoRealizado, qtdShort, custoShort, pmShort, lucroShort };
+}
+
 function abrirDetalhe(id) {
     const t = _transacoes.find(x => x.id === id);
     if (!t) return;
@@ -653,26 +696,48 @@ function abrirDetalhe(id) {
     const data = t.data ? new Date(t.data).toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
     const precoUnit = parseFloat(t.quantidade_ativo) > 0 ? parseFloat(t.valor_total_usd)/parseFloat(t.quantidade_ativo) : 0;
 
+    const estado = calcularEstadoAte(id);
+    const isShort = tipo === 'SA' || tipo === 'SF';
+    const lucroReal = isShort ? estado.lucroShort : estado.lucroRealizado;
+    const custoReal = isShort ? estado.custoShort : estado.custoRealizado;
+    const qtdAberta = isShort ? estado.qtdShort : estado.qtdAberta;
+    const custoAberto = isShort ? estado.custoShort : estado.custoAberto;
+    const corLucro = lucroReal > 0 ? '#16A34A' : lucroReal < 0 ? '#DC2626' : '#6B7280';
+
     document.getElementById('detalhe-titulo').textContent = TIPO_LABEL[tipo] || tipo;
-    document.getElementById('detalhe-corpo').innerHTML = [
-        { label: 'Data', value: data },
-        { label: 'Tipo', value: TIPO_LABEL[tipo] || tipo },
-        { label: 'Ativo', value: _ticker },
-        { label: 'Quantidade', value: fmtQtd(t.quantidade_ativo) },
-        { label: 'Valor Total', value: 'USD ' + fmtUSD(t.valor_total_usd) },
-        { label: 'Preço Unitário', value: 'USD ' + fmtUSD(precoUnit) },
-        { label: 'Taxa', value: fmtQtd(t.taxa_operacao) },
-    ].map(r => `
+    document.getElementById('detalhe-corpo').innerHTML = `
+        ${[
+            { label: 'Data', value: data },
+            { label: 'Tipo', value: TIPO_LABEL[tipo] || tipo },
+            { label: 'Ativo', value: _ticker },
+            { label: 'Quantidade', value: fmtQtd(t.quantidade_ativo) },
+            { label: 'Valor Total', value: 'USD ' + fmtUSD(t.valor_total_usd) },
+            { label: 'Preço Unitário', value: 'USD ' + fmtUSD(precoUnit) },
+            { label: 'Taxa', value: fmtQtd(t.taxa_operacao) },
+        ].map(r => `
         <div class="detalhe-row">
             <span class="detalhe-label">${r.label}</span>
             <span class="detalhe-value">${r.value}</span>
-        </div>`).join('');
+        </div>`).join('')}
+        <div style="height:1px;background:#F2F2F7;margin:10px 0 6px;"></div>
+        <div style="font-size:9px;font-weight:700;color:#8E8E93;letter-spacing:0.8px;text-transform:uppercase;margin-bottom:4px;">Posição após esta operação</div>
+        ${[
+            { label: 'Qtd. em Aberto', value: fmtQtd(qtdAberta) },
+            { label: 'Custo em Aberto', value: 'USD ' + fmtUSD(custoAberto) },
+            { label: 'Custo Realizado', value: 'USD ' + fmtUSD(custoReal) },
+            { label: 'Lucro Realizado', value: (lucroReal >= 0 ? '+' : '') + 'USD ' + fmtUSD(lucroReal), color: corLucro },
+        ].map(r => `
+        <div class="detalhe-row">
+            <span class="detalhe-label">${r.label}</span>
+            <span class="detalhe-value" style="${r.color ? 'color:'+r.color : ''}">${r.value}</span>
+        </div>`).join('')}`;
 
     document.querySelector('#modal-detalhe .modal-actions').innerHTML = `
         <button class="modal-btn-excluir" onclick="confirmarExclusao()">Excluir</button>
         <button class="modal-btn-salvar" onclick="editarDetalhe()">Editar</button>`;
     document.getElementById('modal-detalhe').classList.add('active');
 }
+
 
 function editarDetalhe() {
     const t = _transacoes.find(x => x.id === _detalheId);
