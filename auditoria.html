@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+<title>Auditoria BTC</title>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="supabase.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Plus Jakarta Sans',sans-serif;background:#F2F4F8;padding:16px;}
+h2{font-size:13px;font-weight:800;color:#6B7280;text-transform:uppercase;letter-spacing:0.8px;margin:16px 0 8px;}
+table{width:100%;border-collapse:collapse;background:#FFF;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.06);margin-bottom:8px;}
+th{padding:8px 10px;background:#F9FAFB;font-size:9px;font-weight:700;color:#6B7280;text-transform:uppercase;text-align:right;}
+th:first-child{text-align:left;}
+td{padding:8px 10px;font-size:11px;font-weight:600;color:#111827;text-align:right;border-top:1px solid #F3F4F6;}
+td:first-child{text-align:left;}
+.pos{color:#16A34A}
+.neg{color:#DC2626}
+.total-row td{font-weight:800;font-size:12px;background:#F9FAFB;}
+.resumo{background:#1C1C1E;color:#FFF;border-radius:12px;padding:14px 16px;margin-top:16px;}
+.resumo-row{display:flex;justify-content:space-between;font-size:13px;padding:3px 0;}
+.resumo-label{color:rgba(255,255,255,0.6);}
+.resumo-value{font-weight:800;}
+</style>
+</head>
+<body>
+
+<h2>Auditoria — BTC/USD</h2>
+
+<div id="content">Carregando...</div>
+
+<script>
+const db = window.db;
+const fmt = v => parseFloat(v||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const fmtQ = v => parseFloat(v||0).toLocaleString('pt-BR',{minimumFractionDigits:8,maximumFractionDigits:8});
+const sign = v => v > 0 ? '+' : '';
+
+async function init() {
+    const { data: txs } = await db.from('transacoes')
+        .select('*, ativos!inner(ticker)')
+        .eq('ativos.ticker', 'BTC/USD')
+        .order('data');
+
+    if (!txs || txs.length === 0) {
+        document.getElementById('content').innerHTML = 'Nenhuma transação encontrada para BTC/USD.';
+        return;
+    }
+
+    const sorted = txs.sort((a,b) => new Date(a.data) - new Date(b.data));
+
+    // Calcula PM acumulado e lucro de cada operação
+    let pm = 0, qtdAberta = 0, custoAberto = 0;
+    let pmShort = 0, qtdShort = 0;
+
+    const longs = [], shorts = [];
+
+    sorted.forEach(t => {
+        const qtd = parseFloat(t.quantidade_ativo) || 0;
+        const valor = parseFloat(t.valor_total_usd) || 0;
+        const data = new Date(t.data).toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'2-digit'});
+
+        if (t.tipo_operacao === 'LA') {
+            const novoCusto = custoAberto + valor;
+            const novaQtd = qtdAberta + qtd;
+            pm = novaQtd > 0 ? novoCusto / novaQtd : 0;
+            qtdAberta = novaQtd;
+            custoAberto = novoCusto;
+            longs.push({ data, tipo:'LA', qtd, valor, pm, custo: null, lucro: null });
+
+        } else if (t.tipo_operacao === 'LF') {
+            const custo = qtd * pm;
+            const lucro = valor - custo;
+            longs.push({ data, tipo:'LF', qtd, valor, pm, custo, lucro });
+            qtdAberta -= qtd;
+            custoAberto = qtdAberta * pm;
+
+        } else if (t.tipo_operacao === 'SA') {
+            const novoCusto = (qtdShort * pmShort) + valor;
+            const novaQtd = qtdShort + qtd;
+            pmShort = novaQtd > 0 ? novoCusto / novaQtd : 0;
+            qtdShort = novaQtd;
+            shorts.push({ data, tipo:'SA', qtd, valor, pm: pmShort, custo: null, lucro: null });
+
+        } else if (t.tipo_operacao === 'SF') {
+            const custo = qtd * pmShort;
+            const lucro = custo - valor;
+            shorts.push({ data, tipo:'SF', qtd, valor, pm: pmShort, custo, lucro });
+            qtdShort -= qtd;
+        }
+    });
+
+    const somaLucroLong = longs.filter(r => r.lucro !== null).reduce((s,r) => s + r.lucro, 0);
+    const somaLucroShort = shorts.filter(r => r.lucro !== null).reduce((s,r) => s + r.lucro, 0);
+    const total = somaLucroLong + somaLucroShort;
+
+    const renderTabela = (rows, titulo) => {
+        const linhas = rows.map(r => `<tr>
+            <td>${r.data}</td>
+            <td>${r.tipo}</td>
+            <td>${fmtQ(r.qtd)}</td>
+            <td>${fmt(r.valor)}</td>
+            <td>${fmt(r.pm)}</td>
+            <td>${r.custo !== null ? fmt(r.custo) : '—'}</td>
+            <td class="${r.lucro > 0 ? 'pos' : r.lucro < 0 ? 'neg' : ''}">${r.lucro !== null ? sign(r.lucro) + fmt(r.lucro) : '—'}</td>
+        </tr>`).join('');
+
+        const soma = rows.filter(r => r.lucro !== null).reduce((s,r) => s + r.lucro, 0);
+
+        return `<h2>${titulo}</h2>
+        <table>
+            <thead><tr>
+                <th>Data</th><th style="text-align:right">Tipo</th><th style="text-align:right">Qtd</th>
+                <th style="text-align:right">Valor</th><th style="text-align:right">PM</th>
+                <th style="text-align:right">Custo</th><th style="text-align:right">Lucro</th>
+            </tr></thead>
+            <tbody>${linhas}</tbody>
+            <tfoot><tr class="total-row">
+                <td colspan="6">Total Lucro</td>
+                <td class="${soma >= 0 ? 'pos' : 'neg'}">${sign(soma)}${fmt(soma)}</td>
+            </tr></tfoot>
+        </table>`;
+    };
+
+    document.getElementById('content').innerHTML =
+        renderTabela(longs, 'Long (LA / LF)') +
+        renderTabela(shorts, 'Short (SA / SF)') +
+        `<div class="resumo">
+            <div class="resumo-row"><span class="resumo-label">Lucro Long</span><span class="resumo-value ${somaLucroLong>=0?'pos':'neg'}">${sign(somaLucroLong)}USD ${fmt(somaLucroLong)}</span></div>
+            <div class="resumo-row"><span class="resumo-label">Lucro Short</span><span class="resumo-value ${somaLucroShort>=0?'pos':'neg'}">${sign(somaLucroShort)}USD ${fmt(somaLucroShort)}</span></div>
+            <div class="resumo-row" style="border-top:1px solid rgba(255,255,255,0.15);margin-top:6px;padding-top:6px;">
+                <span class="resumo-label" style="color:#FFF;font-weight:700;">Total BTC/USD</span>
+                <span class="resumo-value ${total>=0?'pos':'neg'}" style="font-size:15px;">${sign(total)}USD ${fmt(total)}</span>
+            </div>
+        </div>`;
+}
+
+init();
+</script>
+</body>
+</html>
