@@ -492,6 +492,27 @@ body{
     color: #EF4444;
     white-space: nowrap;
 }
+.nota-chip-paga {
+    flex-shrink: 0;
+    background: #D1FAE5;
+    border-radius: 8px;
+    padding: 4px 8px;
+    font-size: 10px;
+    font-weight: 700;
+    color: #059669;
+    white-space: nowrap;
+}
+.nota-chip-haver {
+    flex-shrink: 0;
+    background: #FEF3C7;
+    border-radius: 8px;
+    padding: 4px 8px;
+    font-size: 10px;
+    font-weight: 700;
+    color: #D97706;
+    white-space: nowrap;
+}
+
 
 /* Modal incluir produto */
 .modal-overlay {
@@ -1421,37 +1442,56 @@ inputBusca.addEventListener('input', (e) => {
 async function atualizarExtratoComprasEmAberto(fornecedorId, valorAtual = 0) {
     if (!fornecedorId) return;
     try {
-        const { data, error } = await window.db.from('pedidos_compras').select('em_aberto, data').eq('fornecedor_id', fornecedorId).order('data', { ascending: true });
-
+        const [{ data, error }, { data: dataPagos, error: errPagos }] = await Promise.all([
+            window.db.from('pedidos_compras').select('em_aberto, data').eq('fornecedor_id', fornecedorId).order('data', { ascending: true }),
+            window.db.from('movimentos_fornecedores').select('valor').eq('fornecedor_id', fornecedorId).eq('status', 0)
+        ]);
         if (error) throw error;
+        if (errPagos) throw errPagos;
+
+        const totalPagos = (dataPagos || []).reduce((acc, curr) => acc + (parseFloat(curr.valor) || 0), 0);
+        document.getElementById('extrato-pagos').textContent = `- ${totalPagos.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`;
+
         const totalEmAberto = data.reduce((acc, curr) => acc + (parseFloat(curr.em_aberto) || 0), 0) - valorAtual;
-const comSaldo = data.filter(n => (parseFloat(n.em_aberto) || 0) > 0);
-const qtdNotas = valorAtual > 0 ? comSaldo.length - 1 : comSaldo.length;
+        const comSaldo = data.filter(n => (parseFloat(n.em_aberto) || 0) > 0);
+        const qtdNotas = valorAtual > 0 ? comSaldo.length - 1 : comSaldo.length;
 
         document.getElementById('extrato-aberto').textContent = totalEmAberto.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
         document.getElementById('label-compras-aberto').textContent = `Compras em Aberto (#${qtdNotas})`;
-        const notasFiltradas = data.filter(n => {
-    const val = parseFloat(n.em_aberto) || 0;
-    return val > 0 && (valorAtual <= 0 || val !== valorAtual);
-});
 
-        document.getElementById('carrossel-notas').innerHTML = notasFiltradas.map(n =>
-            `<span class="nota-chip">${(parseFloat(n.em_aberto)||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'})}</span>`
-        ).join('');
+        const notasFiltradas = data.filter(n => {
+            const val = parseFloat(n.em_aberto) || 0;
+            return val > 0 && (valorAtual <= 0 || val !== valorAtual);
+        });
+
+        // FIFO: distribui os pagamentos nas pílulas da mais antiga para a mais nova
+        let saldoPagamentos = totalPagos;
+        document.getElementById('carrossel-notas').innerHTML = notasFiltradas.map(n => {
+            const val = parseFloat(n.em_aberto) || 0;
+            let classe, label;
+            if (saldoPagamentos >= val) {
+                // pílula totalmente coberta → verde
+                classe = 'nota-chip-paga';
+                saldoPagamentos -= val;
+            } else if (saldoPagamentos > 0) {
+                // pílula parcialmente coberta → laranja
+                classe = 'nota-chip-haver';
+                saldoPagamentos = 0;
+            } else {
+                // pílula sem cobertura → vermelho (padrão)
+                classe = 'nota-chip';
+            }
+            return `<span class="${classe}">${val.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</span>`;
+        }).join('');
+
         recalcularSaldoExtrato();
     } catch (err) { console.error('Erro ao buscar compras em aberto:', err.message); }
 }
 
 async function atualizarPagamentosRealizados(fornecedorId) {
-    if (!fornecedorId) return;
-    try {
-        const { data, error } = await window.db.from('movimentos_fornecedores').select('valor').eq('fornecedor_id', fornecedorId).eq('status', 0);
-        if (error) throw error;
-        const totalPagos = data.reduce((acc, curr) => acc + (parseFloat(curr.valor) || 0), 0);
-        document.getElementById('extrato-pagos').textContent = `- ${totalPagos.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`;
-        recalcularSaldoExtrato();
-    } catch (err) { console.error('Erro ao buscar pagamentos:', err.message); }
+    // Agora é no-op: lógica absorvida por atualizarExtratoComprasEmAberto
 }
+
 
 function recalcularSaldoExtrato() {
     const aberto = parseVal(document.getElementById('extrato-aberto').textContent);
