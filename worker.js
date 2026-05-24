@@ -66,7 +66,21 @@ export default {
       }
     }
 
-    if (request.method === 'GET' && path === '/bitget/cotacao') {
+    if (request.method === 'GET' && path === '/bitget/candles') {
+  try {
+    const symbol = url.searchParams.get('symbol') || 'BTCUSDT';
+    const granularity = url.searchParams.get('granularity') || '4H';
+    const limit = url.searchParams.get('limit') || '100';
+    const res = await fetch(`https://api.bitget.com/api/v2/spot/market/candles?symbol=${symbol}&granularity=${granularity}&limit=${limit}`, {
+      headers: { 'User-Agent': 'PostmanRuntime/7.43.0' }
+    });
+    const data = await res.json();
+    return Response.json(data, { headers: CORS });
+  } catch (e) {
+    return Response.json({ error: e.message }, { status: 500, headers: CORS });
+  }
+}
+
       try {
         const symbol = url.searchParams.get('symbol') || 'BTCUSDT';
         const res = await fetch(`https://api.bitget.com/api/v2/spot/market/tickers?symbol=${symbol}`);
