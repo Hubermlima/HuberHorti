@@ -7,17 +7,102 @@ const VAPID_JWK = {
 };
 const VAPID_PUBLIC_KEY = 'BA_0xwI2B5MjD8ojcPew-j6-jZ3zdPXaK8qNS3DkXNIED7Hia1THsR_1Nb8XcsAg_qIpdr1U72vmt5aInVOB6WE';
 
+const CORS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type'
+};
+
+async function bitgetRequest(env, method, path, body = null) {
+  const timestamp = Date.now().toString();
+  const bodyStr = body ? JSON.stringify(body) : '';
+  const prehash = timestamp + method.toUpperCase() + path + bodyStr;
+  const keyBytes = new TextEncoder().encode(env.BITGET_SECRET_KEY);
+  const msgBytes = new TextEncoder().encode(prehash);
+  const cryptoKey = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sigBytes = await crypto.subtle.sign('HMAC', cryptoKey, msgBytes);
+  const signature = btoa(String.fromCharCode(...new Uint8Array(sigBytes)));
+  const res = await fetch('https://api.bitget.com' + path, {
+    method,
+    headers: {
+      'ACCESS-KEY': env.BITGET_API_KEY,
+      'ACCESS-SIGN': signature,
+      'ACCESS-TIMESTAMP': timestamp,
+      'ACCESS-PASSPHRASE': env.BITGET_PASSPHRASE,
+      'Content-Type': 'application/json'
+    },
+    body: body ? bodyStr : undefined
+  });
+  return res.json();
+}
+
 export default {
   async fetch(request, env) {
+    const url = new URL(request.url);
+    const path = url.pathname;
+
     if (request.method === 'OPTIONS') {
-      return new Response(null, { headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type'
-      }});
+      return new Response(null, { headers: CORS });
     }
+
+    if (request.method === 'GET' && path === '/bitget/saldo') {
+      try {
+        const data = await bitgetRequest(env, 'GET', '/api/v2/spot/account/assets');
+        return Response.json(data, { headers: CORS });
+      } catch (e) {
+        return Response.json({ error: e.message }, { status: 500, headers: CORS });
+      }
+    }
+
+    if (request.method === 'GET' && path === '/bitget/saldo-futuros') {
+      try {
+        const productType = url.searchParams.get('productType') || 'USDT-FUTURES';
+        const data = await bitgetRequest(env, 'GET', `/api/v2/mix/account/accounts?productType=${productType}`);
+        return Response.json(data, { headers: CORS });
+      } catch (e) {
+        return Response.json({ error: e.message }, { status: 500, headers: CORS });
+      }
+    }
+
+    if (request.method === 'GET' && path === '/bitget/cotacao') {
+      try {
+        const symbol = url.searchParams.get('symbol') || 'BTCUSDT';
+        const res = await fetch(`https://api.bitget.com/api/v2/spot/market/tickers?symbol=${symbol}`);
+        const data = await res.json();
+        return Response.json(data, { headers: CORS });
+      } catch (e) {
+        return Response.json({ error: e.message }, { status: 500, headers: CORS });
+      }
+    }
+
+    if (request.method === 'GET' && path === '/bitget/posicoes') {
+      try {
+        const productType = url.searchParams.get('productType') || 'USDT-FUTURES';
+        const symbol = url.searchParams.get('symbol') || '';
+        const query = symbol
+          ? `/api/v2/mix/position/single-position?productType=${productType}&symbol=${symbol}`
+          : `/api/v2/mix/position/all-position?productType=${productType}`;
+        const data = await bitgetRequest(env, 'GET', query);
+        return Response.json(data, { headers: CORS });
+      } catch (e) {
+        return Response.json({ error: e.message }, { status: 500, headers: CORS });
+      }
+    }
+
+    if (request.method === 'GET' && path === '/bitget/ordens') {
+      try {
+        const productType = url.searchParams.get('productType') || 'USDT-FUTURES';
+        const symbol = url.searchParams.get('symbol') || 'BTCUSDT';
+        const data = await bitgetRequest(env, 'GET', `/api/v2/mix/order/orders-pending?productType=${productType}&symbol=${symbol}`);
+        return Response.json(data, { headers: CORS });
+      } catch (e) {
+        return Response.json({ error: e.message }, { status: 500, headers: CORS });
+      }
+    }
+
     if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
     const { subscription, title, body } = await request.json();
+
     try {
       await sendPush(subscription, JSON.stringify({ title, body }));
       return new Response('OK', { status: 200, headers: { 'Access-Control-Allow-Origin': '*' }});
