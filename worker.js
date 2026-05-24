@@ -29,7 +29,9 @@ async function bitgetRequest(env, method, path, body = null) {
       'ACCESS-SIGN': signature,
       'ACCESS-TIMESTAMP': timestamp,
       'ACCESS-PASSPHRASE': env.BITGET_PASSPHRASE,
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
+'User-Agent': 'PostmanRuntime/7.43.0'
+
     },
     body: body ? bodyStr : undefined
   });
@@ -91,14 +93,17 @@ export default {
 
     if (request.method === 'GET' && path === '/bitget/ordens') {
       try {
-        const productType = url.searchParams.get('productType') || 'USDT-FUTURES';
-        const symbol = url.searchParams.get('symbol') || 'BTCUSDT';
-        const data = await bitgetRequest(env, 'GET', `/api/v2/mix/order/orders-pending?productType=${productType}&symbol=${symbol}`);
-        return Response.json(data, { headers: CORS });
+        const [futuros, spot] = await Promise.all([
+          bitgetRequest(env, 'GET', '/api/v2/mix/order/orders-pending?productType=USDT-FUTURES'),
+
+          bitgetRequest(env, 'GET', '/api/v2/spot/trade/unfilled-orders')
+        ]);
+        return Response.json({ futuros, spot }, { headers: CORS });
       } catch (e) {
         return Response.json({ error: e.message }, { status: 500, headers: CORS });
       }
     }
+
 
     if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
     const { subscription, title, body } = await request.json();
