@@ -1105,6 +1105,9 @@ function grDrawCandles(candles) {
         const pad5 = (maxP - minP) * 0.05;
         minP -= pad5; maxP += pad5;
 
+        // Salva escala para drag de linhas
+        _grMinP = minP; _grMaxP = maxP; _grChartH = chartH;
+
         const priceRange = maxP - minP;
         const toY = p => PAD.top + chartH - ((p - minP) / priceRange) * chartH;
         const cW = Math.max(2, Math.floor(chartW / candles.length) - 1);
@@ -1228,6 +1231,16 @@ function grDrawCandles(candles) {
                 ctx.font = 'bold 10px -apple-system';
                 ctx.textAlign = 'center';
                 ctx.fillText(label, bX + bW / 2, bY + bH - 3);
+                // Handle de arrastar (lado direito)
+                const hX = W - PAD.right - 2, hY = y;
+                ctx.fillStyle = color;
+                ctx.beginPath();
+                ctx.roundRect(hX - 14, hY - 8, 14, 16, 3);
+                ctx.fill();
+                ctx.fillStyle = '#FFF';
+                for (let i = -3; i <= 3; i += 3) {
+                    ctx.fillRect(hX - 11, hY + i - 0.5, 8, 1.5);
+                }
             });
         }
 
@@ -1274,18 +1287,39 @@ function grDrawCandles(candles) {
         ctx.fillText('Bitstamp', W - PAD.right - 2, H - PAD.bottom + 22);
 }
 
-// Touch scroll e zoom
+// Touch scroll, zoom e drag de linhas
 function grInitTouch() {
     const canvas = document.getElementById('gr-chart-canvas');
-    let touchStartX = 0, touchStartY = 0;
+    let touchStartX = 0;
     let lastTouchDist = 0;
     let isDragging = false;
 
+    function grGetDragTarget(yCanvas) {
+        const HIT = 18; // px de tolerância
+        const entrada = grParseInput('gr-entrada');
+        const stop    = grParseInput('gr-stop');
+        const alvo    = grParseInput('gr-alvo');
+        if (alvo   > 0 && Math.abs(yCanvas - grLineY(alvo))    <= HIT) return 'alvo';
+        if (entrada > 0 && Math.abs(yCanvas - grLineY(entrada)) <= HIT) return 'entrada';
+        if (stop   > 0 && Math.abs(yCanvas - grLineY(stop))    <= HIT) return 'stop';
+        return null;
+    }
+
     canvas.addEventListener('touchstart', e => {
         if (e.touches.length === 1) {
-            touchStartX = e.touches[0].clientX;
-            isDragging = true;
+            const rect = canvas.getBoundingClientRect();
+            const yCanvas = e.touches[0].clientY - rect.top;
+            const target = grGetDragTarget(yCanvas);
+            if (target) {
+                _grDragLine = target;
+            } else {
+                _grDragLine = null;
+                touchStartX = e.touches[0].clientX;
+                isDragging = true;
+            }
         } else if (e.touches.length === 2) {
+            _grDragLine = null;
+            isDragging = false;
             lastTouchDist = Math.hypot(
                 e.touches[0].clientX - e.touches[1].clientX,
                 e.touches[0].clientY - e.touches[1].clientY
@@ -1295,14 +1329,25 @@ function grInitTouch() {
     }, { passive: false });
 
     canvas.addEventListener('touchmove', e => {
-        if (e.touches.length === 1 && isDragging) {
-            const dx = e.touches[0].clientX - touchStartX;
-            const candlesPerPx = _grZoom / canvas.width;
-            const delta = Math.round(dx * candlesPerPx);
-            if (Math.abs(delta) >= 1) {
-                _grOffset = Math.max(0, Math.min(_grAllCandles.length - _grZoom, _grOffset - delta));
-                touchStartX = e.touches[0].clientX;
+        if (e.touches.length === 1) {
+            if (_grDragLine) {
+                // Arrasta linha
+                const rect = canvas.getBoundingClientRect();
+                const yCanvas = e.touches[0].clientY - rect.top;
+                const novoPreco = grToPrice(yCanvas);
+                const fieldMap = { entrada: 'gr-entrada', stop: 'gr-stop', alvo: 'gr-alvo' };
+                grSetFieldPreco(fieldMap[_grDragLine], novoPreco);
+                grCalcular();
                 grDrawChart();
+            } else if (isDragging) {
+                const dx = e.touches[0].clientX - touchStartX;
+                const candlesPerPx = _grZoom / canvas.width;
+                const delta = Math.round(dx * candlesPerPx);
+                if (Math.abs(delta) >= 1) {
+                    _grOffset = Math.max(0, Math.min(_grAllCandles.length - _grZoom, _grOffset - delta));
+                    touchStartX = e.touches[0].clientX;
+                    grDrawChart();
+                }
             }
         } else if (e.touches.length === 2) {
             const dist = Math.hypot(
@@ -1317,7 +1362,10 @@ function grInitTouch() {
         e.preventDefault();
     }, { passive: false });
 
-    canvas.addEventListener('touchend', () => { isDragging = false; });
+    canvas.addEventListener('touchend', () => {
+        isDragging = false;
+        _grDragLine = null;
+    });
 }
 
 function grDrawChart() {
@@ -1331,6 +1379,29 @@ function grDrawChart() {
 
 let _grDir = 'LONG';
 let _grRiscoPct = 2;
+
+// Escala Y atual do gráfico (atualizada a cada draw)
+let _grMinP = 0, _grMaxP = 0, _grChartH = 0;
+const _grPAD = { top: 10, right: 4, bottom: 30, left: 70 };
+
+// Linha sendo arrastada: 'entrada' | 'stop' | 'alvo' | null
+let _grDragLine = null;
+
+function grSetFieldPreco(id, preco) {
+    const s = preco.toFixed(2).replace('.', ',');
+    document.getElementById(id).value = s;
+}
+
+function grToPrice(yCanvas) {
+    if (_grMaxP === _grMinP) return 0;
+    const p = _grMinP + (1 - (yCanvas - _grPAD.top) / _grChartH) * (_grMaxP - _grMinP);
+    return Math.max(_grMinP, Math.min(_grMaxP, p));
+}
+
+function grLineY(price) {
+    if (_grMaxP === _grMinP) return -999;
+    return _grPAD.top + _grChartH - ((price - _grMinP) / (_grMaxP - _grMinP)) * _grChartH;
+}
 
 function grSetDir(dir) {
     _grDir = dir;
