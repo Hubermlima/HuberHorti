@@ -1402,20 +1402,20 @@ async function grRenderChart() {
         // Janela visível
         const total = _grAllCandles.length;
         const visible = Math.min(_grZoom, total);
-        const startIdx = Math.max(0, Math.min(total - visible, _grOffset));
+        const startIdx = Math.max(0, Math.min(total, _grOffset));
         const candles = _grAllCandles.slice(startIdx, startIdx + visible);
+        const emptyRight = Math.max(0, (_grOffset + visible) - total);
 
+        if (candles.length === 0 && emptyRight === 0) return;
 
-
-        if (candles.length === 0) return;
-
-        grDrawCandles(candles);
+        grDrawCandles(candles, emptyRight);
     } catch(e) {
         console.log('Chart error:', e.message);
     }
 }
 
-function grDrawCandles(candles) {
+function grDrawCandles(candles, emptyRight) {
+        emptyRight = emptyRight || 0;
     const canvas = document.getElementById('gr-chart-canvas');
     const ctx = canvas.getContext('2d');
         const W = canvas.width, H = canvas.height;
@@ -1466,7 +1466,8 @@ function grDrawCandles(candles) {
 
         const priceRange = maxP - minP;
         const toY = p => PAD.top + chartH - ((p - minP) / priceRange) * chartH;
-        const cW = Math.max(2, Math.floor(chartW / candles.length) - 1);
+        const totalSlots = candles.length + emptyRight;
+        const cW = Math.max(2, Math.floor(chartW / Math.max(totalSlots, 1)) - 1);
 
         ctx.clearRect(0, 0, W, H);
 
@@ -1504,7 +1505,7 @@ function grDrawCandles(candles) {
         let emaStarted = false;
         ema200.forEach((val, i) => {
             if (val === null) { emaStarted = false; return; }
-            const x = PAD.left + (i / candles.length) * chartW + cW / 2;
+            const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
             const y = toY(val);
             if (!emaStarted) { ctx.moveTo(x, y); emaStarted = true; }
             else ctx.lineTo(x, y);
@@ -1513,7 +1514,7 @@ function grDrawCandles(candles) {
 
         // Candles
         candles.forEach((c, i) => {
-            const x = PAD.left + (i / candles.length) * chartW + cW / 2;
+            const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
             const isUp = c.c >= c.o;
             const color = isUp ? '#26A69A' : '#EF5350';
             ctx.strokeStyle = color;
@@ -1704,7 +1705,8 @@ function grInitTouch() {
                 const candlesPerPx = _grZoom / canvas.width;
                 const delta = Math.round(dx * candlesPerPx);
                 if (Math.abs(delta) >= 1) {
-                    _grOffset = Math.max(0, Math.min(_grAllCandles.length - _grZoom, _grOffset - delta));
+                    // Permite ir além do último candle (espaço vazio à direita)
+                    _grOffset = Math.max(0, Math.min(_grAllCandles.length + Math.floor(_grZoom * 0.5), _grOffset - delta));
                     touchStartX = e.touches[0].clientX;
                     grDrawChart();
                 }
@@ -1732,9 +1734,12 @@ function grDrawChart() {
     const total = _grAllCandles.length;
     if (total === 0) return;
     const visible = Math.min(_grZoom, total);
-    const startIdx = Math.max(0, Math.min(total - visible, _grOffset));
+    // Permite offset além do total para criar espaço vazio à direita
+    const startIdx = Math.max(0, Math.min(total, _grOffset));
     const candles = _grAllCandles.slice(startIdx, startIdx + visible);
-    grDrawCandles(candles);
+    // Passa quantos slots vazios existem à direita
+    const emptyRight = Math.max(0, (_grOffset + visible) - total);
+    grDrawCandles(candles, emptyRight);
 }
 
 let _grDir = 'LONG';
@@ -1851,8 +1856,15 @@ function cvCapTipo(tipo) {
 function cvCapSlider(v) {
     window._cvCapVal = parseFloat(v);
     const val = document.getElementById('cv-capital-val');
-    if (window._cvCapTipo === 'percentual') val.textContent = v + '%';
-    else val.textContent = '$' + fmtUSD(parseFloat(v));
+    const maxLbl = document.getElementById('cv-cap-max-lbl');
+    if (window._cvCapTipo === 'percentual') {
+        const usd = (_saldoCorretora || 0) * (parseFloat(v) / 100);
+        val.textContent = v + '%';
+        if (maxLbl) maxLbl.textContent = usd > 0 ? '= $' + fmtUSD(usd) : '100%';
+    } else {
+        val.textContent = '$' + fmtUSD(parseFloat(v));
+        if (maxLbl) maxLbl.textContent = '$' + fmtUSD(_saldoCorretora || 0);
+    }
     grCalcularComGlobais();
 }
 
