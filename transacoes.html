@@ -223,6 +223,20 @@ input[type=range]::-webkit-slider-runnable-track{border-radius:100px;}
 
 /* Bottom CTA */
 .gr-cta{position:fixed;bottom:0;left:0;right:0;padding:12px 16px;padding-bottom:calc(12px + env(safe-area-inset-bottom));background:#F2F4F8;border-top:0.5px solid rgba(0,0,0,0.06);}
+/* Tabs */
+.gr-tabs{display:flex;background:#FFF;border-bottom:0.5px solid #E5E5EA;flex-shrink:0;}
+.gr-tab{flex:1;padding:12px 0;border:none;background:transparent;font-size:13px;font-weight:600;color:#8E8E93;cursor:pointer;border-bottom:2px solid transparent;font-family:'Plus Jakarta Sans',sans-serif;}
+.gr-tab.active{color:#007AFF;border-bottom-color:#007AFF;}
+/* Chart panel */
+.gr-chart-panel{display:none;flex:1;flex-direction:column;overflow:hidden;}
+.gr-chart-panel.active{display:flex;}
+.gr-risk-panel{display:flex;flex-direction:column;flex:1;overflow:hidden;}
+.gr-risk-panel.hidden{display:none;}
+.gr-tf-row{display:flex;gap:8px;padding:10px 16px;flex-shrink:0;}
+.gr-tf-btn{padding:6px 14px;border-radius:100px;border:1.5px solid #E5E5EA;background:#FFF;font-size:12px;font-weight:700;color:#8E8E93;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;}
+.gr-tf-btn.active{background:#007AFF;border-color:#007AFF;color:#FFF;}
+#gr-chart-container{flex:1;padding:0 8px 8px;}
+#gr-chart-canvas{width:100%;height:100%;display:block;}
 .gr-btn-boleta{width:100%;padding:15px;background:#007AFF;color:#FFF;border:none;border-radius:16px;font-size:15px;font-weight:700;font-family:'Plus Jakarta Sans',sans-serif;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;}
 .gr-btn-boleta:disabled{opacity:0.35;pointer-events:none;}
 .gr-loading{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,0.4);border-top-color:#FFF;border-radius:50%;animation:spin 0.7s linear infinite;}
@@ -360,7 +374,12 @@ input[type=range]::-webkit-slider-runnable-track{border-radius:100px;}
     <span class="gr-topbar-title">Gestão de Risco</span>
     <div style="width:34px"></div>
   </div>
+  <div class="gr-tabs">
+    <button class="gr-tab active" id="gr-tab-risco" onclick="grSwitchTab('risco')">Gestão de Risco</button>
+    <button class="gr-tab" id="gr-tab-candles" onclick="grSwitchTab('candles')">Candles</button>
+  </div>
 
+  <div class="gr-risk-panel" id="gr-risk-panel">
   <div class="gr-body">
 
     <!-- Cotação -->
@@ -531,6 +550,19 @@ input[type=range]::-webkit-slider-runnable-track{border-radius:100px;}
       Gerar Boleta
     </button>
   </div>
+  </div><!-- end gr-risk-panel -->
+
+  <!-- Chart Panel -->
+  <div class="gr-chart-panel" id="gr-chart-panel">
+    <div class="gr-tf-row">
+      <button class="gr-tf-btn active" id="gr-tf-4h" onclick="grSetTf('4h')">4H</button>
+      <button class="gr-tf-btn" id="gr-tf-1d" onclick="grSetTf('1day')">1D</button>
+    </div>
+    <div id="gr-chart-container">
+      <canvas id="gr-chart-canvas"></canvas>
+    </div>
+  </div>
+
 </div>
 
 <!-- Modal consolidado -->
@@ -955,6 +987,146 @@ function abrirGestaoRisco() {
 
 function fecharGestaoRisco() {
     document.getElementById('gr-overlay').classList.remove('active');
+    if (_grChart) { _grChart.destroy(); _grChart = null; }
+}
+
+// ── Tabs ─────────────────────────────────────────────────────────
+function grSwitchTab(tab) {
+    const risco = document.getElementById('gr-risk-panel');
+    const chart = document.getElementById('gr-chart-panel');
+    const tabRisco = document.getElementById('gr-tab-risco');
+    const tabCandles = document.getElementById('gr-tab-candles');
+    if (tab === 'risco') {
+        risco.classList.remove('hidden');
+        chart.classList.remove('active');
+        tabRisco.classList.add('active');
+        tabCandles.classList.remove('active');
+    } else {
+        risco.classList.add('hidden');
+        chart.classList.add('active');
+        tabRisco.classList.remove('active');
+        tabCandles.classList.add('active');
+        grRenderChart();
+    }
+}
+
+// ── Chart ─────────────────────────────────────────────────────────
+let _grChart = null;
+let _grTf = '4h';
+
+function grSetTf(tf) {
+    _grTf = tf;
+    document.getElementById('gr-tf-4h').classList.toggle('active', tf === '4h');
+    document.getElementById('gr-tf-1d').classList.toggle('active', tf === '1day');
+    grRenderChart();
+}
+
+async function grRenderChart() {
+    const container = document.getElementById('gr-chart-container');
+    const canvas = document.getElementById('gr-chart-canvas');
+    canvas.width = container.clientWidth;
+    canvas.height = container.clientHeight - 10;
+
+    const symbol = (_ticker || 'BTCUSDT').replace('/', '').replace(/USD$/, 'USDT');
+    const limit = _grTf === '4h' ? 60 : 30;
+
+    try {
+        const res = await fetch(`https://api.bitget.com/api/v2/spot/market/candles?symbol=${symbol}&granularity=${_grTf}&limit=${limit}`);
+        const data = await res.json();
+        const candles = (data.data || []).map(c => ({
+            t: parseInt(c[0]), o: parseFloat(c[1]), h: parseFloat(c[2]),
+            l: parseFloat(c[3]), c: parseFloat(c[4])
+        })).reverse();
+
+        if (candles.length === 0) return;
+
+        const ctx = canvas.getContext('2d');
+        const W = canvas.width, H = canvas.height;
+        const PAD = { top: 20, right: 60, bottom: 40, left: 10 };
+        const chartW = W - PAD.left - PAD.right;
+        const chartH = H - PAD.top - PAD.bottom;
+
+        // Price range
+        const allH = candles.map(c => c.h);
+        const allL = candles.map(c => c.l);
+        let minP = Math.min(...allL);
+        let maxP = Math.max(...allH);
+
+        // Include suggestion lines in range
+        if (_grSugestao) {
+            minP = Math.min(minP, _grSugestao.stop * 0.999);
+            maxP = Math.max(maxP, _grSugestao.alvo * 1.001);
+        }
+
+        const priceRange = maxP - minP;
+        const toY = p => PAD.top + chartH - ((p - minP) / priceRange) * chartH;
+        const candleW = Math.max(2, Math.floor(chartW / candles.length) - 1);
+
+        ctx.clearRect(0, 0, W, H);
+
+        // Background
+        ctx.fillStyle = '#F2F4F8';
+        ctx.fillRect(0, 0, W, H);
+
+        // Grid lines
+        ctx.strokeStyle = 'rgba(0,0,0,0.06)';
+        ctx.lineWidth = 1;
+        for (let i = 0; i <= 4; i++) {
+            const y = PAD.top + (chartH / 4) * i;
+            ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(W - PAD.right, y); ctx.stroke();
+            const price = maxP - (priceRange / 4) * i;
+            ctx.fillStyle = '#8E8E93';
+            ctx.font = '10px -apple-system';
+            ctx.textAlign = 'left';
+            ctx.fillText(price.toFixed(0), W - PAD.right + 4, y + 4);
+        }
+
+        // Candles
+        candles.forEach((c, i) => {
+            const x = PAD.left + (i / candles.length) * chartW + candleW / 2;
+            const isUp = c.c >= c.o;
+            const color = isUp ? '#10B981' : '#EF4444';
+            ctx.strokeStyle = color;
+            ctx.fillStyle = color;
+            ctx.lineWidth = 1;
+
+            // Wick
+            ctx.beginPath();
+            ctx.moveTo(x, toY(c.h));
+            ctx.lineTo(x, toY(c.l));
+            ctx.stroke();
+
+            // Body
+            const bodyTop = toY(Math.max(c.o, c.c));
+            const bodyBot = toY(Math.min(c.o, c.c));
+            const bodyH = Math.max(1, bodyBot - bodyTop);
+            ctx.fillRect(x - candleW / 2, bodyTop, candleW, bodyH);
+        });
+
+        // Suggestion lines
+        if (_grSugestao) {
+            const lines = [
+                { price: _grSugestao.entrada, color: '#10B981', label: 'Entrada' },
+                { price: _grSugestao.stop, color: '#EF4444', label: 'Stop' },
+                { price: _grSugestao.alvo, color: '#007AFF', label: 'Alvo' }
+            ];
+            lines.forEach(({ price, color, label }) => {
+                const y = toY(price);
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 1.5;
+                ctx.setLineDash([6, 4]);
+                ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(W - PAD.right, y); ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.fillStyle = color;
+                ctx.font = 'bold 10px -apple-system';
+                ctx.textAlign = 'left';
+                ctx.fillText(label + ' ' + price.toFixed(0), W - PAD.right + 4, y + 4);
+            });
+        }
+
+    } catch(e) {
+        console.log('Chart error:', e.message);
+    }
 }
 
 let _grDir = 'LONG';
@@ -1310,21 +1482,22 @@ function grGerarBoleta() {
     if (!window._grDados) return;
     const { tamanho, valorInvestido } = window._grDados;
 
-    // Fecha gestão de risco
     fecharGestaoRisco();
 
-    // Abre modal de boleta preenchido
-    abrirModalNova();
+    // Abre modal SEM limpar campos
+    document.getElementById('nova-cotacao').textContent = fmtUSD(_precoAtual) + ' USD';
+    document.getElementById('nova-taxa').value = '';
+    document.getElementById('nova-slider').value = 0;
+    document.getElementById('slider-pct-val').textContent = '0%';
+    setTipoNova(_grDir === 'LONG' ? 'LA' : 'SA');
 
-    // Preenche quantidade e valor automaticamente
-        setTimeout(() => {
-        const qtdStr = tamanho.toFixed(8).replace('.', ',');
-        const valStr = valorInvestido.toLocaleString('pt-BR', {minimumFractionDigits: 8, maximumFractionDigits: 8});
-        document.getElementById('nova-qtd').value = qtdStr;
-        document.getElementById('nova-valor').value = valStr;
-        setTipoNova(_grDir === 'LONG' ? 'LA' : 'SA');
-    }, 300);
+    // Preenche quantidade e valor
+    const qtdStr = tamanho.toFixed(8).replace('.', ',');
+    const valStr = valorInvestido.toLocaleString('pt-BR', {minimumFractionDigits: 8, maximumFractionDigits: 8});
+    document.getElementById('nova-qtd').value = qtdStr;
+    document.getElementById('nova-valor').value = valStr;
 
+    document.getElementById('modal-nova').classList.add('active');
 }
 
 
