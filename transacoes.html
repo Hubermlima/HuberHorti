@@ -1310,12 +1310,9 @@ function grInitTouch() {
 
     function grGetDragTarget(yInterno) {
         const HIT = 28;
-        const entrada = grParseInput('gr-entrada');
-        const stop    = grParseInput('gr-stop');
-        const alvo    = grParseInput('gr-alvo');
-        if (alvo    > 0 && Math.abs(yInterno - grLineY(alvo))    <= HIT) return 'alvo';
-        if (entrada > 0 && Math.abs(yInterno - grLineY(entrada)) <= HIT) return 'entrada';
-        if (stop    > 0 && Math.abs(yInterno - grLineY(stop))    <= HIT) return 'stop';
+        if (_grAlvo    > 0 && Math.abs(yInterno - grLineY(_grAlvo))    <= HIT) return 'alvo';
+        if (_grEntrada > 0 && Math.abs(yInterno - grLineY(_grEntrada)) <= HIT) return 'entrada';
+        if (_grStop    > 0 && Math.abs(yInterno - grLineY(_grStop))    <= HIT) return 'stop';
         return null;
     }
 
@@ -1334,8 +1331,8 @@ function grInitTouch() {
             ctx2.font = '11px monospace';
             ctx2.textAlign = 'left';
             ctx2.fillText(`yInterno=${yInterno.toFixed(0)} target=${target||'null'}`, 5, 16);
-            ctx2.fillText(`entrada=${entrada} lineY=${grLineY(entrada).toFixed(0)}`, 5, 32);
-            ctx2.fillText(`stop=${stop} lineY=${grLineY(stop).toFixed(0)}`, 5, 48);
+            ctx2.fillText(`entrada=${_grEntrada} lineY=${grLineY(_grEntrada).toFixed(0)}`, 5, 32);
+            ctx2.fillText(`stop=${_grStop} lineY=${grLineY(_grStop).toFixed(0)}`, 5, 48);
             ctx2.fillText(`minP=${_grMinP.toFixed(0)} maxP=${_grMaxP.toFixed(0)} H=${_grChartH.toFixed(0)}`, 5, 64);
             if (target) {
                 _grDragLine = target;
@@ -1363,7 +1360,7 @@ function grInitTouch() {
                 const novoPreco = grToPrice(yInterno);
                 const fieldMap = { entrada: 'gr-entrada', stop: 'gr-stop', alvo: 'gr-alvo' };
                 grSetFieldPreco(fieldMap[_grDragLine], novoPreco);
-                grCalcular();
+                grCalcularComGlobais();
                 grDrawChart();
             } else if (isDragging) {
                 const dx = e.touches[0].clientX - touchStartX;
@@ -1412,10 +1409,15 @@ const _grPAD = { top: 10, right: 4, bottom: 30, left: 70 };
 
 // Linha sendo arrastada: 'entrada' | 'stop' | 'alvo' | null
 let _grDragLine = null;
+let _grEntrada = 0, _grStop = 0, _grAlvo = 0;
 
 function grSetFieldPreco(id, preco) {
     const s = preco.toFixed(2).replace('.', ',');
     document.getElementById(id).value = s;
+    // Atualiza global correspondente
+    if (id === 'gr-entrada') _grEntrada = preco;
+    else if (id === 'gr-stop') _grStop = preco;
+    else if (id === 'gr-alvo') _grAlvo = preco;
 }
 
 function grToPrice(yCanvas) {
@@ -1478,10 +1480,37 @@ function grParseInput(id) {
     return parseFloat(v) || 0;
 }
 
+function grCalcularComGlobais() {
+    // Recalcula usando variáveis globais (para uso no drag, quando aba está oculta)
+    const entrada = _grEntrada, stop = _grStop, alvo = _grAlvo;
+    const capital = _saldoCorretora || 1;
+    const riscoPct = _grRiscoPct / 100;
+    if (!entrada || !stop) return;
+    const isLong = _grDir === 'LONG';
+    const risco = isLong ? entrada - stop : stop - entrada;
+    if (risco <= 0) return;
+    const riscoUSD = capital * riscoPct;
+    let tamanho = riscoUSD / risco;
+    let valorInvestido = tamanho * entrada;
+    if (valorInvestido > capital) { tamanho = capital / entrada; valorInvestido = capital; }
+    const reward = alvo > 0 ? (isLong ? alvo - entrada : entrada - alvo) : 0;
+    const rr = reward > 0 ? reward / risco : 0;
+    const ganhoUSD = rr > 0 ? riscoUSD * rr : 0;
+    // Atualiza campos HTML se visíveis
+    const trySet = (id, val) => { try { document.getElementById(id).textContent = val; } catch(e){} };
+    trySet('gr-perda', '−$' + fmtUSD(riscoUSD));
+    trySet('gr-ganho', rr > 0 ? '+$' + fmtUSD(ganhoUSD) : '—');
+    trySet('gr-posicao', tamanho.toFixed(6) + ' BTC');
+    trySet('gr-valor-inv', '$' + fmtUSD(valorInvestido));
+    if (rr > 0) trySet('gr-rr-val', '1 : ' + rr.toFixed(2));
+}
+
 function grCalcular() {
     const entrada = grParseInput('gr-entrada');
     const stop = grParseInput('gr-stop');
     const alvo = grParseInput('gr-alvo');
+    // Salva globais para uso no drag do canvas (aba pode estar oculta)
+    _grEntrada = entrada; _grStop = stop; _grAlvo = alvo;
     const capital = _saldoCorretora || 1;
     const riscoPct = _grRiscoPct / 100;
 
