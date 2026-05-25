@@ -598,6 +598,7 @@ input[type=range]::-webkit-slider-runnable-track{border-radius:100px;}
         <div class="gr-tf-row">
       <button class="gr-tf-btn active" id="gr-tf-4h" onclick="grSetTf('4h')">4H</button>
       <button class="gr-tf-btn" id="gr-tf-1d" onclick="grSetTf('1day')">1D</button>
+      <button class="gr-tf-btn" id="gr-tf-1w" onclick="grSetTf('1week')">1W</button>
       <span id="gr-periodo" style="font-size:10px;color:#D1D4DC;font-weight:700;margin-left:6px;font-family:-apple-system,sans-serif;"></span>
 
     </div>
@@ -1125,6 +1126,7 @@ function grSetTf(tf) {
     _grAllCandles = [];
     document.getElementById('gr-tf-4h').classList.toggle('active', tf === '4h');
     document.getElementById('gr-tf-1d').classList.toggle('active', tf === '1day');
+    document.getElementById('gr-tf-1w').classList.toggle('active', tf === '1week');
     grRenderChart();
 }
 
@@ -1133,7 +1135,7 @@ async function grRenderChart() {
     const canvas = document.getElementById('gr-chart-canvas');
     canvas.width = container.clientWidth;
     canvas.height = container.clientHeight - 10;
-    const step = _grTf === '4h' ? 14400 : 86400;
+    const step = _grTf === '4h' ? 14400 : _grTf === '1day' ? 86400 : 604800;
     const limit = 400;
 
 
@@ -1176,11 +1178,21 @@ function grDrawCandles(candles) {
         const chartW = W - PAD.left - PAD.right;
         const chartH = H - PAD.top - PAD.bottom;
 
-        // EMA 200
-                const allCloses = _grAllCandles.map(c => c.c);
-        const allEma200 = grEMA(allCloses, Math.min(200, allCloses.length));
-        const startIdxEma = _grAllCandles.length - allEma200.length;
-        const ema200 = allEma200.slice(startIdxEma, startIdxEma + candles.length);
+        // EMA 200 — calcula sobre todos os candles e extrai a janela visível
+        const allCloses = _grAllCandles.map(c => c.c);
+        const allEma200 = grEMA(allCloses, 200);
+        // Índice de início da janela visível nos _grAllCandles
+        const total = _grAllCandles.length;
+        const visible = candles.length;
+        const startIdx = Math.max(0, Math.min(total - visible, _grOffset === 999999 ? total - visible : _grOffset));
+        // allEma200 começa no índice 199 dos _grAllCandles
+        const emaStartOffset = total - allEma200.length; // = 199
+        const ema200 = [];
+        for (let i = 0; i < visible; i++) {
+            const globalIdx = startIdx + i;
+            const emaIdx = globalIdx - emaStartOffset;
+            ema200.push(emaIdx >= 0 ? allEma200[emaIdx] : null);
+        }
 
         const closes = candles.map(c => c.c);
 
@@ -1244,11 +1256,13 @@ function grDrawCandles(candles) {
         ctx.lineWidth = 1.5;
         ctx.setLineDash([]);
         ctx.beginPath();
+        let emaStarted = false;
         ema200.forEach((val, i) => {
-            const ci = i + ema200Offset;
-            const x = PAD.left + (ci / candles.length) * chartW + cW / 2;
+            if (val === null) { emaStarted = false; return; }
+            const x = PAD.left + (i / candles.length) * chartW + cW / 2;
             const y = toY(val);
-            i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+            if (!emaStarted) { ctx.moveTo(x, y); emaStarted = true; }
+            else ctx.lineTo(x, y);
         });
         ctx.stroke();
 
