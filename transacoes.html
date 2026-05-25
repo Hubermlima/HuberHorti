@@ -228,15 +228,18 @@ input[type=range]::-webkit-slider-runnable-track{border-radius:100px;}
 .gr-tab{flex:1;padding:12px 0;border:none;background:transparent;font-size:13px;font-weight:600;color:#8E8E93;cursor:pointer;border-bottom:2px solid transparent;font-family:'Plus Jakarta Sans',sans-serif;}
 .gr-tab.active{color:#007AFF;border-bottom-color:#007AFF;}
 /* Chart panel */
-.gr-chart-panel{display:none;flex:1;flex-direction:column;overflow:hidden;}
+.gr-chart-panel{display:none;flex:1;flex-direction:column;overflow:hidden;background:#131722;}
+
 .gr-chart-panel.active{display:flex;}
 .gr-risk-panel{display:flex;flex-direction:column;flex:1;overflow:hidden;}
 .gr-risk-panel.hidden{display:none;}
-.gr-tf-row{display:flex;gap:8px;padding:10px 16px;flex-shrink:0;}
-.gr-tf-btn{padding:6px 14px;border-radius:100px;border:1.5px solid #E5E5EA;background:#FFF;font-size:12px;font-weight:700;color:#8E8E93;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;}
-.gr-tf-btn.active{background:#007AFF;border-color:#007AFF;color:#FFF;}
-#gr-chart-container{flex:1;padding:0 8px 8px;}
+.gr-tf-row{display:flex;gap:8px;padding:8px 12px;flex-shrink:0;background:#131722;}
+.gr-tf-btn{padding:5px 12px;border-radius:6px;border:none;background:#2A2E39;font-size:12px;font-weight:700;color:#787B86;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;}
+.gr-tf-btn.active{background:#364156;color:#D1D4DC;}
+
+#gr-chart-container{flex:1;padding:0;background:#131722;border-radius:0;}
 #gr-chart-canvas{width:100%;height:100%;display:block;}
+
 .gr-btn-boleta{width:100%;padding:15px;background:#007AFF;color:#FFF;border:none;border-radius:16px;font-size:15px;font-weight:700;font-family:'Plus Jakarta Sans',sans-serif;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;}
 .gr-btn-boleta:disabled{opacity:0.35;pointer-events:none;}
 .gr-loading{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,0.4);border-top-color:#FFF;border-radius:50%;animation:spin 0.7s linear infinite;}
@@ -1028,7 +1031,7 @@ async function grRenderChart() {
     canvas.height = container.clientHeight - 10;
 
     const symbol = (_ticker || 'BTCUSDT').replace('/', '').replace(/USD$/, 'USDT');
-    const limit = _grTf === '4h' ? 60 : 30;
+    const limit = _grTf === '4h' ? 100 : 60;
 
     try {
         const res = await fetch(`https://api.bitget.com/api/v2/spot/market/candles?symbol=${symbol}&granularity=${_grTf}&limit=${limit}`);
@@ -1042,53 +1045,77 @@ async function grRenderChart() {
 
         const ctx = canvas.getContext('2d');
         const W = canvas.width, H = canvas.height;
-        const PAD = { top: 20, right: 60, bottom: 40, left: 10 };
+        const PAD = { top: 10, right: 12, bottom: 30, left: 65 };
         const chartW = W - PAD.left - PAD.right;
         const chartH = H - PAD.top - PAD.bottom;
 
-        // Price range
+        // EMA 200
+        const closes = candles.map(c => c.c);
+        const ema200 = grEMA(closes, Math.min(200, closes.length));
+
+        // Price range incluindo EMA
         const allH = candles.map(c => c.h);
         const allL = candles.map(c => c.l);
         let minP = Math.min(...allL);
         let maxP = Math.max(...allH);
-
-        // Include suggestion lines in range
         if (_grSugestao) {
             minP = Math.min(minP, _grSugestao.stop * 0.999);
             maxP = Math.max(maxP, _grSugestao.alvo * 1.001);
         }
+        const pad5 = (maxP - minP) * 0.05;
+        minP -= pad5; maxP += pad5;
 
         const priceRange = maxP - minP;
         const toY = p => PAD.top + chartH - ((p - minP) / priceRange) * chartH;
-        const candleW = Math.max(2, Math.floor(chartW / candles.length) - 1);
+        const cW = Math.max(2, Math.floor(chartW / candles.length) - 1);
 
         ctx.clearRect(0, 0, W, H);
 
-        // Background
-        ctx.fillStyle = '#F2F4F8';
+        // Fundo escuro estilo TradingView
+        ctx.fillStyle = '#131722';
         ctx.fillRect(0, 0, W, H);
 
-        // Grid lines
-        ctx.strokeStyle = 'rgba(0,0,0,0.06)';
-        ctx.lineWidth = 1;
-        for (let i = 0; i <= 4; i++) {
-            const y = PAD.top + (chartH / 4) * i;
+        // Grid horizontal
+        const gridPrices = [];
+        const step = (maxP - minP) / 6;
+        for (let i = 0; i <= 6; i++) gridPrices.push(minP + step * i);
+
+        gridPrices.forEach(price => {
+            const y = toY(price);
+            ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([]);
             ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(W - PAD.right, y); ctx.stroke();
-            const price = maxP - (priceRange / 4) * i;
-            ctx.fillStyle = '#8E8E93';
+            // Labels preço à esquerda
+            ctx.fillStyle = '#787B86';
             ctx.font = '10px -apple-system';
-            ctx.textAlign = 'left';
-            ctx.fillText(price.toFixed(0), W - PAD.right + 4, y + 4);
-        }
+            ctx.textAlign = 'right';
+            ctx.fillText(price.toFixed(0), PAD.left - 4, y + 4);
+        });
+
+        // EMA 200
+        const ema200Offset = closes.length - ema200.length;
+        ctx.strokeStyle = '#F5A623';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ema200.forEach((val, i) => {
+            const ci = i + ema200Offset;
+            const x = PAD.left + (ci / candles.length) * chartW + cW / 2;
+            const y = toY(val);
+            i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        });
+        ctx.stroke();
 
         // Candles
         candles.forEach((c, i) => {
-            const x = PAD.left + (i / candles.length) * chartW + candleW / 2;
+            const x = PAD.left + (i / candles.length) * chartW + cW / 2;
             const isUp = c.c >= c.o;
-            const color = isUp ? '#10B981' : '#EF4444';
+            const color = isUp ? '#26A69A' : '#EF5350';
             ctx.strokeStyle = color;
             ctx.fillStyle = color;
             ctx.lineWidth = 1;
+            ctx.setLineDash([]);
 
             // Wick
             ctx.beginPath();
@@ -1100,34 +1127,48 @@ async function grRenderChart() {
             const bodyTop = toY(Math.max(c.o, c.c));
             const bodyBot = toY(Math.min(c.o, c.c));
             const bodyH = Math.max(1, bodyBot - bodyTop);
-            ctx.fillRect(x - candleW / 2, bodyTop, candleW, bodyH);
+            ctx.fillRect(x - cW / 2, bodyTop, cW, bodyH);
         });
 
-        // Suggestion lines
+        // Linhas IA
         if (_grSugestao) {
             const lines = [
-                { price: _grSugestao.entrada, color: '#10B981', label: 'Entrada' },
-                { price: _grSugestao.stop, color: '#EF4444', label: 'Stop' },
-                { price: _grSugestao.alvo, color: '#007AFF', label: 'Alvo' }
+                { price: _grSugestao.entrada, color: '#26A69A', label: 'E ' + _grSugestao.entrada.toFixed(0) },
+                { price: _grSugestao.stop,   color: '#EF5350', label: 'S ' + _grSugestao.stop.toFixed(0) },
+                { price: _grSugestao.alvo,   color: '#2196F3', label: 'A ' + _grSugestao.alvo.toFixed(0) }
             ];
             lines.forEach(({ price, color, label }) => {
                 const y = toY(price);
+                // Linha tracejada
                 ctx.strokeStyle = color;
-                ctx.lineWidth = 1.5;
-                ctx.setLineDash([6, 4]);
+                ctx.lineWidth = 1;
+                ctx.setLineDash([4, 3]);
                 ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(W - PAD.right, y); ctx.stroke();
                 ctx.setLineDash([]);
+                // Badge preço
+                const bW = 70, bH = 16, bX = 0, bY = y - bH / 2;
                 ctx.fillStyle = color;
+                ctx.beginPath();
+                ctx.roundRect(bX, bY, bW, bH, 3);
+                ctx.fill();
+                ctx.fillStyle = '#FFF';
                 ctx.font = 'bold 10px -apple-system';
-                ctx.textAlign = 'left';
-                ctx.fillText(label + ' ' + price.toFixed(0), W - PAD.right + 4, y + 4);
+                ctx.textAlign = 'center';
+                ctx.fillText(label, bX + bW / 2, bY + bH - 3);
             });
         }
+
+        // Label EMA200
+        ctx.fillStyle = '#F5A623';
+        ctx.font = 'bold 9px -apple-system';
+        ctx.textAlign = 'left';
+        ctx.fillText('EMA 200', PAD.left + 4, PAD.top + 14);
 
     } catch(e) {
         console.log('Chart error:', e.message);
     }
 }
+
 
 let _grDir = 'LONG';
 let _grRiscoPct = 2;
