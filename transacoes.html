@@ -1100,6 +1100,8 @@ function grDrawCandles(candles) {
         if (_grSugestao) {
             minP = Math.min(minP, _grSugestao.stop * 0.999);
             maxP = Math.max(maxP, _grSugestao.alvo * 1.001);
+            if (_grSugestao.suporte) minP = Math.min(minP, _grSugestao.suporte * 0.999);
+            if (_grSugestao.resistencia) maxP = Math.max(maxP, _grSugestao.resistencia * 1.001);
         }
         const pad5 = (maxP - minP) * 0.05;
         minP -= pad5; maxP += pad5;
@@ -1171,6 +1173,36 @@ function grDrawCandles(candles) {
             const bodyH = Math.max(1, bodyBot - bodyTop);
             ctx.fillRect(x - cW / 2, bodyTop, cW, bodyH);
         });
+
+        // Zonas de Suporte e Resistência
+        if (_grSugestao && _grSugestao.suporte && _grSugestao.resistencia) {
+            const srZones = [
+                { price: _grSugestao.resistencia, color: '#EF5350', label: 'R' },
+                { price: _grSugestao.suporte, color: '#26A69A', label: 'S' }
+            ];
+            srZones.forEach(({ price, color, label }) => {
+                const y = toY(price);
+                // Faixa colorida semi-transparente
+                ctx.fillStyle = color + '22';
+                ctx.fillRect(PAD.left, y - 8, chartW, 16);
+                // Linha sólida fina
+                ctx.strokeStyle = color + '88';
+                ctx.lineWidth = 1;
+                ctx.setLineDash([2, 2]);
+                ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(W - PAD.right, y); ctx.stroke();
+                ctx.setLineDash([]);
+                // Círculo label
+                const cx = PAD.left + 20, cy = y;
+                ctx.beginPath();
+                ctx.arc(cx, cy, 9, 0, Math.PI * 2);
+                ctx.fillStyle = color;
+                ctx.fill();
+                ctx.fillStyle = '#FFF';
+                ctx.font = 'bold 9px -apple-system';
+                ctx.textAlign = 'center';
+                ctx.fillText(label, cx, cy + 3);
+            });
+        }
 
         // Linhas IA
         if (_grSugestao) {
@@ -1529,21 +1561,19 @@ fetch(`https://api.bitget.com/api/v2/spot/market/candles?symbol=${symbol}&granul
         // Lógica de sugestão
         let entrada, stop, alvo, confianca, resumo;
 
-        if (isLong) {
-            // Long: entrada próxima do preço atual ou pullback para EMA
-            const emaSuporte = Math.max(e9, e21);
-            entrada = preco > emaSuporte ? preco : emaSuporte * 1.001;
-            stop = suporte * 0.998;
-            alvo = resistencia * 0.998;
+                if (isLong) {
+            entrada = preco * 1.001;
+            stop = Math.min(suporte, preco * 0.98) * 0.998;
+            alvo = Math.max(resistencia, preco * 1.02) * 0.998;
+
             const tendencia = e9 > e21 && e21 > (e50 || e21) ? 'Alta' : e9 < e21 ? 'Baixa' : 'Lateral';
             confianca = tendencia === 'Alta' && rsiAtual < 70 ? 'Alta' : tendencia === 'Lateral' ? 'Média' : 'Baixa';
             resumo = `EMA9 ${e9 > e21 ? '>' : '<'} EMA21 · RSI ${rsiAtual.toFixed(0)} · Tendência ${tendencia}\nSuporte: ${fmtUSD(suporte)} · Resistência: ${fmtUSD(resistencia)}`;
-        } else {
-            // Short: entrada no topo ou rejeição de resistência
-            const emaResist = Math.min(e9, e21);
-            entrada = preco < emaResist ? preco : emaResist * 0.999;
-            stop = resistencia * 1.002;
-            alvo = suporte * 1.002;
+                } else {
+            entrada = preco * 0.999;
+            stop = Math.max(resistencia, preco * 1.02) * 1.002;
+            alvo = Math.min(suporte, preco * 0.98) * 1.002;
+
             const tendencia = e9 < e21 && e21 < (e50 || e21) ? 'Baixa' : e9 > e21 ? 'Alta' : 'Lateral';
             confianca = tendencia === 'Baixa' && rsiAtual > 30 ? 'Alta' : tendencia === 'Lateral' ? 'Média' : 'Baixa';
             resumo = `EMA9 ${e9 > e21 ? '>' : '<'} EMA21 · RSI ${rsiAtual.toFixed(0)} · Tendência ${tendencia}\nSuporte: ${fmtUSD(suporte)} · Resistência: ${fmtUSD(resistencia)}`;
@@ -1556,7 +1586,7 @@ fetch(`https://api.bitget.com/api/v2/spot/market/candles?symbol=${symbol}&granul
             alvo = isLong ? entrada + riscoCalc * 2 : entrada - riscoCalc * 2;
         }
 
-        _grSugestao = { entrada, stop, alvo };
+        _grSugestao = { entrada, stop, alvo, suporte, resistencia };
 
         // Mostra card
         card.style.display = 'block';
