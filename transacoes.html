@@ -228,6 +228,37 @@ input[type=range]::-webkit-slider-runnable-track{border-radius:100px;}
 .gr-tab{flex:1;padding:12px 0;border:none;background:transparent;font-size:13px;font-weight:600;color:#8E8E93;cursor:pointer;border-bottom:2px solid transparent;font-family:'Plus Jakarta Sans',sans-serif;}
 .gr-tab.active{color:#007AFF;border-bottom-color:#007AFF;}
 /* Chart panel */
+
+/* Painel flutuante retrátil no gráfico */
+.gr-float-panel{
+    position:absolute;top:48px;right:0;z-index:100;
+    display:flex;flex-direction:column;align-items:flex-end;
+}
+.gr-float-toggle{
+    width:28px;height:72px;background:rgba(30,34,45,0.92);
+    border:none;border-radius:8px 0 0 8px;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
+    cursor:pointer;padding:0;
+}
+.gr-float-toggle span{display:block;width:3px;height:3px;border-radius:50%;background:#D1D4DC;}
+.gr-float-body{
+    display:none;background:rgba(19,23,34,0.95);
+    border-radius:12px 0 0 12px;padding:10px 12px;
+    border:1px solid rgba(255,255,255,0.08);border-right:none;
+    min-width:180px;
+}
+.gr-float-body.open{display:block;}
+.gr-float-row{display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:0.5px solid rgba(255,255,255,0.06);}
+.gr-float-row:last-child{border-bottom:none;}
+.gr-float-lbl{font-size:10px;font-weight:600;color:#787B86;font-family:-apple-system,sans-serif;}
+.gr-float-val{font-size:11px;font-weight:700;font-family:-apple-system,sans-serif;color:#D1D4DC;}
+.gr-float-val.pos{color:#26A69A;}
+.gr-float-val.neg{color:#EF5350;}
+.gr-float-val.blue{color:#2196F3;}
+.gr-float-rr{text-align:center;padding:6px 0 4px;border-bottom:0.5px solid rgba(255,255,255,0.06);margin-bottom:2px;}
+.gr-float-rr-val{font-size:16px;font-weight:900;color:#D1D4DC;font-family:-apple-system,sans-serif;letter-spacing:-0.5px;}
+.gr-float-rr-lbl{font-size:9px;font-weight:600;color:#787B86;font-family:-apple-system,sans-serif;letter-spacing:0.5px;text-transform:uppercase;}
+
 .gr-chart-panel{display:none;flex:1;flex-direction:column;overflow:hidden;background:#131722;}
 
 .gr-chart-panel.active{display:flex;}
@@ -564,8 +595,48 @@ input[type=range]::-webkit-slider-runnable-track{border-radius:100px;}
       <span id="gr-periodo" style="font-size:10px;color:#D1D4DC;font-weight:700;margin-left:6px;font-family:-apple-system,sans-serif;"></span>
 
     </div>
-    <div id="gr-chart-container">
+    <div id="gr-chart-container" style="position:relative;">
       <canvas id="gr-chart-canvas"></canvas>
+      <!-- Painel flutuante retrátil -->
+      <div class="gr-float-panel" id="gr-float-panel">
+        <button class="gr-float-toggle" onclick="grToggleFloat()" id="gr-float-btn">
+          <span></span><span></span><span></span>
+        </button>
+        <div class="gr-float-body" id="gr-float-body">
+          <div class="gr-float-rr">
+            <div class="gr-float-rr-lbl">R / R</div>
+            <div class="gr-float-rr-val" id="gf-rr">—</div>
+          </div>
+          <div class="gr-float-row">
+            <span class="gr-float-lbl">Perda máx</span>
+            <span class="gr-float-val neg" id="gf-perda">—</span>
+          </div>
+          <div class="gr-float-row">
+            <span class="gr-float-lbl">Ganho pot.</span>
+            <span class="gr-float-val pos" id="gf-ganho">—</span>
+          </div>
+          <div class="gr-float-row">
+            <span class="gr-float-lbl">Tamanho</span>
+            <span class="gr-float-val blue" id="gf-tamanho">—</span>
+          </div>
+          <div class="gr-float-row">
+            <span class="gr-float-lbl">Investido</span>
+            <span class="gr-float-val" id="gf-investido">—</span>
+          </div>
+          <div class="gr-float-row">
+            <span class="gr-float-lbl">Stop dist.</span>
+            <span class="gr-float-val" id="gf-stopdist">—</span>
+          </div>
+          <div class="gr-float-row" id="gf-alvo-row" style="display:none">
+            <span class="gr-float-lbl">Alvo dist.</span>
+            <span class="gr-float-val" id="gf-alvodist">—</span>
+          </div>
+          <div class="gr-float-row">
+            <span class="gr-float-lbl">Breakeven</span>
+            <span class="gr-float-val" id="gf-breakeven">—</span>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1007,6 +1078,11 @@ function grSwitchTab(tab) {
         chart.classList.remove('active');
         tabRisco.classList.add('active');
         tabCandles.classList.remove('active');
+        // Sincroniza campos com valores movidos no gráfico
+        if (_grEntrada > 0) grSetFieldPreco('gr-entrada', _grEntrada);
+        if (_grStop    > 0) grSetFieldPreco('gr-stop',    _grStop);
+        if (_grAlvo    > 0) grSetFieldPreco('gr-alvo',    _grAlvo);
+        grCalcular();
     } else {
         // Salva globais antes de esconder os campos
         // Prioriza _grSugestao (IA) se campos estiverem vazios
@@ -1017,9 +1093,14 @@ function grSwitchTab(tab) {
         chart.classList.add('active');
         tabRisco.classList.remove('active');
         tabCandles.classList.add('active');
-        _grAllCandles = [];
-        _grOffset = 999999;
-        grRenderChart().then(() => grInitTouch());
+        // Não reseta candles para não perder posição e manter globais
+        if (_grAllCandles.length === 0) {
+            _grOffset = 999999;
+            grRenderChart().then(() => grInitTouch());
+        } else {
+            grInitTouch();
+            grDrawChart();
+        }
     }
 }
 
@@ -1322,23 +1403,6 @@ function grInitTouch() {
         if (e.touches.length === 1) {
             const yInterno = toCanvasY(e.touches[0].clientY);
             const target = grGetDragTarget(yInterno);
-            const entrada = grParseInput('gr-entrada');
-            const stop = grParseInput('gr-stop');
-            const alvo = grParseInput('gr-alvo');
-            // Debug: mostra info no canvas
-            const ctx2 = canvas.getContext('2d');
-            ctx2.fillStyle = 'rgba(0,0,0,0.7)';
-            ctx2.fillRect(0, 0, 320, 112);
-            ctx2.fillStyle = '#FFF';
-            ctx2.font = '11px monospace';
-            ctx2.textAlign = 'left';
-            ctx2.fillText(`yInterno=${yInterno.toFixed(0)} target=${target||'null'}`, 5, 16);
-            const rect2 = canvas.getBoundingClientRect();
-            ctx2.fillText(`ent=${_grEntrada.toFixed(0)} lineY=${grLineY(_grEntrada).toFixed(0)}`, 5, 32);
-            ctx2.fillText(`stp=${_grStop.toFixed(0)} lineY=${grLineY(_grStop).toFixed(0)}`, 5, 48);
-            ctx2.fillText(`alv=${_grAlvo.toFixed(0)} lineY=${grLineY(_grAlvo).toFixed(0)}`, 5, 64);
-            ctx2.fillText(`canvas.h=${canvas.height} rect.h=${rect2.height.toFixed(0)}`, 5, 80);
-            ctx2.fillText(`minP=${_grMinP.toFixed(0)} maxP=${_grMaxP.toFixed(0)} H=${_grChartH.toFixed(0)}`, 5, 96);
             if (target) {
                 _grDragLine = target;
                 isDragging = false;
@@ -1487,8 +1551,13 @@ function grParseInput(id) {
     return parseFloat(v) || 0;
 }
 
+let _grFloatOpen = false;
+function grToggleFloat() {
+    _grFloatOpen = !_grFloatOpen;
+    document.getElementById('gr-float-body').classList.toggle('open', _grFloatOpen);
+}
+
 function grCalcularComGlobais() {
-    // Recalcula usando variáveis globais (para uso no drag, quando aba está oculta)
     const entrada = _grEntrada, stop = _grStop, alvo = _grAlvo;
     const capital = _saldoCorretora || 1;
     const riscoPct = _grRiscoPct / 100;
@@ -1503,7 +1572,24 @@ function grCalcularComGlobais() {
     const reward = alvo > 0 ? (isLong ? alvo - entrada : entrada - alvo) : 0;
     const rr = reward > 0 ? reward / risco : 0;
     const ganhoUSD = rr > 0 ? riscoUSD * rr : 0;
-    // Atualiza campos HTML se visíveis
+    const stopDist = (Math.abs(risco) / entrada) * 100;
+    const alvoDist = alvo > 0 ? (Math.abs(reward) / entrada) * 100 : 0;
+    const breakeven = rr > 0 ? (1 / (1 + rr)) * 100 : 0;
+
+    // Atualiza painel flutuante
+    const s = (id, val) => { const el = document.getElementById(id); if(el) el.textContent = val; };
+    s('gf-rr',       rr > 0 ? '1 : ' + rr.toFixed(2) : '—');
+    s('gf-perda',    '−$' + fmtUSD(riscoUSD));
+    s('gf-ganho',    rr > 0 ? '+$' + fmtUSD(ganhoUSD) : '—');
+    s('gf-tamanho',  tamanho.toFixed(6) + ' BTC');
+    s('gf-investido','$' + fmtUSD(valorInvestido));
+    s('gf-stopdist', stopDist.toFixed(2) + '%');
+    s('gf-breakeven',breakeven > 0 ? breakeven.toFixed(1) + '%' : '—');
+    const alvoRow = document.getElementById('gf-alvo-row');
+    if (alvoRow) alvoRow.style.display = alvoDist > 0 ? 'flex' : 'none';
+    s('gf-alvodist', alvoDist > 0 ? alvoDist.toFixed(2) + '%' : '—');
+
+    // Também atualiza aba Gestão de Risco se visível
     const trySet = (id, val) => { try { document.getElementById(id).textContent = val; } catch(e){} };
     trySet('gr-perda', '−$' + fmtUSD(riscoUSD));
     trySet('gr-ganho', rr > 0 ? '+$' + fmtUSD(ganhoUSD) : '—');
