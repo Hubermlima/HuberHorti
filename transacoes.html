@@ -598,7 +598,7 @@ input[type=range]::-webkit-slider-runnable-track{border-radius:100px;}
         <div class="gr-tf-row">
       <button class="gr-tf-btn active" id="gr-tf-4h" onclick="grSetTf('4h')">4H</button>
       <button class="gr-tf-btn" id="gr-tf-1d" onclick="grSetTf('1day')">1D</button>
-      <button class="gr-tf-btn" id="gr-tf-1w" onclick="grSetTf('1week')">1W</button>
+      <button class="gr-tf-btn" id="gr-tf-1w" onclick="grSetTf('1week')">1S</button>
       <span id="gr-periodo" style="font-size:10px;color:#D1D4DC;font-weight:700;margin-left:6px;font-family:-apple-system,sans-serif;"></span>
 
     </div>
@@ -1143,15 +1143,34 @@ async function grRenderChart() {
         // Busca dados se ainda não tiver ou mudou timeframe
         if (_grAllCandles.length === 0) {
             const bitstampSymbol = (_ticker || 'BTC/USD').replace('/', '').toLowerCase();
-            const res = await fetch(`https://www.bitstamp.net/api/v2/ohlc/${bitstampSymbol}/?step=${step}&limit=${limit}`);
-            const data = await res.json();
-            _grAllCandles = (data.data.ohlc || []).map(c => ({
-                t: parseInt(c.timestamp) * 1000,
-                o: parseFloat(c.open),
-                h: parseFloat(c.high),
-                l: parseFloat(c.low),
-                c: parseFloat(c.close)
-            }));
+            let rawCandles = [];
+            if (_grTf === '1week') {
+                const res = await fetch(`https://www.bitstamp.net/api/v2/ohlc/${bitstampSymbol}/?step=86400&limit=400`);
+                const data = await res.json();
+                const daily = (data.data.ohlc || []).map(c => ({
+                    t: parseInt(c.timestamp)*1000, o: parseFloat(c.open),
+                    h: parseFloat(c.high), l: parseFloat(c.low), c: parseFloat(c.close)
+                }));
+                const weeks = {};
+                daily.forEach(d => {
+                    const date = new Date(d.t);
+                    const day = date.getDay();
+                    const monday = new Date(d.t - ((day===0?6:day-1)*86400000));
+                    monday.setHours(0,0,0,0);
+                    const key = monday.getTime();
+                    if (!weeks[key]) weeks[key] = { t:key, o:d.o, h:d.h, l:d.l, c:d.c };
+                    else { weeks[key].h = Math.max(weeks[key].h,d.h); weeks[key].l = Math.min(weeks[key].l,d.l); weeks[key].c = d.c; }
+                });
+                rawCandles = Object.values(weeks).sort((a,b) => a.t - b.t);
+            } else {
+                const res = await fetch(`https://www.bitstamp.net/api/v2/ohlc/${bitstampSymbol}/?step=${step}&limit=${limit}`);
+                const data = await res.json();
+                rawCandles = (data.data.ohlc || []).map(c => ({
+                    t: parseInt(c.timestamp)*1000, o: parseFloat(c.open),
+                    h: parseFloat(c.high), l: parseFloat(c.low), c: parseFloat(c.close)
+                }));
+            }
+            _grAllCandles = rawCandles;
         }
 
         // Janela visível
@@ -1640,13 +1659,27 @@ function grCalcularComGlobais() {
     if (alvoRow) alvoRow.style.display = alvoDist > 0 ? 'flex' : 'none';
     s('gf-alvodist', alvoDist > 0 ? alvoDist.toFixed(2) + '%' : '—');
 
-    // Também atualiza aba Gestão de Risco se visível
+    // Atualiza aba Gestão de Risco
     const trySet = (id, val) => { try { document.getElementById(id).textContent = val; } catch(e){} };
     trySet('gr-perda', '−$' + fmtUSD(riscoUSD));
     trySet('gr-ganho', rr > 0 ? '+$' + fmtUSD(ganhoUSD) : '—');
     trySet('gr-posicao', tamanho.toFixed(6) + ' BTC');
     trySet('gr-valor-inv', '$' + fmtUSD(valorInvestido));
     if (rr > 0) trySet('gr-rr-val', '1 : ' + rr.toFixed(2));
+    // Atualiza card de Análise Técnica com valores movidos
+    const fmtU = v => v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const bodyEl = document.getElementById('gr-analise-body');
+    if (bodyEl && _grSugestao) {
+        const resumoEl = bodyEl.querySelector('div:first-child');
+        const resumoTxt = resumoEl ? resumoEl.innerHTML : '';
+        bodyEl.innerHTML =
+            `<div style="margin-bottom:8px;font-size:11px;color:#6B7280;">${resumoTxt}</div>` +
+            `<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px;">` +
+            `<div style="text-align:center;background:#F0FDF4;border-radius:10px;padding:8px;"><div style="font-size:9px;font-weight:700;color:#6B7280;margin-bottom:3px;">ENTRADA</div><div style="font-size:12px;font-weight:800;color:#15803D;">${fmtU(_grEntrada||_grSugestao.entrada)}</div></div>` +
+            `<div style="text-align:center;background:#FEF2F2;border-radius:10px;padding:8px;"><div style="font-size:9px;font-weight:700;color:#6B7280;margin-bottom:3px;">STOP</div><div style="font-size:12px;font-weight:800;color:#991B1B;">${fmtU(_grStop||_grSugestao.stop)}</div></div>` +
+            `<div style="text-align:center;background:#EFF6FF;border-radius:10px;padding:8px;"><div style="font-size:9px;font-weight:700;color:#6B7280;margin-bottom:3px;">ALVO</div><div style="font-size:12px;font-weight:800;color:#1D4ED8;">${fmtU(_grAlvo||_grSugestao.alvo)}</div></div>` +
+            `</div>`;
+    }
 }
 
 function grCalcular() {
