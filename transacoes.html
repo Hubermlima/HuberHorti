@@ -309,6 +309,7 @@ input[type=range]::-webkit-slider-runnable-track{border-radius:100px;}
 .cv-ind-btn.med.active{color:#FFFFFF;background:linear-gradient(180deg,#252836 0%,#1a1d2a 100%);}
 .cv-ind-btn.rsi.active{color:#CE93D8;background:linear-gradient(180deg,#25183d 0%,#1a102e 100%);}
 .cv-ind-btn.vol.active{color:#80CBC4;background:linear-gradient(180deg,#12302e 0%,#0d2220 100%);}
+.cv-ind-btn.fib.active{color:#FFD700;background:linear-gradient(180deg,#2e2a00 0%,#1e1c00 100%);}
 
 /* Submenu médias */
 .cv-med-menu{display:none;position:absolute;bottom:100%;left:32px;background:rgba(30,34,45,0.95);border:0.5px solid rgba(255,255,255,0.08);padding:8px 12px;flex-wrap:wrap;gap:8px;z-index:210;border-radius:8px;min-width:160px;}
@@ -674,6 +675,7 @@ input[type=range]::-webkit-slider-runnable-track{border-radius:100px;}
           <button class="cv-ind-btn med" id="cv-ind-med" onclick="cvToggleMedMenu()">EMA</button>
           <button class="cv-ind-btn rsi" id="cv-ind-rsi" onclick="cvToggleSubInd('rsi')">RSI</button>
           <button class="cv-ind-btn vol" id="cv-ind-vol" onclick="cvToggleSubInd('vol')">Vol</button>
+          <button class="cv-ind-btn fib" id="cv-ind-fib" onclick="cvToggleFib()">Fib</button>
         </div>
       </div>
     </div>
@@ -1906,7 +1908,7 @@ function grDrawCandles(candles, emptyRight) {
             ctx.fillText(txt, pX + 4, pY + pH - 3);
         }
 
-        // ── Pílulas das EMAs no eixo Y (valor atual) ─────────────────
+        // ── Pílulas das EMAs no eixo Y ESQUERDO ──────────────────────
         emaInfo.forEach(({ key, data, cor }) => {
             if (!_indState[key] || !data) return;
             const lastVal = data.filter(v => v !== null).pop();
@@ -1917,7 +1919,7 @@ function grDrawCandles(candles, emptyRight) {
             ctx.font = 'bold 9px -apple-system';
             const tw = ctx.measureText(txt).width;
             const pH = 14, pW = tw + 8;
-            const pX = W - PAD.right;
+            const pX = 0;
             const pY = y - pH / 2;
             ctx.fillStyle = cor;
             ctx.beginPath(); ctx.roundRect(pX, pY, pW, pH, 3); ctx.fill();
@@ -1933,6 +1935,44 @@ function grDrawCandles(candles, emptyRight) {
             if (el) el.textContent = fmt(candles[0].t) + ' a ' + fmt(candles[candles.length-1].t);
         }
 
+
+        // ── Fibonacci automático ─────────────────────────────────────
+        if (_indState.fib && candles.length > 5) {
+            const highs = candles.map(c => c.h);
+            const lows  = candles.map(c => c.l);
+            const fibHigh = Math.max(...highs);
+            const fibLow  = Math.min(...lows);
+            const diff = fibHigh - fibLow;
+            // Determina direção pelo último candle
+            const isUp = candles[candles.length-1].c >= candles[candles.length-1].o;
+            // Níveis: 0, 23.6, 38.2, 50, 61.8, 78.6, 100
+            const niveis = [
+                { r: 0,     label: '0%'    },
+                { r: 0.236, label: '23.6%' },
+                { r: 0.382, label: '38.2%' },
+                { r: 0.5,   label: '50%'   },
+                { r: 0.618, label: '61.8%' },
+                { r: 0.786, label: '78.6%' },
+                { r: 1,     label: '100%'  },
+            ];
+            niveis.forEach(({ r, label }) => {
+                const price = isUp ? fibLow + diff * (1 - r) : fibHigh - diff * (1 - r);
+                const y = toY(price);
+                if (y < PAD.top || y > PAD.top + chartH) return;
+                // Destaque nos níveis principais
+                const isPrincipal = [0.382, 0.5, 0.618].includes(r);
+                ctx.strokeStyle = isPrincipal ? 'rgba(255,215,0,0.5)' : 'rgba(255,215,0,0.2)';
+                ctx.lineWidth = isPrincipal ? 1 : 0.5;
+                ctx.setLineDash([3, 4]);
+                ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(W - PAD.right, y); ctx.stroke();
+                ctx.setLineDash([]);
+                // Label no eixo Y esquerdo
+                ctx.font = isPrincipal ? 'bold 9px -apple-system' : '8px -apple-system';
+                ctx.fillStyle = isPrincipal ? 'rgba(255,215,0,0.9)' : 'rgba(255,215,0,0.5)';
+                ctx.textAlign = 'right';
+                ctx.fillText(label + ' ' + price.toFixed(0), PAD.left - 2, y + 3);
+            });
+        }
 
         // Bitstamp source label
         ctx.fillStyle = 'rgba(255,255,255,0.3)';
@@ -2079,6 +2119,10 @@ function grInitTouch() {
         return null;
     }
 
+    let _longPressTimer = null;
+    let _longPressY = 0;
+    let _longPressActive = false;
+
     canvas.addEventListener('touchstart', e => {
         if (e.touches.length === 1) {
             const yInterno = toCanvasY(e.touches[0].clientY);
@@ -2090,10 +2134,21 @@ function grInitTouch() {
                 _grDragLine = null;
                 touchStartX = e.touches[0].clientX;
                 isDragging = true;
+                // Long press: 400ms para ativar
+                _longPressY = yInterno;
+                _longPressTimer = setTimeout(() => {
+                    if (isDragging) { // só ativa se não rolou
+                        _longPressActive = true;
+                        isDragging = false;
+                        grDrawChartWithCrosshair(yInterno);
+                    }
+                }, 400);
             }
         } else if (e.touches.length === 2) {
             _grDragLine = null;
             isDragging = false;
+            clearTimeout(_longPressTimer);
+            _longPressActive = false;
             lastTouchDist = Math.hypot(
                 e.touches[0].clientX - e.touches[1].clientX,
                 e.touches[0].clientY - e.touches[1].clientY
@@ -2107,13 +2162,19 @@ function grInitTouch() {
             if (_grDragLine) {
                 const yInterno = toCanvasY(e.touches[0].clientY);
                 const novoPreco = grToPrice(yInterno);
-                // Atualiza global diretamente
                 if (_grDragLine === 'entrada') _grEntrada = novoPreco;
                 else if (_grDragLine === 'stop') _grStop = novoPreco;
                 else if (_grDragLine === 'alvo') _grAlvo = novoPreco;
                 grCalcularComGlobais();
                 grDrawChart();
+            } else if (_longPressActive) {
+                // Move crosshair
+                const yInterno = toCanvasY(e.touches[0].clientY);
+                grDrawChartWithCrosshair(yInterno);
             } else if (isDragging) {
+                // Cancela long press se rolar
+                const dx = Math.abs(e.touches[0].clientX - touchStartX);
+                if (dx > 5) { clearTimeout(_longPressTimer); }
                 const dx = e.touches[0].clientX - touchStartX;
                 const candlesPerPx = _grZoom / canvas.width;
                 const delta = Math.round(dx * candlesPerPx);
@@ -2141,6 +2202,11 @@ function grInitTouch() {
     canvas.addEventListener('touchend', () => {
         isDragging = false;
         _grDragLine = null;
+        clearTimeout(_longPressTimer);
+        if (_longPressActive) {
+            _longPressActive = false;
+            grDrawChart(); // redesenha sem crosshair
+        }
     });
 }
 
@@ -2148,14 +2214,40 @@ function grDrawChart() {
     const total = _grAllCandles.length;
     if (total === 0) return;
     const visible = Math.min(_grZoom, total);
-    // startIdx pode ir além para criar espaço vazio, mas sempre pega candles reais
     const maxOff = total - Math.floor(_grZoom * 0.7);
     const startIdx = Math.max(0, Math.min(maxOff, _grOffset));
     const candles = _grAllCandles.slice(startIdx, startIdx + visible);
     if (candles.length === 0) return;
-    // emptyRight: quantos slots vazios à direita dos candles visíveis
     const emptyRight = Math.max(0, visible - candles.length);
     grDrawCandles(candles, emptyRight);
+}
+
+function grDrawChartWithCrosshair(yInterno) {
+    grDrawChart();
+    const canvas = document.getElementById('gr-chart-canvas');
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width;
+    const preco = grToPrice(yInterno);
+    if (!preco || preco <= 0) return;
+    // Linha tracejada horizontal
+    ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(_grPAD.left, yInterno);
+    ctx.lineTo(W - _grPAD.right, yInterno);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // Pílula no eixo Y esquerdo
+    const txt = preco.toFixed(0);
+    ctx.font = 'bold 10px -apple-system';
+    const tw = ctx.measureText(txt).width;
+    const pH = 16, pW = tw + 10, pX = 0, pY = yInterno - pH / 2;
+    ctx.fillStyle = '#FFFFFF';
+    ctx.beginPath(); ctx.roundRect(pX, pY, pW, pH, 3); ctx.fill();
+    ctx.fillStyle = '#131722';
+    ctx.textAlign = 'left';
+    ctx.fillText(txt, pX + 5, pY + pH - 4);
 }
 
 let _grDir = 'LONG';
@@ -2169,6 +2261,7 @@ const _indState = {
     ema50:     false,
     ema200:    true,   // EMA 200 ativa por padrão
     subInd:    null,   // 'rsi' | 'vol' | null
+    fib:       false,
 };
 
 // Escala Y atual do gráfico (atualizada a cada draw)
@@ -2337,6 +2430,12 @@ function cvToggleBol() {
     _indState.bollinger = !_indState.bollinger;
     const btn = document.getElementById('cv-ind-bol');
     btn.classList.toggle('active', _indState.bollinger);
+    grDrawChart();
+}
+
+function cvToggleFib() {
+    _indState.fib = !_indState.fib;
+    document.getElementById('cv-ind-fib').classList.toggle('active', _indState.fib);
     grDrawChart();
 }
 
