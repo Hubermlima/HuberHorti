@@ -310,6 +310,7 @@ input[type=range]::-webkit-slider-runnable-track{border-radius:100px;}
 .cv-ind-btn.rsi.active{color:#CE93D8;background:linear-gradient(180deg,#25183d 0%,#1a102e 100%);}
 .cv-ind-btn.vol.active{color:#80CBC4;background:linear-gradient(180deg,#12302e 0%,#0d2220 100%);}
 .cv-ind-btn.fib.active{color:#FFD700;background:linear-gradient(180deg,#2e2a00 0%,#1e1c00 100%);}
+.cv-ind-btn.macd.active{color:#FF6B9D;background:linear-gradient(180deg,#2e0d1a 0%,#1e0810 100%);}
 
 /* Submenu médias */
 .cv-med-menu{display:none;position:absolute;bottom:100%;right:28px;background:rgba(30,34,45,0.95);border:0.5px solid rgba(255,255,255,0.08);padding:8px 12px;flex-wrap:wrap;gap:8px;z-index:210;border-radius:8px;min-width:160px;}
@@ -675,6 +676,7 @@ input[type=range]::-webkit-slider-runnable-track{border-radius:100px;}
           <button class="cv-ind-btn med" id="cv-ind-med" onclick="cvToggleMedMenu()">EMA</button>
           <button class="cv-ind-btn rsi" id="cv-ind-rsi" onclick="cvToggleSubInd('rsi')">RSI</button>
           <button class="cv-ind-btn vol" id="cv-ind-vol" onclick="cvToggleSubInd('vol')">Vol</button>
+          <button class="cv-ind-btn macd" id="cv-ind-macd" onclick="cvToggleSubInd('macd')">MACD</button>
           <button class="cv-ind-btn fib" id="cv-ind-fib" onclick="cvToggleFib()">Fib</button>
         </div>
       </div>
@@ -2095,6 +2097,90 @@ function grDrawCandles(candles, emptyRight) {
                 ctx.font = '9px -apple-system';
                 const fmtV = v => v >= 1000 ? (v/1000).toFixed(0)+'K' : v.toFixed(0);
                 ctx.fillText(fmtV(maxVol), PAD.left - 3, panY + panPad.top + 8);
+
+            } else if (_indState.subInd === 'macd') {
+                // ── MACD ───────────────────────────────────────────────
+                const macdCloses = _grAllCandles.map(c => c.c);
+                const allEma12 = grEMA(macdCloses, 12);
+                const allEma26 = grEMA(macdCloses, 26);
+                const lenM = Math.min(allEma12.length, allEma26.length);
+                const off12 = allEma12.length - lenM;
+                const off26 = allEma26.length - lenM;
+                const macdLine = [];
+                for (let i = 0; i < lenM; i++) macdLine.push(allEma12[off12+i] - allEma26[off26+i]);
+                const allSignal = grEMA(macdLine, 9);
+                const sigOff = macdLine.length - allSignal.length;
+                const macdGlobalOff = _grAllCandles.length - lenM;
+
+                const macdVis = [], signalVis = [], histVis = [];
+                for (let i = 0; i < visible; i++) {
+                    const gIdx = startIdx + i;
+                    const mIdx = gIdx - macdGlobalOff;
+                    const sIdx = mIdx - sigOff;
+                    const m = mIdx >= 0 && mIdx < macdLine.length ? macdLine[mIdx] : null;
+                    const s = sIdx >= 0 && sIdx < allSignal.length ? allSignal[sIdx] : null;
+                    macdVis.push(m);
+                    signalVis.push(s);
+                    histVis.push(m !== null && s !== null ? m - s : null);
+                }
+
+                const allMVals = [...macdVis, ...signalVis, ...histVis].filter(v => v !== null);
+                if (allMVals.length === 0) { return; }
+                const macdMax = Math.max(...allMVals.map(Math.abs)) * 1.2 || 1;
+                const toMacdY = v => panY + panPad.top + panChartH/2 - (v / macdMax) * (panChartH/2);
+                const zeroY = toMacdY(0);
+
+                // Linha zero
+                ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+                ctx.lineWidth = 0.5; ctx.setLineDash([]);
+                ctx.beginPath(); ctx.moveTo(PAD.left, zeroY); ctx.lineTo(W - PAD.right, zeroY); ctx.stroke();
+
+                // Histograma
+                histVis.forEach((v, i) => {
+                    if (v === null) return;
+                    const x = PAD.left + (i / totalSlots) * panChartW;
+                    const y = toMacdY(v);
+                    const h = Math.abs(zeroY - y);
+                    ctx.fillStyle = v >= 0 ? 'rgba(38,166,154,0.5)' : 'rgba(239,83,80,0.5)';
+                    ctx.fillRect(x, Math.min(y, zeroY), Math.max(1, cW-1), h);
+                });
+
+                // Linha MACD
+                ctx.strokeStyle = '#FF6B9D'; ctx.lineWidth = 1.2;
+                ctx.beginPath(); let ms = false;
+                macdVis.forEach((v, i) => {
+                    if (v === null) { ms = false; return; }
+                    const x = PAD.left + (i / totalSlots) * panChartW + cW/2;
+                    const y = toMacdY(v);
+                    if (!ms) { ctx.moveTo(x, y); ms = true; } else ctx.lineTo(x, y);
+                }); ctx.stroke();
+
+                // Linha Signal
+                ctx.strokeStyle = '#FFD700'; ctx.lineWidth = 1;
+                ctx.beginPath(); let ss = false;
+                signalVis.forEach((v, i) => {
+                    if (v === null) { ss = false; return; }
+                    const x = PAD.left + (i / totalSlots) * panChartW + cW/2;
+                    const y = toMacdY(v);
+                    if (!ss) { ctx.moveTo(x, y); ss = true; } else ctx.lineTo(x, y);
+                }); ctx.stroke();
+
+                // Labels
+                const lastMacd = macdVis.filter(v=>v!==null).pop();
+                const lastSig  = signalVis.filter(v=>v!==null).pop();
+                ctx.font = 'bold 9px -apple-system'; ctx.textAlign = 'left';
+                ctx.fillStyle = '#FF6B9D';
+                ctx.fillText('MACD', PAD.left + 4, panY + panPad.top + 10);
+                if (lastMacd !== undefined && lastMacd !== null) {
+                    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+                    ctx.fillText(lastMacd.toFixed(1), PAD.left + 42, panY + panPad.top + 10);
+                }
+                ctx.fillStyle = '#FFD700';
+                ctx.fillText('Sig', PAD.left + 4, panY + panPad.top + 22);
+                if (lastSig !== undefined && lastSig !== null) {
+                    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+                    ctx.fillText(lastSig.toFixed(1), PAD.left + 22, panY + panPad.top + 22);
+                }
             }
         }
 }
@@ -2421,6 +2507,7 @@ function cvToggleSubInd(key) {
     _indState.subInd = (era === key) ? null : key;
     document.getElementById('cv-ind-rsi').classList.toggle('active', _indState.subInd === 'rsi');
     document.getElementById('cv-ind-vol').classList.toggle('active', _indState.subInd === 'vol');
+    document.getElementById('cv-ind-macd').classList.toggle('active', _indState.subInd === 'macd');
     // Fechar menu EMA se aberto
     document.getElementById('cv-med-menu').classList.remove('active');
     grDrawChart();
