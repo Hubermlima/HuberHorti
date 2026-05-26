@@ -1284,15 +1284,65 @@ function cvAbrir() {
     cvAtualizarSaldo();
     if (_grAllCandles.length === 0) {
         _grOffset = 999999;
-        grRenderChart().then(() => { grInitTouch(); grInitFloatDrag(); grCalcularComGlobais(); });
+        grRenderChart().then(() => { grInitTouch(); grInitFloatDrag(); grCalcularComGlobais(); cvIniciarRealTime(); });
     } else {
-        grInitTouch(); grInitFloatDrag(); grDrawChart(); grCalcularComGlobais();
+        grInitTouch(); grInitFloatDrag(); grDrawChart(); grCalcularComGlobais(); cvIniciarRealTime();
     }
 }
 
 function cvFechar() {
     document.getElementById('cv-screen').classList.remove('active');
     if (_grChart) { _grChart.destroy(); _grChart = null; }
+    // Para atualização em tempo real
+    if (window._cvTickerInterval) {
+        clearInterval(window._cvTickerInterval);
+        window._cvTickerInterval = null;
+    }
+}
+
+async function cvAtualizarPrecoRealTime() {
+    try {
+        const symbol = (_ticker || 'BTC/USD').replace('/', '').toLowerCase();
+        const res = await fetch(`https://www.bitstamp.net/api/v2/ticker/${symbol}/`);
+        const data = await res.json();
+        if (!data || !data.last) return;
+
+        const novoPreco = parseFloat(data.last);
+        const open24h   = parseFloat(data.open);
+        const novaVar   = ((novoPreco - open24h) / open24h) * 100;
+
+        // Atualiza globais
+        _precoAtual = novoPreco;
+        _varPct     = novaVar;
+
+        // Atualiza topbar
+        const precoEl = document.getElementById('cv-preco');
+        const varEl   = document.getElementById('cv-var');
+        if (precoEl) precoEl.textContent = fmtUSD(novoPreco) + ' USD';
+        if (varEl) {
+            varEl.textContent = (novaVar >= 0 ? '+' : '') + novaVar.toFixed(2) + '%';
+            varEl.style.color = novaVar >= 0 ? '#26A69A' : '#EF5350';
+        }
+
+        // Atualiza o último candle com o preço atual
+        if (_grAllCandles.length > 0) {
+            const last = _grAllCandles[_grAllCandles.length - 1];
+            last.c = novoPreco;
+            last.h = Math.max(last.h, novoPreco);
+            last.l = Math.min(last.l, novoPreco);
+            // Redesenha sem resetar nada
+            grDrawChart();
+        }
+    } catch(e) {
+        // Falha silenciosa — não interrompe o usuário
+    }
+}
+
+function cvIniciarRealTime() {
+    // Atualiza imediatamente e depois a cada 10s
+    cvAtualizarPrecoRealTime();
+    if (window._cvTickerInterval) clearInterval(window._cvTickerInterval);
+    window._cvTickerInterval = setInterval(cvAtualizarPrecoRealTime, 10000);
 }
 
 function fecharGestaoRisco() { cvFechar(); }
@@ -1332,7 +1382,7 @@ function cvSetTf(tf) {
     document.getElementById('cv-tf-4h').classList.toggle('active', tf==='4h');
     document.getElementById('cv-tf-1d').classList.toggle('active', tf==='1day');
     document.getElementById('cv-tf-1s').classList.toggle('active', tf==='1week');
-    grRenderChart().then(() => { grInitTouch(); grInitFloatDrag(); grCalcularComGlobais(); });
+    grRenderChart().then(() => { grInitTouch(); grInitFloatDrag(); grCalcularComGlobais(); cvIniciarRealTime(); });
 }
 
 let _cvSetupId = null, _cvDir = 'long';
