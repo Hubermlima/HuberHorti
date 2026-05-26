@@ -916,6 +916,7 @@ const mascara2 = input => {
     input.value = (parseInt(v)/100).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
 };
 const fmtUSD = v => parseFloat(v||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const fmtN   = v => parseFloat(v||0).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0});
 const fmtQtd = v => parseFloat(v||0).toLocaleString('pt-BR',{minimumFractionDigits:8,maximumFractionDigits:8});
 
 document.getElementById('nova-qtd').addEventListener('input', function(){ mascara8(this); });
@@ -1298,6 +1299,10 @@ function cvFechar() {
         clearInterval(window._cvTickerInterval);
         window._cvTickerInterval = null;
     }
+    if (window._cvCandleInterval) {
+        clearInterval(window._cvCandleInterval);
+        window._cvCandleInterval = null;
+    }
 }
 
 async function cvAtualizarPrecoRealTime() {
@@ -1315,7 +1320,7 @@ async function cvAtualizarPrecoRealTime() {
         _precoAtual = novoPreco;
         _varPct     = novaVar;
 
-        // Atualiza topbar
+        // ── Topbar: atualiza imediatamente (leve) ──────────────────
         const precoEl = document.getElementById('cv-preco');
         const varEl   = document.getElementById('cv-var');
         if (precoEl) precoEl.textContent = fmtUSD(novoPreco) + ' USD';
@@ -1324,25 +1329,49 @@ async function cvAtualizarPrecoRealTime() {
             varEl.style.color = novaVar >= 0 ? '#26A69A' : '#EF5350';
         }
 
-        // Atualiza o último candle com o preço atual
-        if (_grAllCandles.length > 0) {
-            const last = _grAllCandles[_grAllCandles.length - 1];
-            last.c = novoPreco;
-            last.h = Math.max(last.h, novoPreco);
-            last.l = Math.min(last.l, novoPreco);
-            // Redesenha sem resetar nada
-            grDrawChart();
-        }
-    } catch(e) {
-        // Falha silenciosa — não interrompe o usuário
-    }
+        // ── Linha de preço: redesenha só a linha e pílula ──────────
+        // Faz overlay rápido sem recalcular indicadores
+        cvAtualizarLinhaPreco(novoPreco);
+
+    } catch(e) {}
+}
+
+function cvAtualizarLinhaPreco(preco) {
+    // Redesenha só a linha de cotação por cima do canvas existente
+    // Não recalcula indicadores — usa _grMinP/_grMaxP/_grChartH já calculados
+    if (!_grMinP || !_grMaxP || _grMaxP === _grMinP) return;
+    const canvas = document.getElementById('gr-chart-canvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width;
+    const PAD = _grPAD;
+
+    // Recalcula posição Y
+    const y = PAD.top + _grChartH - ((preco - _grMinP) / (_grMaxP - _grMinP)) * _grChartH;
+    if (y < PAD.top || y > PAD.top + _grChartH) return;
+
+    // Redesenha o gráfico completo a cada 3s (mais leve que recalcular tudo)
+    grDrawChart();
+}
+
+async function cvAtualizarCandle() {
+    // Atualiza o candle atual e recalcula indicadores (a cada 30s)
+    if (_grAllCandles.length === 0) return;
+    const last = _grAllCandles[_grAllCandles.length - 1];
+    last.c = _precoAtual;
+    last.h = Math.max(last.h, _precoAtual);
+    last.l = Math.min(last.l, _precoAtual);
+    grDrawChart();
 }
 
 function cvIniciarRealTime() {
-    // Atualiza imediatamente e depois a cada 10s
     cvAtualizarPrecoRealTime();
+    // Topbar + linha: a cada 3s
     if (window._cvTickerInterval) clearInterval(window._cvTickerInterval);
-    window._cvTickerInterval = setInterval(cvAtualizarPrecoRealTime, 10000);
+    window._cvTickerInterval = setInterval(cvAtualizarPrecoRealTime, 3000);
+    // Candle (recalcula indicadores): a cada 30s
+    if (window._cvCandleInterval) clearInterval(window._cvCandleInterval);
+    window._cvCandleInterval = setInterval(cvAtualizarCandle, 30000);
 }
 
 function fecharGestaoRisco() { cvFechar(); }
@@ -1736,7 +1765,7 @@ function grDrawCandles(candles, emptyRight) {
             ctx.fillStyle = '#FFFFFF';
             ctx.font = '10px -apple-system';
             ctx.textAlign = 'right';
-            ctx.fillText(price.toFixed(0), PAD.left - 4, y + 4);
+            ctx.fillText(fmtN(price), PAD.left - 4, y + 4);
         });
 
         // ── Desenha indicadores ──────────────────────────────────────
@@ -2051,9 +2080,9 @@ function grDrawCandles(candles, emptyRight) {
         // Linhas IA
         if (_grEntrada > 0 || _grStop > 0 || _grAlvo > 0) {
             const lines = [
-                _grAlvo    > 0 ? { price: _grAlvo,    color: '#2196F3', label: 'A ' + _grAlvo.toFixed(0)    } : null,
-                _grEntrada > 0 ? { price: _grEntrada, color: '#FFFFFF',  label: 'E ' + _grEntrada.toFixed(0) } : null,
-                _grStop    > 0 ? { price: _grStop,    color: '#E91E8C',  label: 'S ' + _grStop.toFixed(0)    } : null,
+                _grAlvo    > 0 ? { price: _grAlvo,    color: '#2196F3', label: 'A ' + fmtN(_grAlvo)    } : null,
+                _grEntrada > 0 ? { price: _grEntrada, color: '#FFFFFF',  label: 'E ' + fmtN(_grEntrada) } : null,
+                _grStop    > 0 ? { price: _grStop,    color: '#E91E8C',  label: 'S ' + fmtN(_grStop)    } : null,
             ].filter(Boolean);
             lines.forEach(({ price, color, label }) => {
                 const y = toY(price);
@@ -2108,7 +2137,7 @@ function grDrawCandles(candles, emptyRight) {
             ctx.fillStyle = '#FFFFFF';
             ctx.font = 'bold 10px -apple-system';
             ctx.textAlign = 'center';
-            ctx.fillText(_precoAtual.toFixed(0), bX + bW / 2, bY + bH - 4);
+            ctx.fillText(fmtN(_precoAtual), bX + bW / 2, bY + bH - 4);
         }
 
         // ── Labels EMAs horizontais no topo ─────────────────────────
@@ -2153,7 +2182,7 @@ function grDrawCandles(candles, emptyRight) {
             if (!lastVal) return;
             const y = toY(lastVal);
             if (y < PAD.top || y > PAD.top + chartH) return;
-            const txt = lastVal.toFixed(0);
+            const txt = fmtN(lastVal);
             ctx.font = 'bold 9px -apple-system';
             const tw = ctx.measureText(txt).width;
             const pH = 14, pW = tw + 8;
@@ -2208,7 +2237,7 @@ function grDrawCandles(candles, emptyRight) {
                 ctx.font = isPrincipal ? 'bold 9px -apple-system' : '8px -apple-system';
                 ctx.fillStyle = isPrincipal ? 'rgba(255,215,0,0.9)' : 'rgba(255,215,0,0.5)';
                 ctx.textAlign = 'right';
-                ctx.fillText(label + ' ' + price.toFixed(0), PAD.left - 2, y + 3);
+                ctx.fillText(label + ' ' + fmtN(price), PAD.left - 2, y + 3);
             });
         }
 
@@ -2564,7 +2593,7 @@ function grDrawChartWithCrosshair(yInterno) {
     ctx.stroke();
     ctx.setLineDash([]);
     // Pílula no eixo Y esquerdo
-    const txt = preco.toFixed(0);
+    const txt = fmtN(preco);
     ctx.font = 'bold 10px -apple-system';
     const tw = ctx.measureText(txt).width;
     const pH = 16, pW = tw + 10, pX = 0, pY = yInterno - pH / 2;
