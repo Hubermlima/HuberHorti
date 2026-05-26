@@ -30,7 +30,8 @@ async function bitgetRequest(env, method, path, body = null) {
       'ACCESS-TIMESTAMP': timestamp,
       'ACCESS-PASSPHRASE': env.BITGET_PASSPHRASE,
       'Content-Type': 'application/json',
-      'User-Agent': 'PostmanRuntime/7.43.0'
+      'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1
+'
     },
     body: body ? bodyStr : undefined
   });
@@ -68,7 +69,9 @@ export default {
     if (request.method === 'GET' && path === '/bitget/candles') {
       try {
         const symbol = url.searchParams.get('symbol') || 'BTCUSDT';
-        const granularity = url.searchParams.get('granularity') || '4H';
+        const granularity = (url.searchParams.get('granularity') || '4h').toLowerCase();
+
+
         const limit = url.searchParams.get('limit') || '100';
         const res = await fetch(`https://api.bitget.com/api/v2/spot/market/candles?symbol=${symbol}&granularity=${granularity}&limit=${limit}`, {
           headers: { 'User-Agent': 'PostmanRuntime/7.43.0' }
