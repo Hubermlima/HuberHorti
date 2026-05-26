@@ -1337,8 +1337,7 @@ async function cvAtualizarPrecoRealTime() {
 }
 
 function cvAtualizarLinhaPreco(preco) {
-    // Redesenha só a linha de cotação por cima do canvas existente
-    // Não recalcula indicadores — usa _grMinP/_grMaxP/_grChartH já calculados
+    // Só redesenha a linha e pílula de cotação — não toca nos indicadores
     if (!_grMinP || !_grMaxP || _grMaxP === _grMinP) return;
     const canvas = document.getElementById('gr-chart-canvas');
     if (!canvas) return;
@@ -1346,12 +1345,38 @@ function cvAtualizarLinhaPreco(preco) {
     const W = canvas.width;
     const PAD = _grPAD;
 
-    // Recalcula posição Y
     const y = PAD.top + _grChartH - ((preco - _grMinP) / (_grMaxP - _grMinP)) * _grChartH;
     if (y < PAD.top || y > PAD.top + _grChartH) return;
 
-    // Redesenha o gráfico completo a cada 3s (mais leve que recalcular tudo)
-    grDrawChart();
+    // Apaga só a faixa onde estava a linha anterior (±12px)
+    if (window._grUltimaLinhaY) {
+        const oldY = window._grUltimaLinhaY;
+        // Redesenha faixa fundo + candles dessa região
+        // Mais simples: redesenha gráfico só quando candle mudou, linha é leve
+        ctx.clearRect(0, oldY - 12, W, 24);
+    }
+    window._grUltimaLinhaY = y;
+
+    // Cor dinâmica pelo último candle
+    const lastC = _grAllCandles[_grAllCandles.length - 1];
+    const precoColor = lastC ? (lastC.c >= lastC.o ? '#26A69A' : '#EF5350') : '#FFFFFF';
+
+    // Linha tracejada
+    ctx.strokeStyle = precoColor;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(W - PAD.right, y); ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Pílula alinhada com eixo Y
+    const txt = fmtN(preco);
+    ctx.font = 'bold 10px -apple-system';
+    const pH = 16, pW = PAD.left - 1;
+    ctx.fillStyle = precoColor;
+    ctx.beginPath(); ctx.roundRect(0, y - pH/2, pW, pH, 3); ctx.fill();
+    ctx.fillStyle = '#FFF';
+    ctx.textAlign = 'right';
+    ctx.fillText(txt, pW - 4, y + pH/2 - 4);
 }
 
 async function cvAtualizarCandle() {
@@ -1749,20 +1774,29 @@ function grDrawCandles(candles, emptyRight) {
         ctx.fillStyle = '#131722';
         ctx.fillRect(0, 0, W, H);
 
-        // Grid horizontal
+        // Grid horizontal — espaçamento redondo tipo TradingView
         const gridPrices = [];
-        const gridStep = (maxP - minP) / 6;
-
-        for (let i = 0; i <= 6; i++) gridPrices.push(minP + gridStep * i);
+        const range = maxP - minP;
+        // Calcula step redondo (100, 200, 500, 1000, 2000...)
+        const rawStep = range / 5;
+        const magnitude = Math.pow(10, Math.floor(Math.log10(rawStep)));
+        const niceSteps = [1, 2, 2.5, 5, 10];
+        let gridStep = magnitude;
+        for (const s of niceSteps) {
+            const candidate = s * magnitude;
+            if (range / candidate <= 6) { gridStep = candidate; break; }
+        }
+        const firstGrid = Math.ceil(minP / gridStep) * gridStep;
+        for (let p = firstGrid; p <= maxP; p += gridStep) gridPrices.push(p);
 
         gridPrices.forEach(price => {
             const y = toY(price);
+            if (y < PAD.top || y > PAD.top + chartH) return;
             ctx.strokeStyle = 'rgba(255,255,255,0.05)';
             ctx.lineWidth = 1;
             ctx.setLineDash([]);
             ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(W - PAD.right, y); ctx.stroke();
-            // Labels preço à esquerda
-            ctx.fillStyle = '#FFFFFF';
+            ctx.fillStyle = 'rgba(255,255,255,0.6)';
             ctx.font = '10px -apple-system';
             ctx.textAlign = 'right';
             ctx.fillText(fmtN(price), PAD.left - 4, y + 4);
@@ -2175,24 +2209,22 @@ function grDrawCandles(candles, emptyRight) {
             ctx.fillText(txt, pX + 4, pY + pH - 3);
         }
 
-        // ── Pílulas das EMAs no eixo Y ESQUERDO ──────────────────────
+        // ── Pílulas das EMAs no eixo Y ESQUERDO — alinhadas com grid ─
         emaInfo.forEach(({ key, data, cor }) => {
             if (!_indState[key] || !data) return;
             const lastVal = data.filter(v => v !== null).pop();
             if (!lastVal) return;
             const y = toY(lastVal);
-            if (y < PAD.top || y > PAD.top + chartH) return;
+            if (y < PAD.top || y > PAD.top + _grChartH) return;
             const txt = fmtN(lastVal);
-            ctx.font = 'bold 9px -apple-system';
-            const tw = ctx.measureText(txt).width;
-            const pH = 14, pW = tw + 8;
-            const pX = 0;
-            const pY = y - pH / 2;
+            ctx.font = 'bold 10px -apple-system';
+            const pH = 14, pW = PAD.left - 1;
+            const pX = 0, pY = y - pH / 2;
             ctx.fillStyle = cor;
             ctx.beginPath(); ctx.roundRect(pX, pY, pW, pH, 3); ctx.fill();
             ctx.fillStyle = '#000';
-            ctx.textAlign = 'left';
-            ctx.fillText(txt, pX + 4, pY + pH - 3);
+            ctx.textAlign = 'right';
+            ctx.fillText(txt, pX + pW - 4, pY + pH - 3);
         });
 
         // Período
