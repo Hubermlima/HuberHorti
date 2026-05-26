@@ -709,6 +709,15 @@ input[type=range]::-webkit-slider-runnable-track{border-radius:100px;}
   </div>
 
   <!-- Rodapé resultado -->
+<!-- Tooltip Pattern -->
+<div id="cv-pattern-tip" style="display:none;position:fixed;z-index:9999;background:rgba(19,23,34,0.96);border:1px solid rgba(255,255,255,0.12);border-radius:10px;padding:10px 14px;min-width:160px;pointer-events:none;">
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+    <span id="cv-pattern-icon" style="font-size:16px;"></span>
+    <span id="cv-pattern-nome" style="font-size:13px;font-weight:800;color:#FFFFFF;font-family:-apple-system,sans-serif;text-transform:capitalize;"></span>
+  </div>
+  <div id="cv-pattern-desc" style="font-size:11px;color:#9DA5B4;font-family:-apple-system,sans-serif;line-height:1.4;"></div>
+</div>
+
 <!-- Modal Resumo Trade -->
 <div class="cv-resumo-overlay" id="cv-resumo-overlay" onclick="cvFecharResumo()">
   <div class="cv-resumo-sheet" onclick="event.stopPropagation()">
@@ -1776,28 +1785,26 @@ function grDrawCandles(candles, emptyRight) {
                 const ss   = sombSup(c);
 
                 // ── 1 candle ──────────────────────────────────────────
-                // Doji
-                if (corp / rng < 0.1 && rng > 0) {
+                // Doji — só se range for significativo
+                if (corp / rng < 0.07 && rng / c.c > 0.002) {
                     patterns.push({ i, tipo: 'doji', dir: 'neutro', label: '十' });
                     continue;
                 }
 
-                // Martelo (fundo)
-                if (si >= corp * 2 && ss <= corp * 0.5 && corp / rng < 0.4) {
+                // Martelo (fundo) — após tendência de baixa
+                if (si >= corp * 2.5 && ss <= corp * 0.3 && rng / c.c > 0.003 && c1 && isBaixa(c1)) {
                     patterns.push({ i, tipo: 'martelo', dir: 'alta', label: '🔨' });
                     continue;
                 }
 
-                // Enforcado (topo) — mesma forma do martelo mas após tendência de alta
-                if (si >= corp * 2 && ss <= corp * 0.5 && corp / rng < 0.4 && c1 && isAlta(c1)) {
-                    patterns[patterns.length - 1] && patterns[patterns.length - 1].i === i
-                        ? null
-                        : patterns.push({ i, tipo: 'enforcado', dir: 'baixa', label: '🪝' });
+                // Enforcado (topo) — após tendência de alta
+                if (si >= corp * 2.5 && ss <= corp * 0.3 && rng / c.c > 0.003 && c1 && isAlta(c1)) {
+                    patterns.push({ i, tipo: 'enforcado', dir: 'baixa', label: '🪝' });
                     continue;
                 }
 
-                // Estrela cadente (shooting star)
-                if (ss >= corp * 2 && si <= corp * 0.5 && corp / rng < 0.4) {
+                // Estrela cadente — após tendência de alta
+                if (ss >= corp * 2.5 && si <= corp * 0.3 && rng / c.c > 0.003 && c1 && isAlta(c1)) {
                     patterns.push({ i, tipo: 'estrela cadente', dir: 'baixa', label: '✦' });
                     continue;
                 }
@@ -1887,6 +1894,9 @@ function grDrawCandles(candles, emptyRight) {
                 }
             }
 
+            // Salva posições para detecção de toque
+            window._grPatterns = [];
+
             // Desenha marcações
             ctx.font = 'bold 10px -apple-system';
             patterns.forEach(({ i, dir, label, tipo }) => {
@@ -1896,7 +1906,6 @@ function grDrawCandles(candles, emptyRight) {
                 const isNeu = dir === 'neutro';
                 const cor = isAlt ? '#26A69A' : isNeu ? '#B0BEC5' : '#EF5350';
 
-                // Posição: abaixo para alta/neutro, acima para baixa
                 let y;
                 if (isAlt || isNeu) {
                     y = toY(c.l) + 14;
@@ -1905,15 +1914,27 @@ function grDrawCandles(candles, emptyRight) {
                 }
 
                 // Círculo de fundo
-                ctx.fillStyle = cor + '33';
+                ctx.fillStyle = cor + '44';
                 ctx.beginPath();
-                ctx.arc(x, y - 3, 8, 0, Math.PI * 2);
+                ctx.arc(x, y - 3, 9, 0, Math.PI * 2);
                 ctx.fill();
+                ctx.strokeStyle = cor;
+                ctx.lineWidth = 1;
+                ctx.stroke();
 
                 // Texto
                 ctx.fillStyle = cor;
                 ctx.textAlign = 'center';
                 ctx.fillText(label, x, y);
+
+                // Guarda para toque
+                const rect = canvas.getBoundingClientRect();
+                const scaleX = rect.width / canvas.width;
+                const scaleY = rect.height / canvas.height;
+                window._grPatterns.push({
+                    cx: x, cy: y - 3, r: 9,
+                    tipo, dir, label, cor
+                });
             });
         })();
 
@@ -2450,13 +2471,16 @@ function grInitTouch() {
         e.preventDefault();
     }, { passive: false });
 
-    canvas.addEventListener('touchend', () => {
+    canvas.addEventListener('touchend', e => {
         isDragging = false;
         _grDragLine = null;
         clearTimeout(_longPressTimer);
         if (_longPressActive) {
             _longPressActive = false;
-            grDrawChart(); // redesenha sem crosshair
+            grDrawChart();
+        } else if (e.changedTouches.length === 1) {
+            // Verifica se tocou num pattern
+            cvCheckPatternTap(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
         }
     });
 }
@@ -2683,6 +2707,62 @@ function cvToggleBol() {
     const btn = document.getElementById('cv-ind-bol');
     btn.classList.toggle('active', _indState.bollinger);
     grDrawChart();
+}
+
+// Descrições dos patterns
+const _patternDesc = {
+    'doji':           { icon: '十', desc: 'Indecisão — compradores e vendedores empatados. Sinal de possível reversão.' },
+    'martelo':        { icon: '🔨', desc: 'Reversão de alta. Rejeição de preços baixos — compradores entraram forte.' },
+    'enforcado':      { icon: '🪝', desc: 'Reversão de baixa no topo. Mesma forma do martelo, mas em tendência de alta.' },
+    'estrela cadente':{ icon: '✦', desc: 'Reversão de baixa. Rejeição de preços altos — vendedores assumiram o controle.' },
+    'marubozu alta':  { icon: '▲', desc: 'Força compradora intensa. Sem sombras — compradores dominaram todo o candle.' },
+    'marubozu baixa': { icon: '▼', desc: 'Força vendedora intensa. Sem sombras — vendedores dominaram todo o candle.' },
+    'engolfo alta':   { icon: 'E↑', desc: 'Reversão de alta. Candle verde engoliu o vermelho anterior — virada dos compradores.' },
+    'engolfo baixa':  { icon: 'E↓', desc: 'Reversão de baixa. Candle vermelho engoliu o verde anterior — virada dos vendedores.' },
+    'harami alta':    { icon: 'H↑', desc: 'Possível reversão de alta. Candle menor dentro do anterior — momentum perdendo força.' },
+    'harami baixa':   { icon: 'H↓', desc: 'Possível reversão de baixa. Candle menor dentro do anterior — momentum fraquejando.' },
+    'tweezer bottom': { icon: 'T↑', desc: 'Reversão de alta. Duas mínimas iguais — forte suporte nesse nível.' },
+    'tweezer top':    { icon: 'T↓', desc: 'Reversão de baixa. Duas máximas iguais — forte resistência nesse nível.' },
+    'morning star':   { icon: '🌅', desc: 'Forte reversão de alta em 3 candles. Um dos patterns mais confiáveis do mercado.' },
+    'evening star':   { icon: '🌇', desc: 'Forte reversão de baixa em 3 candles. Um dos patterns mais confiáveis do mercado.' },
+    '3 soldados':     { icon: '3↑', desc: 'Continuação de alta. Três candles verdes consecutivos — compradores no controle.' },
+    '3 corvos':       { icon: '3↓', desc: 'Continuação de baixa. Três candles vermelhos consecutivos — vendedores dominantes.' },
+};
+
+function cvShowPatternTip(clientX, clientY, pattern) {
+    const tip = document.getElementById('cv-pattern-tip');
+    const info = _patternDesc[pattern.tipo] || { icon: pattern.label, desc: '' };
+    document.getElementById('cv-pattern-icon').textContent = info.icon;
+    document.getElementById('cv-pattern-nome').textContent = pattern.tipo;
+    document.getElementById('cv-pattern-nome').style.color = pattern.cor;
+    document.getElementById('cv-pattern-desc').textContent = info.desc;
+    // Posição na tela
+    const x = Math.min(clientX - 80, window.innerWidth - 180);
+    const y = clientY - 90;
+    tip.style.left = Math.max(8, x) + 'px';
+    tip.style.top = Math.max(8, y) + 'px';
+    tip.style.display = 'block';
+    // Some após 3 segundos
+    clearTimeout(window._patternTipTimer);
+    window._patternTipTimer = setTimeout(() => { tip.style.display = 'none'; }, 3000);
+}
+
+function cvCheckPatternTap(clientX, clientY) {
+    const canvas = document.getElementById('gr-chart-canvas');
+    if (!canvas || !window._grPatterns || !window._grPatterns.length) return false;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const cx = (clientX - rect.left) * scaleX;
+    const cy = (clientY - rect.top) * scaleY;
+    for (const p of window._grPatterns) {
+        const dist = Math.sqrt((cx - p.cx)**2 + (cy - p.cy)**2);
+        if (dist <= p.r + 12) {
+            cvShowPatternTip(clientX, clientY, p);
+            return true;
+        }
+    }
+    return false;
 }
 
 function cvToggleFib() {
