@@ -1572,7 +1572,7 @@ async function cvSalvarSetup() {
     if (btn) btn.style.opacity = '0.5';
     const alavancagem = document.getElementById('cv-alav-toggle').checked;
     const risco_pct = parseFloat(document.getElementById('cv-risco-slider').value);
-    const payload = { ativo_id:_ativoId, tipo:_cvDir, entrada:_grEntrada||null, stop:_grStop||null, alvo:_grAlvo||null, alavancagem, risco_pct, capital_tipo: window._cvCapTipo||'percentual', capital_valor: window._cvCapVal||100 };
+    const payload = { ativo_id:_ativoId, tipo:_cvDir, entrada:_grEntrada||null, stop:_grStop||null, alvo:_grAlvo||null, alavancagem, risco_pct, capital_tipo: window._cvCapTipo||'percentual', capital_valor: window._cvCapVal||100, codigo_setup: window._cvSetupCodigo||null, descricao_setup: window._cvSetupDescricao||null };
     let error;
     if (_cvSetupId) {
         ({error} = await db.from('trades').update(payload).eq('id', _cvSetupId));
@@ -1612,7 +1612,9 @@ async function cvCarregarSetup() {
         const rr = (s.entrada&&s.stop&&s.alvo) ? (()=>{ const r=s.tipo==='long'?s.entrada-s.stop:s.stop-s.entrada; const rw=s.tipo==='long'?s.alvo-s.entrada:s.entrada-s.alvo; return r>0&&rw>0?(rw/r).toFixed(2):null; })() : null;
         return `<div class="cv-setup-item" onclick="cvAplicarSetup(${JSON.stringify(s).replace(/"/g,'&quot;')})">
             <div><div class="cv-setup-item-ticker">${s.tipo==='long'?'↑':'↓'} E:${s.entrada?fmtUSD(s.entrada):'—'} S:${s.stop?fmtUSD(s.stop):'—'}</div>
-            <div class="cv-setup-item-meta">Risco ${s.risco_pct}% · ${s.alavancagem?'Alavancado':'Sem alavancagem'}</div></div>
+            <div class="cv-setup-item-meta">Risco ${s.risco_pct}% · ${s.alavancagem?'Alavancado':'Sem alavancagem'}${s.codigo_setup?' · '+s.codigo_setup:''}</div>
+            ${s.descricao_setup ? `<div style="font-size:11px;color:#FFFFFF;font-family:-apple-system,sans-serif;margin-top:6px;line-height:1.4;">${s.descricao_setup}</div>` : ''}
+            </div>
             ${rr?`<div class="cv-setup-item-rr" style="color:${parseFloat(rr)>=2?'#26A69A':parseFloat(rr)>=1?'#F59E0B':'#EF5350'}">1:${rr}</div>`:''}
         </div>`;
     }).join('');
@@ -3174,6 +3176,35 @@ async function cvExecutarAnalise() {
         // ── Geração de propostas ──────────────────────────────────
         const propostas = [];
 
+        function gerarCodigo(titulo) {
+            const now = new Date();
+            const dd = String(now.getDate()).padStart(2,'0');
+            const mm = String(now.getMonth()+1).padStart(2,'0');
+            const hh = String(now.getHours()).padStart(2,'0');
+            const mi = String(now.getMinutes()).padStart(2,'0');
+            const sufixo = `${dd}${mm}${hh}${mi}`;
+            if (titulo.includes('Suporte'))    return `ST-${sufixo}`;
+            if (titulo.includes('Resistência')) return `SR-${sufixo}`;
+            if (titulo.includes('EMA 200'))    return `SE-${sufixo}`;
+            if (titulo.includes('Tendência'))  return `SB-${sufixo}`;
+            if (titulo.includes('Pullback'))   return `SP-${sufixo}`;
+            if (titulo.includes('Livre'))      return `TL-${sufixo}`;
+            return `ST-${sufixo}`;
+        }
+
+        function gerarDescricao(p, preco, rsiV, atrV, ema200v, volAtual, volMed, sup1, res1) {
+            const now = new Date();
+            const data = now.toLocaleDateString('pt-BR') + ' ' + now.toHours().toString().padStart(2,'0') + ':' + now.getMinutes().toString().padStart(2,'0');
+            const volTxt = volAtual > volMed*1.2 ? 'acima da média' : 'abaixo da média';
+            return `${p.codigo} · ${p.titulo} · ${now.toLocaleDateString('pt-BR')} ${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')} · ` +
+                `${_ticker||'BTC/USD'} em ${fmtN(preco)} · ` +
+                `EMA200: ${ema200v?fmtN(ema200v):'N/A'} · RSI: ${rsiV.toFixed(0)} · ATR: ${fmtN(Math.round(atrV))} · ` +
+                `Suporte: ${fmtN(sup1)} · Resistência: ${fmtN(res1)} · Volume ${volTxt} · ` +
+                `Score: ${p.score}/9 (${p.scoreInfo.txt}) · ` +
+                `Entrada: ${fmtN(p.entrada)} · Stop: ${fmtN(p.stop)} · Alvo: ${fmtN(p.alvo)} · ` +
+                `R/R: 1:${p.fin.rr.toFixed(2)} · Perda máx: -$${fmtUSD(p.fin.riscoUSD)} · Custo: $${fmtUSD(p.fin.investido)} · Qtd: ${p.fin.tamanho.toFixed(6)}`;
+        }
+
         function gerarNarrativa(p, preco, rsiV, atrV, ema200v, ema9v, ema21v, volAtual, volMed, sup1, res1) {
             const rsiTxt  = rsiV < 30 ? 'sobrevendido' : rsiV < 40 ? 'próximo da sobrevenda' : rsiV > 70 ? 'sobrecomprado' : rsiV > 60 ? 'próximo da sobrecompra' : 'em zona neutra';
             const volTxt  = volAtual > volMed*1.5 ? 'volume expressivo acima da média — confirmando interesse institucional' : volAtual > volMed*1.2 ? 'volume acima da média — movimento com suporte' : 'volume moderado — setup ainda em formação';
@@ -3233,10 +3264,12 @@ async function cvExecutarAnalise() {
             if(altoVolume){score+=1;reasons.push('Volume acima da média — movimento com força');}
             if(ema9v>ema21v){score+=1;reasons.push('EMAs curtas em alta');}
             const fin = calcFinanceiro(entrada,stop,alvo,'long');
-            if(fin.rr>=1.2) propostas.push({
-                titulo:'Long — Reversão no Suporte', tipo:'long', score, entrada, stop, alvo,
-                reasons, fin, scoreInfo: scoreLabel(score)
-            });
+            if(fin.rr>=0.8) {
+                const _cod = gerarCodigo('Long — Reversão no Suporte');
+                const _nar = gerarNarrativa({titulo:'Long — Reversão no Suporte',tipo:'long',stop,alvo}, preco, rsiV, atrV, ema200v, ema9v, ema21v, volAtual, volMed, sup1, res1);
+                const _des = gerarDescricao({titulo:'Long — Reversão no Suporte',tipo:'long',score,entrada,stop,alvo,fin,scoreInfo:scoreLabel(score),codigo:_cod}, preco, rsiV, atrV, ema200v, volAtual, volMed, sup1, res1);
+                propostas.push({titulo:'Long — Reversão no Suporte', tipo:'long', score, entrada, stop, alvo, reasons, fin, scoreInfo:scoreLabel(score), narrativa:_nar, codigo:_cod, descricao:_des});
+            }
         }
 
         // ── PROPOSTA 2: Short reversão na resistência ─────────────
@@ -3254,10 +3287,12 @@ async function cvExecutarAnalise() {
             if(altoVolume){score+=1;reasons.push('Volume acima da média — movimento com força');}
             if(ema9v<ema21v){score+=1;reasons.push('EMAs curtas em baixa');}
             const fin = calcFinanceiro(entrada,stop,alvo,'short');
-            if(fin.rr>=1.2) propostas.push({
-                titulo:'Short — Reversão na Resistência', tipo:'short', score, entrada, stop, alvo,
-                reasons, fin, scoreInfo: scoreLabel(score)
-            });
+            if(fin.rr>=0.8) {
+                const _cod = gerarCodigo('Short — Reversão na Resistência');
+                const _nar = gerarNarrativa({titulo:'Short — Reversão na Resistência',tipo:'short',stop,alvo}, preco, rsiV, atrV, ema200v, ema9v, ema21v, volAtual, volMed, sup1, res1);
+                const _des = gerarDescricao({titulo:'Short — Reversão na Resistência',tipo:'short',score,entrada,stop,alvo,fin,scoreInfo:scoreLabel(score),codigo:_cod}, preco, rsiV, atrV, ema200v, volAtual, volMed, sup1, res1);
+                propostas.push({titulo:'Short — Reversão na Resistência', tipo:'short', score, entrada, stop, alvo, reasons, fin, scoreInfo:scoreLabel(score), narrativa:_nar, codigo:_cod, descricao:_des});
+            }
         }
 
         // ── PROPOSTA 3: Long rompimento acima da EMA 200 ──────────
@@ -3273,10 +3308,12 @@ async function cvExecutarAnalise() {
             if(altoVolume){score+=1;reasons.push('Volume acima da média confirma interesse');}
             if(macdV>0){score+=1;reasons.push('MACD positivo — momentum de alta');}
             const fin = calcFinanceiro(entrada,stop,alvo,'long');
-            if(fin.rr>=1.2) propostas.push({
-                titulo:'Long — Teste da EMA 200', tipo:'long', score, entrada, stop, alvo,
-                reasons, fin, scoreInfo: scoreLabel(score)
-            });
+            if(fin.rr>=0.8) {
+                const _cod = gerarCodigo('Long — Teste da EMA 200');
+                const _nar = gerarNarrativa({titulo:'Long — Teste da EMA 200',tipo:'long',stop,alvo}, preco, rsiV, atrV, ema200v, ema9v, ema21v, volAtual, volMed, sup1, res1);
+                const _des = gerarDescricao({titulo:'Long — Teste da EMA 200',tipo:'long',score,entrada,stop,alvo,fin,scoreInfo:scoreLabel(score),codigo:_cod}, preco, rsiV, atrV, ema200v, volAtual, volMed, sup1, res1);
+                propostas.push({titulo:'Long — Teste da EMA 200', tipo:'long', score, entrada, stop, alvo, reasons, fin, scoreInfo:scoreLabel(score), narrativa:_nar, codigo:_cod, descricao:_des});
+            }
         }
 
         // ── PROPOSTA 4: Short abaixo da EMA 200 ──────────────────
@@ -3291,10 +3328,12 @@ async function cvExecutarAnalise() {
             if(rsiV<50){score+=1;reasons.push(`RSI ${rsiV.toFixed(0)} — momentum de baixa`);}
             if(macdV<0){score+=1;reasons.push('MACD negativo — pressão vendedora');}
             const fin = calcFinanceiro(entrada,stop,alvo,'short');
-            if(fin.rr>=1.2) propostas.push({
-                titulo:'Short — Tendência de Baixa', tipo:'short', score, entrada, stop, alvo,
-                reasons, fin, scoreInfo: scoreLabel(score)
-            });
+            if(fin.rr>=0.8) {
+                const _cod = gerarCodigo('Short — Tendência de Baixa');
+                const _nar = gerarNarrativa({titulo:'Short — Tendência de Baixa',tipo:'short',stop,alvo}, preco, rsiV, atrV, ema200v, ema9v, ema21v, volAtual, volMed, sup1, res1);
+                const _des = gerarDescricao({titulo:'Short — Tendência de Baixa',tipo:'short',score,entrada,stop,alvo,fin,scoreInfo:scoreLabel(score),codigo:_cod}, preco, rsiV, atrV, ema200v, volAtual, volMed, sup1, res1);
+                propostas.push({titulo:'Short — Tendência de Baixa', tipo:'short', score, entrada, stop, alvo, reasons, fin, scoreInfo:scoreLabel(score), narrativa:_nar, codigo:_cod, descricao:_des});
+            }
         }
 
         // ── PROPOSTA 5: Long pullback pós-rompimento ──────────────
@@ -3310,10 +3349,12 @@ async function cvExecutarAnalise() {
             if(altoVolume){score+=1;reasons.push('Volume confirma força compradora');}
             if(acimaDiario){score+=1;reasons.push('Acima da EMA 200 diária — contexto macro favorável');}
             const fin = calcFinanceiro(entrada,stop,alvo,'long');
-            if(fin.rr>=1.2) propostas.push({
-                titulo:'Long — Pullback na Tendência', tipo:'long', score, entrada, stop, alvo,
-                reasons, fin, scoreInfo: scoreLabel(score)
-            });
+            if(fin.rr>=0.8) {
+                const _cod = gerarCodigo('Long — Pullback na Tendência');
+                const _nar = gerarNarrativa({titulo:'Long — Pullback na Tendência',tipo:'long',stop,alvo}, preco, rsiV, atrV, ema200v, ema9v, ema21v, volAtual, volMed, sup1, res1);
+                const _des = gerarDescricao({titulo:'Long — Pullback na Tendência',tipo:'long',score,entrada,stop,alvo,fin,scoreInfo:scoreLabel(score),codigo:_cod}, preco, rsiV, atrV, ema200v, volAtual, volMed, sup1, res1);
+                propostas.push({titulo:'Long — Pullback na Tendência', tipo:'long', score, entrada, stop, alvo, reasons, fin, scoreInfo:scoreLabel(score), narrativa:_nar, codigo:_cod, descricao:_des});
+            }
         }
 
         // Sempre adiciona Long e Short básicos se não tiver propostas suficientes
@@ -3321,13 +3362,19 @@ async function cvExecutarAnalise() {
             const entrada = preco, stop = sup1 - atrV, alvo = res1;
             const fin = calcFinanceiro(entrada,stop,alvo,'long');
             const narrativa = gerarNarrativa({titulo:'Long — Mercado Atual',tipo:'long',stop,alvo}, preco, rsiV, atrV, ema200v, ema9v, ema21v, volAtual, volMed, sup1, res1);
-            propostas.push({titulo:'Long — Mercado Atual', tipo:'long', score:2, entrada, stop, alvo, reasons:['Suporte: '+fmtN(sup1),'Resistência: '+fmtN(res1)], fin, scoreInfo:scoreLabel(2), narrativa});
+            const _codLA = gerarCodigo('Long — Suporte');
+            const _narLA = gerarNarrativa({titulo:'Long — Mercado Atual',tipo:'long',stop,alvo}, preco, rsiV, atrV, ema200v, ema9v, ema21v, volAtual, volMed, sup1, res1);
+            const _desLA = gerarDescricao({titulo:'Long — Mercado Atual',tipo:'long',score:2,entrada,stop,alvo,fin,scoreInfo:scoreLabel(2),codigo:_codLA}, preco, rsiV, atrV, ema200v, volAtual, volMed, sup1, res1);
+            propostas.push({titulo:'Long — Mercado Atual', tipo:'long', score:2, entrada, stop, alvo, reasons:['Suporte: '+fmtN(sup1),'Resistência: '+fmtN(res1)], fin, scoreInfo:scoreLabel(2), narrativa:_narLA, codigo:_codLA, descricao:_desLA});
         }
         if (propostas.filter(p=>p.tipo==='short').length === 0) {
             const entrada = preco, stop = res1 + atrV, alvo = sup1;
             const fin = calcFinanceiro(entrada,stop,alvo,'short');
             const narrativa = gerarNarrativa({titulo:'Short — Mercado Atual',tipo:'short',stop,alvo}, preco, rsiV, atrV, ema200v, ema9v, ema21v, volAtual, volMed, sup1, res1);
-            propostas.push({titulo:'Short — Mercado Atual', tipo:'short', score:2, entrada, stop, alvo, reasons:['Resistência: '+fmtN(res1),'Suporte: '+fmtN(sup1)], fin, scoreInfo:scoreLabel(2), narrativa});
+            const _codSA = gerarCodigo('Short — Resistência');
+            const _narSA = gerarNarrativa({titulo:'Short — Mercado Atual',tipo:'short',stop,alvo}, preco, rsiV, atrV, ema200v, ema9v, ema21v, volAtual, volMed, sup1, res1);
+            const _desSA = gerarDescricao({titulo:'Short — Mercado Atual',tipo:'short',score:2,entrada,stop,alvo,fin,scoreInfo:scoreLabel(2),codigo:_codSA}, preco, rsiV, atrV, ema200v, volAtual, volMed, sup1, res1);
+            propostas.push({titulo:'Short — Mercado Atual', tipo:'short', score:2, entrada, stop, alvo, reasons:['Resistência: '+fmtN(res1),'Suporte: '+fmtN(sup1)], fin, scoreInfo:scoreLabel(2), narrativa:_narSA, codigo:_codSA, descricao:_desSA});
         }
 
         // Ordena por score e pega top 3
@@ -3345,38 +3392,46 @@ async function cvExecutarAnalise() {
 
 function cvRenderRelatorio(propostas, preco, atrV, rsiV) {
     const body = document.getElementById('cv-rel-body');
-    if (!propostas.length) {
-        body.innerHTML = '<div style="padding:32px;text-align:center;"><div style="font-size:32px;margin-bottom:12px;">🔍</div><div style="font-size:14px;font-weight:700;color:#FFFFFF;font-family:-apple-system,sans-serif;">Nenhum setup identificado</div><div style="font-size:12px;color:#FFFFFF;opacity:1;margin-top:6px;font-family:-apple-system,sans-serif;">Mercado sem confluências claras no momento.</div></div>';
-        return;
-    }
 
-    const html = propostas.map((p, idx) => {
-        const dirClass = p.tipo === 'long' ? 'long' : 'short';
-        const dirLabel = p.tipo === 'long' ? '↑ Long' : '↓ Short';
-        const entradaColor = '#FFFFFF';
-        const stopColor    = '#EF5350';
-        const alvoColor    = '#2196F3';
-        const rr = p.fin.rr.toFixed(2);
+    // Sempre adiciona Trade Livre no final
+    const tradeLivre = {
+        titulo: 'Trade Livre', tipo: 'livre', score: 0,
+        entrada: preco, stop: 0, alvo: 0,
+        reasons: [], fin: { rr:0, riscoUSD:0, ganho:0, investido:0, tamanho:0 },
+        scoreInfo: { txt: 'Configuração Manual', cor: '#FFFFFF' },
+        narrativa: 'Modo livre — você define a direção, entrada, stop e alvo manualmente arrastando as linhas no gráfico.',
+        codigo: 'TL-' + new Date().toLocaleDateString('pt-BR').replace(/\//g,'') + String(new Date().getHours()).padStart(2,'0') + String(new Date().getMinutes()).padStart(2,'0'),
+        descricao: 'Trade Livre — configurado manualmente pelo trader.'
+    };
+    const todas = [...propostas, tradeLivre];
+
+    const html = todas.map((p, idx) => {
+        const isLivre = p.tipo === 'livre';
+        const dirClass = p.tipo === 'long' ? 'long' : p.tipo === 'short' ? 'short' : 'long';
+        const dirLabel = p.tipo === 'long' ? '↑ Long' : p.tipo === 'short' ? '↓ Short' : '↕ Livre';
+        const rr = p.fin.rr > 0 ? p.fin.rr.toFixed(2) : '—';
         const rrColor = p.fin.rr>=2?'#26A69A':p.fin.rr>=1.5?'#FFA726':'#EF5350';
-        const scoreDots = Array.from({length:9},(_,i)=>`<div class="cv-rel-score-dot" style="background:${i<p.score?p.scoreInfo.cor:'rgba(255,255,255,0.1)'}"></div>`).join('');
+        const scoreDots = isLivre ? '' : Array.from({length:9},(_,i)=>`<div class="cv-rel-score-dot" style="background:${i<p.score?p.scoreInfo.cor:'rgba(255,255,255,0.12)'}"></div>`).join('');
+        const codigoTag = p.codigo ? `<div style="font-size:10px;font-weight:800;color:#FFFFFF;font-family:-apple-system,sans-serif;background:rgba(255,255,255,0.1);padding:2px 8px;border-radius:100px;">${p.codigo}</div>` : '';
 
         return `<div class="cv-rel-setup" id="cv-setup-${idx}" onclick="cvSelecionarProposta(${idx})">
             <div class="cv-rel-setup-header">
                 <div style="display:flex;align-items:center;gap:8px;">
                     <div class="cv-rel-radio" id="cv-radio-${idx}"></div>
-                    <div class="cv-rel-setup-titulo">${p.titulo}</div>
+                    <div>
+                        <div class="cv-rel-setup-titulo">${p.titulo}</div>
+                        ${codigoTag}
+                    </div>
                 </div>
                 <div class="cv-rel-dir ${dirClass}">${dirLabel}</div>
             </div>
-            <div class="cv-rel-score">
-                ${scoreDots}
-                <div class="cv-rel-score-label" style="color:${p.scoreInfo.cor};margin-left:6px;">${p.scoreInfo.txt}</div>
-            </div>
-            <div class="cv-rel-desc">${p.reasons.join(' · ')}</div>
+            ${!isLivre ? `<div class="cv-rel-score">${scoreDots}<div class="cv-rel-score-label" style="color:${p.scoreInfo.cor};margin-left:6px;">${p.scoreInfo.txt}</div></div>` : ''}
+            <div class="cv-rel-desc">${p.narrativa || p.reasons.join(' · ')}</div>
+            ${!isLivre ? `
             <div class="cv-rel-valores">
-                <div class="cv-rel-val-item"><div class="cv-rel-val-lbl">Entrada</div><div class="cv-rel-val-num" style="color:${entradaColor}">${fmtN(p.entrada)}</div></div>
-                <div class="cv-rel-val-item"><div class="cv-rel-val-lbl">Stop</div><div class="cv-rel-val-num" style="color:${stopColor}">${fmtN(p.stop)}</div></div>
-                <div class="cv-rel-val-item"><div class="cv-rel-val-lbl">Alvo</div><div class="cv-rel-val-num" style="color:${alvoColor}">${fmtN(p.alvo)}</div></div>
+                <div class="cv-rel-val-item"><div class="cv-rel-val-lbl">Entrada</div><div class="cv-rel-val-num" style="color:#FFFFFF">${fmtN(p.entrada)}</div></div>
+                <div class="cv-rel-val-item"><div class="cv-rel-val-lbl">Stop</div><div class="cv-rel-val-num" style="color:#EF5350">${fmtN(p.stop)}</div></div>
+                <div class="cv-rel-val-item"><div class="cv-rel-val-lbl">Alvo</div><div class="cv-rel-val-num" style="color:#2196F3">${fmtN(p.alvo)}</div></div>
             </div>
             <div class="cv-rel-rr">
                 <div class="cv-rel-rr-txt">R / R</div>
@@ -3384,9 +3439,9 @@ function cvRenderRelatorio(propostas, preco, atrV, rsiV) {
             </div>
             <div class="cv-rel-financeiro">
                 <div class="cv-rel-fin-item"><div class="cv-rel-fin-lbl">Perda Máx</div><div class="cv-rel-fin-val" style="color:#EF5350">-$${fmtUSD(p.fin.riscoUSD)}</div></div>
+                <div class="cv-rel-fin-item"><div class="cv-rel-fin-lbl">Ganho Pot.</div><div class="cv-rel-fin-val" style="color:#26A69A">+$${fmtUSD(p.fin.ganho)}</div></div>
                 <div class="cv-rel-fin-item"><div class="cv-rel-fin-lbl">Custo</div><div class="cv-rel-fin-val">$${fmtUSD(p.fin.investido)}</div></div>
-                <div class="cv-rel-fin-item"><div class="cv-rel-fin-lbl">Qtd</div><div class="cv-rel-fin-val" style="color:#2196F3">${p.fin.tamanho.toFixed(5)}</div></div>
-            </div>
+            </div>` : ''}
         </div>`;
     }).join('');
 
@@ -3413,18 +3468,43 @@ function cvAceitarProposta() {
     if (idx === null || idx === undefined || !propostas[idx]) return;
     const p = propostas[idx];
 
+    const isLivre = p.tipo === 'livre';
+
+    // Guarda codigo e descricao para salvar depois
+    window._cvSetupCodigo  = p.codigo  || 'TL-000';
+    window._cvSetupDescricao = p.descricao || 'Trade Livre';
+
     // Injeta valores nas globais
-    _grEntrada = p.entrada;
-    _grStop    = p.stop;
-    _grAlvo    = p.alvo;
-    _grDir     = p.tipo.toUpperCase();
-    _cvDir     = p.tipo;
+    _grEntrada = p.entrada || _precoAtual;
+    _grStop    = p.stop    || 0;
+    _grAlvo    = p.alvo    || 0;
+    _grDir     = isLivre ? 'LONG' : p.tipo.toUpperCase();
+    _cvDir     = isLivre ? 'long' : p.tipo;
 
     // Fecha relatório e abre modal de configuração
     cvFecharRelatorio();
-    // Abre modal config para perda máxima, custo e alavancagem
     document.getElementById('cv-modal-config-title').textContent = 'Configurar Trade';
-    cvSetDir(p.tipo);
+
+    // Direção: editável no Trade Livre, informativo nos demais
+    const dirLong = document.getElementById('cv-dir-long');
+    const dirShort = document.getElementById('cv-dir-short');
+    if (dirLong && dirShort) {
+        if (isLivre) {
+            // Trade Livre: Long e Short habilitados
+            dirLong.style.opacity = '1'; dirLong.style.pointerEvents = 'auto';
+            dirShort.style.opacity = '1'; dirShort.style.pointerEvents = 'auto';
+            dirLong.onclick = () => cvSetDir('long');
+            dirShort.onclick = () => cvSetDir('short');
+        } else {
+            // Setup da análise: apenas informativo
+            dirLong.style.opacity = p.tipo === 'long' ? '1' : '0.3';
+            dirShort.style.opacity = p.tipo === 'short' ? '1' : '0.3';
+            dirLong.style.pointerEvents = 'none';
+            dirShort.style.pointerEvents = 'none';
+        }
+    }
+
+    cvSetDir(_cvDir);
     document.getElementById('cv-alav-toggle').checked = false;
     document.getElementById('cv-alav-sub').textContent = 'Desligada';
     document.getElementById('cv-risco-slider').value = _grRiscoPct || 2;
