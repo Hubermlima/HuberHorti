@@ -283,6 +283,23 @@ input[type=range]::-webkit-slider-runnable-track{border-radius:100px;}
 .gr-loading{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,0.4);border-top-color:#FFF;border-radius:50%;animation:spin 0.7s linear infinite;}
 @keyframes spin{to{transform:rotate(360deg)}}
 
+
+/* Barra de indicadores */
+.cv-ind-row{display:flex;gap:6px;padding:6px 12px;flex-shrink:0;background:#1E222D;border-top:0.5px solid rgba(255,255,255,0.06);align-items:center;flex-wrap:wrap;}
+.cv-ind-btn{padding:4px 10px;border-radius:6px;border:1.5px solid rgba(255,255,255,0.12);background:transparent;font-size:11px;font-weight:800;color:#787B86;cursor:pointer;font-family:-apple-system,sans-serif;transition:all 0.15s;}
+.cv-ind-btn.active{color:#FFFFFF;border-color:currentColor;}
+.cv-ind-btn.bol.active{color:#64B5F6;border-color:#64B5F6;background:rgba(100,181,246,0.1);}
+.cv-ind-btn.med.active{color:#FFFFFF;border-color:rgba(255,255,255,0.4);background:rgba(255,255,255,0.06);}
+
+/* Submenu médias */
+.cv-med-menu{display:none;position:absolute;bottom:100%;left:0;right:0;background:#1E222D;border-top:0.5px solid rgba(255,255,255,0.08);padding:8px 12px;flex-wrap:wrap;gap:8px;z-index:200;}
+.cv-med-menu.active{display:flex;}
+.cv-med-item{display:flex;align-items:center;gap:6px;cursor:pointer;padding:4px 8px;border-radius:6px;}
+.cv-med-item:active{background:rgba(255,255,255,0.06);}
+.cv-med-check{width:16px;height:16px;border-radius:50%;border:2px solid currentColor;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+.cv-med-check.on::after{content:'';width:8px;height:8px;border-radius:50%;background:currentColor;display:block;}
+.cv-med-lbl{font-size:12px;font-weight:700;font-family:-apple-system,sans-serif;}
+
 /* Nova tela Candles standalone */
 .cv-screen{display:none;position:fixed;inset:0;z-index:4000;background:#131722;flex-direction:column;overflow:hidden;}
 .cv-screen.active{display:flex;}
@@ -588,6 +605,33 @@ input[type=range]::-webkit-slider-runnable-track{border-radius:100px;}
     <button class="cv-tf-btn" id="cv-tf-1d" onclick="cvSetTf('1day')">1D</button>
     <button class="cv-tf-btn" id="cv-tf-1s" onclick="cvSetTf('1week')">1S</button>
     <span class="cv-periodo" id="gr-periodo"></span>
+  </div>
+
+  <!-- Barra de indicadores -->
+  <div style="position:relative;">
+    <!-- Submenu médias -->
+    <div class="cv-med-menu" id="cv-med-menu">
+      <div class="cv-med-item" onclick="cvToggleMed('ema9')" id="cv-med-ema9">
+        <div class="cv-med-check" style="color:#00BCD4;" id="cv-chk-ema9"></div>
+        <span class="cv-med-lbl" style="color:#00BCD4;">EMA 9</span>
+      </div>
+      <div class="cv-med-item" onclick="cvToggleMed('ema21')" id="cv-med-ema21">
+        <div class="cv-med-check" style="color:#9C27B0;" id="cv-chk-ema21"></div>
+        <span class="cv-med-lbl" style="color:#9C27B0;">EMA 21</span>
+      </div>
+      <div class="cv-med-item" onclick="cvToggleMed('ema50')" id="cv-med-ema50">
+        <div class="cv-med-check" style="color:#FF80AB;" id="cv-chk-ema50"></div>
+        <span class="cv-med-lbl" style="color:#FF80AB;">EMA 50</span>
+      </div>
+      <div class="cv-med-item" onclick="cvToggleMed('ema200')" id="cv-med-ema200">
+        <div class="cv-med-check on" style="color:#F5A623;" id="cv-chk-ema200"></div>
+        <span class="cv-med-lbl" style="color:#F5A623;">EMA 200</span>
+      </div>
+    </div>
+    <div class="cv-ind-row">
+      <button class="cv-ind-btn bol" id="cv-ind-bol" onclick="cvToggleBol()">BB</button>
+      <button class="cv-ind-btn med" id="cv-ind-med" onclick="cvToggleMedMenu()">Médias ▾</button>
+    </div>
   </div>
 
   <!-- Chart container (preservado) -->
@@ -1477,20 +1521,48 @@ function grDrawCandles(candles, emptyRight) {
         const chartW = W - PAD.left - PAD.right;
         const chartH = H - PAD.top - PAD.bottom;
 
-        // EMA 200 — calcula sobre todos os candles e extrai a janela visível
+        // ── Calcula indicadores sobre todos os candles ───────────────
         const allCloses = _grAllCandles.map(c => c.c);
-        const allEma200 = grEMA(allCloses, 200);
-        // Índice de início da janela visível nos _grAllCandles
         const total = _grAllCandles.length;
         const visible = candles.length;
         const startIdx = Math.max(0, Math.min(total - visible, _grOffset === 999999 ? total - visible : _grOffset));
-        // allEma200 começa no índice 199 dos _grAllCandles
-        const emaStartOffset = total - allEma200.length; // = 199
-        const ema200 = [];
-        for (let i = 0; i < visible; i++) {
-            const globalIdx = startIdx + i;
-            const emaIdx = globalIdx - emaStartOffset;
-            ema200.push(emaIdx >= 0 ? allEma200[emaIdx] : null);
+
+        function extrairJanela(allVals, period) {
+            const offset = total - allVals.length;
+            const arr = [];
+            for (let i = 0; i < visible; i++) {
+                const idx = (startIdx + i) - offset;
+                arr.push(idx >= 0 ? allVals[idx] : null);
+            }
+            return arr;
+        }
+
+        // EMA 200 (sempre calculada para range)
+        const allEma200 = grEMA(allCloses, 200);
+        const ema200 = extrairJanela(allEma200, 200);
+
+        // Outras EMAs (só se ativas)
+        const ema9   = _indState.ema9   ? extrairJanela(grEMA(allCloses, 9),   9)   : null;
+        const ema21  = _indState.ema21  ? extrairJanela(grEMA(allCloses, 21),  21)  : null;
+        const ema50  = _indState.ema50  ? extrairJanela(grEMA(allCloses, 50),  50)  : null;
+
+        // Bollinger Bands (20, 2σ)
+        let bolUpper = null, bolMid = null, bolLower = null;
+        if (_indState.bollinger) {
+            const period = 20;
+            const allBolMid = grEMA(allCloses, period); // SMA approximation via EMA
+            // Calcula desvio padrão
+            const allBolUpper = [], allBolLower = [];
+            for (let i = period - 1; i < allCloses.length; i++) {
+                const slice = allCloses.slice(i - period + 1, i + 1);
+                const mean = slice.reduce((a,b)=>a+b,0) / period;
+                const std = Math.sqrt(slice.reduce((a,b)=>a+(b-mean)**2,0) / period);
+                allBolUpper.push(allBolMid[i - (allCloses.length - allBolMid.length)] + 2 * std);
+                allBolLower.push(allBolMid[i - (allCloses.length - allBolMid.length)] - 2 * std);
+            }
+            bolMid   = extrairJanela(allBolMid, period);
+            bolUpper = extrairJanela(allBolUpper, period);
+            bolLower = extrairJanela(allBolLower, period);
         }
 
         const closes = candles.map(c => c.c);
@@ -1548,23 +1620,54 @@ function grDrawCandles(candles, emptyRight) {
             ctx.fillText(price.toFixed(0), PAD.left - 4, y + 4);
         });
 
-        // EMA 200
-        const ema200Offset = 0;
+        // ── Desenha indicadores ──────────────────────────────────────
+        function desenharLinha(dados, cor, lw, dash) {
+            if (!dados) return;
+            ctx.strokeStyle = cor;
+            ctx.lineWidth = lw || 1.2;
+            ctx.setLineDash(dash || []);
+            ctx.beginPath();
+            let started = false;
+            dados.forEach((val, i) => {
+                if (val === null || val === undefined) { started = false; return; }
+                const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
+                const y = toY(val);
+                if (!started) { ctx.moveTo(x, y); started = true; }
+                else ctx.lineTo(x, y);
+            });
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
 
+        // Bollinger Bands
+        if (_indState.bollinger && bolUpper && bolLower) {
+            // Preenchimento entre bandas
+            ctx.beginPath();
+            let s = false;
+            bolUpper.forEach((val, i) => {
+                if (!val) { s = false; return; }
+                const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
+                if (!s) { ctx.moveTo(x, toY(val)); s = true; } else ctx.lineTo(x, toY(val));
+            });
+            for (let i = bolLower.length - 1; i >= 0; i--) {
+                const val = bolLower[i];
+                if (!val) continue;
+                const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
+                ctx.lineTo(x, toY(val));
+            }
+            ctx.closePath();
+            ctx.fillStyle = 'rgba(100,181,246,0.05)';
+            ctx.fill();
+            desenharLinha(bolUpper, '#64B5F6', 1);
+            desenharLinha(bolLower, '#64B5F6', 1);
+            desenharLinha(bolMid,   '#64B5F6', 1, [3,3]);
+        }
 
-        ctx.strokeStyle = '#F5A623';
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([]);
-        ctx.beginPath();
-        let emaStarted = false;
-        ema200.forEach((val, i) => {
-            if (val === null) { emaStarted = false; return; }
-            const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
-            const y = toY(val);
-            if (!emaStarted) { ctx.moveTo(x, y); emaStarted = true; }
-            else ctx.lineTo(x, y);
-        });
-        ctx.stroke();
+        // EMAs
+        if (_indState.ema9)   desenharLinha(ema9,   '#00BCD4', 1.2);
+        if (_indState.ema21)  desenharLinha(ema21,  '#9C27B0', 1.2);
+        if (_indState.ema50)  desenharLinha(ema50,  '#FF80AB', 1.2);
+        if (_indState.ema200) desenharLinha(ema200, '#F5A623', 1.5);
 
         // Candles
         candles.forEach((c, i) => {
@@ -1670,7 +1773,8 @@ function grDrawCandles(candles, emptyRight) {
                 ctx.beginPath();
                 ctx.roundRect(bX, bY, bW, bH, 3);
                 ctx.fill();
-                ctx.fillStyle = '#FFF';
+                // Texto preto se pílula branca (entrada), senão branco
+                ctx.fillStyle = color === '#FFFFFF' ? '#000000' : '#FFFFFF';
                 ctx.font = 'bold 10px -apple-system';
                 ctx.textAlign = 'center';
                 ctx.fillText(label, bX + bW / 2, bY + bH - 3);
@@ -1711,11 +1815,27 @@ function grDrawCandles(candles, emptyRight) {
             ctx.fillText(_precoAtual.toFixed(0), bX + bW / 2, bY + bH - 4);
         }
 
-        // Label EMA200
-        ctx.fillStyle = '#F5A623';
+        // Labels das EMAs ativas
         ctx.font = 'bold 9px -apple-system';
         ctx.textAlign = 'left';
-        ctx.fillText('EMA 200', PAD.left + 4, PAD.top + 14);
+        let labelY = PAD.top + 14;
+        const emaLabels = [
+            { key: 'ema9',   label: 'EMA 9',   cor: '#00BCD4' },
+            { key: 'ema21',  label: 'EMA 21',  cor: '#9C27B0' },
+            { key: 'ema50',  label: 'EMA 50',  cor: '#FF80AB' },
+            { key: 'ema200', label: 'EMA 200', cor: '#F5A623' },
+        ];
+        emaLabels.forEach(({ key, label, cor }) => {
+            if (_indState[key]) {
+                ctx.fillStyle = cor;
+                ctx.fillText(label, PAD.left + 4, labelY);
+                labelY += 12;
+            }
+        });
+        if (_indState.bollinger) {
+            ctx.fillStyle = '#64B5F6';
+            ctx.fillText('BB(20,2)', PAD.left + 4, labelY);
+        }
 
         // Período
         if (candles.length > 0) {
@@ -1833,6 +1953,15 @@ function grDrawChart() {
 
 let _grDir = 'LONG';
 let _grRiscoPct = 2;
+
+// Estado dos indicadores
+const _indState = {
+    bollinger: false,
+    ema9:      false,
+    ema21:     false,
+    ema50:     false,
+    ema200:    true,   // EMA 200 ativa por padrão
+};
 
 // Escala Y atual do gráfico (atualizada a cada draw)
 let _grMinP = 0, _grMaxP = 0, _grChartH = 0;
@@ -1971,6 +2100,32 @@ function cvCapSlider(v) {
     }
     cvRiscoSlider(document.getElementById('cv-risco-slider')?.value || 2);
     grCalcularComGlobais();
+}
+
+// ── Indicadores toggle ───────────────────────────────────────────
+function cvToggleBol() {
+    _indState.bollinger = !_indState.bollinger;
+    const btn = document.getElementById('cv-ind-bol');
+    btn.classList.toggle('active', _indState.bollinger);
+    grDrawChart();
+}
+
+function cvToggleMedMenu() {
+    const menu = document.getElementById('cv-med-menu');
+    menu.classList.toggle('active');
+}
+
+function cvToggleMed(key) {
+    _indState[key] = !_indState[key];
+    const chk = document.getElementById('cv-chk-' + key);
+    if (chk) {
+        if (_indState[key]) chk.classList.add('on');
+        else chk.classList.remove('on');
+    }
+    // Atualiza botão Médias — ativo se qualquer EMA ligada
+    const anyMed = _indState.ema9 || _indState.ema21 || _indState.ema50 || _indState.ema200;
+    document.getElementById('cv-ind-med').classList.toggle('active', anyMed);
+    grDrawChart();
 }
 
 function cvAbrirResumo() {
