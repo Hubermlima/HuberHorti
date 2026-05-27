@@ -120,8 +120,25 @@ export default {
       }
     }
 
+        // ── Narrativa via Cloudflare AI ───────────────────────────────
+    if (request.method === 'POST' && path === '/ai/narrativa') {
+      try {
+        const { titulo, tipo, preco, rsi, ema200, ema9, ema21, atr, sup1, res1, stop, alvo, score, rr, volStatus, divStatus } = await request.json();
+        const prompt = `Você é um analista de trading profissional. Escreva um parágrafo curto (3-5 frases) em português brasileiro explicando este setup de ${tipo === 'long' ? 'compra' : 'venda'} no BTC/USD.\n\nDados:\n- Setup: ${titulo}\n- Preço: ${preco} | RSI: ${rsi} | EMA200: ${ema200} | EMA9: ${ema9} | EMA21: ${ema21}\n- ATR: ${atr} | Suporte: ${sup1} | Resistência: ${res1}\n- Entrada: ${preco} | Stop: ${stop} | Alvo: ${alvo} | R/R: 1:${rr}\n- Score: ${score}/9 | Volume: ${volStatus}${divStatus ? ' | ' + divStatus : ''}\n\nEscreva de forma direta e técnica. Explique o que está acontecendo, por que o setup faz sentido e o que esperar. Sem formatação, só o parágrafo.`;
+        const aiResponse = await env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 300
+        });
+        const narrativa = aiResponse.response || aiResponse.result?.response || 'Narrativa indisponível.';
+        return Response.json({ narrativa }, { headers: CORS });
+      } catch (e) {
+        return Response.json({ narrativa: null, error: e.message }, { status: 500, headers: CORS });
+      }
+    }
+
     if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
     const { subscription, title, body } = await request.json();
+
 
     try {
       await sendPush(subscription, JSON.stringify({ title, body }));
