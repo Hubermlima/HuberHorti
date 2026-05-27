@@ -3246,6 +3246,32 @@ async function cvExecutarAnalise() {
             return `BTC/USD em ${fPreco}. RSI ${rsiV.toFixed(0)} (${rsiTxt}). ${emaTxt}. ${ema200Txt}. ${volTxt}. Stop ${fStop}, alvo ${fAlvo}.`;
         }
 
+        async function gerarNarrativaIA(p, preco, rsiV, atrV, ema200v, ema9v, ema21v, volAtual, volMed, sup1, res1) {
+            try {
+                const volStatus = volAtual > volMed*1.5 ? 'expressivo acima da média' : volAtual > volMed*1.2 ? 'acima da média' : 'moderado';
+                const res = await fetch('https://huberhorti-push.huber-produtos.workers.dev/ai/narrativa', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        titulo: p.titulo, tipo: p.tipo,
+                        preco: fmtN(preco), rsi: rsiV.toFixed(0),
+                        ema200: ema200v ? fmtN(Math.round(ema200v)) : 'N/A',
+                        ema9: fmtN(Math.round(ema9v)), ema21: fmtN(Math.round(ema21v)),
+                        atr: fmtN(Math.round(atrV)),
+                        sup1: fmtN(Math.round(sup1)), res1: fmtN(Math.round(res1)),
+                        stop: fmtN(Math.round(p.stop)), alvo: fmtN(Math.round(p.alvo)),
+                        score: p.score, rr: p.fin ? p.fin.rr.toFixed(2) : '0',
+                        volStatus,
+                        divStatus: p.reasons ? p.reasons.find(r=>r.includes('ivergência')) || '' : ''
+                    })
+                });
+                const data = await res.json();
+                if (data.narrativa) return data.narrativa;
+            } catch(e) { /* fallback para template */ }
+            // Fallback: usa template local
+            return gerarNarrativa(p, preco, rsiV, atrV, ema200v, ema9v, ema21v, volAtual, volMed, sup1, res1);
+        }
+
         function calcFinanceiro(entrada, stop, alvo, tipo) {
             const saldo = _saldoCorretora || 1;
             const capTipo = window._cvCapTipo||'percentual';
@@ -3576,6 +3602,14 @@ async function cvExecutarAnalise() {
 
         // Ordena por R/R (maior primeiro)
         propostas.sort((a,b)=>b.fin.rr-a.fin.rr);
+
+        // Mostra spinner enquanto busca narrativas da IA
+        document.getElementById('cv-rel-body').innerHTML = '<div class="cv-rel-loading"><div class="cv-rel-spinner"></div><div class="cv-rel-loading-txt">Gerando análises com IA...</div></div>';
+
+        // Busca narrativas em paralelo para todos os setups
+        await Promise.all(propostas.map(async p => {
+            p.narrativa = await gerarNarrativaIA(p, preco, rsiV, atrV, ema200v, ema9v, ema21v, volAtual, volMed, sup1, res1);
+        }));
 
         cvRenderRelatorio(propostas, preco, atrV, rsiV);
 
