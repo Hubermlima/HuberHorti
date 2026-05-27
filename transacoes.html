@@ -316,6 +316,15 @@ input[type=range]::-webkit-slider-runnable-track{border-radius:100px;}
 .cv-ind-btn.obv.active{color:#A5D6A7;background:linear-gradient(180deg,#0d2810 0%,#081808 100%);}
 .cv-ind-btn.stoch.active{color:#FFF176;background:linear-gradient(180deg,#2e2a00 0%,#1e1c00 100%);}
 .cv-ind-btn.liq.active{color:#FF6B6B;background:linear-gradient(180deg,#2e0a0a 0%,#1e0606 100%);}
+.cv-ind-btn.fig.active{color:#FFD700;background:linear-gradient(180deg,#2e2a00 0%,#1e1c00 100%);}
+.cv-fig-menu{display:none;position:absolute;bottom:100%;right:0;background:rgba(19,23,34,0.97);border:0.5px solid rgba(255,255,255,0.12);padding:8px;gap:4px;z-index:210;border-radius:10px;min-width:200px;flex-direction:column;}
+.cv-fig-menu.active{display:flex;}
+.cv-fig-item{display:flex;align-items:center;gap:8px;cursor:pointer;padding:8px 10px;border-radius:7px;}
+.cv-fig-item:active{background:rgba(255,255,255,0.08);}
+.cv-fig-check{width:14px;height:14px;border-radius:50%;border:1.5px solid currentColor;flex-shrink:0;}
+.cv-fig-check.on{background:currentColor;}
+.cv-fig-lbl{font-size:12px;font-weight:700;font-family:-apple-system,sans-serif;color:#FFFFFF;}
+.cv-fig-vazia{font-size:12px;color:rgba(255,255,255,0.5);font-family:-apple-system,sans-serif;padding:8px 10px;}
 .cv-ind-btn.macd.active{color:#FF6B9D;background:linear-gradient(180deg,#2e0d1a 0%,#1e0810 100%);}
 
 /* Submenu médias */
@@ -749,6 +758,10 @@ input[type=range]::-webkit-slider-runnable-track{border-radius:100px;}
           <button class="cv-ind-btn obv" id="cv-ind-obv" onclick="cvToggleSubInd('obv')">OBV</button>
           <button class="cv-ind-btn stoch" id="cv-ind-stoch" onclick="cvToggleSubInd('stoch')">Stoch</button>
           <button class="cv-ind-btn liq" id="cv-ind-liq" onclick="cvToggleLiq()">Liq</button>
+          <div style="position:relative;">
+            <div class="cv-fig-menu" id="cv-fig-menu"></div>
+            <button class="cv-ind-btn fig" id="cv-ind-fig" onclick="cvToggleFigMenu()">Fig</button>
+          </div>
         </div>
       </div>
     </div>
@@ -2411,6 +2424,11 @@ const precoColor = lastCandle ? (lastCandle.c >= lastCandle.o ? '#26A69A' : '#EF
             cvDesenharLiquidacoes(ctx, candles, PAD, chartW, chartH, W, toY);
         }
 
+        // ── Figuras Técnicas ──────────────────────────────────────
+        if (_indState.figAtivas && _indState.figAtivas.size > 0) {
+            cvDesenharFiguras(ctx, _grAllCandles, PAD, chartW, chartH, W, H, toY);
+        }
+
         // Bitstamp source label
         ctx.fillStyle = '#FFFFFF';
         ctx.font = 'bold 9px -apple-system';
@@ -2888,7 +2906,9 @@ const _indState = {
     patterns:  false,
     vwap:      false,
     liq:       false,
+    figAtivas: new Set(),
 };
+let _figDetectadas = [];
 
 // Escala Y atual do gráfico (atualizada a cada draw)
 let _grMinP = 0, _grMaxP = 0, _grChartH = 0;
@@ -3238,6 +3258,331 @@ function cvDesenharLiquidacoes(ctx, candles, PAD, chartW, chartH, W, toY) {
     ctx.fillText('Liq', W - PAD.right - 2, PAD.top + 10);
     ctx.fillStyle = '#FFFFFF';
     ctx.fillText(lsLatest > 1 ? 'L>' : '<S', W - PAD.right - 2, PAD.top + 22);
+}
+
+// ── DETECÇÃO E DESENHO DE FIGURAS TÉCNICAS ──────────────────────
+
+function cvToggleFigMenu() {
+    const menu = document.getElementById('cv-fig-menu');
+    const btn  = document.getElementById('cv-ind-fig');
+    const aberto = menu.classList.contains('active');
+    if (aberto) {
+        menu.classList.remove('active');
+        btn.classList.remove('active');
+        return;
+    }
+    // Detecta figuras e monta menu
+    _figDetectadas = cvDetectarFiguras(_grAllCandles);
+    cvRenderFigMenu(_figDetectadas);
+    menu.classList.add('active');
+    btn.classList.add('active');
+}
+
+function cvRenderFigMenu(figs) {
+    const menu = document.getElementById('cv-fig-menu');
+    if (!figs.length) {
+        menu.innerHTML = '<div class="cv-fig-vazia">Nenhuma figura identificada</div>';
+        return;
+    }
+    menu.innerHTML = figs.map((f, i) => `
+        <div class="cv-fig-item" onclick="cvToggleFig(${i})">
+            <div class="cv-fig-check ${_indState.figAtivas.has(i)?'on':''}" style="color:${f.cor}"></div>
+            <span class="cv-fig-lbl" style="color:${f.cor}">${f.nome}</span>
+        </div>`).join('');
+}
+
+function cvToggleFig(idx) {
+    if (_indState.figAtivas.has(idx)) {
+        _indState.figAtivas.delete(idx);
+    } else {
+        _indState.figAtivas.add(idx);
+    }
+    cvRenderFigMenu(_figDetectadas);
+    grDrawChart();
+}
+
+function cvDetectarFiguras(todos) {
+    if (!todos || todos.length < 20) return [];
+    const candles = todos.slice(-80); // últimos 80 candles
+    const figs = [];
+
+    // Calcula swing highs e lows
+    const swingH = [], swingL = [];
+    for (let i = 2; i < candles.length - 2; i++) {
+        if (candles[i].h > candles[i-1].h && candles[i].h > candles[i-2].h &&
+            candles[i].h > candles[i+1].h && candles[i].h > candles[i+2].h)
+            swingH.push({ idx: i, v: candles[i].h });
+        if (candles[i].l < candles[i-1].l && candles[i].l < candles[i-2].l &&
+            candles[i].l < candles[i+1].l && candles[i].l < candles[i+2].l)
+            swingL.push({ idx: i, v: candles[i].l });
+    }
+    if (swingH.length < 2 || swingL.length < 2) return [];
+
+    const ultH = swingH.slice(-4);
+    const ultL = swingL.slice(-4);
+
+    // ── LTA: fundos ascendentes ───────────────────────────────────
+    const ltaL = ultL.slice(-2);
+    if (ltaL.length >= 2 && ltaL[1].v > ltaL[0].v) {
+        figs.push({
+            nome: 'LTA — Linha de Tendência de Alta',
+            tipo: 'lta', cor: '#26A69A',
+            p1: { idx: ltaL[0].idx, v: ltaL[0].v },
+            p2: { idx: ltaL[1].idx, v: ltaL[1].v },
+            extend: true
+        });
+    }
+
+    // ── LTB: topos descendentes ───────────────────────────────────
+    const ltbH = ultH.slice(-2);
+    if (ltbH.length >= 2 && ltbH[1].v < ltbH[0].v) {
+        figs.push({
+            nome: 'LTB — Linha de Tendência de Baixa',
+            tipo: 'ltb', cor: '#EF5350',
+            p1: { idx: ltbH[0].idx, v: ltbH[0].v },
+            p2: { idx: ltbH[1].idx, v: ltbH[1].v },
+            extend: true
+        });
+    }
+
+    // ── Canal de Alta: LTA + paralela superior ────────────────────
+    if (figs.find(f=>f.tipo==='lta') && ultH.length >= 2) {
+        const lta = figs.find(f=>f.tipo==='lta');
+        const slope = (lta.p2.v - lta.p1.v) / (lta.p2.idx - lta.p1.idx);
+        const dist = ultH[ultH.length-1].v - (lta.p1.v + slope * (ultH[ultH.length-1].idx - lta.p1.idx));
+        if (dist > 0) {
+            figs.push({
+                nome: 'Canal de Alta',
+                tipo: 'canal_alta', cor: '#26A69A',
+                p1: { idx: lta.p1.idx, v: lta.p1.v + dist },
+                p2: { idx: lta.p2.idx, v: lta.p2.v + dist },
+                lta: lta, offset: dist, extend: true
+            });
+        }
+    }
+
+    // ── Canal de Baixa: LTB + paralela inferior ───────────────────
+    if (figs.find(f=>f.tipo==='ltb') && ultL.length >= 2) {
+        const ltb = figs.find(f=>f.tipo==='ltb');
+        const slope = (ltb.p2.v - ltb.p1.v) / (ltb.p2.idx - ltb.p1.idx);
+        const dist = ltb.p1.v + slope * (ultL[ultL.length-1].idx - ltb.p1.idx) - ultL[ultL.length-1].v;
+        if (dist > 0) {
+            figs.push({
+                nome: 'Canal de Baixa',
+                tipo: 'canal_baixa', cor: '#EF5350',
+                p1: { idx: ltb.p1.idx, v: ltb.p1.v - dist },
+                p2: { idx: ltb.p2.idx, v: ltb.p2.v - dist },
+                ltb: ltb, offset: dist, extend: true
+            });
+        }
+    }
+
+    // ── Triângulo Simétrico: topos desc + fundos asc convergindo ──
+    if (ultH.length >= 2 && ultL.length >= 2) {
+        const h1 = ultH[ultH.length-2], h2 = ultH[ultH.length-1];
+        const l1 = ultL[ultL.length-2], l2 = ultL[ultL.length-1];
+        const slopeH = (h2.v - h1.v) / (h2.idx - h1.idx);
+        const slopeL = (l2.v - l1.v) / (l2.idx - l1.idx);
+        if (h2.v < h1.v && l2.v > l1.v && slopeH < 0 && slopeL > 0) {
+            figs.push({
+                nome: 'Triângulo Simétrico',
+                tipo: 'triangulo_sim', cor: '#FFA726',
+                p1H: h1, p2H: h2, p1L: l1, p2L: l2
+            });
+        }
+    }
+
+    // ── Triângulo Ascendente: topo horizontal + fundos asc ────────
+    if (ultH.length >= 2 && ultL.length >= 2) {
+        const h1 = ultH[ultH.length-2], h2 = ultH[ultH.length-1];
+        const l1 = ultL[ultL.length-2], l2 = ultL[ultL.length-1];
+        const topoPlanar = Math.abs(h2.v - h1.v) / h1.v < 0.005;
+        if (topoPlanar && l2.v > l1.v) {
+            figs.push({
+                nome: 'Triângulo Ascendente',
+                tipo: 'triangulo_asc', cor: '#26A69A',
+                p1H: h1, p2H: h2, p1L: l1, p2L: l2
+            });
+        }
+    }
+
+    // ── Triângulo Descendente: fundo horizontal + topos desc ──────
+    if (ultH.length >= 2 && ultL.length >= 2) {
+        const h1 = ultH[ultH.length-2], h2 = ultH[ultH.length-1];
+        const l1 = ultL[ultL.length-2], l2 = ultL[ultL.length-1];
+        const fundoPlanar = Math.abs(l2.v - l1.v) / l1.v < 0.005;
+        if (fundoPlanar && h2.v < h1.v) {
+            figs.push({
+                nome: 'Triângulo Descendente',
+                tipo: 'triangulo_desc', cor: '#EF5350',
+                p1H: h1, p2H: h2, p1L: l1, p2L: l2
+            });
+        }
+    }
+
+    // ── Cunha de Alta: ambas as linhas sobem e convergem ──────────
+    if (ultH.length >= 2 && ultL.length >= 2) {
+        const h1 = ultH[ultH.length-2], h2 = ultH[ultH.length-1];
+        const l1 = ultL[ultL.length-2], l2 = ultL[ultL.length-1];
+        const slopeH = (h2.v - h1.v) / (h2.idx - h1.idx);
+        const slopeL = (l2.v - l1.v) / (l2.idx - l1.idx);
+        if (slopeH > 0 && slopeL > 0 && slopeL > slopeH) {
+            figs.push({
+                nome: 'Cunha de Alta (Bearish)',
+                tipo: 'cunha_alta', cor: '#EF5350',
+                p1H: h1, p2H: h2, p1L: l1, p2L: l2
+            });
+        }
+    }
+
+    // ── Cunha de Baixa: ambas as linhas descem e convergem ────────
+    if (ultH.length >= 2 && ultL.length >= 2) {
+        const h1 = ultH[ultH.length-2], h2 = ultH[ultH.length-1];
+        const l1 = ultL[ultL.length-2], l2 = ultL[ultL.length-1];
+        const slopeH = (h2.v - h1.v) / (h2.idx - h1.idx);
+        const slopeL = (l2.v - l1.v) / (l2.idx - l1.idx);
+        if (slopeH < 0 && slopeL < 0 && slopeH < slopeL) {
+            figs.push({
+                nome: 'Cunha de Baixa (Bullish)',
+                tipo: 'cunha_baixa', cor: '#26A69A',
+                p1H: h1, p2H: h2, p1L: l1, p2L: l2
+            });
+        }
+    }
+
+    // ── Duplo Topo ────────────────────────────────────────────────
+    if (ultH.length >= 2) {
+        const h1 = ultH[ultH.length-2], h2 = ultH[ultH.length-1];
+        if (Math.abs(h2.v - h1.v) / h1.v < 0.01 && h2.idx - h1.idx > 5) {
+            figs.push({
+                nome: 'Duplo Topo',
+                tipo: 'duplo_topo', cor: '#EF5350',
+                p1: h1, p2: h2
+            });
+        }
+    }
+
+    // ── Duplo Fundo ───────────────────────────────────────────────
+    if (ultL.length >= 2) {
+        const l1 = ultL[ultL.length-2], l2 = ultL[ultL.length-1];
+        if (Math.abs(l2.v - l1.v) / l1.v < 0.01 && l2.idx - l1.idx > 5) {
+            figs.push({
+                nome: 'Duplo Fundo',
+                tipo: 'duplo_fundo', cor: '#26A69A',
+                p1: l1, p2: l2
+            });
+        }
+    }
+
+    return figs;
+}
+
+function cvDesenharFiguras(ctx, todos, PAD, chartW, chartH, W, H, toY) {
+    if (!_figDetectadas.length || !_indState.figAtivas.size) return;
+    const candles = todos.slice(-80);
+    const total = todos.length;
+    const startAll = total - 80;
+
+    // Converte índice local (nos 80 candles) para X no canvas
+    const visible = _grAllCandles.slice(
+        Math.max(0, Math.min(_grAllCandles.length, _grOffset === 999999 ?
+            Math.max(0, _grAllCandles.length - _grZoom) : _grOffset)),
+        Math.max(0, Math.min(_grAllCandles.length, (_grOffset === 999999 ?
+            Math.max(0, _grAllCandles.length - _grZoom) : _grOffset) + _grZoom))
+    );
+    const visStart = _grAllCandles.indexOf(visible[0]);
+
+    function idxToX(idxLocal) {
+        const idxGlobal = startAll + idxLocal;
+        const idxVis = idxGlobal - visStart;
+        const totalSlots = visible.length + Math.floor(_grZoom * 0.3);
+        return PAD.left + (idxVis / totalSlots) * chartW;
+    }
+
+    function drawLine(x1, y1, x2, y2, cor, dash=[]) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.strokeStyle = cor;
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash(dash);
+        ctx.moveTo(x1, y1);
+        // Extende a linha até a borda do gráfico
+        const slope = (y2 - y1) / (x2 - x1);
+        const xEnd = PAD.left + chartW;
+        const yEnd = y2 + slope * (xEnd - x2);
+        ctx.lineTo(xEnd, yEnd);
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    _indState.figAtivas.forEach(idx => {
+        const f = _figDetectadas[idx];
+        if (!f) return;
+        ctx.save();
+
+        if (f.tipo === 'lta' || f.tipo === 'ltb') {
+            const x1 = idxToX(f.p1.idx), y1 = toY(f.p1.v);
+            const x2 = idxToX(f.p2.idx), y2 = toY(f.p2.v);
+            drawLine(x1, y1, x2, y2, f.cor, []);
+            // Label
+            ctx.font = 'bold 10px -apple-system';
+            ctx.fillStyle = f.cor;
+            ctx.textAlign = 'right';
+            ctx.fillText(f.tipo.toUpperCase(), PAD.left + chartW - 4, y2 - 6);
+        }
+
+        if (f.tipo === 'canal_alta' || f.tipo === 'canal_baixa') {
+            const base = f.tipo === 'canal_alta' ? f.lta : f.ltb;
+            const x1b = idxToX(base.p1.idx), y1b = toY(base.p1.v);
+            const x2b = idxToX(base.p2.idx), y2b = toY(base.p2.v);
+            const x1p = idxToX(f.p1.idx),   y1p = toY(f.p1.v);
+            const x2p = idxToX(f.p2.idx),   y2p = toY(f.p2.v);
+            drawLine(x1b, y1b, x2b, y2b, f.cor, []);
+            drawLine(x1p, y1p, x2p, y2p, f.cor, [4, 4]);
+            ctx.font = 'bold 10px -apple-system';
+            ctx.fillStyle = f.cor;
+            ctx.textAlign = 'right';
+            ctx.fillText(f.nome.split(' ')[0] + ' ' + f.nome.split(' ')[1], PAD.left + chartW - 4, y1p - 6);
+        }
+
+        if (['triangulo_sim','triangulo_asc','triangulo_desc','cunha_alta','cunha_baixa'].includes(f.tipo)) {
+            const x1H = idxToX(f.p1H.idx), y1H = toY(f.p1H.v);
+            const x2H = idxToX(f.p2H.idx), y2H = toY(f.p2H.v);
+            const x1L = idxToX(f.p1L.idx), y1L = toY(f.p1L.v);
+            const x2L = idxToX(f.p2L.idx), y2L = toY(f.p2L.v);
+            drawLine(x1H, y1H, x2H, y2H, f.cor, []);
+            drawLine(x1L, y1L, x2L, y2L, f.cor, [4,4]);
+            ctx.font = 'bold 10px -apple-system';
+            ctx.fillStyle = f.cor;
+            ctx.textAlign = 'right';
+            ctx.fillText(f.nome.split('(')[0].trim(), PAD.left + chartW - 4, y2H - 6);
+        }
+
+        if (f.tipo === 'duplo_topo' || f.tipo === 'duplo_fundo') {
+            const x1 = idxToX(f.p1.idx), y1 = toY(f.p1.v);
+            const x2 = idxToX(f.p2.idx), y2 = toY(f.p2.v);
+            ctx.beginPath();
+            ctx.strokeStyle = f.cor;
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([3,3]);
+            ctx.moveTo(x1, y1);
+            ctx.lineTo(x2, y2);
+            ctx.stroke();
+            // Círculos nos pontos
+            [{ x: x1, y: y1 }, { x: x2, y: y2 }].forEach(p => {
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+                ctx.fillStyle = f.cor;
+                ctx.fill();
+            });
+            ctx.font = 'bold 10px -apple-system';
+            ctx.fillStyle = f.cor;
+            ctx.textAlign = 'center';
+            ctx.fillText(f.nome, (x1 + x2) / 2, Math.min(y1, y2) - 8);
+        }
+
+        ctx.restore();
+    });
 }
 
 function cvToggleFib() {
