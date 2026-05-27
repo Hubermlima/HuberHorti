@@ -3176,6 +3176,12 @@ async function cvExecutarAnalise() {
         const sup1 = suportes[0]||preco*0.98;
         const sup2 = suportes[1]||preco*0.965;
 
+        // Stop por swing: fundo/topo mais próximo do preço
+        // Long: stop abaixo do swing low mais próximo
+        // Short: stop acima do swing high mais próximo
+        const stopLong  = sup1;   // fundo relevante mais próximo
+        const stopShort = res1;   // topo relevante mais próximo
+
         // Patterns no último candle
         const ult = c4h[c4h.length-1];
         const ant = c4h[c4h.length-2];
@@ -3292,14 +3298,15 @@ async function cvExecutarAnalise() {
             // Tamanho em BTC = custo / preço de entrada
             const tamanho = investido / entrada;
 
-            // R/R baseado em pontos
-            const riscoPreco  = Math.abs(entrada - stop);
-            const rewardPreco = Math.abs(alvo - entrada);
-            const rr = riscoPreco > 0 ? rewardPreco / riscoPreco : 0;
+            // Distâncias em %
+            const stopPct  = entrada > 0 ? Math.abs(entrada - stop) / entrada : 0;
+            const alvoPct  = entrada > 0 && alvo > 0 ? Math.abs(alvo - entrada) / entrada : 0;
 
-            // Ganho = custo × (movimento % do alvo)
-            const movPct = entrada > 0 ? rewardPreco / entrada : 0;
-            const ganho  = investido * movPct;
+            // Ganho financeiro = investido × % de movimento ao alvo
+            const ganho    = investido * alvoPct;
+
+            // R/R financeiro = ganho / risco em USD
+            const rr       = riscoUSD > 0 && ganho > 0 ? ganho / riscoUSD : 0;
 
             // % de ganho sobre o saldo total
             const ganhoPct = saldo > 0 ? (ganho / saldo) * 100 : 0;
@@ -3318,7 +3325,7 @@ async function cvExecutarAnalise() {
         {
             let score = 0;
             const entrada = preco;
-            const stop    = sup1 - atrV * 0.5;
+            const stop    = stopLong;
             const alvo    = res1;
             const reasons = [];
             if(preco < sup1*1.005){score+=2;reasons.push('Preço na zona de suporte');}
@@ -3341,7 +3348,7 @@ async function cvExecutarAnalise() {
         {
             let score = 0;
             const entrada = preco;
-            const stop    = res1 + atrV * 0.5;
+            const stop    = stopShort;
             const alvo    = sup1;
             const reasons = [];
             if(preco > res1*0.995){score+=2;reasons.push('Preço na zona de resistência');}
@@ -3364,7 +3371,7 @@ async function cvExecutarAnalise() {
         if(true) { // Setup 3: Long EMA 200
             let score = 0;
             const entrada = preco;
-            const stop    = ema200v - atrV;
+            const stop    = stopLong;
             const alvo    = res1;
             const reasons = [];
             score+=2; reasons.push('Preço testando a EMA 200 — nível crítico');
@@ -3385,7 +3392,7 @@ async function cvExecutarAnalise() {
         if(true) { // Setup 4: Short baixo EMA 200
             let score = 0;
             const entrada = preco;
-            const stop    = ema200v + atrV * 0.5;
+            const stop    = stopShort;
             const alvo    = sup2;
             const reasons = [];
             score+=2; reasons.push('Abaixo da EMA 200 — tendência de baixa confirmada');
@@ -3405,7 +3412,7 @@ async function cvExecutarAnalise() {
         if(true) { // Setup 5: Long Pullback
             let score = 0;
             const entrada = preco;
-            const stop    = ema21v - atrV * 0.3;
+            const stop    = stopLong;
             const alvo    = res2;
             const reasons = [];
             score+=2; reasons.push('Tendência de alta bem estruturada');
@@ -3426,7 +3433,7 @@ async function cvExecutarAnalise() {
         // ── PROPOSTA 6: Long — Confluência 2 Timeframes ──────────────
         {
             let score = 0; const reasons = [];
-            const entrada = preco, stop = sup1 - atrV*0.5, alvo = res1;
+            const entrada = preco, stop = stopLong, alvo = res1;
             const cl1d = c1d.map(c=>c.c);
             const ema9d = grEMA(cl1d,9).pop(), ema21d = grEMA(cl1d,21).pop();
             const tdAlta = ema9d > ema21d, t4hAlta = ema9v > ema21v;
@@ -3448,7 +3455,7 @@ async function cvExecutarAnalise() {
         // ── PROPOSTA 7: Short — Confluência 2 Timeframes ─────────────
         {
             let score = 0; const reasons = [];
-            const entrada = preco, stop = res1 + atrV*0.5, alvo = sup1;
+            const entrada = preco, stop = stopShort, alvo = sup1;
             const cl1d = c1d.map(c=>c.c);
             const ema9d = grEMA(cl1d,9).pop(), ema21d = grEMA(cl1d,21).pop();
             const tdBaixa = ema9d < ema21d, t4hBaixa = ema9v < ema21v;
@@ -3516,7 +3523,7 @@ async function cvExecutarAnalise() {
             const vwapAtual=vwapV10[vwapV10.length-1];
             if (vwapAtual) { // Setup 10: Long VWAP
                 let score=2; const reasons=['Preço tocando VWAP — referência institucional de preço justo'];
-                const entrada=preco, stop=vwapAtual-atrV, alvo=res1;
+                const entrada=preco, stop=stopLong, alvo=res1;
                 if (ema9v>ema21v) { score+=1; reasons.push('EMAs de alta apoiam o bounce'); }
                 if (rsiV>40&&rsiV<60) { score+=1; reasons.push(`RSI ${rsiV.toFixed(0)} — neutro, ideal para entrada`); }
                 if (altoVolume) { score+=1; reasons.push('Volume institucional presente'); }
@@ -3544,7 +3551,7 @@ async function cvExecutarAnalise() {
                 const bwMin=Math.min(...bwHist.slice(-50));
                 if (true) {
                     const tipo=ema9v>ema21v?'long':'short';
-                    const entrada=preco, stop=tipo==='long'?sup1-atrV*0.3:res1+atrV*0.3, alvo=tipo==='long'?res1:sup1;
+                    const entrada=preco, stop=tipo==='long'?stopLong:stopShort, alvo=tipo==='long'?res1:sup1;
                     let score=3; const reasons=['Squeeze de Bollinger — bandas em mínima, explosão iminente'];
                     if (ema9v>ema21v) { score+=1; reasons.push('EMAs favorecem alta'); } else { score+=1; reasons.push('EMAs favorecem baixa'); }
                     if (altoVolume) { score+=1; reasons.push('Volume crescente confirma direção'); }
@@ -3565,7 +3572,7 @@ async function cvExecutarAnalise() {
             const maxAnt=Math.max(...ult5.slice(0,-1).map(c=>c.h));
             if (true) { // Setup 12: Rompimento
                 let score=3; const reasons=['Rompimento de máxima recente com volume confirmado'];
-                const entrada=ult.c, stop=maxAnt-atrV*0.3, alvo=res2;
+                const entrada=ult.c, stop=stopLong, alvo=res2;
                 if (macdV>0) { score+=1; reasons.push('MACD positivo confirma momentum de alta'); }
                 if (ema9v>ema21v) { score+=1; reasons.push('EMAs de alta apoiam o rompimento'); }
                 if (preco>ema200v) { score+=1; reasons.push('Acima da EMA 200 — tendência primária favorável'); }
@@ -3585,7 +3592,7 @@ async function cvExecutarAnalise() {
             const maxRec=Math.max(...ult10.slice(0,7).map(c=>c.h));
             if (true) { // Setup 13: Pullback Pós-Rompimento
                 let score=3; const reasons=['Pullback para nível rompido — entrada mais segura que o rompimento'];
-                const entrada=preco, stop=sup1-atrV*0.3, alvo=maxRec+(maxRec-preco)*1.5;
+                const entrada=preco, stop=stopLong, alvo=maxRec+(maxRec-preco)*1.5;
                 if (rsiV>40&&rsiV<60) { score+=1; reasons.push(`RSI ${rsiV.toFixed(0)} — zona ideal para entrada em pullback`); }
                 if (!altoVolume) { score+=1; reasons.push('Volume baixo no pullback confirma fraqueza vendedora'); }
                 const fin=calcFinanceiro(entrada,stop,alvo,'long');
@@ -3856,7 +3863,7 @@ function grCalcularComGlobais() {
         const saldo = _saldoCorretora || 1;
     // Capital limitado pelo usuário
     const capTipo = window._cvCapTipo || 'percentual';
-    const capVal  = window._cvCapVal  || 100;
+    const capVal  = window._cvCapVal  || 10;
     const capital = capTipo === 'percentual' ? saldo * (capVal / 100) : Math.min(capVal, saldo);
     const riscoPct = _grRiscoPct / 100;
     if (!entrada || !stop) return;
@@ -3871,10 +3878,12 @@ function grCalcularComGlobais() {
     const alavOn = document.getElementById('cv-alav-toggle')?.checked || false;
     if (!alavOn && valorInvestido > capital) { tamanho = capital / entrada; valorInvestido = capital; }
     const reward = alvo > 0 ? (isLong ? alvo - entrada : entrada - alvo) : 0;
-    const rr = reward > 0 ? reward / risco : 0;
-    const ganhoUSD = rr > 0 ? riscoUSD * rr : 0;
-    const stopDist = (Math.abs(risco) / entrada) * 100;
     const alvoDist = alvo > 0 ? (Math.abs(reward) / entrada) * 100 : 0;
+    const stopDist = (Math.abs(risco) / entrada) * 100;
+    // Ganho financeiro = investido × % de movimento ao alvo (sem alavancagem)
+    const ganhoUSD = alvoDist > 0 ? valorInvestido * (alvoDist / 100) : 0;
+    // R/R financeiro = ganho / risco em USD
+    const rr = riscoUSD > 0 && ganhoUSD > 0 ? ganhoUSD / riscoUSD : 0;
     const breakeven = rr > 0 ? (1 / (1 + rr)) * 100 : 0;
 
     // Atualiza painel flutuante
