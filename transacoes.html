@@ -1450,7 +1450,7 @@ function cvIniciarRealTime() {
     cvAtualizarPrecoRealTime();
     // Topbar + linha: a cada 3s
     if (window._cvTickerInterval) clearInterval(window._cvTickerInterval);
-    window._cvTickerInterval = setInterval(cvAtualizarPrecoRealTime, 5000);
+    window._cvTickerInterval = setInterval(cvAtualizarPrecoRealTime, 3000);
     // Candle (recalcula indicadores): a cada 30s
     if (window._cvCandleInterval) clearInterval(window._cvCandleInterval);
     window._cvCandleInterval = setInterval(cvAtualizarCandle, 30000);
@@ -3278,19 +3278,33 @@ async function cvExecutarAnalise() {
 
         function calcFinanceiro(entrada, stop, alvo, tipo) {
             const saldo = _saldoCorretora || 1;
-            const capTipo = window._cvCapTipo||'percentual';
-            const capVal  = window._cvCapVal||10;
-            const capital = capTipo==='percentual' ? saldo*(capVal/100) : Math.min(capVal,saldo);
-            const riscoPct = (_grRiscoPct||2)/100;
-            const riscoUSD = saldo * riscoPct;
-            const riscoPreco = Math.abs(entrada-stop);
-            let tamanho = riscoUSD / riscoPreco;
-            let investido = tamanho * entrada;
-            if (investido > capital) { tamanho = capital/entrada; investido = capital; }
-            const reward = Math.abs(alvo-entrada);
-            const rr = riscoPreco > 0 ? reward/riscoPreco : 0;
-            const ganho = rr * riscoUSD;
-            return { tamanho, investido, riscoUSD, ganho, rr };
+            // Custo em aberto: padrão 10% do saldo (sem alavancagem)
+            const capTipo = window._cvCapTipo || 'percentual';
+            const capVal  = window._cvCapVal  || 10;
+            const investido = capTipo === 'percentual'
+                ? saldo * (capVal / 100)
+                : Math.min(capVal, saldo);
+
+            // Risco: % do saldo (perda máxima)
+            const riscoPct  = (_grRiscoPct || 2) / 100;
+            const riscoUSD  = saldo * riscoPct;
+
+            // Tamanho em BTC = custo / preço de entrada
+            const tamanho = investido / entrada;
+
+            // R/R baseado em pontos
+            const riscoPreco  = Math.abs(entrada - stop);
+            const rewardPreco = Math.abs(alvo - entrada);
+            const rr = riscoPreco > 0 ? rewardPreco / riscoPreco : 0;
+
+            // Ganho = custo × (movimento % do alvo)
+            const movPct = entrada > 0 ? rewardPreco / entrada : 0;
+            const ganho  = investido * movPct;
+
+            // % de ganho sobre o saldo total
+            const ganhoPct = saldo > 0 ? (ganho / saldo) * 100 : 0;
+
+            return { tamanho, investido, riscoUSD, ganho, ganhoPct, rr };
         }
 
         function scoreLabel(s) {
@@ -3687,7 +3701,7 @@ function cvRenderRelatorio(propostas, preco, atrV, rsiV) {
             </div>
             <div class="cv-rel-financeiro">
                 <div class="cv-rel-fin-item"><div class="cv-rel-fin-lbl">Perda Máx</div><div class="cv-rel-fin-val" style="color:#EF5350">-$${fmtUSD(p.fin.riscoUSD)}</div></div>
-                <div class="cv-rel-fin-item"><div class="cv-rel-fin-lbl">Ganho Pot.</div><div class="cv-rel-fin-val" style="color:#26A69A">+$${fmtUSD(p.fin.ganho)}</div></div>
+                <div class="cv-rel-fin-item"><div class="cv-rel-fin-lbl">Ganho Pot.</div><div class="cv-rel-fin-val" style="color:#26A69A">+$${fmtUSD(p.fin.ganho)}<span style="font-size:10px;margin-left:4px;opacity:0.8">(${p.fin.ganhoPct.toFixed(2)}%)</span></div></div>
                 <div class="cv-rel-fin-item"><div class="cv-rel-fin-lbl">Custo</div><div class="cv-rel-fin-val">$${fmtUSD(p.fin.investido)}</div></div>
             </div>` : ''}
         </div>`;
