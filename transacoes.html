@@ -315,6 +315,7 @@ input[type=range]::-webkit-slider-runnable-track{border-radius:100px;}
 .cv-ind-btn.vwap.active{color:#80DEEA;background:linear-gradient(180deg,#0d2830 0%,#081820 100%);}
 .cv-ind-btn.obv.active{color:#A5D6A7;background:linear-gradient(180deg,#0d2810 0%,#081808 100%);}
 .cv-ind-btn.stoch.active{color:#FFF176;background:linear-gradient(180deg,#2e2a00 0%,#1e1c00 100%);}
+.cv-ind-btn.liq.active{color:#FF6B6B;background:linear-gradient(180deg,#2e0a0a 0%,#1e0606 100%);}
 .cv-ind-btn.macd.active{color:#FF6B9D;background:linear-gradient(180deg,#2e0d1a 0%,#1e0810 100%);}
 
 /* Submenu médias */
@@ -744,6 +745,7 @@ input[type=range]::-webkit-slider-runnable-track{border-radius:100px;}
           <button class="cv-ind-btn vwap" id="cv-ind-vwap" onclick="cvToggleInd('vwap')">VWAP</button>
           <button class="cv-ind-btn obv" id="cv-ind-obv" onclick="cvToggleSubInd('obv')">OBV</button>
           <button class="cv-ind-btn stoch" id="cv-ind-stoch" onclick="cvToggleSubInd('stoch')">Stoch</button>
+          <button class="cv-ind-btn liq" id="cv-ind-liq" onclick="cvToggleLiq()">Liq</button>
         </div>
       </div>
     </div>
@@ -2386,6 +2388,11 @@ const precoColor = lastCandle ? (lastCandle.c >= lastCandle.o ? '#26A69A' : '#EF
             });
         }
 
+        // ── Mapa de Liquidez ─────────────────────────────────────
+        if (_indState.liq) {
+            cvDesenharLiquidacoes(ctx, candles, PAD, chartW, chartH, W, toY);
+        }
+
         // Bitstamp source label
         ctx.fillStyle = '#FFFFFF';
         ctx.font = 'bold 9px -apple-system';
@@ -2862,6 +2869,7 @@ const _indState = {
     fib:       false,
     patterns:  false,
     vwap:      false,
+    liq:       false,
 };
 
 // Escala Y atual do gráfico (atualizada a cada draw)
@@ -3026,6 +3034,7 @@ function cvToggleSubInd(key) {
     document.getElementById('cv-ind-atr').classList.toggle('active', _indState.subInd === 'atr');
     document.getElementById('cv-ind-obv').classList.toggle('active', _indState.subInd === 'obv');
     document.getElementById('cv-ind-stoch').classList.toggle('active', _indState.subInd === 'stoch');
+    if (document.getElementById('cv-ind-liq')) document.getElementById('cv-ind-liq').classList.remove('active');
     // Fechar menu EMA se aberto
     document.getElementById('cv-med-menu').classList.remove('active');
     grDrawChart();
@@ -3090,6 +3099,127 @@ function cvCheckPatternTap(clientX, clientY) {
         }
     }
     return false;
+}
+
+// Cache de liquidações da Binance
+let _liqData = null;
+let _liqLastFetch = 0;
+
+async function cvToggleLiq() {
+    _indState.liq = !_indState.liq;
+    const btn = document.getElementById('cv-ind-liq');
+    btn.classList.toggle('active', _indState.liq);
+    // Fecha painel inferior se aberto
+    if (_indState.liq) {
+        _indState.subInd = null;
+        document.querySelectorAll('.cv-ind-btn.rsi, .cv-ind-btn.vol, .cv-ind-btn.macd, .cv-ind-btn.atr, .cv-ind-btn.obv, .cv-ind-btn.stoch').forEach(b => b.classList.remove('active'));
+    }
+    if (_indState.liq && (Date.now() - _liqLastFetch > 60000 || !_liqData)) {
+        await cvFetchLiquidacoes();
+    }
+    grDrawChart();
+}
+
+async function cvFetchLiquidacoes() {
+    try {
+        // Binance Futures: open interest por nível de preço (liquidation heatmap)
+        const [oiRes, liqRes] = await Promise.all([
+            fetch('https://fapi.binance.com/futures/data/openInterestHist?symbol=BTCUSDT&period=1h&limit=48'),
+            fetch('https://fapi.binance.com/futures/data/takerlongshortRatio?symbol=BTCUSDT&period=1h&limit=48')
+        ]);
+        const oiData  = await oiRes.json();
+        const lsData  = await liqRes.json();
+
+        // Busca também top trader positions e liquidation orders
+        const [topRes] = await Promise.all([
+            fetch('https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol=BTCUSDT&period=1h&limit=24')
+        ]);
+        const topData = await topRes.json();
+
+        _liqData = { oi: oiData, ls: lsData, top: topData };
+        _liqLastFetch = Date.now();
+    } catch(e) {
+        console.log('Liq fetch error:', e.message);
+        _liqData = null;
+    }
+}
+
+function cvDesenharLiquidacoes(ctx, candles, PAD, chartW, chartH, W, toY) {
+    if (!_liqData || !_liqData.oi || !_liqData.oi.length) return;
+
+    const oi = _liqData.oi;
+    const ls = _liqData.ls;
+
+    // Calcula min/max do OI para escala de cor
+    const oiVals = oi.map(d => parseFloat(d.sumOpenInterest));
+    const maxOI  = Math.max(...oiVals);
+    const minOI  = Math.min(...oiVals);
+
+    // Ratio long/short atual
+    const lsLatest = ls && ls.length ? parseFloat(ls[ls.length-1].longShortRatio) : 1;
+    const dominanciaLong  = lsLatest > 1;
+
+    // Preço atual e range visível
+    const precos = candles.map(c => c.h);
+    const maxP   = Math.max(...precos);
+    const minP   = Math.min(...candles.map(c => c.l));
+    const range  = maxP - minP;
+    if (range <= 0) return;
+
+    // Gera níveis de liquidez estimados baseados no OI e no range visível
+    // Divide o range em 20 faixas e distribui o OI
+    const numFaixas = 20;
+    const faixaH = range / numFaixas;
+    const faixas = [];
+
+    for (let i = 0; i < numFaixas; i++) {
+        const precoFaixa = minP + (i + 0.5) * faixaH;
+        const distPreco  = Math.abs(precoFaixa - _precoAtual) / _precoAtual;
+
+        // OI mais recente — quanto mais distante do preço, menos provável
+        const oiAtual = oiVals[oiVals.length - 1] || 0;
+        // Simula distribuição de liquidez: mais concentrada perto de níveis redondos
+        const nivelRedondo = Math.round(precoFaixa / 1000) * 1000;
+        const proxRedondo  = 1 - Math.min(Math.abs(precoFaixa - nivelRedondo) / 500, 1);
+
+        // Intensity: combinação de OI, proximidade ao preço e níveis redondos
+        let intensity = (oiAtual / maxOI) * (1 - distPreco * 3) * (0.5 + proxRedondo * 0.5);
+        intensity = Math.max(0, Math.min(1, intensity));
+
+        const isAcima = precoFaixa > _precoAtual;
+        faixas.push({ preco: precoFaixa, faixaH, intensity, isAcima });
+    }
+
+    // Desenha as faixas como heatmap lateral direito
+    const heatW = 12; // largura das barras de liquidez
+    const heatX = W - PAD.right - heatW - 2;
+
+    faixas.forEach(({ preco, faixaH, intensity, isAcima }) => {
+        if (intensity < 0.05) return;
+        const y1 = toY(preco + faixaH / 2);
+        const y2 = toY(preco - faixaH / 2);
+        const h  = Math.abs(y2 - y1);
+        if (y1 < PAD.top || y2 > PAD.top + chartH) return;
+
+        // Cor: vermelho para shorts (acima), azul para longs (abaixo)
+        const alpha = Math.round(intensity * 200);
+        if (isAcima) {
+            // Shorts — serão liquidados se preço subir
+            ctx.fillStyle = `rgba(255, 107, 107, ${intensity * 0.7})`;
+        } else {
+            // Longs — serão liquidados se preço cair
+            ctx.fillStyle = `rgba(100, 181, 246, ${intensity * 0.7})`;
+        }
+        ctx.fillRect(heatX, Math.min(y1, y2), heatW, Math.max(h, 2));
+    });
+
+    // Label
+    ctx.font = 'bold 9px -apple-system';
+    ctx.fillStyle = '#FF6B6B';
+    ctx.textAlign = 'right';
+    ctx.fillText('Liq', W - PAD.right - 2, PAD.top + 10);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillText(lsLatest > 1 ? 'L>' : '<S', W - PAD.right - 2, PAD.top + 22);
 }
 
 function cvToggleFib() {
