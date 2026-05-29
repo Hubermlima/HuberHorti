@@ -157,26 +157,25 @@ export default {
                 const hoje = new Date().toISOString().split('T')[0];
         const prompt = `Analise esse extrato bancário e extraia todos os lançamentos visíveis. Retorne SOMENTE um array JSON válido, sem texto adicional, sem markdown, sem explicações. Cada item deve ter exatamente estes campos:\n- "data": string no formato YYYY-MM-DD (se aparecer "Hoje" use ${hoje})\n- "tipo": "entrada" se for "Pix recebido", "saida" se for "Pix enviado"
 \n- "forma": sempre "deposito"\n- "valor": número positivo sem sinal\n- "descricao": nome/descrição abaixo do tipo de transação\n\nExemplo: [{"data":"2026-05-29","tipo":"saida","forma":"deposito","valor":100.00,"descricao":"Fabio Adriano Passos"}]`;
-        const content = [
-          ...imagens.map(img => ({
-            type: 'image_url',
-            image_url: { url: `data:image/jpeg;base64,${img}` }
-          })),
-          {
-            type: 'text',
-            text: prompt
+                const todos = [];
+        for (const img of imagens) {
+          const content = [
+            { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${img}` } },
+            { type: 'text', text: prompt }
+          ];
+          const aiResponse = await env.AI.run('@cf/meta/llama-3.2-11b-vision-instruct', {
+            messages: [{ role: 'user', content }],
+            max_tokens: 2048
+          });
+          const raw = aiResponse?.response ?? aiResponse?.result?.response ?? aiResponse?.[0]?.response ?? '';
+          const text = typeof raw === 'string' ? raw : JSON.stringify(raw);
+          const match = text.match(/\[[\s\S]*\]/);
+          if (match) {
+            try { todos.push(...JSON.parse(match[0])); } catch(e) {}
           }
-        ];
-        const aiResponse = await env.AI.run('@cf/meta/llama-3.2-11b-vision-instruct', {
-          messages: [{ role: 'user', content }],
-          max_tokens: 2048
-        });
+        }
+        const lancamentos = todos;
 
-        const raw = aiResponse?.response ?? aiResponse?.result?.response ?? aiResponse?.[0]?.response ?? '';
-const text = typeof raw === 'string' ? raw : JSON.stringify(raw);
-
-        const json = text.match(/\[[\s\S]*\]/)?.[0] || '[]';
-        const lancamentos = JSON.parse(json);
         return Response.json({ lancamentos }, { headers: CORS });
       } catch (e) {
         return Response.json({ lancamentos: [], error: e.message }, { status: 500, headers: CORS });
