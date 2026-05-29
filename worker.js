@@ -137,31 +137,43 @@ export default {
     }
 
     // ── Extrato via Cloudflare AI Vision ─────────────────────────
+        // ── Aceitar termos Meta Llama Vision ─────────────────────────
+    if (request.method === 'GET' && path === '/ai/aceitar-termos') {
+      try {
+        const aiResponse = await env.AI.run('@cf/meta/llama-3.2-11b-vision-instruct', {
+          prompt: 'agree'
+        });
+        return Response.json({ ok: true, response: aiResponse }, { headers: CORS });
+      } catch (e) {
+        return Response.json({ ok: false, error: e.message }, { status: 500, headers: CORS });
+      }
+    }
+
+    // ── Extrato via Cloudflare AI Vision ─────────────────────────
     if (request.method === 'POST' && path === '/ai/extrato') {
+
       try {
         const { imagens } = await request.json(); // array de base64
+                const hoje = new Date().toISOString().split('T')[0];
+        const prompt = `Analise esse extrato bancário e extraia todos os lançamentos visíveis. Retorne SOMENTE um array JSON válido, sem texto adicional, sem markdown, sem explicações. Cada item deve ter exatamente estes campos:\n- "data": string no formato YYYY-MM-DD (se aparecer "Hoje" use ${hoje})\n- "tipo": "entrada" se valor positivo, "saida" se valor negativo\n- "forma": sempre "deposito"\n- "valor": número positivo sem sinal\n- "descricao": nome/descrição abaixo do tipo de transação\n\nExemplo: [{"data":"2026-05-29","tipo":"saida","forma":"deposito","valor":100.00,"descricao":"Fabio Adriano Passos"}]`;
         const content = [
           ...imagens.map(img => ({
-            type: 'image',
-            image: img // base64 string
+            type: 'image_url',
+            image_url: { url: `data:image/jpeg;base64,${img}` }
           })),
           {
             type: 'text',
-            text: `Analise esse extrato bancário e extraia todos os lançamentos visíveis. Retorne SOMENTE um array JSON válido, sem texto adicional, sem markdown, sem explicações. Cada item deve ter exatamente estes campos:
-- "data": string no formato YYYY-MM-DD (se aparecer "Hoje" use ${new Date().toISOString().split('T')[0]})
-- "tipo": "entrada" se valor positivo, "saida" se valor negativo
-- "forma": sempre "deposito"
-- "valor": número positivo sem sinal
-- "descricao": nome/descrição abaixo do tipo de transação
-
-Exemplo: [{"data":"2026-05-29","tipo":"saida","forma":"deposito","valor":100.00,"descricao":"Fabio Adriano Passos"}]`
+            text: prompt
           }
         ];
         const aiResponse = await env.AI.run('@cf/meta/llama-3.2-11b-vision-instruct', {
           messages: [{ role: 'user', content }],
           max_tokens: 2048
         });
-        const text = aiResponse.response || aiResponse.result?.response || '[]';
+
+        const raw = aiResponse?.response ?? aiResponse?.result?.response ?? aiResponse?.[0]?.response ?? '';
+const text = typeof raw === 'string' ? raw : JSON.stringify(raw);
+
         const json = text.match(/\[[\s\S]*\]/)?.[0] || '[]';
         const lancamentos = JSON.parse(json);
         return Response.json({ lancamentos }, { headers: CORS });
