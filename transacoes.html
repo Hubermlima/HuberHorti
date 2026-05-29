@@ -1840,9 +1840,10 @@ let _grAllCandles = [];
 let _grOffset = 999999;
 let _grZoom = 40;
 
-let _fibP1 = null;
-let _fibP2 = null;
+let _fibs = [];          // array de fibs salvos: [{p1, p2}]
+let _fibAtual = null;    // fib sendo desenhado agora: {p1, p2}
 let _fibDragging = false;
+
 
 function grSetTf(tf) {
     _grTf = tf;
@@ -2522,12 +2523,15 @@ const precoColor = lastCandle ? (lastCandle.c >= lastCandle.o ? '#26A69A' : '#EF
         }
 
 
-        // ── Fibonacci manual ─────────────────────────────────────────
-if (_indState.fib && _fibP1 && _fibP2) {
-    const fibHigh = Math.max(_fibP1, _fibP2);
-    const fibLow  = Math.min(_fibP1, _fibP2);
+  // ── Fibonacci manual ─────────────────────────────────────────
+const fibsParaDesenhar = [..._fibs, ...(_fibAtual ? [_fibAtual] : [])];
+if (fibsParaDesenhar.length > 0) {
+    fibsParaDesenhar.forEach(fib => {
+    const fibHigh = Math.max(fib.p1, fib.p2);
+    const fibLow  = Math.min(fib.p1, fib.p2);
     const diff = fibHigh - fibLow;
-    const isUp = _fibP2 > _fibP1;
+    const isUp = fib.p2 > fib.p1;
+
 
             // Níveis: 0, 23.6, 38.2, 50, 61.8, 78.6, 100
             const niveis = [
@@ -2596,10 +2600,12 @@ ctx.globalAlpha = 1;
 ctx.fillText(txtPct, labelX, y + 9);
 ctx.globalAlpha = 1;
 
-            });
-        }
+                     });
+    });
+}
 
         // ── Mapa de Liquidez ─────────────────────────────────────
+
         if (_indState.liq) {
             cvDesenharLiquidacoes(ctx, candles, PAD, chartW, chartH, W, toY);
         }
@@ -2949,9 +2955,23 @@ function grInitTouch() {
                 _grDragLine = target;
                 isDragging = false;
             } else if (_indState.fib) {
-    _fibDragging = true;
-    _fibP1 = grToPrice(yInterno);
-    _fibP2 = null;
+    // Verifica se tocou em cima de um fib existente
+    const precoToque = grToPrice(yInterno);
+    const fibTocado = _fibs.findIndex(f => {
+        const hi = Math.max(f.p1, f.p2), lo = Math.min(f.p1, f.p2), diff = hi - lo;
+        const niveis = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+        return niveis.some(r => Math.abs(grLineY(lo + diff * r) - yInterno) < 20);
+    });
+    if (fibTocado >= 0) {
+        if (confirm('Apagar este Fibonacci?')) {
+            _fibs.splice(fibTocado, 1);
+            grDrawChart();
+        }
+    } else {
+        _fibDragging = true;
+        _fibAtual = { p1: grToPrice(yInterno), p2: grToPrice(yInterno) };
+    }
+
 } else {
     _grDragLine = null;
     touchStartX = e.touches[0].clientX;
@@ -2990,8 +3010,9 @@ function grInitTouch() {
                 grCalcularComGlobais();
                 grDrawChart();
             } else if (_fibDragging && _indState.fib) {
-    _fibP2 = grToPrice(toCanvasY(e.touches[0].clientY));
+    _fibAtual.p2 = grToPrice(toCanvasY(e.touches[0].clientY));
     grDrawChart();
+
 } else if (_longPressActive) {
     // Move crosshair
     const yInterno = toCanvasY(e.touches[0].clientY);
@@ -3028,10 +3049,18 @@ function grInitTouch() {
     }, { passive: false });
 
     canvas.addEventListener('touchend', e => {
-        isDragging = false;
-        _grDragLine = null;
-        clearTimeout(_longPressTimer);
-        if (_longPressActive) {
+    isDragging = false;
+    _grDragLine = null;
+    clearTimeout(_longPressTimer);
+    if (_fibDragging) {
+        _fibDragging = false;
+        if (_fibAtual && Math.abs(_fibAtual.p2 - _fibAtual.p1) > 0) {
+            _fibs.push({ ..._fibAtual });
+        }
+        _fibAtual = null;
+        grDrawChart();
+    } else if (_longPressActive) {
+
             _longPressActive = false;
             grDrawChart();
         } else if (e.changedTouches.length === 1) {
@@ -3809,7 +3838,8 @@ function cvDesenharFiguras(ctx, todos, PAD, chartW, chartH, W, H, toY) {
 
 function cvToggleFib() {
     _indState.fib = !_indState.fib;
-    if (!_indState.fib) { _fibP1 = null; _fibP2 = null; }
+    if (!_indState.fib) { _fibAtual = null; } // fibs salvos permanecem
+
     document.getElementById('cv-ind-fib').classList.toggle('active', _indState.fib);
     grDrawChart();
 }
