@@ -136,51 +136,48 @@ export default {
       }
     }
 
-    // ── Extrato via Cloudflare AI Vision ─────────────────────────
-        // ── Aceitar termos Meta Llama Vision ─────────────────────────
-    if (request.method === 'GET' && path === '/ai/aceitar-termos') {
-      try {
-        const aiResponse = await env.AI.run('@cf/meta/llama-3.2-11b-vision-instruct', {
-          prompt: 'agree'
-        });
-        return Response.json({ ok: true, response: aiResponse }, { headers: CORS });
-      } catch (e) {
-        return Response.json({ ok: false, error: e.message }, { status: 500, headers: CORS });
-      }
-    }
 
-    // ── Extrato via Cloudflare AI Vision ─────────────────────────
+     // ── Extrato via Anthropic Claude Vision ──────────────────────
     if (request.method === 'POST' && path === '/ai/extrato') {
-
       try {
-        const { imagens } = await request.json(); // array de base64
-                const hoje = new Date().toISOString().split('T')[0];
-        const prompt = `Analise esse extrato bancário e extraia todos os lançamentos visíveis. Retorne SOMENTE um array JSON válido, sem texto adicional, sem markdown, sem explicações. Cada item deve ter exatamente estes campos:\n- "data": string no formato YYYY-MM-DD (se aparecer "Hoje" use ${hoje})\n- "tipo": "entrada" se for "Pix recebido", "saida" se for "Pix enviado"
-\n- "forma": sempre "deposito"\n- "valor": número positivo sem sinal\n- "descricao": nome/descrição abaixo do tipo de transação\n\nExemplo: [{"data":"2026-05-29","tipo":"saida","forma":"deposito","valor":100.00,"descricao":"Fabio Adriano Passos"}]`;
-                const todos = [];
+        const { imagens } = await request.json();
+        const hoje = new Date().toISOString().split('T')[0];
+        const prompt = `Analise esse extrato bancário e extraia todos os lançamentos visíveis. Retorne SOMENTE um array JSON válido, sem texto adicional, sem markdown, sem explicações. Cada item deve ter exatamente estes campos:\n- "data": string no formato YYYY-MM-DD. Preste atenção nos separadores de data da tela (ex: "Hoje" = ${hoje}, "Quinta, 28 de maio" = 2026-05-28). Cada lançamento usa a data do separador mais recente acima dele.\n- "tipo": "entrada" se o label for "Pix recebido", "saida" se for "Pix enviado"\n- "forma": sempre "deposito"\n- "valor": número positivo sem sinal\n- "descricao": nome/descrição abaixo do label "Pix enviado" ou "Pix recebido". Nunca inclua separadores de data como lançamentos.\n\nExemplo: [{"data":"2026-05-29","tipo":"saida","forma":"deposito","valor":100.00,"descricao":"Fabio Adriano Passos"}]`;
+
+        const todos = [];
         for (const img of imagens) {
-          const content = [
-            { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${img}` } },
-            { type: 'text', text: prompt }
-          ];
-          const aiResponse = await env.AI.run('@cf/meta/llama-3.2-11b-vision-instruct', {
-            messages: [{ role: 'user', content }],
-            max_tokens: 2048
+          const res = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-api-key': env.ANTHROPIC_API_KEY,
+              'anthropic-version': '2023-06-01'
+            },
+            body: JSON.stringify({
+              model: 'claude-sonnet-4-5',
+              max_tokens: 2048,
+              messages: [{
+                role: 'user',
+                content: [
+                  { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: img } },
+                  { type: 'text', text: prompt }
+                ]
+              }]
+            })
           });
-          const raw = aiResponse?.response ?? aiResponse?.result?.response ?? aiResponse?.[0]?.response ?? '';
-          const text = typeof raw === 'string' ? raw : JSON.stringify(raw);
+          const data = await res.json();
+          const text = data.content?.[0]?.text ?? '';
           const match = text.match(/\[[\s\S]*\]/);
           if (match) {
             try { todos.push(...JSON.parse(match[0])); } catch(e) {}
           }
         }
-        const lancamentos = todos;
-
-        return Response.json({ lancamentos }, { headers: CORS });
+        return Response.json({ lancamentos: todos }, { headers: CORS });
       } catch (e) {
         return Response.json({ lancamentos: [], error: e.message }, { status: 500, headers: CORS });
       }
     }
+
 
     if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
 
