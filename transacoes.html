@@ -2681,23 +2681,24 @@ ctx.globalAlpha = 1;
                 const rsiMin = 0, rsiMax = 100;
                 const toRsiY = v => panY + panPad.top + panChartH - ((v - rsiMin) / (rsiMax - rsiMin)) * panChartH;
 
-                // Linhas 70 e 30
-                [70, 50, 30].forEach(lvl => {
-                    const y = toRsiY(lvl);
-                    ctx.strokeStyle = lvl === 50 ? 'rgba(255,255,255,0.08)' : 'rgba(206,147,216,0.25)';
-                    ctx.lineWidth = 0.5;
-                    ctx.setLineDash(lvl === 50 ? [] : [3, 3]);
-                    ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(W - PAD.right, y); ctx.stroke();
-                    ctx.setLineDash([]);
-                    ctx.fillStyle = '#FFFFFF';
-                    ctx.font = '9px -apple-system';
-                    ctx.textAlign = 'right';
-                    ctx.fillText(lvl, PAD.left - 3, y + 3);
-                });
+   // Linhas 70 e 30
+[70, 50, 30].forEach(lvl => {
+    const y = toRsiY(lvl);
+    ctx.strokeStyle = lvl === 70 ? 'rgba(239,83,80,0.5)' : lvl === 30 ? 'rgba(38,166,154,0.5)' : 'rgba(255,255,255,0.12)';
+    ctx.lineWidth = lvl === 50 ? 0.5 : 1;
+    ctx.setLineDash(lvl === 50 ? [] : [4, 4]);
+    ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(W - PAD.right, y); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = lvl === 70 ? '#EF5350' : lvl === 30 ? '#26A69A' : 'rgba(255,255,255,0.4)';
+    ctx.font = 'bold 9px -apple-system';
+    ctx.textAlign = 'right';
+    ctx.fillText(lvl, PAD.left - 3, y + 3);
+});
 
-                // Linha RSI
-                ctx.strokeStyle = '#CE93D8';
-                ctx.lineWidth = 1.5;
+// Linha RSI
+ctx.strokeStyle = '#E040FB';
+ctx.lineWidth = 2;
+
                 ctx.beginPath();
                 let rsiStarted = false;
                 rsiVis.forEach((val, i) => {
@@ -2707,10 +2708,72 @@ ctx.globalAlpha = 1;
                     if (!rsiStarted) { ctx.moveTo(x, y); rsiStarted = true; }
                     else ctx.lineTo(x, y);
                 });
-                ctx.stroke();
+                               ctx.stroke();
+
+                // ── Divergências ───────────────────────────────────────
+                const swing = 3; // lookback de cada lado para detectar swing
+                const priceSeries = candles.map(c => c.c);
+
+                // Detecta swings no preço e no RSI
+                const swingHighs = [], swingLows = [];
+                for (let i = swing; i < rsiVis.length - swing; i++) {
+                    if (rsiVis[i] === null) continue;
+                    const priceSlice = priceSeries.slice(i - swing, i + swing + 1);
+                    const rsiSlice = rsiVis.slice(i - swing, i + swing + 1).filter(v => v !== null);
+                    if (rsiSlice.length < swing * 2 + 1) continue;
+                    const isRsiHigh = rsiVis[i] === Math.max(...rsiSlice);
+                    const isRsiLow  = rsiVis[i] === Math.min(...rsiSlice);
+                    const isPriceHigh = priceSeries[i] === Math.max(...priceSlice);
+                    const isPriceLow  = priceSeries[i] === Math.min(...priceSlice);
+                    if (isRsiHigh && isPriceHigh) swingHighs.push({ i, rsi: rsiVis[i], price: priceSeries[i] });
+                    if (isRsiLow  && isPriceLow)  swingLows.push({ i, rsi: rsiVis[i], price: priceSeries[i] });
+                }
+
+                // Detecta divergências entre pares de swings consecutivos
+                const divs = [];
+                for (let j = 1; j < swingHighs.length; j++) {
+                    const a = swingHighs[j-1], b = swingHighs[j];
+                    if (b.price > a.price && b.rsi < a.rsi) { // preço sobe, RSI cai = bear div
+                        const invalidated = priceSeries.slice(b.i).some((p, k) => k > 0 && p < a.price);
+                        divs.push({ a, b, tipo: 'bear', invalidated });
+                    }
+                }
+                for (let j = 1; j < swingLows.length; j++) {
+                    const a = swingLows[j-1], b = swingLows[j];
+                    if (b.price < a.price && b.rsi > a.rsi) { // preço cai, RSI sobe = bull div
+                        const invalidated = priceSeries.slice(b.i).some((p, k) => k > 0 && p > a.price);
+                        divs.push({ a, b, tipo: 'bull', invalidated });
+                    }
+                }
+
+                // Desenha linhas de divergência no painel RSI
+                divs.forEach(({ a, b, tipo, invalidated }) => {
+                    const xa = PAD.left + (a.i / totalSlots) * panChartW + cW / 2;
+                    const xb = PAD.left + (b.i / totalSlots) * panChartW + cW / 2;
+                    const ya = toRsiY(a.rsi);
+                    const yb = toRsiY(b.rsi);
+                    const cor = tipo === 'bear' ? '#EF5350' : '#26A69A';
+                    ctx.strokeStyle = cor;
+                    ctx.lineWidth = 1.5;
+                    ctx.globalAlpha = invalidated ? 0.25 : 0.9;
+                    ctx.setLineDash(invalidated ? [4, 4] : []);
+                    ctx.beginPath(); ctx.moveTo(xa, ya); ctx.lineTo(xb, yb); ctx.stroke();
+                    ctx.setLineDash([]);
+                    ctx.globalAlpha = 1;
+                    // Rótulo no ponto B
+                    if (!invalidated) {
+                        ctx.fillStyle = cor;
+                        ctx.font = 'bold 9px -apple-system';
+                        ctx.textAlign = 'center';
+                        ctx.fillText(tipo === 'bear' ? '▼' : '▲', xb, yb + (tipo === 'bear' ? -4 : 10));
+                    }
+                });
+                ctx.globalAlpha = 1;
+                ctx.textAlign = 'left';
 
                 // Valor atual
                 const lastRsi = rsiVis.filter(v => v !== null).pop();
+
                 if (lastRsi) {
                     const rsiColor = lastRsi >= 70 ? '#EF5350' : lastRsi <= 30 ? '#26A69A' : '#CE93D8';
                     ctx.fillStyle = rsiColor;
@@ -5464,8 +5527,12 @@ async function cvAbrirRelPerf() {
     document.getElementById('cv-ind-rel').classList.add('active');
     // BTC sempre como base
     if (_relPerfAtivos.length === 0) {
-        await cvRelPerfCarregarAtivo('BTC', true);
-    }
+    // Reutiliza os candles já carregados do gráfico principal
+    const candles = _grAllCandles.map(c => ({ t: c.t, c: c.c }));
+    _relPerfAtivos.push({ ticker: 'BTC', candles, cor: '#26A69A', isBase: true });
+}
+
+
     cvRelPerfDesenhar();
     cvRelPerfRenderLista();
 }
