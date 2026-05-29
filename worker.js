@@ -136,7 +136,42 @@ export default {
       }
     }
 
+    // ── Extrato via Cloudflare AI Vision ─────────────────────────
+    if (request.method === 'POST' && path === '/ai/extrato') {
+      try {
+        const { imagens } = await request.json(); // array de base64
+        const content = [
+          ...imagens.map(img => ({
+            type: 'image',
+            image: img // base64 string
+          })),
+          {
+            type: 'text',
+            text: `Analise esse extrato bancário e extraia todos os lançamentos visíveis. Retorne SOMENTE um array JSON válido, sem texto adicional, sem markdown, sem explicações. Cada item deve ter exatamente estes campos:
+- "data": string no formato YYYY-MM-DD (se aparecer "Hoje" use ${new Date().toISOString().split('T')[0]})
+- "tipo": "entrada" se valor positivo, "saida" se valor negativo
+- "forma": sempre "deposito"
+- "valor": número positivo sem sinal
+- "descricao": nome/descrição abaixo do tipo de transação
+
+Exemplo: [{"data":"2026-05-29","tipo":"saida","forma":"deposito","valor":100.00,"descricao":"Fabio Adriano Passos"}]`
+          }
+        ];
+        const aiResponse = await env.AI.run('@cf/meta/llama-3.2-11b-vision-instruct', {
+          messages: [{ role: 'user', content }],
+          max_tokens: 2048
+        });
+        const text = aiResponse.response || aiResponse.result?.response || '[]';
+        const json = text.match(/\[[\s\S]*\]/)?.[0] || '[]';
+        const lancamentos = JSON.parse(json);
+        return Response.json({ lancamentos }, { headers: CORS });
+      } catch (e) {
+        return Response.json({ lancamentos: [], error: e.message }, { status: 500, headers: CORS });
+      }
+    }
+
     if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+
     const { subscription, title, body } = await request.json();
 
 
