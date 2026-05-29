@@ -155,7 +155,8 @@ export default {
       try {
         const { imagens } = await request.json(); // array de base64
                 const hoje = new Date().toISOString().split('T')[0];
-        const prompt = `Analise esse extrato bancário e extraia todos os lançamentos visíveis. Retorne SOMENTE um array JSON válido, sem texto adicional, sem markdown, sem explicações. Cada item deve ter exatamente estes campos:\n- "data": string no formato YYYY-MM-DD (se aparecer "Hoje" use ${hoje})\n- "tipo": "entrada" se valor positivo, "saida" se valor negativo\n- "forma": sempre "deposito"\n- "valor": número positivo sem sinal\n- "descricao": nome/descrição abaixo do tipo de transação\n\nExemplo: [{"data":"2026-05-29","tipo":"saida","forma":"deposito","valor":100.00,"descricao":"Fabio Adriano Passos"}]`;
+        const prompt = `Analise esse extrato bancário e extraia todos os lançamentos visíveis. Retorne SOMENTE um array JSON válido, sem texto adicional, sem markdown, sem explicações. Cada item deve ter exatamente estes campos:\n- "data": string no formato YYYY-MM-DD (se aparecer "Hoje" use ${hoje})\n- "tipo": "entrada" se for "Pix recebido", "saida" se for "Pix enviado"
+\n- "forma": sempre "deposito"\n- "valor": número positivo sem sinal\n- "descricao": nome/descrição abaixo do tipo de transação\n\nExemplo: [{"data":"2026-05-29","tipo":"saida","forma":"deposito","valor":100.00,"descricao":"Fabio Adriano Passos"}]`;
         const content = [
           ...imagens.map(img => ({
             type: 'image_url',
