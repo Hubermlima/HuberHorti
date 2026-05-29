@@ -1565,9 +1565,26 @@ async function conciliacaoProcessarFotos(input) {
         });
                 const data = await resp.json();
         console.log('Resposta worker:', JSON.stringify(data));
-        _conciliacaoLancamentos = (data.lancamentos || []).map((l, i) => ({ ...l, _id: i, _selecionado: true, _conta_id: null }));
-
+                const lancamentos = data.lancamentos || [];
+        // Busca lançamentos existentes no período
+        const datas = [...new Set(lancamentos.map(l => l.data))];
+        const d0 = datas.sort()[0];
+        const d1 = datas.sort().slice(-1)[0];
+        const { data: existentes } = await window.db.from('livro_caixa')
+            .select('data, forma, descricao, valor')
+            .gte('data', d0 + 'T00:00:00')
+            .lte('data', d1 + 'T23:59:59');
+        _conciliacaoLancamentos = lancamentos.map((l, i) => {
+            const duplicado = (existentes || []).some(e =>
+                e.data?.substring(0, 10) === l.data &&
+                e.forma === l.forma &&
+                Math.abs(parseFloat(e.valor) - parseFloat(l.valor)) < 0.01 &&
+                (e.descricao || '').toLowerCase().includes((l.descricao || '').substring(0, 8).toLowerCase())
+            );
+            return { ...l, _id: i, _selecionado: !duplicado, _conta_id: null, _duplicado: duplicado };
+        });
         conciliacaoRenderLista();
+
     } catch(e) {
         alert('Erro ao analisar extrato: ' + e.message);
         conciliacaoReset();
@@ -1586,6 +1603,8 @@ function conciliacaoRenderLista() {
         <div style="padding:12px 0;border-bottom:0.5px solid #E5E5EA;">
             <div style="display:flex;align-items:flex-start;gap:10px;">
                 <input type="checkbox" ${l._selecionado ? 'checked' : ''} onchange="_conciliacaoLancamentos[${i}]._selecionado=this.checked" style="width:18px;height:18px;accent-color:#007AFF;margin-top:3px;flex-shrink:0;cursor:pointer;">
+                ${l._duplicado ? `<span style="font-size:9px;font-weight:700;color:#EF4444;background:#FEE2E2;padding:2px 6px;border-radius:6px;flex-shrink:0;margin-top:4px;">JÁ EXISTE</span>` : ''}
+
                 <div style="flex:1;min-width:0;">
                     <!-- Linha 1: dropdown tipo + data + valor -->
                     <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">

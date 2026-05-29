@@ -139,10 +139,14 @@ export default {
 
      // ── Extrato via Anthropic Claude Vision ──────────────────────
     if (request.method === 'POST' && path === '/ai/extrato') {
-      try {
-        const { imagens } = await request.json();
+           try {
+        const body = await request.json();
+        console.log('Body recebido, imagens:', body.imagens?.length);
+        const { imagens } = body;
         const hoje = new Date().toISOString().split('T')[0];
-        const prompt = `Analise esse extrato bancário e extraia todos os lançamentos visíveis. Retorne SOMENTE um array JSON válido, sem texto adicional, sem markdown, sem explicações. Cada item deve ter exatamente estes campos:\n- "data": string no formato YYYY-MM-DD. Preste atenção nos separadores de data da tela (ex: "Hoje" = ${hoje}, "Quinta, 28 de maio" = 2026-05-28). Cada lançamento usa a data do separador mais recente acima dele.\n- "tipo": "entrada" se o label for "Pix recebido", "saida" se for "Pix enviado"\n- "forma": sempre "deposito"\n- "valor": número positivo sem sinal\n- "descricao": nome/descrição abaixo do label "Pix enviado" ou "Pix recebido". Nunca inclua separadores de data como lançamentos.\n\nExemplo: [{"data":"2026-05-29","tipo":"saida","forma":"deposito","valor":100.00,"descricao":"Fabio Adriano Passos"}]`;
+
+        const prompt = `Analise essa página do extrato bancário (pode ser uma de várias páginas sequenciais) e extraia APENAS os lançamentos visíveis NESSA imagem. Não repita lançamentos que possam aparecer em outras páginas.
+Retorne SOMENTE um array JSON válido, sem texto adicional, sem markdown, sem explicações. Cada item deve ter exatamente estes campos:\n- "data": string no formato YYYY-MM-DD. Preste atenção nos separadores de data da tela (ex: "Hoje" = ${hoje}, "Quinta, 28 de maio" = 2026-05-28). Cada lançamento usa a data do separador mais recente acima dele.\n- "tipo": "entrada" se o label for "Pix recebido", "saida" se for "Pix enviado"\n- "forma": sempre "deposito"\n- "valor": número positivo sem sinal\n- "descricao": nome/descrição abaixo do label "Pix enviado" ou "Pix recebido". Nunca inclua separadores de data como lançamentos.\n\nExemplo: [{"data":"2026-05-29","tipo":"saida","forma":"deposito","valor":100.00,"descricao":"Fabio Adriano Passos"}]`;
 
         const todos = [];
         for (const img of imagens) {
@@ -154,28 +158,42 @@ export default {
               'anthropic-version': '2023-06-01'
             },
             body: JSON.stringify({
-              model: 'claude-sonnet-4-5',
+              model: 'claude-sonnet-4-6',
+
               max_tokens: 2048,
               messages: [{
                 role: 'user',
                 content: [
-                  { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: img } },
+                  { type: 'image', source: { type: 'base64', media_type: img.startsWith('/9j/') ? 'image/jpeg' : 'image/png', data: img } },
+
                   { type: 'text', text: prompt }
                 ]
               }]
             })
           });
           const data = await res.json();
-          const text = data.content?.[0]?.text ?? '';
+          console.log('Anthropic raw:', JSON.stringify(data).substring(0, 500));
+                    const text = data.content?.[0]?.text ?? '';
+          console.log('Claude response:', text.substring(0, 500));
           const match = text.match(/\[[\s\S]*\]/);
           if (match) {
-            try { todos.push(...JSON.parse(match[0])); } catch(e) {}
+            try { todos.push(...JSON.parse(match[0])); } catch(e) { console.log('Parse error:', e.message); }
           }
+
         }
-        return Response.json({ lancamentos: todos }, { headers: CORS });
-      } catch (e) {
-        return Response.json({ lancamentos: [], error: e.message }, { status: 500, headers: CORS });
+        const vistos = new Set();
+        const unicos = todos.filter(l => {
+          const key = `${l.data}-${l.valor}-${l.descricao}`;
+          if (vistos.has(key)) return false;
+          vistos.add(key);
+          return true;
+        });
+        return Response.json({ lancamentos: unicos }, { headers: CORS });
+
+          } catch (e) {
+        return Response.json({ lancamentos: [], error: e.message, stack: e.stack }, { status: 200, headers: CORS });
       }
+
     }
 
 
