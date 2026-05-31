@@ -269,7 +269,7 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
     <div style="display:flex;justify-content:space-between;font-size:11px;color:#8E8E93;margin-bottom:5px;"><span>Saídas</span><span id="sum-banco-saidas" style="color:#EF4444;">—</span></div>
     <div style="display:flex;justify-content:space-between;font-size:11px;color:#8E8E93;margin-bottom:5px;"><span>Despesas</span><span id="sum-banco-despesas" style="color:#EF4444;">—</span></div>
         <div style="display:flex;justify-content:space-between;font-size:12px;font-weight:600;color:#1C1C1E;margin-top:6px;"><span>Saldo Final</span><span id="sum-banco-final">—</span></div>
-    <div id="sum-saldo-extrato" style="display:none;justify-content:space-between;font-size:11px;color:#8E8E93;margin-top:4px;"><span>Saldo Extrato</span><span>—</span></div>
+    <div id="sum-saldo-extrato" style="display:none;justify-content:space-between;font-size:11px;color:#1C1C1E;font-weight:600;margin-top:4px;"><span>Saldo Extrato</span><span>—</span></div>
   </div>
 
 
@@ -1642,6 +1642,17 @@ async function conciliacaoProcessarFotos(input) {
             .select('data, forma, descricao, valor')
             .gte('data', d0 + 'T00:00:00')
             .lte('data', d1 + 'T23:59:59');
+
+        // Verifica movimentos_clientes já pagos no período
+        const clienteIds = Object.values(mapaDeposit).map(r => r.cliente_id).filter(Boolean);
+        const { data: movsPagos } = clienteIds.length
+            ? await window.db.from('movimentos_clientes')
+                .select('cliente_id, valor, data')
+                .in('cliente_id', clienteIds)
+                .not('data', 'is', null)
+                .gte('data', d0 + 'T00:00:00')
+                .lte('data', d1 + 'T23:59:59')
+            : { data: [] };
         // Busca de-para na conciliacao_bancaria para entradas
         const depositantes = lancamentos
             .filter(l => l.tipo === 'entrada' && l.descricao)
@@ -1668,14 +1679,18 @@ async function conciliacaoProcessarFotos(input) {
         (envPara || []).forEach(r => { mapaBenefic[r.beneficiario] = r.conta_contabil_id; });
 
         _conciliacaoLancamentos = lancamentos.map((l, i) => {
-            const duplicado = (existentes || []).some(e =>
+            const depMatch = l.tipo === 'entrada' && l.descricao ? mapaDeposit[l.descricao] : null;
+            const jaPagoCliente = depMatch && (movsPagos || []).some(m =>
+                m.cliente_id === depMatch.cliente_id &&
+                Math.abs(parseFloat(m.valor) - parseFloat(l.valor)) < 0.01 &&
+                m.data?.substring(0, 10) === l.data
+            );
+            const duplicado = jaPagoCliente || (existentes || []).some(e =>
                 e.data?.substring(0, 10) === l.data &&
                 e.forma === l.forma &&
                 Math.abs(parseFloat(e.valor) - parseFloat(l.valor)) < 0.01 &&
                 (e.descricao || '').toLowerCase() === (l.descricao || '').toLowerCase()
-
             );
-            const depMatch = l.tipo === 'entrada' && l.descricao ? mapaDeposit[l.descricao] : null;
             const contaDeposito = depMatch ? (
                 _contas.find(c => c.descricao && c.descricao.toLowerCase().includes('depósito') && c.descricao.toLowerCase().includes('cliente'))
                 || _contas.find(c => c.codigo === 3)
@@ -1732,12 +1747,12 @@ function conciliacaoRenderCard() {
     const optsHTML = opcoesConta.map(c => `<option value="${c.id}" ${l?._conta_id == c.id ? 'selected' : ''}>${c.descricao}</option>`).join('');
 
     const bloqueado = l ? (l._gravado || l._duplicado) : false;
-    const corTexto = bloqueado ? '#C7C7CC' : '#1C1C1E';
+    const corTexto = bloqueado ? '#6B6B6B' : '#1C1C1E';
     const inputStyle = `border:none;outline:none;font-size:15px;font-weight:500;font-family:'Inter',sans-serif;text-align:right;background:transparent;color:${corTexto};`;
 
     document.getElementById('conciliacao-lista').innerHTML = !l
         ? `<div style="text-align:center;padding:24px;font-size:13px;color:#8E8E93;font-family:'Inter',sans-serif;">Nenhum lançamento</div>`
-        : `<div id="conciliacao-item-${i}" style="padding:4px 0;${bloqueado ? 'opacity:0.5;pointer-events:none;' : ''}">
+        : `<div id="conciliacao-item-${i}" style="padding:4px 0;${bloqueado ? 'opacity:0.75;pointer-events:none;' : ''}">
 
     <!-- Link movimentos clientes (sem checkbox) -->
     ${l._cliente_id ? `
