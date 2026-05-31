@@ -1631,28 +1631,43 @@ async function conciliacaoProcessarFotos(input) {
             .filter(l => l.tipo === 'entrada' && l.descricao)
             .map(l => l.descricao);
         const { data: depPara } = depositantes.length
-            ? await window.db.from('conciliacao_bancaria')
+            ? await window.db.from('pix_recebido_extrato')
+
                 .select('depositante, cliente_id, clientes(nome)')
                 .in('depositante', depositantes)
             : { data: [] };
         const mapaDeposit = {};
         (depPara || []).forEach(r => { mapaDeposit[r.depositante] = { cliente_id: r.cliente_id, nome: r.clientes?.nome || '' }; });
 
+        // Busca de-para na pix_enviado_extrato para saídas
+        const beneficiarios = lancamentos
+            .filter(l => l.tipo === 'saida' && l.descricao)
+            .map(l => l.descricao);
+        const { data: envPara } = beneficiarios.length
+            ? await window.db.from('pix_enviado_extrato')
+                .select('beneficiario, conta_contabil_id')
+                .in('beneficiario', beneficiarios)
+            : { data: [] };
+        const mapaBenefic = {};
+        (envPara || []).forEach(r => { mapaBenefic[r.beneficiario] = r.conta_contabil_id; });
+
         _conciliacaoLancamentos = lancamentos.map((l, i) => {
             const duplicado = (existentes || []).some(e =>
                 e.data?.substring(0, 10) === l.data &&
                 e.forma === l.forma &&
                 Math.abs(parseFloat(e.valor) - parseFloat(l.valor)) < 0.01 &&
-                (e.descricao || '').toLowerCase().includes((l.descricao || '').substring(0, 8).toLowerCase())
+                (e.descricao || '').toLowerCase() === (l.descricao || '').toLowerCase()
+
             );
             const depMatch = l.tipo === 'entrada' && l.descricao ? mapaDeposit[l.descricao] : null;
             const contaDeposito = depMatch ? (
                 _contas.find(c => c.descricao && c.descricao.toLowerCase().includes('depósito') && c.descricao.toLowerCase().includes('cliente'))
                 || _contas.find(c => c.codigo === 3)
             ) : null;
+            const contaSaidaId = l.tipo === 'saida' && l.descricao ? mapaBenefic[l.descricao] || null : null;
             return {
                 ...l, _id: i, _selecionado: !duplicado, _duplicado: duplicado,
-                _conta_id: contaDeposito?.id || null,
+                _conta_id: contaDeposito?.id || contaSaidaId || null,
                 _cliente_id: depMatch?.cliente_id || null,
                 _cliente_nome: depMatch?.nome || ''
             };
@@ -1744,7 +1759,7 @@ function conciliacaoRenderCard() {
     <div style="padding:6px 0;border-bottom:0.5px solid #F2F2F7;">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
             <span style="font-size:15px;color:#8E8E93;font-family:'Inter',sans-serif;flex-shrink:0;">Conta</span>
-            <select id="conta-sel-${i}" ${bloqueado ? 'disabled' : `onchange="_conciliacaoLancamentos[${i}]._conta_id=this.value||null"`} class="sel-arrow" style="border:none;outline:none;font-size:15px;font-weight:500;color:${corTexto};font-family:'Inter',sans-serif;background:transparent;min-width:0;max-width:65%;margin-left:auto;display:block;">
+            <select id="conta-sel-${i}" ${bloqueado ? 'disabled' : `onchange="conciliacaoSelecionarConta(${i}, this.value||null)"`} class="sel-arrow" style="border:none;outline:none;font-size:15px;font-weight:500;color:${corTexto};font-family:'Inter',sans-serif;background:transparent;min-width:0;max-width:65%;margin-left:auto;display:block;">
                 ${optsHTML}
             </select>
         </div>
@@ -1839,11 +1854,24 @@ async function conciliacaoSelecionarCliente(i, id, nome) {
     // Grava de-para na conciliacao_bancaria para uso futuro
     const depositante = _conciliacaoLancamentos[i].descricao;
     if (depositante) {
-        await window.db.from('conciliacao_bancaria')
+        await window.db.from('pix_recebido_extrato')
+
             .upsert({ depositante, cliente_id: id }, { onConflict: 'depositante' });
     }
     // Re-renderiza para exibir o link Movimentos Clientes
     conciliacaoRenderCard();
+}
+
+
+
+async function conciliacaoSelecionarConta(i, contaId) {
+    _conciliacaoLancamentos[i]._conta_id = contaId;
+    // Grava de-para na pix_enviado_extrato para saídas
+    const l = _conciliacaoLancamentos[i];
+    if (l.tipo === 'saida' && l.descricao && contaId) {
+        await window.db.from('pix_enviado_extrato')
+            .upsert({ beneficiario: l.descricao, conta_contabil_id: contaId }, { onConflict: 'beneficiario' });
+    }
 }
 
 
