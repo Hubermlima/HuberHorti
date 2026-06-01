@@ -1161,9 +1161,12 @@ async function carregarTransacoes() {
         .select('*')
         .eq('ativo_id', _ativoId)
         .order('data', {ascending: true});
-    _transacoes = data || [];
+        _transacoes = data || [];
     document.getElementById('topbar-sub').textContent = `${_transacoes.length} operação${_transacoes.length !== 1 ? 'ões' : ''}`;
+    const _c = calcularConsolidado();
+    _grPm = _c.pm > 0 ? _c.pm : (_c.pmShort > 0 ? _c.pmShort : 0);
     renderizar();
+
 }
 
 function renderizar() {
@@ -1455,13 +1458,17 @@ async function salvarNova() {
     }).select().single();
 
     document.getElementById('btn-salvar-nova').disabled = false;
-    if (!error && d) {
+        if (!error && d) {
         _transacoes.push(d);
         _transacoes.sort((a,b) => new Date(a.data) - new Date(b.data));
         document.getElementById('topbar-sub').textContent = `${_transacoes.length} operações`;
+        const _c = calcularConsolidado();
+        _grPm = _c.pm > 0 ? _c.pm : (_c.pmShort > 0 ? _c.pmShort : 0);
         fecharModal('modal-nova');
         renderizar();
+        grDrawChart();
     }
+
 }
 
 function abrirGestaoRisco() { cvAbrir(); }
@@ -2478,8 +2485,28 @@ if (_grTipoGrafico === 'linha') {
             });
         }
 
+                // Linha do Preço Médio de Compra
+        if (_grPm > 0) {
+            const yPm = toY(_grPm);
+            ctx.strokeStyle = '#F5A623';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([6, 3]);
+            ctx.beginPath(); ctx.moveTo(PAD.left, yPm); ctx.lineTo(W - PAD.right, yPm); ctx.stroke();
+            ctx.setLineDash([]);
+            const pmTxt = 'PM ' + fmtN(_grPm);
+            ctx.font = 'bold 10px -apple-system';
+            const bH = 16, bW = PAD.left - 4;
+            const bX = 3, bY = yPm - bH / 2;
+            ctx.fillStyle = '#F5A623';
+            ctx.beginPath(); ctx.roundRect(bX, bY, bW, bH, 3); ctx.fill();
+            ctx.fillStyle = '#131722';
+            ctx.textAlign = 'right';
+            ctx.fillText(pmTxt, bX + bW - 4, bY + bH - 3);
+        }
+
         // Linha de preço atual — cor dinâmica pelo último candle
         if (_precoAtual > 0) {
+
             const lastCandle = _grAllCandles[_grAllCandles.length - 1];
 const precoColor = lastCandle ? (lastCandle.c >= lastCandle.o ? '#26A69A' : '#EF5350') : '#FFFFFF';
 
@@ -3225,17 +3252,17 @@ function grDrawChartWithCrosshair(yInterno) {
         ctx.fillStyle = '#131722';
         ctx.fillText(dtxt, dpX + 6, dpY + dpH - 4);
 
-        // Janelinha OHLC
+                // Janelinha OHLC
         const isBull = candle.c >= candle.o;
         const corCandle = isBull ? '#26A69A' : '#EF5350';
         const linhas = [
-            { label: 'A', val: fmtN(candle.o) },
-            { label: 'M', val: fmtN(candle.h) },
-            { label: 'm', val: fmtN(candle.l) },
-            { label: 'F', val: fmtN(candle.c) },
+            { label: 'Abert', val: fmtN(candle.o) },
+            { label: 'Max',   val: fmtN(candle.h) },
+            { label: 'Min',   val: fmtN(candle.l) },
+            { label: 'Fech',  val: fmtN(candle.c) },
         ];
         const boxPad = 10, lineH = 18, boxH = linhas.length * lineH + boxPad;
-        const colLabel = 28, colVal = 80;
+        const colLabel = 44, colVal = 80;
         const boxW = colLabel + colVal + boxPad;
         let bx = _grCrosshairX + 10;
         if (bx + boxW > W - _grPAD.right) bx = _grCrosshairX - boxW - 10;
@@ -3251,12 +3278,13 @@ function grDrawChartWithCrosshair(yInterno) {
             const ly = by + boxPad / 2 + i * lineH + lineH * 0.75;
             ctx.font = 'bold 11px -apple-system';
             ctx.textAlign = 'left';
-            ctx.fillStyle = 'rgba(255,255,255,0.45)';
+            ctx.fillStyle = '#FFFFFF';
             ctx.fillText(l.label, bx + boxPad / 2, ly);
             ctx.fillStyle = '#FFFFFF';
             ctx.textAlign = 'right';
             ctx.fillText(l.val, bx + boxW - boxPad / 2, ly);
         });
+
     }
 }
 
@@ -3296,6 +3324,8 @@ const _grPAD = { top: 22, right: 24, bottom: 30, left: 45 };
 // Linha sendo arrastada: 'entrada' | 'stop' | 'alvo' | null
 let _grDragLine = null;
 let _grEntrada = 0, _grStop = 0, _grAlvo = 0;
+let _grPm = 0;
+
 
 function grSetFieldPreco(id, preco) {
     const s = preco.toFixed(2).replace('.', ',');
@@ -5530,8 +5560,11 @@ async function salvarEdicao() {
         if (idx >= 0) {
             _transacoes[idx] = { ..._transacoes[idx], quantidade_ativo, valor_total_usd, taxa_operacao, data: data + 'T12:00:00-04:00' };
         }
+        const _c = calcularConsolidado();
+        _grPm = _c.pm > 0 ? _c.pm : (_c.pmShort > 0 ? _c.pmShort : 0);
         fecharModal('modal-detalhe');
         renderizar();
+        grDrawChart();
     }
 }
 
@@ -5569,8 +5602,11 @@ async function excluirTransacao() {
     if (!error) {
         _transacoes = _transacoes.filter(x => x.id !== _detalheId);
         document.getElementById('topbar-sub').textContent = `${_transacoes.length} operação${_transacoes.length !== 1 ? 'ões' : ''}`;
+        const _c = calcularConsolidado();
+        _grPm = _c.pm > 0 ? _c.pm : (_c.pmShort > 0 ? _c.pmShort : 0);
         fecharModal('modal-detalhe');
         renderizar();
+        grDrawChart();
     } else {
         if (btn) btn.disabled = false;
     }
