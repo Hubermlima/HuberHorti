@@ -5575,37 +5575,54 @@ function cvFecharRelPerf() {
     document.getElementById('cv-ind-rel').classList.remove('active');
 }
 
+const TWELVE_DATA_KEY = '3366384ac03a400c84f239e16cb5c4bd';
+const CRYPTO_REGEX = /^[A-Z]{2,5}(USD|EUR|BTC|ETH|USDT)$/;
+
 async function cvRelPerfCarregarAtivo(ticker, isBase) {
     const step = _grTf === '4h' ? 14400 : _grTf === '1day' ? 86400 : 604800;
     const limit = 800;
     const symbol = ticker.toLowerCase().replace('/', '').replace('-', '');
     let candles = [];
+    let fonte = 'Bitstamp';
     try {
-        if (_grTf === '1week') {
-            const res = await fetch(`https://www.bitstamp.net/api/v2/ohlc/${symbol}/?step=86400&limit=400`);
-            const data = await res.json();
-            const daily = (data.data.ohlc || []).map(c => ({ t: parseInt(c.timestamp)*1000, c: parseFloat(c.close) }));
-            const weeks = {};
-            daily.forEach(d => {
-                const date = new Date(d.t);
-                const day = date.getDay();
-                const monday = new Date(d.t - ((day===0?6:day-1)*86400000));
-                monday.setHours(0,0,0,0);
-                const key = monday.getTime();
-                if (!weeks[key] || d.t > weeks[key].t) weeks[key] = d;
-            });
-            candles = Object.values(weeks).sort((a,b) => a.t - b.t);
+        if (CRYPTO_REGEX.test(ticker)) {
+            // Cripto → Bitstamp
+            if (_grTf === '1week') {
+                const res = await fetch(`https://www.bitstamp.net/api/v2/ohlc/${symbol}/?step=86400&limit=400`);
+                const data = await res.json();
+                const daily = (data.data.ohlc || []).map(c => ({ t: parseInt(c.timestamp)*1000, c: parseFloat(c.close) }));
+                const weeks = {};
+                daily.forEach(d => {
+                    const date = new Date(d.t);
+                    const day = date.getDay();
+                    const monday = new Date(d.t - ((day===0?6:day-1)*86400000));
+                    monday.setHours(0,0,0,0);
+                    const key = monday.getTime();
+                    if (!weeks[key] || d.t > weeks[key].t) weeks[key] = d;
+                });
+                candles = Object.values(weeks).sort((a,b) => a.t - b.t);
+            } else {
+                const res = await fetch(`https://www.bitstamp.net/api/v2/ohlc/${symbol}/?step=${step}&limit=${limit}`);
+                const data = await res.json();
+                candles = (data.data.ohlc || []).map(c => ({ t: parseInt(c.timestamp)*1000, c: parseFloat(c.close) }));
+            }
         } else {
-            const res = await fetch(`https://www.bitstamp.net/api/v2/ohlc/${symbol}/?step=${step}&limit=${limit}`);
+            // ETF/Ação → Twelve Data
+            fonte = 'Twelve Data';
+            const interval = _grTf === '4h' ? '4h' : _grTf === '1day' ? '1day' : '1week';
+            const outputsize = limit;
+            const res = await fetch(`https://api.twelvedata.com/time_series?symbol=${ticker}&interval=${interval}&outputsize=${outputsize}&apikey=${TWELVE_DATA_KEY}`);
             const data = await res.json();
-            candles = (data.data.ohlc || []).map(c => ({ t: parseInt(c.timestamp)*1000, c: parseFloat(c.close) }));
+            if (!data.values || !data.values.length) throw new Error('not found');
+            candles = data.values.reverse().map(c => ({ t: new Date(c.datetime).getTime(), c: parseFloat(c.close) }));
         }
     } catch(e) { return false; }
     if (!candles.length) return false;
     const cor = isBase ? '#26A69A' : _relPerfCores[_relPerfAtivos.length % _relPerfCores.length];
-    _relPerfAtivos.push({ ticker: ticker.toUpperCase(), candles, cor, isBase: !!isBase });
+    _relPerfAtivos.push({ ticker: ticker.toUpperCase(), candles, cor, isBase: !!isBase, fonte });
     return true;
 }
+
 
 async function cvRelPerfAdicionarAtivo() {
     const input = document.getElementById('cv-relperf-input');
@@ -5736,8 +5753,10 @@ function cvRelPerfRenderLista() {
         return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:0.5px solid rgba(255,255,255,0.06);">
             <div style="display:flex;align-items:center;gap:8px;">
                 <span style="width:10px;height:10px;border-radius:50%;background:${a.cor};flex-shrink:0;display:inline-block;"></span>
-                <span style="font-size:14px;font-weight:800;color:#FFFFFF;font-family:-apple-system,sans-serif;">${a.ticker}</span>
+                                <span style="font-size:14px;font-weight:800;color:#FFFFFF;font-family:-apple-system,sans-serif;">${a.ticker}</span>
                 ${a.isBase ? '<span style="font-size:10px;font-weight:700;color:rgba(255,255,255,0.3);font-family:-apple-system,sans-serif;">BASE</span>' : ''}
+                <span style="font-size:9px;font-weight:700;color:rgba(255,255,255,0.25);font-family:-apple-system,sans-serif;">${a.fonte}</span>
+
             </div>
             <div style="display:flex;align-items:center;gap:12px;">
                 <span style="font-size:14px;font-weight:800;color:${cor};font-family:-apple-system,sans-serif;">${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%</span>
