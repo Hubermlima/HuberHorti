@@ -1609,9 +1609,8 @@ async function conciliacaoProcessarFotos(input) {
         const d0 = datas.sort()[0];
         const d1 = datas.sort().slice(-1)[0];
         const { data: existentes } = await window.db.from('livro_caixa')
-            .select('data, forma, descricao, valor')
-            .gte('data', d0 + 'T00:00:00')
-            .lte('data', d1 + 'T23:59:59');
+    .select('data, forma, descricao, valor');
+
         // Busca de-para na pix_recebido_extrato para entradas
         const depositantes = lancamentos
             .filter(l => l.tipo === 'entrada' && l.descricao)
@@ -1622,18 +1621,18 @@ async function conciliacaoProcessarFotos(input) {
                 .in('depositante', depositantes)
             : { data: [] };
         const mapaDeposit = {};
-        (depPara || []).forEach(r => { mapaDeposit[r.depositante] = { cliente_id: r.cliente_id, nome: r.clientes?.nome || '' }; });
+        (depPara || []).forEach(r => { mapaDeposit[r.depositante.toLowerCase()] = { cliente_id: r.cliente_id, nome: r.clientes?.nome || '' }; });
+
 
         // Verifica movimentos_clientes já pagos no período
         const clienteIds = Object.values(mapaDeposit).map(r => r.cliente_id).filter(Boolean);
         const { data: movsPagos } = clienteIds.length
-            ? await window.db.from('movimentos_clientes')
-                .select('cliente_id, valor, data')
-                .in('cliente_id', clienteIds)
-                .not('data', 'is', null)
-                .gte('data', d0 + 'T00:00:00')
-                .lte('data', d1 + 'T23:59:59')
-            : { data: [] };
+    ? await window.db.from('movimentos_clientes')
+        .select('cliente_id, valor, data')
+        .in('cliente_id', clienteIds)
+        .not('data', 'is', null)
+    : { data: [] };
+
 
         // Busca de-para na pix_enviado_extrato para saídas
         const beneficiarios = lancamentos
@@ -1648,14 +1647,17 @@ async function conciliacaoProcessarFotos(input) {
         (envPara || []).forEach(r => { mapaBenefic[r.beneficiario] = r.conta_contabil_id; });
 
         _conciliacaoLancamentos = lancamentos.map((l, i) => {
-            const depMatch = l.tipo === 'entrada' && l.descricao ? mapaDeposit[l.descricao] : null;
+            const depMatch = l.tipo === 'entrada' && l.descricao ? mapaDeposit[l.descricao.toLowerCase()] : null;
+
             const jaPagoCliente = depMatch && (movsPagos || []).some(m =>
                 m.cliente_id === depMatch.cliente_id &&
                 Math.abs(parseFloat(m.valor) - parseFloat(l.valor)) < 0.01 &&
-                m.data?.substring(0, 10) === l.data
+                new Date(m.data).toLocaleDateString('en-CA', {timeZone:'America/Manaus'}) === l.data
+
             );
             const duplicado = jaPagoCliente || (existentes || []).some(e =>
-                e.data?.substring(0, 10) === l.data &&
+                new Date(e.data).toLocaleDateString('en-CA', {timeZone:'America/Manaus'}) === l.data &&
+
                 e.forma === l.forma &&
                 Math.abs(parseFloat(e.valor) - parseFloat(l.valor)) < 0.01 &&
                 (e.descricao || '').toLowerCase() === (l.descricao || '').toLowerCase()
@@ -1784,9 +1786,12 @@ function conciliacaoRenderCard() {
     let html = `<button class="pag-btn-nav" onclick="conciliacaoMudarPag(-1)" ${pag === 0 ? 'disabled' : ''}>
         <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M15.75 19.5L8.25 12l7.5-7.5"/></svg> Anterior
     </button>`;
-    for (let n = 0; n < total; n++) {
-        html += `<button class="pag-num${n === pag ? ' ativo' : ''}" onclick="conciliacaoIrPag(${n})">${n + 1}</button>`;
-    }
+    const inicio = Math.max(0, Math.min(pag - 1, total - 3));
+const fim = Math.min(inicio + 3, total);
+for (let n = inicio; n < fim; n++) {
+    html += `<button class="pag-num${n === pag ? ' ativo' : ''}" onclick="conciliacaoIrPag(${n})">${n + 1}</button>`;
+}
+
     html += `<button class="pag-btn-nav" onclick="conciliacaoMudarPag(1)" ${pag === total - 1 ? 'disabled' : ''}>
         Próxima <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M8.25 4.5l7.5 7.5-7.5 7.5"/></svg>
     </button>`;
@@ -1852,12 +1857,12 @@ async function conciliacaoSelecionarCliente(i, id, nome) {
     }
 
     // Grava de-para na conciliacao_bancaria para uso futuro
-    const depositante = _conciliacaoLancamentos[i].descricao;
-    if (depositante) {
-        await window.db.from('pix_recebido_extrato')
+    const depositante = (_conciliacaoLancamentos[i].descricao || '').toLowerCase();
+if (depositante) {
+    await window.db.from('pix_recebido_extrato')
+        .upsert({ depositante, cliente_id: id }, { onConflict: 'depositante' });
+}
 
-            .upsert({ depositante, cliente_id: id }, { onConflict: 'depositante' });
-    }
     // Re-renderiza para exibir o link Movimentos Clientes
     conciliacaoRenderCard();
 }
