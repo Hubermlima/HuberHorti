@@ -143,7 +143,8 @@ export default {
         const body = await request.json();
         console.log('Body recebido, imagens:', body.imagens?.length);
         const { imagens } = body;
-        const hoje = new Date().toISOString().split('T')[0];
+        const hoje = new Date().toLocaleDateString('en-CA', {timeZone: 'America/Manaus'});
+
 
         const prompt = `Analise essa página do extrato bancário (pode ser uma de várias páginas sequenciais) e extraia TODOS os lançamentos visíveis NESSA imagem. Não repita lançamentos que possam aparecer em outras páginas.\nRetorne SOMENTE um array JSON válido, sem texto adicional, sem markdown, sem explicações. Cada item deve ter exatamente estes campos:\n- "data": string no formato YYYY-MM-DD. Preste atenção nos separadores de data da tela (ex: "Hoje" = ${hoje}, "Quinta, 28 de maio" = ${hoje.substring(0,4)}-05-28). O ano é SEMPRE ${hoje.substring(0,4)}, nunca use outro ano. Cada lançamento usa a data do separador mais recente acima dele.\n- "tipo": "entrada" se for crédito/recebimento, "saida" se for débito/pagamento/envio\n- "forma": sempre "deposito"\n- "valor": número positivo sem sinal\n- "descricao": nome/descrição do lançamento. Nunca inclua separadores de data como lançamentos.\n\nAlém dos lançamentos, extraia o saldo disponível e retorne: {"saldo_final": 8595.20, "lancamentos": [...]}. Se não achar o saldo, use null.\n\nExemplo: {"saldo_final": 8595.20, "lancamentos": [{"data":"${hoje.substring(0,4)}-05-29","tipo":"saida","forma":"deposito","valor":100.00,"descricao":"Fabio Adriano Passos"}]}`;
 
