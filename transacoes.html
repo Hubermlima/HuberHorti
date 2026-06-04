@@ -590,7 +590,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
     <div class="od-pane active" id="od-pane-0">
       <div class="od-field-group">
         <div class="od-field-label">COTAÇÃO BASE</div>
-        <div class="od-field-display" id="nova-cotacao">—</div>
+        <input class="od-input" id="nova-cotacao" type="tel" inputmode="decimal" placeholder="0,00" oninput="odCotacaoInput(this.value)">
       </div>
       <div class="od-divider"></div>
       <div class="od-field-group">
@@ -1604,7 +1604,7 @@ function abrirModalNova() {
     document.getElementById('nova-taxa').value = '';
     document.getElementById('nova-slider').value = 0;
     document.getElementById('slider-pct-val').textContent = '0%';
-    document.getElementById('nova-cotacao').textContent = fmtUSD(_precoAtual) + ' USD';
+    document.getElementById('nova-cotacao').value = _precoAtual.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
     setTipoNova('LA');
     abrirOrderDesk();
 }
@@ -3401,6 +3401,9 @@ function grInitTouch() {
         if (_grAlvo    > 0 && Math.abs(yInterno - grLineY(_grAlvo))    <= HIT) return 'alvo';
         if (_grEntrada > 0 && Math.abs(yInterno - grLineY(_grEntrada)) <= HIT) return 'entrada';
         if (_grStop    > 0 && Math.abs(yInterno - grLineY(_grStop))    <= HIT) return 'stop';
+        // Stop sempre presente
+        const stopPrice = _grStop > 0 ? _grStop : _precoAtual * 0.95;
+        if (Math.abs(yInterno - grLineY(stopPrice)) <= HIT) return 'stop';
         return null;
     }
 
@@ -3414,19 +3417,6 @@ function grInitTouch() {
         if (e.touches.length === 1) {
             const yInterno = toCanvasY(e.touches[0].clientY);
             const xInterno = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (canvas.width / canvas.getBoundingClientRect().width);
-            // Toque no handle do Stop (S)
-            if (window._stopHandleX !== undefined && window._stopHandleY !== undefined) {
-                const sTocado = xInterno >= window._stopHandleX
-                             && xInterno <= window._stopHandleX + window._stopHandleW
-                             && Math.abs(yInterno - window._stopHandleY) < window._stopHandleH;
-                if (sTocado) {
-                    // Inicia drag do stop — toggle da janelinha no touchend se não arrastou
-                    _grDragLine = 'stop';
-                    window._stopHandleDragged = false;
-                    e.preventDefault();
-                    return;
-                }
-            }
             // Toque no handle da régua
             if (_regAtual && window._regHandleX !== undefined && window._regHandleY !== undefined) {
                 const hTocado = xInterno >= window._regHandleX && xInterno <= window._regHandleX + 14
@@ -3444,6 +3434,7 @@ function grInitTouch() {
             if (target) {
                 _grDragLine = target;
                 isDragging = false;
+                if (target === 'stop') window._stopHandleDragged = false;
             } else if (_indState.fib) {
     // Verifica se tocou em cima de um fib existente
     const precoToque = grToPrice(yInterno);
@@ -5215,7 +5206,7 @@ function cvGerarBoleta() {
     if (!window._grDados) return;
     const { tamanho, valorInvestido } = window._grDados;
     // Popula modal boleta sem fechar nada
-    document.getElementById('nova-cotacao').textContent = fmtUSD(_precoAtual) + ' USD';
+    document.getElementById('nova-cotacao').value = _precoAtual.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
     document.getElementById('nova-taxa').value = '';
     document.getElementById('nova-slider').value = 0;
     document.getElementById('slider-pct-val').textContent = '0%';
@@ -5757,7 +5748,7 @@ function grGerarBoleta() {
     fecharGestaoRisco();
 
     // Abre modal SEM limpar campos
-    document.getElementById('nova-cotacao').textContent = fmtUSD(_precoAtual) + ' USD';
+    document.getElementById('nova-cotacao').value = _precoAtual.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
     document.getElementById('nova-taxa').value = '';
     document.getElementById('nova-slider').value = 0;
     document.getElementById('slider-pct-val').textContent = '0%';
@@ -6028,7 +6019,11 @@ function abrirOrderDesk() {
     // Preenche campos estáticos
     const fmtUSD2 = v => 'USD ' + parseFloat(v||0).toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
     const fmtBTC  = v => parseFloat(v||0).toFixed(8).replace('.', ',') + ' BTC';
-    document.getElementById('nova-cotacao').textContent = fmtUSD2(_precoAtual);
+    const cotacaoEl = document.getElementById('nova-cotacao');
+    if (cotacaoEl) {
+        const cotacaoVal = window._cotacaoProjecao || _precoAtual;
+        cotacaoEl.value = cotacaoVal.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
+    }
     const _c = calcularConsolidado();
     const qtdBase   = _c.qtdAberta > 0 ? _c.qtdAberta : _c.qtdShort;
     const custoBase = _c.custoAberto > 0 ? _c.custoAberto : _c.custoShort;
@@ -6078,8 +6073,9 @@ function calcularDCA() {
     const valor = parseVal(document.getElementById('nova-valor').value);
     const sel = document.getElementById('seg-track-nova');
     const tipo = (sel.dataset && sel.dataset.tipo) ? sel.dataset.tipo : (sel.value || 'LA');
-    const cotacaoRaw = document.getElementById('nova-cotacao').textContent.replace(/[^0-9.,]/g,'');
-    const cotacao = _precoAtual > 0 ? _precoAtual : parseVal(cotacaoRaw);
+    const cotacaoEl2 = document.getElementById('nova-cotacao');
+    const cotacaoRaw = cotacaoEl2 ? (cotacaoEl2.value || cotacaoEl2.textContent).replace(/[^0-9.,]/g,'') : '';
+    const cotacao = parseVal(cotacaoRaw) > 0 ? parseVal(cotacaoRaw) : _precoAtual;
     const _c = calcularConsolidado();
     const qtdBase = _c.qtdAberta > 0 ? _c.qtdAberta : _c.qtdShort;
     const custoBase = _c.custoAberto > 0 ? _c.custoAberto : _c.custoShort;
@@ -6146,6 +6142,19 @@ const novaQtd = novaQtdBruta - taxaEstimada; // igual ao LA real
         document.getElementById('nova-dca').style.display = 'none';
     }
 }
+function odCotacaoInput(raw) {
+    // Permite editar a cotação base para projeções
+    const input = document.getElementById('nova-cotacao');
+    mascara2(input);
+    const val = parseVal(input.value);
+    if (val > 0) window._cotacaoProjecao = val;
+    // Recalcula DCA com nova cotação
+    const qtd = parseVal(document.getElementById('nova-qtd') ? document.getElementById('nova-qtd').value : '');
+    if (qtd > 0 || parseVal(document.getElementById('od-valor-investido') ? document.getElementById('od-valor-investido').value : '') > 0) {
+        calcularDCA();
+    }
+}
+
 function odValorInvestidoInput(raw) {
     // Espelha para nova-valor (Boleta) e dispara calcularDCA
     const input = document.getElementById('od-valor-investido');
