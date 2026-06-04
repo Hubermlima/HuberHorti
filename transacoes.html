@@ -2704,16 +2704,24 @@ ctx.fillText(fmtN(stopPrice), bX + bW - 4, bY + bH - 3);
             ctx.font = 'bold 11px -apple-system';
             ctx.textAlign = 'center';
             ctx.fillText('S', hX - hW / 2, y + 4);
+            // Salva posição do handle para detecção de toque
+            window._stopHandleX = hX - hW;
+            window._stopHandleY = y;
+            window._stopHandleW = hW;
+            window._stopHandleH = hH;
             // Janelinha do Stop — mostra ao arrastar (reutiliza _regJanelaVisivel do stop)
             if (window._stopJanelaVisivel) {
                 const pm = _grPm > 0 ? _grPm : 0;
                 const perdaPct = pm > 0 ? ((pm - stopPrice) / pm * 100) : 0;
                 const perdaUSD = pm > 0 ? (pm - stopPrice) * _grQtd : 0;
+                const perdaBRL = perdaUSD * _fxRate;
                 const alvo = _regAtual ? _regAtual.p2 : 0;
                 const rr = pm > 0 && (pm - stopPrice) > 0 && alvo > 0 ? ((alvo - pm) / (pm - stopPrice)) : 0;
-                const jW = 170, jH = rr > 0 ? 76 : 58;
+                const jW = 170, jH = rr > 0 ? 112 : 94;
                 const centerX = PAD.left + (W - PAD.left - PAD.right) / 2;
-                const jX = centerX - jW / 2, jY = y + 12;
+                const jX = centerX - jW / 2;
+                // Posiciona acima da linha se muito perto do fundo
+                const jY = (y + 12 + jH > H - 20) ? y - jH - 12 : y + 12;
                 ctx.fillStyle = 'rgba(19,23,34,0.92)';
                 ctx.beginPath(); ctx.roundRect(jX, jY, jW, jH, 8); ctx.fill();
                 ctx.strokeStyle = color; ctx.lineWidth = 1.5;
@@ -2724,10 +2732,14 @@ ctx.fillText(fmtN(stopPrice), bX + bW - 4, bY + bH - 3);
                 ctx.textAlign = 'right'; ctx.fillStyle = '#EF5350'; ctx.fillText('-' + Math.abs(perdaPct).toFixed(2) + '%', rx, jY + 18);
                 ctx.textAlign = 'left';  ctx.fillStyle = '#FFFFFF'; ctx.fillText('Perda USD:', lx, jY + 36);
                 ctx.textAlign = 'right'; ctx.fillStyle = '#EF5350'; ctx.fillText('-' + Math.abs(perdaUSD).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}), rx, jY + 36);
+                ctx.textAlign = 'left';  ctx.fillStyle = '#FFFFFF'; ctx.fillText('Perda BRL:', lx, jY + 54);
+                ctx.textAlign = 'right'; ctx.font = 'bold 15px -apple-system'; ctx.fillStyle = '#EF5350';
+                ctx.fillText('-' + Math.abs(perdaBRL).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}), rx, jY + 54);
                 if (rr > 0) {
                     const rrCor = rr >= 2 ? '#26A69A' : rr >= 1 ? '#F59E0B' : '#EF5350';
-                    ctx.textAlign = 'left';  ctx.fillStyle = '#FFFFFF'; ctx.fillText('R/R:', lx, jY + 58);
-                    ctx.textAlign = 'right'; ctx.fillStyle = rrCor; ctx.fillText(rr.toFixed(2), rx, jY + 58);
+                    ctx.font = 'bold 11px -apple-system';
+                    ctx.textAlign = 'left';  ctx.fillStyle = '#FFFFFF'; ctx.fillText('R/R:', lx, jY + 80);
+                    ctx.textAlign = 'right'; ctx.fillStyle = rrCor; ctx.fillText(rr.toFixed(2), rx, jY + 80);
                 }
             }
         }
@@ -3402,6 +3414,19 @@ function grInitTouch() {
         if (e.touches.length === 1) {
             const yInterno = toCanvasY(e.touches[0].clientY);
             const xInterno = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (canvas.width / canvas.getBoundingClientRect().width);
+            // Toque no handle do Stop (S)
+            if (window._stopHandleX !== undefined && window._stopHandleY !== undefined) {
+                const sTocado = xInterno >= window._stopHandleX
+                             && xInterno <= window._stopHandleX + window._stopHandleW
+                             && Math.abs(yInterno - window._stopHandleY) < window._stopHandleH;
+                if (sTocado) {
+                    // Inicia drag do stop — toggle da janelinha no touchend se não arrastou
+                    _grDragLine = 'stop';
+                    window._stopHandleDragged = false;
+                    e.preventDefault();
+                    return;
+                }
+            }
             // Toque no handle da régua
             if (_regAtual && window._regHandleX !== undefined && window._regHandleY !== undefined) {
                 const hTocado = xInterno >= window._regHandleX && xInterno <= window._regHandleX + 14
@@ -3487,7 +3512,7 @@ function grInitTouch() {
                 const yInterno = toCanvasY(e.touches[0].clientY);
                 const novoPreco = grToPrice(yInterno);
                 if (_grDragLine === 'entrada') _grEntrada = novoPreco;
-                else if (_grDragLine === 'stop') { _grStop = novoPreco; window._stopJanelaVisivel = true; }
+                else if (_grDragLine === 'stop') { _grStop = novoPreco; window._stopJanelaVisivel = true; window._stopHandleDragged = true; }
                 else if (_grDragLine === 'alvo') _grAlvo = novoPreco;
                 grCalcularComGlobais();
                 grDrawChart();
@@ -3540,7 +3565,16 @@ function grInitTouch() {
 
     canvas.addEventListener('touchend', e => {
     isDragging = false;
-    if (_grDragLine === 'stop') window._stopJanelaVisivel = false;
+    if (_grDragLine === 'stop') {
+        if (!window._stopHandleDragged) {
+            // Toque curto — toggle janelinha
+            window._stopJanelaVisivel = !window._stopJanelaVisivel;
+        } else {
+            // Arrastou — fecha janelinha
+            window._stopJanelaVisivel = false;
+        }
+        window._stopHandleDragged = false;
+    }
     _grDragLine = null;
     clearTimeout(_longPressTimer);
     if (_fibDragging) {
