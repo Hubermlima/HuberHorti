@@ -818,6 +818,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
           </button>
           <span class="cv-preco" id="cv-preco">—</span>
           <span class="cv-var" id="cv-var">—</span>
+          <span id="cv-rr" style="font-size:11px;font-weight:700;font-family:-apple-system,sans-serif;color:#8E8E93;margin-left:6px;display:none;">R/R —</span>
         </div>
         <!-- Dropdown ativos -->
         <div id="cv-ticker-dropdown" style="display:none;position:absolute;top:48px;left:8px;background:#1E222D;border:0.5px solid rgba(255,255,255,0.12);border-radius:10px;z-index:9000;min-width:160px;overflow:hidden;">
@@ -1820,12 +1821,10 @@ async function cvAtualizarPrecoRealTime() {
         _precoAtual = novoPreco;
         if (!_regAtual && _grPm > 0) {
             _indState.reg = true;
-            _regAtual = { p1: _grPm, p2: _precoAtual };
+            _regAtual = { p1: _grPm, p2: _precoAtual * 1.05 };
             _regJanelaVisivel = false;
-            _regTracking = true;
+            _regTracking = false;
             document.getElementById('cv-ind-reg').classList.add('active');
-        } else if (_regAtual && _regTracking) {
-            _regAtual.p2 = novoPreco;
         }
         _varPct     = novaVar;
 
@@ -1836,6 +1835,16 @@ async function cvAtualizarPrecoRealTime() {
         if (varEl) {
             varEl.textContent = (novaVar >= 0 ? '+' : '') + novaVar.toFixed(2) + '%';
             varEl.style.color = novaVar >= 0 ? '#26A69A' : '#EF5350';
+        }
+        // R/R no topbar
+        const rrEl = document.getElementById('cv-rr');
+        if (rrEl && _grPm > 0 && _grStop > 0 && _regAtual && (_grPm - _grStop) > 0) {
+            const rrV = (_regAtual.p2 - _grPm) / (_grPm - _grStop);
+            rrEl.textContent = 'R/R ' + rrV.toFixed(2);
+            rrEl.style.color = rrV >= 2 ? '#26A69A' : rrV >= 1 ? '#F59E0B' : '#EF5350';
+            rrEl.style.display = 'inline';
+        } else if (rrEl) {
+            rrEl.style.display = 'none';
         }
 
         // ── Linha de preço: redesenha só a linha e pílula ──────────
@@ -2703,7 +2712,7 @@ if (_grTipoGrafico === 'linha') {
 
         // Linha Stop — sempre visível
         {
-            const stopPrice = _grStop > 0 ? _grStop : _precoAtual * 0.97;
+            const stopPrice = _grStop > 0 ? _grStop : _precoAtual * 0.95;
             if (!_grStop) _grStop = stopPrice;
             const color = '#E91E8C';
             const y = toY(stopPrice);
@@ -2733,6 +2742,32 @@ ctx.fillText(fmtN(stopPrice), bX + bW - 4, bY + bH - 3);
             ctx.font = 'bold 11px -apple-system';
             ctx.textAlign = 'center';
             ctx.fillText('S', hX - hW / 2, y + 4);
+            // Janelinha do Stop — mostra ao arrastar (reutiliza _regJanelaVisivel do stop)
+            if (window._stopJanelaVisivel) {
+                const pm = _grPm > 0 ? _grPm : 0;
+                const perdaPct = pm > 0 ? ((pm - stopPrice) / pm * 100) : 0;
+                const perdaUSD = pm > 0 ? (pm - stopPrice) * _grQtd : 0;
+                const alvo = _regAtual ? _regAtual.p2 : 0;
+                const rr = pm > 0 && (pm - stopPrice) > 0 && alvo > 0 ? ((alvo - pm) / (pm - stopPrice)) : 0;
+                const jW = 170, jH = rr > 0 ? 76 : 58;
+                const centerX = PAD.left + (W - PAD.left - PAD.right) / 2;
+                const jX = centerX - jW / 2, jY = y + 12;
+                ctx.fillStyle = 'rgba(19,23,34,0.92)';
+                ctx.beginPath(); ctx.roundRect(jX, jY, jW, jH, 8); ctx.fill();
+                ctx.strokeStyle = color; ctx.lineWidth = 1.5;
+                ctx.beginPath(); ctx.roundRect(jX, jY, jW, jH, 8); ctx.stroke();
+                const lx = jX + 12, rx = jX + jW - 12;
+                ctx.font = 'bold 11px -apple-system';
+                ctx.textAlign = 'left';  ctx.fillStyle = '#FFFFFF'; ctx.fillText('% Perda:', lx, jY + 18);
+                ctx.textAlign = 'right'; ctx.fillStyle = '#EF5350'; ctx.fillText('-' + Math.abs(perdaPct).toFixed(2) + '%', rx, jY + 18);
+                ctx.textAlign = 'left';  ctx.fillStyle = '#FFFFFF'; ctx.fillText('Perda USD:', lx, jY + 36);
+                ctx.textAlign = 'right'; ctx.fillStyle = '#EF5350'; ctx.fillText('-' + Math.abs(perdaUSD).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}), rx, jY + 36);
+                if (rr > 0) {
+                    const rrCor = rr >= 2 ? '#26A69A' : rr >= 1 ? '#F59E0B' : '#EF5350';
+                    ctx.textAlign = 'left';  ctx.fillStyle = '#FFFFFF'; ctx.fillText('R/R:', lx, jY + 58);
+                    ctx.textAlign = 'right'; ctx.fillStyle = rrCor; ctx.fillText(rr.toFixed(2), rx, jY + 58);
+                }
+            }
         }
 
         // Régua %
@@ -2773,7 +2808,7 @@ ctx.fillText(fmtN(stopPrice), bX + bW - 4, bY + bH - 3);
             if (_regJanelaVisivel) {
                 const centerX = PAD.left + (W - PAD.left - PAD.right) / 2;
                 const centerY = rectY + rectH / 2;
-                const boxW = 180, boxH = 110, boxX = centerX - boxW / 2, boxY = centerY - boxH / 2;
+                const boxW = 180, boxH = 128, boxX = centerX - boxW / 2, boxY = centerY - boxH / 2;
                 ctx.fillStyle = 'rgba(19,23,34,0.92)';
                 ctx.beginPath(); ctx.roundRect(boxX, boxY, boxW, boxH, 8); ctx.fill();
                 ctx.strokeStyle = corBorda;
@@ -2792,6 +2827,15 @@ ctx.fillText(fmtN(stopPrice), bX + bW - 4, bY + bH - 3);
                 ctx.textAlign = 'left';  ctx.fillStyle = '#FFFFFF'; ctx.fillText('Lucro BRL:', lx, boxY + 96);
                 ctx.textAlign = 'right'; ctx.font = 'bold 15px -apple-system'; ctx.fillStyle = corBorda;
                 ctx.fillText(fmtMoney(lucroBRL, ''), rx, boxY + 96);
+                // R/R
+                const rrVal = _grPm > 0 && _grStop > 0 && (_grPm - _grStop) > 0
+                    ? (_regAtual.p2 - _grPm) / (_grPm - _grStop) : 0;
+                if (rrVal > 0) {
+                    const rrCor = rrVal >= 2 ? '#26A69A' : rrVal >= 1 ? '#F59E0B' : '#EF5350';
+                    ctx.font = 'bold 11px -apple-system';
+                    ctx.textAlign = 'left';  ctx.fillStyle = '#FFFFFF'; ctx.fillText('R/R:', lx, boxY + 114);
+                    ctx.textAlign = 'right'; ctx.fillStyle = rrCor; ctx.fillText(rrVal.toFixed(2), rx, boxY + 114);
+                }
             }
 
 
@@ -3481,7 +3525,7 @@ function grInitTouch() {
                 const yInterno = toCanvasY(e.touches[0].clientY);
                 const novoPreco = grToPrice(yInterno);
                 if (_grDragLine === 'entrada') _grEntrada = novoPreco;
-                else if (_grDragLine === 'stop') _grStop = novoPreco;
+                else if (_grDragLine === 'stop') { _grStop = novoPreco; window._stopJanelaVisivel = true; }
                 else if (_grDragLine === 'alvo') _grAlvo = novoPreco;
                 grCalcularComGlobais();
                 grDrawChart();
@@ -3534,6 +3578,7 @@ function grInitTouch() {
 
     canvas.addEventListener('touchend', e => {
     isDragging = false;
+    if (_grDragLine === 'stop') window._stopJanelaVisivel = false;
     _grDragLine = null;
     clearTimeout(_longPressTimer);
     if (_fibDragging) {
@@ -3546,14 +3591,10 @@ function grInitTouch() {
     } else if (_regDragging) {
         _regDragging = false;
         if (_regHandleDragged) {
-            // Soltou após arrastar — fecha janelinha e para rastreamento
+            // Soltou após arrastar — fecha janelinha
             _regJanelaVisivel = false;
             _regTracking = false;
             if (_regTrackingTimer) clearTimeout(_regTrackingTimer);
-            _regTrackingTimer = setTimeout(() => {
-                _regTracking = true;
-                _regTrackingTimer = null;
-            }, 60000);
         } else {
             // Toque curto no handle — toggle janelinha
             _regJanelaVisivel = !_regJanelaVisivel;
