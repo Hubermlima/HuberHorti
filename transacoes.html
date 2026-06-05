@@ -1892,13 +1892,12 @@ function cvFechar() {
 async function cvAtualizarPrecoRealTime() {
     try {
         const symbol = (_ticker || 'BTC/USD').replace('/', '').toLowerCase();
-        const binSym2 = (symbol.replace('btcusd','BTCUSDT').replace('ethusd','ETHUSDT').toUpperCase().replace('USD','USDT').replace('USDTT','USDT'));
-        const resBin = await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${binSym2}`);
-        const data = await resBin.json();
-        if (!data || !data.lastPrice) return;
+        const res = await fetch(`https://www.bitstamp.net/api/v2/ticker/${symbol}/`);
+        const data = await res.json();
+        if (!data || !data.last) return;
 
-        const novoPreco = parseFloat(data.lastPrice);
-        const open24h   = parseFloat(data.openPrice);
+        const novoPreco = parseFloat(data.last);
+        const open24h   = parseFloat(data.open);
         const novaVar   = ((novoPreco - open24h) / open24h) * 100;
 
         // Atualiza globais
@@ -2114,32 +2113,35 @@ async function grRenderChart() {
     try {
         // Busca dados se ainda não tiver ou mudou timeframe
         if (_grAllCandles.length === 0) {
-            // Mapeamento ticker → símbolo Binance
-            const binSymbol = ((_ticker || 'BTC/USD').replace('/', '').replace('-','').toUpperCase()
-                .replace('USD','USDT').replace('USDTT','USDT'));
-            const binInterval = _grTf === '1day' ? '1d' : _grTf === '1week' ? '1w' : '4h';
-            const binLimit = 1000;
+            const bitstampSymbol = (_ticker || 'BTC/USD').replace('/', '').replace('-','').toLowerCase();
             let rawCandles = [];
-            // Busca 2 páginas para ter 2000 candles em 4h/daily
-            const fetchBin = async (endTime) => {
-                const url = endTime
-                    ? `https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=${binInterval}&limit=${binLimit}&endTime=${endTime}`
-                    : `https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=${binInterval}&limit=${binLimit}`;
-                const r = await fetch(url);
-                const d = await r.json();
-                return (d || []).map(k => ({
-                    t: k[0], o: parseFloat(k[1]), h: parseFloat(k[2]),
-                    l: parseFloat(k[3]), c: parseFloat(k[4]),
-                    v: parseFloat(k[5]),
-                    bv: parseFloat(k[9]) // taker buy base asset volume para Volume Delta
+            if (_grTf === '1week') {
+                const res = await fetch(`https://www.bitstamp.net/api/v2/ohlc/${bitstampSymbol}/?step=86400&limit=400`);
+                const data = await res.json();
+                const daily = (data.data.ohlc || []).map(c => ({
+                    t: parseInt(c.timestamp)*1000, o: parseFloat(c.open),
+                    h: parseFloat(c.high), l: parseFloat(c.low), c: parseFloat(c.close),
+                    v: parseFloat(c.volume) || 0
                 }));
-            };
-            const page1 = await fetchBin(null);
-            if (page1.length > 0) {
-                const page2 = await fetchBin(page1[0].t - 1);
-                rawCandles = [...page2, ...page1];
+                const weeks = {};
+                daily.forEach(d => {
+                    const date = new Date(d.t);
+                    const day = date.getDay();
+                    const monday = new Date(d.t - ((day===0?6:day-1)*86400000));
+                    monday.setHours(0,0,0,0);
+                    const key = monday.getTime();
+                    if (!weeks[key]) weeks[key] = { t:key, o:d.o, h:d.h, l:d.l, c:d.c, v:d.v||0 };
+                    else { weeks[key].h = Math.max(weeks[key].h,d.h); weeks[key].l = Math.min(weeks[key].l,d.l); weeks[key].c = d.c; weeks[key].v = (weeks[key].v||0)+(d.v||0); }
+                });
+                rawCandles = Object.values(weeks).sort((a,b) => a.t - b.t);
             } else {
-                rawCandles = page1;
+                const res = await fetch(`https://www.bitstamp.net/api/v2/ohlc/${bitstampSymbol}/?step=${step}&limit=${limit}`);
+                const data = await res.json();
+                rawCandles = (data.data.ohlc || []).map(c => ({
+                    t: parseInt(c.timestamp)*1000, o: parseFloat(c.open),
+                    h: parseFloat(c.high), l: parseFloat(c.low), c: parseFloat(c.close),
+                    v: parseFloat(c.volume) || 0
+                }));
             }
             _grAllCandles = rawCandles;
         }
@@ -3096,7 +3098,7 @@ ctx.globalAlpha = 1;
         ctx.fillStyle = '#FFFFFF';
         ctx.font = 'bold 9px -apple-system';
         ctx.textAlign = 'right';
-        ctx.fillText('Binance', W - PAD.right - 2, H - PAD.bottom + 22);
+        ctx.fillText('Bitstamp', W - PAD.right - 2, H - PAD.bottom + 22);
 
         // ── Painel inferior RSI ou Volume ─────────────────────────────
         if (_indState.subInd) {
@@ -3118,37 +3120,28 @@ ctx.globalAlpha = 1;
 
             if (_indState.subInd === 'vd') {
                 // ── Volume Delta ───────────────────────────────────────
-                // Delta = takerBuyVol - (totalVol - takerBuyVol) = 2*bv - v
-                const visibleCandles2 = candles; // já calculado acima
-                const deltas = visibleCandles2.map(c => c.bv != null ? 2 * c.bv - c.v : 0);
+                const deltas = candles.map(c => c.bv != null ? 2 * c.bv - c.v : 0);
                 const maxAbsDelta = Math.max(...deltas.map(Math.abs), 1);
-                const toDeltaY = v => {
-                    const mid = panY + panPad.top + panChartH / 2;
-                    return mid - (v / maxAbsDelta) * (panChartH / 2);
-                };
-                // Linha zero
                 const midY = panY + panPad.top + panChartH / 2;
+                // Linha zero
                 ctx.strokeStyle = 'rgba(255,255,255,0.2)';
                 ctx.lineWidth = 1;
                 ctx.setLineDash([2, 3]);
                 ctx.beginPath(); ctx.moveTo(PAD.left, midY); ctx.lineTo(W - PAD.right, midY); ctx.stroke();
                 ctx.setLineDash([]);
                 // Barras delta
-                const totalSlots2 = visible + emptyRight;
                 deltas.forEach((delta, i) => {
-                    const x = PAD.left + (i / totalSlots2) * panChartW + cW / 2;
-                    const barY = toDeltaY(delta);
-                    const barH = Math.abs(barY - midY);
-                    ctx.fillStyle = delta >= 0 ? 'rgba(38,166,154,0.7)' : 'rgba(239,83,80,0.7)';
-                    ctx.fillRect(x - cW * 0.4, Math.min(barY, midY), cW * 0.8, barH);
+                    const x = PAD.left + (i / totalSlots) * panChartW + cW / 2;
+                    const barH = Math.abs((delta / maxAbsDelta) * (panChartH / 2));
+                    const barY = delta >= 0 ? midY - barH : midY;
+                    ctx.fillStyle = delta >= 0 ? 'rgba(38,166,154,0.75)' : 'rgba(239,83,80,0.75)';
+                    ctx.fillRect(x - cW * 0.4, barY, cW * 0.8, barH);
                 });
-                // Linha CVD (acumulado)
+                // Linha CVD acumulada
                 let cvd = 0;
-                const cvdPoints = [];
-                deltas.forEach((delta, i) => {
-                    cvd += delta;
-                    const x = PAD.left + (i / totalSlots2) * panChartW + cW / 2;
-                    cvdPoints.push({ x, cvd });
+                const cvdPoints = deltas.map((d, i) => {
+                    cvd += d;
+                    return { x: PAD.left + (i / totalSlots) * panChartW + cW / 2, cvd };
                 });
                 const cvdMin = Math.min(...cvdPoints.map(p => p.cvd));
                 const cvdMax = Math.max(...cvdPoints.map(p => p.cvd));
@@ -3157,18 +3150,15 @@ ctx.globalAlpha = 1;
                 ctx.strokeStyle = '#FFD54F';
                 ctx.lineWidth = 1.5;
                 ctx.beginPath();
-                cvdPoints.forEach((p, i) => {
-                    const y = toCvdY(p.cvd);
-                    if (i === 0) ctx.moveTo(p.x, y); else ctx.lineTo(p.x, y);
-                });
+                cvdPoints.forEach((p, i) => { i === 0 ? ctx.moveTo(p.x, toCvdY(p.cvd)) : ctx.lineTo(p.x, toCvdY(p.cvd)); });
                 ctx.stroke();
                 // Label
+                const lastDelta = deltas[deltas.length - 1] || 0;
+                const vdLblColor = lastDelta >= 0 ? '#26A69A' : '#EF5350';
                 ctx.font = 'bold 11px -apple-system';
                 ctx.textAlign = 'left';
-                ctx.fillStyle = '#FFD54F';
-                ctx.fillText('VD', PAD.left + 4, panY + panPad.top + 12);
-                const lastDelta = deltas[deltas.length - 1] || 0;
-                ctx.fillStyle = lastDelta >= 0 ? '#26A69A' : '#EF5350';
+                ctx.fillStyle = '#FFD54F'; ctx.fillText('VD', PAD.left + 4, panY + panPad.top + 12);
+                ctx.fillStyle = vdLblColor;
                 ctx.fillText((lastDelta >= 0 ? '+' : '') + lastDelta.toFixed(2), PAD.left + 28, panY + panPad.top + 12);
 
             } else if (_indState.subInd === 'rsi') {
@@ -4106,7 +4096,6 @@ function cvToggleSubInd(key) {
     const era = _indState.subInd;
     _indState.subInd = (era === key) ? null : key;
     document.getElementById('cv-ind-rsi').classList.toggle('active', _indState.subInd === 'rsi');
-    if (document.getElementById('cv-ind-vd')) document.getElementById('cv-ind-vd').classList.toggle('active', _indState.subInd === 'vd');
     document.getElementById('cv-ind-vol').classList.toggle('active', _indState.subInd === 'vol');
     document.getElementById('cv-ind-macd').classList.toggle('active', _indState.subInd === 'macd');
     document.getElementById('cv-ind-atr').classList.toggle('active', _indState.subInd === 'atr');
