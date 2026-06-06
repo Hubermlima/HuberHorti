@@ -2414,56 +2414,100 @@ if (_grTipoGrafico === 'linha') {
 }
 
 
-        // ── Setas VD+RSI ─────────────────────────────────────────────
+        // ── Setas Score RSI+VD+BB ────────────────────────────────────
         (function() {
             if (candles.length < 5) return;
-            // RSI dos candles visíveis
+            // RSI
             const allClosesVis = _grAllCandles.map(c => c.c);
             const rsiAll = grRSI(allClosesVis, 14);
             const rsiOffset = _grAllCandles.length - rsiAll.length;
-            // CVD acumulado dos candles visíveis
+            // CVD
             let cvdAcc = 0;
-            const cvdArr = candles.map(c => {
-                const delta = c.bv != null ? 2 * c.bv - c.v : 0;
-                cvdAcc += delta;
-                return cvdAcc;
-            });
-            const deltaArr = candles.map(c => c.bv != null ? 2 * c.bv - c.v : 0);
+            const cvdArr = candles.map(c => { const d = c.bv != null ? 2*c.bv - c.v : 0; cvdAcc += d; return cvdAcc; });
+            const deltaArr = candles.map(c => c.bv != null ? 2*c.bv - c.v : 0);
+            // Bollinger 20 — sempre calculado
+            const bbPeriod = 20;
+            const allBBMidArr = grEMA(allClosesVis, bbPeriod);
+            const allBBLowerArr = [], allBBUpperArr = [];
+            for (let j = bbPeriod - 1; j < allClosesVis.length; j++) {
+                const sl = allClosesVis.slice(j - bbPeriod + 1, j + 1);
+                const mn = sl.reduce((a,b)=>a+b,0)/bbPeriod;
+                const std = Math.sqrt(sl.reduce((s,v)=>s+(v-mn)**2,0)/bbPeriod);
+                const mid = allBBMidArr[j-(allClosesVis.length-allBBMidArr.length)];
+                allBBLowerArr.push(mid - 2*std);
+                allBBUpperArr.push(mid + 2*std);
+            }
+            const bbLowerVis = extrairJanela(allBBLowerArr, bbPeriod);
+            const bbUpperVis = extrairJanela(allBBUpperArr, bbPeriod);
 
             for (let i = 3; i < candles.length; i++) {
                 const c = candles[i];
                 const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
-                // RSI deste candle
                 const rsiIdx = (startIdx + i) - rsiOffset;
                 const rsi = rsiIdx >= 0 ? rsiAll[rsiIdx] : null;
                 if (rsi == null) continue;
 
-                // Verifica virada do CVD: últimos 3 deltas positivos após sequência negativa
-                const d0 = deltaArr[i], d1 = deltaArr[i-1], d2 = deltaArr[i-2];
-                const d3 = deltaArr[i-3];
+                const d0 = deltaArr[i], d1 = deltaArr[i-1], d3 = deltaArr[i-3];
                 const cvdVirouCima  = d0 > 0 && d1 > 0 && d3 < 0;
                 const cvdVirouBaixo = d0 < 0 && d1 < 0 && d3 > 0;
-
-                // Divergência de alta: preço fez mínima mais baixa mas CVD não
                 const divAlta  = c.l < candles[i-2].l && cvdArr[i] > cvdArr[i-2];
-                // Divergência de baixa: preço fez máxima mais alta mas CVD não
                 const divBaixo = c.h > candles[i-2].h && cvdArr[i] < cvdArr[i-2];
 
-                // Seta verde ↑
-                if (rsi < 35 && (cvdVirouCima || divAlta)) {
+                // Bollinger confirmação de alta: prev perfurou lower, atual fechou acima
+                const bbL = bbLowerVis && bbLowerVis[i] != null ? bbLowerVis[i] : null;
+                const bbLp = bbLowerVis && bbLowerVis[i-1] != null ? bbLowerVis[i-1] : null;
+                const bbAlta = bbL != null && bbLp != null && candles[i-1].l < bbLp && c.c > bbL;
+                // Bollinger confirmação de baixa: prev perfurou upper, atual fechou abaixo
+                const bbU = bbUpperVis && bbUpperVis[i] != null ? bbUpperVis[i] : null;
+                const bbUp = bbUpperVis && bbUpperVis[i-1] != null ? bbUpperVis[i-1] : null;
+                const bbBaixa = bbU != null && bbUp != null && candles[i-1].h > bbUp && c.c < bbU;
+
+                // ── Score Alta ───────────────────────────────────────
+                const vdAlta = cvdVirouCima || divAlta;
+                let scoreAlta = 0;
+                if (rsi < 35) scoreAlta++;
+                if (vdAlta)   scoreAlta++;
+                if (bbAlta)   scoreAlta++;
+
+                if (scoreAlta >= 2) {
                     const arrowY = toY(c.l) + 14;
-                    ctx.fillStyle = '#26A69A';
-                    ctx.font = 'bold 13px -apple-system';
                     ctx.textAlign = 'center';
-                    ctx.fillText('↑', x, arrowY);
+                    if (scoreAlta === 3) {
+                        ctx.fillStyle = '#00C853';
+                        ctx.font = 'bold 15px -apple-system';
+                        ctx.fillText('↑', x, arrowY);
+                    } else {
+                        ctx.fillStyle = '#80CBC4';
+                        ctx.font = 'bold 13px -apple-system';
+                        ctx.fillText('↑', x, arrowY);
+                        const lbl = [vdAlta ? 'VD' : null, bbAlta ? 'BB' : null].filter(Boolean).join(' ');
+                        ctx.font = '8px -apple-system';
+                        ctx.fillText(lbl, x, arrowY + 10);
+                    }
                 }
-                // Seta vermelha ↓
-                if (rsi > 65 && (cvdVirouBaixo || divBaixo)) {
+
+                // ── Score Baixa ──────────────────────────────────────
+                const vdBaixa = cvdVirouBaixo || divBaixo;
+                let scoreBaixa = 0;
+                if (rsi > 65) scoreBaixa++;
+                if (vdBaixa)  scoreBaixa++;
+                if (bbBaixa)  scoreBaixa++;
+
+                if (scoreBaixa >= 2) {
                     const arrowY = toY(c.h) - 6;
-                    ctx.fillStyle = '#EF5350';
-                    ctx.font = 'bold 13px -apple-system';
                     ctx.textAlign = 'center';
-                    ctx.fillText('↓', x, arrowY);
+                    if (scoreBaixa === 3) {
+                        ctx.fillStyle = '#D50000';
+                        ctx.font = 'bold 15px -apple-system';
+                        ctx.fillText('↓', x, arrowY);
+                    } else {
+                        ctx.fillStyle = '#EF9A9A';
+                        ctx.font = 'bold 13px -apple-system';
+                        ctx.fillText('↓', x, arrowY);
+                        const lblb = [vdBaixa ? 'VD' : null, bbBaixa ? 'BB' : null].filter(Boolean).join(' ');
+                        ctx.font = '8px -apple-system';
+                        ctx.fillText(lblb, x, arrowY - 10);
+                    }
                 }
             }
         })();
