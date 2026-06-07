@@ -671,10 +671,21 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       </div>
     </div>
 
-    <!-- ABA 2: Nova Posição -->
+        <!-- ABA 2: Nova Posição -->
     <div class="od-pane" id="od-pane-2">
       <div class="od-field-group">
+        <div class="od-field-label">OPERAÇÃO</div>
+        <select class="od-select" id="od-sim-tipo" onchange="calcularDCA()">
+          <option value="LA">LA — Long Abertura</option>
+          <option value="LF">LF — Long Fechamento</option>
+          <option value="SA">SA — Short Abertura</option>
+          <option value="SF">SF — Short Fechamento</option>
+        </select>
+      </div>
+      <div class="od-divider"></div>
+      <div class="od-field-group">
         <div class="od-field-label">VALOR INVESTIDO (USDT)</div>
+
         <input class="od-input" id="od-valor-investido" type="tel" inputmode="decimal" placeholder="0,00" oninput="odValorInvestidoInput(this.value)">
       </div>
       <div class="od-divider"></div>
@@ -6291,8 +6302,9 @@ function calcularTaxa() {
 }
 function calcularDCA() {
     const valor = parseVal(document.getElementById('nova-valor').value);
+    const simSel = document.getElementById('od-sim-tipo');
     const sel = document.getElementById('seg-track-nova');
-    const tipo = (sel.dataset && sel.dataset.tipo) ? sel.dataset.tipo : (sel.value || 'LA');
+    const tipo = simSel ? simSel.value : ((sel.dataset && sel.dataset.tipo) ? sel.dataset.tipo : (sel.value || 'LA'));
     const cotacaoEl2 = document.getElementById('nova-cotacao');
     const cotacaoRaw = cotacaoEl2 ? (cotacaoEl2.value || cotacaoEl2.textContent).replace(/[^0-9.,]/g,'') : '';
     const cotacao = parseVal(cotacaoRaw) > 0 ? parseVal(cotacaoRaw) : _precoAtual;
@@ -6300,15 +6312,27 @@ function calcularDCA() {
     const qtdBase = _c.qtdAberta > 0 ? _c.qtdAberta : _c.qtdShort;
     const custoBase = _c.custoAberto > 0 ? _c.custoAberto : _c.custoShort;
     const pmBase = _c.pm > 0 ? _c.pm : _c.pmShort;
-    if (valor > 0 && (tipo === 'LA' || tipo === 'LF') && pmBase > 0 && qtdBase > 0 && cotacao > 0) {
+    const isAbertura = tipo === 'LA' || tipo === 'SA';
+    const isFechamento = tipo === 'LF' || tipo === 'SF';
+    const isLong = tipo === 'LA' || tipo === 'LF';
+    if (valor > 0 && (isAbertura || isFechamento) && pmBase > 0 && qtdBase > 0 && cotacao > 0) {
         const novaQtdBruta = valor / cotacao;
-const taxaEstimada = novaQtdBruta * 0.001;
-const novaQtd = novaQtdBruta - taxaEstimada; // igual ao LA real
+        const taxaEstimada = novaQtdBruta * 0.001;
+        const novaQtd = novaQtdBruta - taxaEstimada;
+        let novoTotalQtd, novoTotalCusto, novoPM, diff;
+        if (isAbertura) {
+            novoTotalQtd = qtdBase + novaQtd;
+            novoTotalCusto = custoBase + valor;
+            novoPM = novoTotalCusto / novoTotalQtd;
+            diff = novoPM - pmBase;
+        } else {
+            novoTotalQtd = Math.max(0, qtdBase - novaQtd);
+            const proporcao = qtdBase > 0 ? novoTotalQtd / qtdBase : 0;
+            novoTotalCusto = custoBase * proporcao;
+            novoPM = pmBase;
+            diff = isLong ? (cotacao - pmBase) * novaQtd : (pmBase - cotacao) * novaQtd;
+        }
 
-        const novoTotalQtd = qtdBase + novaQtd;
-        const novoTotalCusto = custoBase + valor;
-        const novoPM = novoTotalCusto / novoTotalQtd;
-        const diff = novoPM - pmBase;
         const fmtUSD2 = v => 'USD ' + v.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
         const fmtBTC = v => v.toFixed(8).replace('.', ',') + ' BTC';
         document.getElementById('nova-dca-cotacao').textContent = fmtUSD2(cotacao);
@@ -6318,8 +6342,10 @@ const novaQtd = novaQtdBruta - taxaEstimada; // igual ao LA real
         document.getElementById('nova-dca-custo-novo').textContent = fmtUSD2(novoTotalCusto);
         document.getElementById('nova-dca-pm-atual').textContent = fmtUSD2(pmBase);
         document.getElementById('nova-dca-pm').textContent = fmtUSD2(novoPM);
-        document.getElementById('nova-dca-diff').textContent = (diff >= 0 ? '+' : '') + diff.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' USD';
-        document.getElementById('nova-dca-diff').style.color = diff <= 0 ? '#15803D' : '#DC2626';
+                const diffLabel = isFechamento ? 'Resultado: ' : '';
+        document.getElementById('nova-dca-diff').textContent = diffLabel + (diff >= 0 ? '+' : '') + diff.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' USD';
+        document.getElementById('nova-dca-diff').style.color = diff >= 0 ? '#15803D' : '#DC2626';
+
         // Eficiência
         const pctInvestido = (valor / custoBase) * 100;
         const pctMelhora = (Math.abs(diff) / custoBase) * 100;
