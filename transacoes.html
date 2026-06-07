@@ -2116,6 +2116,8 @@ function grSwitchTab(tab) {
 let _grChart = null;
 let _grTf = '4h';
 let _grAllCandles = [];
+let _grZonasCache = null; // {res: [], sup: []} — calculado uma vez por load
+
 let _grOffset = 999999;
 let _grZoom = 40;
 let _grDrone = false;
@@ -2174,8 +2176,10 @@ async function grRenderChart() {
             };
             const page1 = await fetchBin(null);
             const page2 = page1.length > 0 ? await fetchBin(page1[0].t - 1) : [];
-            _grAllCandles = [...page2, ...page1];
+                        _grAllCandles = [...page2, ...page1];
+            _grZonasCache = null; // força recalculo
         }
+
 
         // Janela visível com espaço vazio à direita
         const total = _grAllCandles.length;
@@ -2820,56 +2824,56 @@ const bbAlta = !!window._bbFlagAlta;
             }
         })();
 
-                // ── Zonas de Suporte e Resistência automáticas ───────────────
+                        // ── Zonas de Suporte e Resistência automáticas ───────────────
         (function() {
             if (_grAllCandles.length < 10) return;
-            const N = 3; // janela de swing
-            const swingHighs = [], swingLows = [];
 
-            // Detecta swing highs e lows usando todos os candles
-            for (let i = N; i < _grAllCandles.length - N; i++) {
-                const c = _grAllCandles[i];
-                let isHigh = true, isLow = true;
-                for (let j = i - N; j <= i + N; j++) {
-                    if (j === i) continue;
-                    if (_grAllCandles[j].h >= c.h) isHigh = false;
-                    if (_grAllCandles[j].l <= c.l) isLow = false;
-                }
-                                if (isHigh) swingHighs.push(c.h);
-                if (isLow)  swingLows.push(c.l);
-            }
-
-            // Agrupa níveis próximos em zonas (dentro de 0.4%)
-            function agrupar(niveis) {
-
-                const sorted = [...niveis].sort((a, b) => a - b);
-                const zonas = [];
-                for (const nivel of sorted) {
-                    const zona = zonas.find(z => Math.abs(nivel - z.centro) / z.centro < 0.004);
-                    if (zona) {
-                        zona.min = Math.min(zona.min, nivel);
-                        zona.max = Math.max(zona.max, nivel);
-                        zona.centro = (zona.min + zona.max) / 2;
-                        zona.forca++;
-                    } else {
-                        zonas.push({ min: nivel * 0.9995, max: nivel * 1.0005, centro: nivel, forca: 1 });
+            // Calcula uma vez e cacheia
+            if (!_grZonasCache) {
+                const N = 3;
+                const swingHighs = [], swingLows = [];
+                for (let i = N; i < _grAllCandles.length - N; i++) {
+                    const c = _grAllCandles[i];
+                    let isHigh = true, isLow = true;
+                    for (let j = i - N; j <= i + N; j++) {
+                        if (j === i) continue;
+                        if (_grAllCandles[j].h >= c.h) isHigh = false;
+                        if (_grAllCandles[j].l <= c.l) isLow = false;
                     }
+                    if (isHigh) swingHighs.push(c.h);
+                    if (isLow)  swingLows.push(c.l);
                 }
-                return zonas.filter(z => z.forca >= 1);
+                function agrupar(niveis) {
+                    const sorted = [...niveis].sort((a, b) => a - b);
+                    const zonas = [];
+                    for (const nivel of sorted) {
+                        const zona = zonas.find(z => Math.abs(nivel - z.centro) / z.centro < 0.004);
+                        if (zona) {
+                            zona.min = Math.min(zona.min, nivel);
+                            zona.max = Math.max(zona.max, nivel);
+                            zona.centro = (zona.min + zona.max) / 2;
+                            zona.forca++;
+                        } else {
+                            zonas.push({ min: nivel * 0.9995, max: nivel * 1.0005, centro: nivel, forca: 1 });
+                        }
+                    }
+                    return zonas.filter(z => z.forca >= 1);
+                }
+                const todas = agrupar([...swingHighs, ...swingLows]);
+                _grZonasCache = {
+                    res: todas.filter(z => z.centro > _precoAtual).sort((a,b) => a.centro - b.centro),
+                    sup: todas.filter(z => z.centro < _precoAtual).sort((a,b) => b.centro - a.centro)
+                };
             }
 
-            const zonasRes = agrupar(swingHighs).filter(z => z.centro > _precoAtual);
-            const zonesSup = agrupar(swingLows).filter(z => z.centro < _precoAtual);
-
-            // Desenha zonas (máx 3 de cada lado)
             const desenharZona = (zona, cor) => {
                 const y1 = toY(zona.max);
                 const y2 = toY(zona.min);
-                const h  = Math.max(3, y2 - y1);
+                if (y2 < PAD.top || y1 > PAD.top + _grChartH) return;
+                const h = Math.max(3, y2 - y1);
                 const alpha = Math.min(0.35, 0.12 + zona.forca * 0.06);
                 ctx.fillStyle = cor + Math.round(alpha * 255).toString(16).padStart(2,'0');
                 ctx.fillRect(PAD.left, y1, chartW, h);
-                // Bordas
                 ctx.strokeStyle = cor + '66';
                 ctx.lineWidth = 0.5;
                 ctx.setLineDash([]);
@@ -2877,9 +2881,10 @@ const bbAlta = !!window._bbFlagAlta;
                 ctx.beginPath(); ctx.moveTo(PAD.left, y2); ctx.lineTo(W - PAD.right, y2); ctx.stroke();
             };
 
-            zonasRes.sort((a,b) => a.centro - b.centro).slice(0, 3).forEach(z => desenharZona(z, '#EF5350'));
-            zonesSup.sort((a,b) => b.centro - a.centro).slice(0, 3).forEach(z => desenharZona(z, '#26A69A'));
+            _grZonasCache.res.forEach(z => desenharZona(z, '#EF5350'));
+            _grZonasCache.sup.forEach(z => desenharZona(z, '#26A69A'));
         })();
+
 
         // Linha Stop — sempre visível, área ancorada no PM
         {
