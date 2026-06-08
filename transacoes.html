@@ -2455,24 +2455,8 @@ function grDrawCandles(candles, emptyRight) {
             }
         }
 
-               // ── Suportes e Resistências ───────────────────────────────────
-        _grNiveis.forEach(nivel => {
-            const y = toY(nivel.preco);
-            if (y < PAD.top || y > PAD.top + _grChartH) return;
-            ctx.save();
-            ctx.strokeStyle = nivel.tipo === 'sup' ? 'rgba(52,199,89,0.7)' : 'rgba(255,59,48,0.7)';
-            ctx.lineWidth = 4;
-            ctx.setLineDash([]);
-            ctx.beginPath();
-            ctx.moveTo(PAD.left, y);
-            ctx.lineTo(W - PAD.right, y);
-            ctx.stroke();
-            ctx.restore();
-        });
-
        // Candles ou Linha
 if (_grTipoGrafico === 'linha') {
-
     ctx.setLineDash([]);
     ctx.lineWidth = 2;
     ctx.strokeStyle = '#26A69A';
@@ -2752,55 +2736,13 @@ const bbAlta = !!window._bbFlagAlta;
                 if (i >= 2 && isBaixa(c) && isBaixa(c1) && isBaixa(c2) &&
                     c.c < c1.c && c1.c < c2.c &&
                     corp/rng > 0.6 && corpo(c1)/range(c1) > 0.6 && corpo(c2)/range(c2) > 0.6) {
-                                        patterns.push({ i, tipo: '3 corvos', dir: 'baixa', label: '3↓' });
+                    patterns.push({ i, tipo: '3 corvos', dir: 'baixa', label: '3↓' });
                     continue;
                 }
             }
 
-
-            // ── Detecção Institucional ───────────────────────────────
-            (function() {
-                if (!_grZonasCache || candles.length < 5) return;
-                const vols = candles.map(c => c.v || 0);
-                const volMedInst = vols.reduce((a,b)=>a+b,0) / (vols.filter(v=>v>0).length || 1);
-                candles.forEach((c, i) => {
-                    if (i < 2) return;
-                    if (!c.bv || !c.v) return;
-                    const isSpike = c.v >= volMedInst * 2.5;
-                    if (!isSpike) return;
-                    const delta = 2 * c.bv - c.v;
-                    const precoSubiu = c.c > c.o;
-                    const compradores = delta > 0;
-                    const diverge = precoSubiu !== compradores;
-                    const absorcao = !precoSubiu && compradores;
-                    if (!diverge && !absorcao) return;
-                    const c1 = candles[i-1];
-                    const reversao = (c.c > c.o && c1.c < c1.o) || (c.c < c.o && c1.c > c1.o);
-                    if (!reversao) return;
-                    const todasZonas = [..._grZonasCache];
-                    const emZona = todasZonas.some(z => Math.abs(c.l - z.centro) / z.centro < 0.01 || Math.abs(c.h - z.centro) / z.centro < 0.01);
-                    if (!emZona) return;
-                    const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
-                    const isAltaInst = c.c > c.o;
-                    const yInst = isAltaInst ? toY(c.l) + 28 : toY(c.h) - 20;
-                    const corInst = '#FFD54F';
-                    ctx.fillStyle = corInst + '33';
-                    ctx.beginPath();
-                    ctx.arc(x, yInst - 3, 9, 0, Math.PI * 2);
-                    ctx.fill();
-                    ctx.strokeStyle = corInst;
-                    ctx.lineWidth = 1.5;
-                    ctx.stroke();
-                    ctx.fillStyle = corInst;
-                    ctx.font = 'bold 10px -apple-system';
-                    ctx.textAlign = 'center';
-                    ctx.fillText('I', x, yInst);
-                });
-            })();
-
             // Salva posições para detecção de toque
             window._grPatterns = [];
-
 
             // Desenha marcações
             ctx.font = 'bold 10px -apple-system';
@@ -2907,56 +2849,55 @@ const bbAlta = !!window._bbFlagAlta;
             }
         })();
 
-                        // ── Zonas de Suporte e Resistência automáticas ───────────────
+        // ── Zonas de Suporte e Resistência automáticas ───────────────
         (function() {
-            if (_grAllCandles.length < 10) return;
+            if (candles.length < 10) return;
+            const N = 3; // janela de swing
+            const swingHighs = [], swingLows = [];
 
-            // Calcula uma vez e cacheia
-            if (!_grZonasCache) {
-                const N = 3;
-                const swingHighs = [], swingLows = [];
-                for (let i = N; i < _grAllCandles.length - N; i++) {
-                    const c = _grAllCandles[i];
-                    let isHigh = true, isLow = true;
-                    for (let j = i - N; j <= i + N; j++) {
-                        if (j === i) continue;
-                        if (_grAllCandles[j].h >= c.h) isHigh = false;
-                        if (_grAllCandles[j].l <= c.l) isLow = false;
-                    }
-                    if (isHigh) swingHighs.push(c.h);
-                    if (isLow)  swingLows.push(c.l);
+            // Detecta swing highs e lows
+            for (let i = N; i < candles.length - N; i++) {
+                const c = candles[i];
+                let isHigh = true, isLow = true;
+                for (let j = i - N; j <= i + N; j++) {
+                    if (j === i) continue;
+                    if (candles[j].h >= c.h) isHigh = false;
+                    if (candles[j].l <= c.l) isLow = false;
                 }
-                function agrupar(niveis) {
-                    const sorted = [...niveis].sort((a, b) => a - b);
-                    const zonas = [];
-                    for (const nivel of sorted) {
-                        const zona = zonas.find(z => Math.abs(nivel - z.centro) / z.centro < 0.012);
-
-                        if (zona) {
-                            zona.min = Math.min(zona.min, nivel);
-                            zona.max = Math.max(zona.max, nivel);
-                            zona.centro = (zona.min + zona.max) / 2;
-                            zona.forca++;
-                        } else {
-                            zonas.push({ min: nivel * 0.9995, max: nivel * 1.0005, centro: nivel, forca: 1 });
-                        }
-                    }
-                    return zonas.filter(z => z.forca >= 1);
-                }
-                const todas = agrupar([...swingHighs, ...swingLows]);
-                                                _grZonasCache = todas.sort((a,b) => b.forca - a.forca).slice(0, 12);
-
-
+                if (isHigh) swingHighs.push(c.h);
+                if (isLow)  swingLows.push(c.l);
             }
 
+            // Agrupa níveis próximos em zonas (dentro de 0.4%)
+            function agrupar(niveis) {
+                const sorted = [...niveis].sort((a, b) => a - b);
+                const zonas = [];
+                for (const nivel of sorted) {
+                    const zona = zonas.find(z => Math.abs(nivel - z.centro) / z.centro < 0.004);
+                    if (zona) {
+                        zona.min = Math.min(zona.min, nivel);
+                        zona.max = Math.max(zona.max, nivel);
+                        zona.centro = (zona.min + zona.max) / 2;
+                        zona.forca++;
+                    } else {
+                        zonas.push({ min: nivel * 0.9995, max: nivel * 1.0005, centro: nivel, forca: 1 });
+                    }
+                }
+                return zonas.filter(z => z.forca >= 1);
+            }
+
+            const zonasRes = agrupar(swingHighs).filter(z => z.centro > _precoAtual);
+            const zonesSup = agrupar(swingLows).filter(z => z.centro < _precoAtual);
+
+            // Desenha zonas (máx 3 de cada lado)
             const desenharZona = (zona, cor) => {
                 const y1 = toY(zona.max);
                 const y2 = toY(zona.min);
-                if (y2 < PAD.top || y1 > PAD.top + _grChartH) return;
-                const h = Math.max(3, y2 - y1);
+                const h  = Math.max(3, y2 - y1);
                 const alpha = Math.min(0.35, 0.12 + zona.forca * 0.06);
                 ctx.fillStyle = cor + Math.round(alpha * 255).toString(16).padStart(2,'0');
                 ctx.fillRect(PAD.left, y1, chartW, h);
+                // Bordas
                 ctx.strokeStyle = cor + '66';
                 ctx.lineWidth = 0.5;
                 ctx.setLineDash([]);
@@ -2964,13 +2905,9 @@ const bbAlta = !!window._bbFlagAlta;
                 ctx.beginPath(); ctx.moveTo(PAD.left, y2); ctx.lineTo(W - PAD.right, y2); ctx.stroke();
             };
 
-                        _grZonasCache.forEach(z => {
-                const cor = z.centro >= _precoAtual ? '#EF5350' : '#26A69A';
-                desenharZona(z, cor);
-            });
-
+            zonasRes.sort((a,b) => a.centro - b.centro).slice(0, 3).forEach(z => desenharZona(z, '#EF5350'));
+            zonesSup.sort((a,b) => b.centro - a.centro).slice(0, 3).forEach(z => desenharZona(z, '#26A69A'));
         })();
-
 
         // Linha Stop — sempre visível, área ancorada no PM
         {
@@ -2979,22 +2916,13 @@ const bbAlta = !!window._bbFlagAlta;
             const color = '#E91E8C';
             const y = toY(stopPrice);
             // Área colorida entre PM e Stop
-                        if (_grPm > 0) {
+            if (_grPm > 0) {
                 const yPm = toY(_grPm);
                 const rectY = Math.min(y, yPm);
                 const rectH = Math.abs(y - yPm);
-                                const startIdxStop = Math.max(0, Math.min(_grAllCandles.length - candles.length, _grOffset === 999999 ? _grAllCandles.length - candles.length : _grOffset));
-                const iRecenteAbs = _grAllCandles.length - 1;
-                const iInicioAbs = Math.max(0, iRecenteAbs - 19);
-                const iRecente = iRecenteAbs - startIdxStop;
-                const iInicio = iInicioAbs - startIdxStop;
-                const xInicio = PAD.left + (iInicio / totalSlots) * chartW;
-                const xFim = PAD.left + (iRecente / totalSlots) * chartW + cW;
-
                 ctx.fillStyle = 'rgba(233,30,140,0.12)';
-                ctx.fillRect(xInicio, rectY, xFim - xInicio, rectH);
+                ctx.fillRect(PAD.left, rectY, W - PAD.left - PAD.right, rectH);
             }
-
             // Linha tracejada
             ctx.strokeStyle = color;
             ctx.lineWidth = 1;
@@ -3082,17 +3010,8 @@ ctx.fillText(fmtN(stopPrice), bX + bW - 4, bY + bH - 3);
             const corBorda = isUp ? '#26A69A' : '#EF5350';
             const rectY = Math.min(yR1, yR2);
             const rectH = Math.abs(yR1 - yR2);
-            const startIdxA = Math.max(0, Math.min(_grAllCandles.length - candles.length, _grOffset === 999999 ? _grAllCandles.length - candles.length : _grOffset));
-            const iRecenteAbsA = _grAllCandles.length - 1;
-            const iInicioAbsA = Math.max(0, iRecenteAbsA - 19);
-            const iRecenteA = iRecenteAbsA - startIdxA;
-            const iInicioA = iInicioAbsA - startIdxA;
-            const xInicioA = PAD.left + (iInicioA / totalSlots) * chartW;
-            const xFimA = PAD.left + (iRecenteA / totalSlots) * chartW + cW;
-
             ctx.fillStyle = corReg;
-            ctx.fillRect(xInicioA, rectY, xFimA - xInicioA, rectH);
-
+            ctx.fillRect(PAD.left, rectY, W - PAD.left - PAD.right, rectH);
             ctx.strokeStyle = corBorda;
             ctx.lineWidth = 1;
             ctx.setLineDash([4, 3]);
@@ -3186,18 +3105,9 @@ const aBX = 3, aBY = yR2 - aBH / 2;
             const rectCor = isLoss ? 'rgba(239,83,80,0.12)' : 'rgba(38,166,154,0.12)';
             const rectY = Math.min(yPm, yPreco);
             const rectH = Math.abs(yPm - yPreco);
-                        // Retângulo entre PM e preço atual
-                        const startIdxPm = Math.max(0, Math.min(_grAllCandles.length - candles.length, _grOffset === 999999 ? _grAllCandles.length - candles.length : _grOffset));
-            const iRecenteAbsPm = _grAllCandles.length - 1;
-            const iInicioAbsPm = Math.max(0, iRecenteAbsPm - 19);
-            const iRecentePm = iRecenteAbsPm - startIdxPm;
-            const iInicioPm = iInicioAbsPm - startIdxPm;
-            const xInicioPm = PAD.left + (iInicioPm / totalSlots) * chartW;
-            const xFimPm = PAD.left + (iRecentePm / totalSlots) * chartW + cW;
-
+            // Retângulo entre PM e preço atual
             ctx.fillStyle = rectCor;
-            ctx.fillRect(xInicioPm, rectY, xFimPm - xInicioPm, rectH);
-
+            ctx.fillRect(PAD.left, rectY, W - PAD.left - PAD.right, rectH);
             // Label de % no centro do retângulo, lado direito
             const pct = ((_precoAtual - _grPm) / _grPm * 100);
             const labelCor = isLoss ? '#EF5350' : '#26A69A';
