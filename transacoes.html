@@ -2062,13 +2062,81 @@ async function cvAtualizarCandle() {
 }
 
 function cvIniciarRealTime() {
-    cvAtualizarPrecoRealTime();
-    // Topbar + linha: a cada 3s
-    if (window._cvTickerInterval) clearInterval(window._cvTickerInterval);
-    window._cvTickerInterval = setInterval(cvAtualizarPrecoRealTime, 1000);
-    // Candle (recalcula indicadores): a cada 30s
-    if (window._cvCandleInterval) clearInterval(window._cvCandleInterval);
-    window._cvCandleInterval = setInterval(cvAtualizarCandle, 30000);
+    // Fecha WS anterior se existir
+    if (window._cvWs) { try { window._cvWs.close(); } catch(e) {} }
+
+    const symbol = (_ticker || 'BTC/USD').replace('/', '').toLowerCase();
+    const binSym = symbol.replace('btcusd','btcusdt').replace('ethusd','ethusdt').replace('usd','usdt').replace('usdtt','usdt');
+    const ws = new WebSocket('wss://stream.binance.com:9443/ws/' + binSym + '@aggTrade');
+    window._cvWs = ws;
+
+    ws.onmessage = function(e) {
+        try {
+            const d = JSON.parse(e.data);
+            const novoPreco = parseFloat(d.p);
+            if (!novoPreco) return;
+            _precoAtual = novoPreco;
+
+            // Atualiza globais reg
+            if (!_regAtual && _grPm > 0) {
+                _indState.reg = true;
+                _regAtual = { p1: _grPm, p2: _cvTradeAlvoPendente > 0 ? _cvTradeAlvoPendente : _precoAtual * 1.05 };
+                _cvTradeAlvoPendente = 0;
+                _regJanelaVisivel = false;
+                _regTracking = false;
+                document.getElementById('cv-ind-reg').classList.add('active');
+            }
+
+            // Topbar
+            const precoEl = document.getElementById('cv-preco');
+            if (precoEl) precoEl.textContent = fmtUSD(novoPreco) + ' USD';
+            const rrEl = document.getElementById('cv-rr');
+            if (rrEl && _grPm > 0 && _grStop > 0 && _regAtual && (_grPm - _grStop) > 0) {
+                const rrV = (_regAtual.p2 - _grPm) / (_grPm - _grStop);
+                rrEl.textContent = 'R/R ' + rrV.toFixed(2);
+                rrEl.style.color = rrV >= 2 ? '#26A69A' : rrV >= 1 ? '#F59E0B' : '#EF5350';
+                rrEl.style.display = 'inline';
+            }
+
+            // Candle atual
+            if (_grAllCandles.length > 0) {
+                const last = _grAllCandles[_grAllCandles.length - 1];
+                last.c = novoPreco;
+                last.h = Math.max(last.h, novoPreco);
+                last.l = Math.min(last.l, novoPreco);
+            }
+
+            grDrawChart();
+        } catch(e) {}
+    };
+
+    ws.onerror = function() {
+        // Fallback para polling se WS falhar
+        if (window._cvTickerInterval) clearInterval(window._cvTickerInterval);
+        window._cvTickerInterval = setInterval(cvAtualizarPrecoRealTime, 1000);
+    };
+
+    ws.onclose = function() {
+        // Reconecta após 3s se fechar inesperadamente
+        setTimeout(cvIniciarRealTime, 3000);
+    };
+
+    // Variação 24h continua via polling (menos crítico)
+    if (window._cvVarInterval) clearInterval(window._cvVarInterval);
+    window._cvVarInterval = setInterval(async function() {
+        try {
+            const res = await fetch('https://api.binance.com/api/v3/ticker/24hr?symbol=' + binSym.toUpperCase());
+            const data = await res.json();
+            if (!data || !data.openPrice) return;
+            const novaVar = ((_precoAtual - parseFloat(data.openPrice)) / parseFloat(data.openPrice)) * 100;
+            _varPct = novaVar;
+            const varEl = document.getElementById('cv-var');
+            if (varEl) {
+                varEl.textContent = (novaVar >= 0 ? '+' : '') + novaVar.toFixed(2) + '%';
+                varEl.style.color = novaVar >= 0 ? '#26A69A' : '#EF5350';
+            }
+        } catch(e) {}
+    }, 10000);
 }
 
 function fecharGestaoRisco() { cvFechar(); }
