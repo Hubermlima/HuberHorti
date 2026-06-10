@@ -1131,15 +1131,45 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
 <!-- Modal Resumo Trade -->
 
 
-<!-- Modal Novo Stop -->
+<!-- Modal Stop & Alvo -->
 <div class="modal-overlay" id="cv-stop-overlay" onclick="cvFecharNovoStop()" style="align-items:center;justify-content:center;padding:20px;background:rgba(0,0,0,0.5);">
   <div class="modal-sheet" onclick="event.stopPropagation()" style="max-width:340px;width:100%;">
-    <div class="modal-title">Novo Stop</div>
-    <div style="margin-bottom:16px;">
-      <label class="modal-label">Valor do Stop (USD)</label>
-      <input id="cv-stop-input" class="modal-input" type="tel" inputmode="decimal"
-        placeholder="0,00" oninput="cvStopMascara(this)">
+    <div class="modal-title">Stop &amp; Alvo</div>
+
+    <!-- Alvo -->
+    <div style="margin-bottom:8px;">
+      <label class="modal-label">Valor Alvo (USD)</label>
+      <input id="cv-alvo-input" class="modal-input" type="tel" inputmode="decimal" placeholder="0,00" oninput="cvStopMascara(this)">
     </div>
+    <div style="margin-bottom:4px;">
+      <label class="modal-label">Realização Alvo: <span id="cv-alvo-pct-label">0%</span></label>
+      <input id="cv-alvo-slider" type="range" min="0" max="100" value="0" style="width:100%;accent-color:#1C1C1E;" oninput="document.getElementById('cv-alvo-pct-label').textContent=this.value+'%'">
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+      <label class="modal-label" style="margin:0;">Notificar Alvo</label>
+      <label style="display:flex;align-items:center;cursor:pointer;">
+        <input type="checkbox" id="cv-alvo-notificar" checked style="width:20px;height:20px;">
+      </label>
+    </div>
+
+    <div style="border-top:0.5px solid #E5E5EA;margin-bottom:16px;"></div>
+
+    <!-- Stop -->
+    <div style="margin-bottom:8px;">
+      <label class="modal-label">Valor Stop (USD)</label>
+      <input id="cv-stop-input" class="modal-input" type="tel" inputmode="decimal" placeholder="0,00" oninput="cvStopMascara(this)">
+    </div>
+    <div style="margin-bottom:4px;">
+      <label class="modal-label">Realização Stop: <span id="cv-stop-pct-label">0%</span></label>
+      <input id="cv-stop-slider" type="range" min="0" max="100" value="0" style="width:100%;accent-color:#1C1C1E;" oninput="document.getElementById('cv-stop-pct-label').textContent=this.value+'%'">
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
+      <label class="modal-label" style="margin:0;">Notificar Stop</label>
+      <label style="display:flex;align-items:center;cursor:pointer;">
+        <input type="checkbox" id="cv-stop-notificar" checked style="width:20px;height:20px;">
+      </label>
+    </div>
+
     <div class="modal-actions">
       <button class="modal-btn-cancelar" onclick="cvFecharNovoStop()">Cancelar</button>
       <button class="modal-btn-salvar" onclick="cvConfirmarNovoStop()">Confirmar</button>
@@ -1773,14 +1803,28 @@ _precoAtual = 0;
 
 // ── Toggle Liquidação Total ──────────────────────────────────────
 function cvAbrirNovoStop() {
-    const input = document.getElementById('cv-stop-input');
-    if (input) {
-        input.value = _grStop > 0
+    const stopInput = document.getElementById('cv-stop-input');
+    const alvoInput = document.getElementById('cv-alvo-input');
+    if (stopInput) {
+        stopInput.value = _grStop > 0
             ? _grStop.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2})
             : '';
     }
+    if (alvoInput && _regAtual && _regAtual.p2 > 0) {
+        alvoInput.value = _regAtual.p2.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
+    }
+    // Carrega valores salvos do trade
+    if (_cvTradeId && window._cvTradeCache) {
+        const t = window._cvTradeCache;
+        const alvoSlider = document.getElementById('cv-alvo-slider');
+        const stopSlider = document.getElementById('cv-stop-slider');
+        if (alvoSlider && t.alvo_realizacao) { alvoSlider.value = t.alvo_realizacao; document.getElementById('cv-alvo-pct-label').textContent = t.alvo_realizacao + '%'; }
+        if (stopSlider && t.stop_realizacao) { stopSlider.value = t.stop_realizacao; document.getElementById('cv-stop-pct-label').textContent = t.stop_realizacao + '%'; }
+        if (t.alvo_ativo !== undefined) document.getElementById('cv-alvo-notificar').checked = t.alvo_ativo !== false;
+        if (t.stop_ativo !== undefined) document.getElementById('cv-stop-notificar').checked = t.stop_ativo !== false;
+    }
     document.getElementById('cv-stop-overlay').classList.add('active');
-    setTimeout(() => { if (input) input.focus(); }, 300);
+    setTimeout(() => { if (stopInput) stopInput.focus(); }, 300);
 }
 
 function cvFecharNovoStop() {
@@ -1794,16 +1838,45 @@ function cvStopMascara(el) {
     el.value = num.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
 }
 
-function cvConfirmarNovoStop() {
-    const input = document.getElementById('cv-stop-input');
-    if (!input) return;
-    const raw = input.value.replace(/\./g, '').replace(',', '.');
-    const val = parseFloat(raw);
-    if (!isNaN(val) && val > 0) {
-        _grStop = val;
-        cvFecharNovoStop();
-        grDrawChart();
+async function cvConfirmarNovoStop() {
+    const stopInput = document.getElementById('cv-stop-input');
+    const alvoInput = document.getElementById('cv-alvo-input');
+    if (!stopInput) return;
+
+    const stopRaw = stopInput.value.replace(/\./g, '').replace(',', '.');
+    const stopVal = parseFloat(stopRaw);
+    if (!isNaN(stopVal) && stopVal > 0) _grStop = stopVal;
+
+    const alvoRaw = alvoInput ? alvoInput.value.replace(/\./g, '').replace(',', '.') : '';
+    const alvoVal = parseFloat(alvoRaw);
+    if (!isNaN(alvoVal) && alvoVal > 0 && _regAtual) _regAtual.p2 = alvoVal;
+
+    const alvoRealizacao = parseInt(document.getElementById('cv-alvo-slider').value) || 0;
+    const stopRealizacao = parseInt(document.getElementById('cv-stop-slider').value) || 0;
+    const alvoAtivo = document.getElementById('cv-alvo-notificar').checked;
+    const stopAtivo = document.getElementById('cv-stop-notificar').checked;
+
+    // Salva no trade operacional
+    if (_cvTradeId) {
+        const payload = {
+            stop: !isNaN(stopVal) && stopVal > 0 ? stopVal : undefined,
+            alvo: !isNaN(alvoVal) && alvoVal > 0 ? alvoVal : undefined,
+            alvo_realizacao: alvoRealizacao,
+            alvo_ativo: alvoAtivo,
+            stop_realizacao: stopRealizacao,
+            stop_ativo: stopAtivo,
+        };
+        // Remove undefined fields
+        Object.keys(payload).forEach(k => payload[k] === undefined && delete payload[k]);
+        const { error } = await db.from('trades').update(payload).eq('id', _cvTradeId);
+        if (!error) {
+            if (!window._cvTradeCache) window._cvTradeCache = {};
+            Object.assign(window._cvTradeCache, payload);
+        }
     }
+
+    cvFecharNovoStop();
+    grDrawChart();
 }
 
 function stopInputMascara(el) {
@@ -1934,6 +2007,7 @@ async function cvCarregarTradeOperacional() {
         if (_regAtual) {
             _regAtual.p2 = _cvTradeAlvoPendente || (_precoAtual * 1.05);
         }
+        window._cvTradeCache = trade;
         // Carrega faixas
         document.getElementById('faixa-preco-1').value = trade.faixa  || '';
         document.getElementById('faixa-taxa-1').value  = trade.taxa   || '';
