@@ -974,7 +974,8 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
   <!-- Chart container (preservado) -->
   <div id="gr-chart-container" style="position:relative;flex:1;background:#131722;">
     <canvas id="gr-chart-canvas" style="width:100%;height:100%;display:block;" onclick="if(_tickerDropdownAberto){cvToggleTickerDropdown();}"></canvas>
-<!-- stop input removido — usar modal Novo Stop -->
+<!-- stop input removido — usar modal Stop & Alvo
+-->
 
     <!-- Botão toggle barra unificada -->
     
@@ -1019,6 +1020,8 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <button class="cv-ind-btn fib" id="cv-ind-fib" onclick="cvToggleFib()"><span class="btn-sigla">Fib</span><span class="btn-nome">Fibonacci</span></button>
       <button class="cv-ind-btn sup" id="cv-ind-sup" onclick="cvToggleNivel('sup')"><span class="btn-sigla">Sup</span><span class="btn-nome">Suporte</span></button>
       <button class="cv-ind-btn res" id="cv-ind-res" onclick="cvToggleNivel('res')"><span class="btn-sigla">Res</span><span class="btn-nome">Resistência</span></button>
+      <button class="cv-ind-btn" id="cv-ind-alerta" onclick="cvToggleAlerta()"><span class="btn-sigla" style="font-size:14px;">⏰</span><span class="btn-nome">Alerta</span></button>
+      <button class="cv-ind-btn" id="cv-ind-alerta" onclick="cvToggleAlerta()"><span class="btn-sigla" style="font-size:14px;">⏰</span><span class="btn-nome">Alerta</span></button>
 
       <button class="cv-ind-btn reg" id="cv-ind-reg"><span class="btn-sigla">Reg</span><span class="btn-nome">Régua %</span></button>
       <button class="cv-ind-btn pat" id="cv-ind-pat" onclick="cvTogglePat()"><span class="btn-sigla">Pat</span><span class="btn-nome">Padrões</span></button>
@@ -1177,6 +1180,33 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
   </div>
 </div>
 
+<!-- Modal Alerta Gráfico -->
+<div class="modal-overlay" id="cv-alerta-overlay" onclick="cvFecharModalAlertaGrafico()" style="align-items:center;justify-content:center;padding:20px;background:rgba(0,0,0,0.5);">
+  <div class="modal-sheet" onclick="event.stopPropagation()" style="max-width:340px;width:100%;">
+    <div class="modal-title">Alerta</div>
+    <div style="margin-bottom:8px;">
+      <label class="modal-label">Ativo</label>
+      <div id="cv-alerta-modal-ticker" style="font-size:16px;font-weight:600;color:#1C1C1E;padding:4px 0;"></div>
+    </div>
+    <div style="margin-bottom:8px;">
+      <label class="modal-label">Preço</label>
+      <div id="cv-alerta-modal-preco" style="font-size:16px;font-weight:600;color:#1C1C1E;padding:4px 0;"></div>
+    </div>
+    <div style="margin-bottom:8px;">
+      <label class="modal-label">Criado em</label>
+      <div id="cv-alerta-modal-data" style="font-size:14px;color:#8E8E93;padding:4px 0;"></div>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
+      <label class="modal-label" style="margin:0;">Habilitado</label>
+      <input type="checkbox" id="cv-alerta-modal-habilitado" style="width:20px;height:20px;">
+    </div>
+    <div class="modal-actions">
+      <button class="modal-btn-cancelar" onclick="cvFecharModalAlertaGrafico()">Cancelar</button>
+      <button class="modal-btn-salvar" onclick="cvGravarAlertaGrafico()">Gravar</button>
+    </div>
+  </div>
+</div>
+
 <!-- Modal Gravar Trade -->
 <div class="cv-trade-overlay" id="cv-trade-overlay" onclick="cvFecharGravarTrade()">
   <div class="cv-trade-sheet" onclick="event.stopPropagation()">
@@ -1257,7 +1287,8 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
     <button class="cv-menu-item" onclick="cvFecharMenu();window.location.href='dashboard.html';">
 
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-      <span class="cv-menu-item-label">Sair</span>
+      <span class="cv-menu-item-label" style="color:#EF5350;">Sair</span>
+
     </button>
   </div>
 
@@ -2368,6 +2399,7 @@ let _grDroneRange = null;
 let _fibs = [];          // array de fibs salvos: [{p1, p2}]
 let _fibAtual = null;    // fib sendo desenhado agora: {p1, p2}
 let _grNiveis = [];      // array de níveis: [{preco, tipo}] tipo: 'sup'|'res'
+let _grAlertas = [];     // array de alertas: [{preco, id, habilitado}]
 
 let _fibDragging = false;
 let _regAtual = null;
@@ -2666,6 +2698,21 @@ function grDrawCandles(candles, emptyRight) {
             ctx.strokeStyle = nivel.tipo === 'sup' ? 'rgba(52,199,89,0.7)' : 'rgba(255,59,48,0.7)';
             ctx.lineWidth = 4;
             ctx.setLineDash([]);
+            ctx.beginPath();
+            ctx.moveTo(PAD.left, y);
+            ctx.lineTo(W - PAD.right, y);
+            ctx.stroke();
+            ctx.restore();
+        });
+
+       // ── Alertas ──────────────────────────────────────────────────
+        _grAlertas.forEach((alerta, i) => {
+            const y = toY(alerta.preco);
+            if (y < PAD.top || y > PAD.top + _grChartH) return;
+            ctx.save();
+            ctx.strokeStyle = alerta.habilitado !== false ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.3)';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([6, 4]);
             ctx.beginPath();
             ctx.moveTo(PAD.left, y);
             ctx.lineTo(W - PAD.right, y);
@@ -4149,6 +4196,10 @@ function grInitTouch() {
         for (let i = 0; i < _grNiveis.length; i++) {
             if (Math.abs(yInterno - grLineY(_grNiveis[i].preco)) <= HIT) return 'nivel_' + i;
         }
+        // Alertas
+        for (let i = 0; i < _grAlertas.length; i++) {
+            if (Math.abs(yInterno - grLineY(_grAlertas[i].preco)) <= HIT) return 'alerta_' + i;
+        }
         return null;
     }
 
@@ -4291,6 +4342,9 @@ function grInitTouch() {
                 else if (_grDragLine && _grDragLine.startsWith('nivel_')) {
                     const idx = parseInt(_grDragLine.split('_')[1]);
                     if (_grNiveis[idx]) _grNiveis[idx].preco = novoPreco;
+                    } else if (dragging.startsWith('alerta_')) {
+                    const idx = parseInt(dragging.split('_')[1]);
+                    if (_grAlertas[idx]) _grAlertas[idx].preco = novoPreco;
                 }
 
                 grCalcularComGlobais();
@@ -4343,7 +4397,26 @@ function grInitTouch() {
         e.preventDefault();
     }, { passive: false });
 
+    let _lastTapTime = 0;
+    let _lastTapTarget = null;
+
     canvas.addEventListener('touchend', e => {
+    // Double tap detection for alertas
+    const now = Date.now();
+    const touch = e.changedTouches[0];
+    const yT = (touch.clientY - canvas.getBoundingClientRect().top) * (canvas.height / canvas.getBoundingClientRect().height);
+    const xT = (touch.clientX - canvas.getBoundingClientRect().left) * (canvas.width / canvas.getBoundingClientRect().width);
+    const hitT = grHitTest(xT, yT);
+    if (hitT && hitT.startsWith('alerta_') && now - _lastTapTime < 350 && _lastTapTarget === hitT) {
+        const idx = parseInt(hitT.split('_')[1]);
+        cvAbrirModalAlertaGrafico(idx);
+        _lastTapTime = 0;
+        _lastTapTarget = null;
+        return;
+    }
+    _lastTapTime = now;
+    _lastTapTarget = hitT;
+
     isDragging = false;
     if (_grDragLine === 'stop') {
         if (!window._stopHandleDragged) {
@@ -5466,6 +5539,69 @@ function cvDesenharFiguras(ctx, todos, PAD, chartW, chartH, W, H, toY) {
 function cvToggleNivel(tipo) {
     if (!_precoAtual) return;
     _grNiveis.push({ preco: _precoAtual, tipo });
+    grDrawChart();
+}
+
+function cvToggleAlerta() {
+    if (!_precoAtual) return;
+    // Lança no centro do gráfico (preço médio visível)
+    const canvas = document.getElementById('gr-chart-canvas');
+    const H = canvas.height;
+    const PAD = { ..._grPAD };
+    if (_indState.subInd) PAD.bottom = Math.floor(H * 0.28) + _grPAD.bottom;
+    const chartH = H - PAD.top - PAD.bottom;
+    // Calcula preço do centro do gráfico
+    const visCandles = _grAllCandles.slice(Math.max(0,_grAllCandles.length - _grZoom));
+    if (visCandles.length === 0) return;
+    const highs = visCandles.map(c => c.h);
+    const lows  = visCandles.map(c => c.l);
+    const maxP = Math.max(...highs);
+    const minP = Math.min(...lows);
+    const centroPreco = (maxP + minP) / 2;
+    _grAlertas.push({ preco: centroPreco, habilitado: true, created_at: new Date().toISOString(), id: null });
+    document.getElementById('cv-ind-alerta').classList.add('active');
+    grDrawChart();
+}
+
+let _alertaEditIdx = null;
+
+function cvAbrirModalAlertaGrafico(idx) {
+    _alertaEditIdx = idx;
+    const a = _grAlertas[idx];
+    if (!a) return;
+    document.getElementById('cv-alerta-modal-ticker').textContent = _ticker || '—';
+    document.getElementById('cv-alerta-modal-preco').textContent = a.preco.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
+    document.getElementById('cv-alerta-modal-data').textContent = a.created_at ? new Date(a.created_at).toLocaleDateString('pt-BR') : '—';
+    document.getElementById('cv-alerta-modal-habilitado').checked = a.habilitado !== false;
+    document.getElementById('cv-alerta-overlay').classList.add('active');
+}
+
+function cvFecharModalAlertaGrafico() {
+    document.getElementById('cv-alerta-overlay').classList.remove('active');
+    _alertaEditIdx = null;
+}
+
+async function cvGravarAlertaGrafico() {
+    if (_alertaEditIdx === null) return;
+    const a = _grAlertas[_alertaEditIdx];
+    if (!a) return;
+    const habilitado = document.getElementById('cv-alerta-modal-habilitado').checked;
+    a.habilitado = habilitado;
+    const payload = {
+        ativo_id: _ativoId,
+        preco: a.preco,
+        habilitado,
+    };
+    let error;
+    if (a.id) {
+        ({ error } = await db.from('alertas').update({ habilitado }).eq('id', a.id));
+    } else {
+        const { data, error: e } = await db.from('alertas').insert(payload).select().single();
+        error = e;
+        if (data) a.id = data.id;
+    }
+    if (error) { alert('Erro: ' + error.message); return; }
+    cvFecharModalAlertaGrafico();
     grDrawChart();
 }
 
