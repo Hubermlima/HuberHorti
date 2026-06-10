@@ -2174,6 +2174,37 @@ async function cvAtualizarCandle() {
     grDrawChart();
 }
 
+let _precoAnterior = 0;
+let _cvAlvoDisparado = false;
+let _cvStopDisparado = false;
+
+function cvAbrirTargetModal(tipo, preco, pct, cor) {
+    const qtdParcial = _grQtd * (pct / 100);
+    const usdt = qtdParcial * preco;
+    document.getElementById('cv-target-tipo-label').textContent = tipo;
+    document.getElementById('cv-target-tipo-label').style.color = cor;
+    document.getElementById('cv-target-preco').textContent = preco.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' USD';
+    document.getElementById('cv-target-preco').style.color = cor;
+    document.getElementById('cv-target-pct').textContent = pct + '%';
+    document.getElementById('cv-target-qtd').textContent = qtdParcial.toFixed(8) + ' BTC';
+    document.getElementById('cv-target-usdt').textContent = usdt.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' USDT';
+    const overlay = document.getElementById('cv-target-overlay');
+    overlay.style.display = 'flex';
+}
+
+async function cvFecharTargetModal() {
+    document.getElementById('cv-target-overlay').style.display = 'none';
+    if (!_cvTradeId) return;
+    const payload = {};
+    if (_cvAlvoDisparado) { payload.alvo_ativo = false; if (window._cvTradeCache) window._cvTradeCache.alvo_ativo = false; }
+    if (_cvStopDisparado) { payload.stop_ativo = false; if (window._cvTradeCache) window._cvTradeCache.stop_ativo = false; }
+    _cvAlvoDisparado = false;
+    _cvStopDisparado = false;
+    if (Object.keys(payload).length > 0) {
+        await db.from('trades').update(payload).eq('id', _cvTradeId);
+    }
+}
+
 function cvIniciarRealTime() {
     // Fecha WS anterior se existir
     if (window._cvWs) { try { window._cvWs.close(); } catch(e) {} }
@@ -2188,7 +2219,32 @@ function cvIniciarRealTime() {
             const d = JSON.parse(e.data);
             const novoPreco = parseFloat(d.p);
             if (!novoPreco) return;
+            const precoAntes = _precoAtual;
             _precoAtual = novoPreco;
+
+            // Detecção de cruzamento alvo/stop
+            if (precoAntes > 0 && window._cvTradeCache) {
+                const cache = window._cvTradeCache;
+                const dir = _grDir === 'SHORT' ? 'short' : 'long';
+                if (_grAlvo > 0 && cache.alvo_ativo !== false && !_cvAlvoDisparado) {
+                    const cruzou = dir === 'long'
+                        ? (precoAntes < _grAlvo && novoPreco >= _grAlvo)
+                        : (precoAntes > _grAlvo && novoPreco <= _grAlvo);
+                    if (cruzou) {
+                        _cvAlvoDisparado = true;
+                        cvAbrirTargetModal('ALVO', _grAlvo, cache.alvo_realizacao || 0, '#26A69A');
+                    }
+                }
+                if (_grStop > 0 && cache.stop_ativo !== false && !_cvStopDisparado) {
+                    const cruzou = dir === 'long'
+                        ? (precoAntes > _grStop && novoPreco <= _grStop)
+                        : (precoAntes < _grStop && novoPreco >= _grStop);
+                    if (cruzou) {
+                        _cvStopDisparado = true;
+                        cvAbrirTargetModal('STOP', _grStop, cache.stop_realizacao || 0, '#EF5350');
+                    }
+                }
+            }
 
             // Atualiza globais reg
             if (!_regAtual && _grPm > 0) {
@@ -7565,6 +7621,27 @@ async function cvCarregarMacro() {
         <button onclick="cvFecharMacro()" style="background:rgba(255,255,255,0.1);border:none;color:#FFFFFF;font-size:16px;width:28px;height:28px;border-radius:50%;cursor:pointer;">✕</button>
     </div>
     <div id="cv-macro-body"></div>
+</div>
+
+<!-- Modal Target -->
+<div class="modal-overlay" id="cv-target-overlay" style="display:none;position:fixed;inset:0;z-index:9999;align-items:center;justify-content:center;padding:20px;background:rgba(0,0,0,0.7);">
+  <div class="modal-sheet" onclick="event.stopPropagation()" style="max-width:340px;width:100%;border-radius:16px;">
+    <div id="cv-target-tipo-label" style="font-size:12px;font-weight:700;letter-spacing:1px;color:#8E8E93;margin-bottom:4px;text-align:center;"></div>
+    <div id="cv-target-preco" style="font-size:28px;font-weight:700;text-align:center;margin-bottom:16px;"></div>
+    <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
+      <span class="modal-label">Realização</span>
+      <span id="cv-target-pct" style="font-size:15px;font-weight:600;color:#1C1C1E;"></span>
+    </div>
+    <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
+      <span class="modal-label">Quantidade</span>
+      <span id="cv-target-qtd" style="font-size:15px;font-weight:600;color:#1C1C1E;"></span>
+    </div>
+    <div style="display:flex;justify-content:space-between;margin-bottom:20px;">
+      <span class="modal-label">Valor USDT</span>
+      <span id="cv-target-usdt" style="font-size:15px;font-weight:600;color:#1C1C1E;"></span>
+    </div>
+    <button class="modal-btn-salvar" style="width:100%;" onclick="cvFecharTargetModal()">Entendido</button>
+  </div>
 </div>
 
 </body>
