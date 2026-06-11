@@ -47,7 +47,8 @@ self.addEventListener('push', e => {
         body: data.body || 'Pedido atualizado',
         icon: '/icon-192.png',
         badge: '/icon-192.png',
-        tag: 'huberhorti-update',
+        tag: data.tag || 'huberhorti-update',
+
         renotify: true
       }),
       clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {

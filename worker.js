@@ -226,11 +226,13 @@ export default {
 
     if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
 
-    const { subscription, title, body } = await request.json();
+    const { subscription, title, body, tag } = await request.json();
+
 
 
     try {
-      await sendPush(subscription, JSON.stringify({ title, body }));
+      await sendPush(subscription, JSON.stringify({ title, body, tag }));
+
       return new Response('OK', { status: 200, headers: { 'Access-Control-Allow-Origin': '*' } });
     } catch (e) {
       console.error('Push error:', e.message, e.stack);
