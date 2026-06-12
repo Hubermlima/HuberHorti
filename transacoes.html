@@ -1179,6 +1179,23 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
   </div>
 </div>
 
+<!-- Modal Fib Gravar -->
+<div class="modal-overlay" id="cv-fib-overlay" onclick="cvFecharModalFib()" style="align-items:center;justify-content:center;padding:20px;background:rgba(0,0,0,0.5);">
+  <div class="modal-sheet" onclick="event.stopPropagation()" style="max-width:340px;width:100%;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+      <div class="modal-title" style="margin:0;">Fibonacci</div>
+      <button onclick="cvFecharModalFib()" style="background:none;border:none;cursor:pointer;padding:4px;line-height:0;">
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="#8E8E93" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div id="cv-fib-niveis-list" style="margin-bottom:20px;font-size:14px;color:#1C1C1E;line-height:1.8;"></div>
+    <div class="modal-actions">
+      <button class="modal-btn-cancelar" style="background:#FEF0EF;color:#EF5350;" onclick="cvExcluirFibAlertas()">Excluir</button>
+      <button class="modal-btn-salvar" style="background:#E5E5EA;color:#1C1C1E;" onclick="cvGravarFibAlertas()">Gravar</button>
+    </div>
+  </div>
+</div>
+
 <!-- Modal Alerta Gráfico -->
 <div class="modal-overlay" id="cv-alerta-overlay" onclick="cvFecharModalAlertaGrafico()" style="align-items:center;justify-content:center;padding:20px;background:rgba(0,0,0,0.5);">
   <div class="modal-sheet" onclick="event.stopPropagation()" style="max-width:340px;width:100%;">
@@ -4393,10 +4410,7 @@ function grInitTouch() {
         return niveis.some(r => Math.abs(grLineY(lo + diff * r) - yInterno) < 20);
     });
     if (fibTocado >= 0) {
-        if (confirm('Apagar este Fibonacci?')) {
-            _fibs.splice(fibTocado, 1);
-            grDrawChart();
-        }
+        cvAbrirModalFib(fibTocado);
     } else {
         _fibDragging = true;
         _fibAtual = { p1: grToPrice(yInterno), p2: grToPrice(yInterno) };
@@ -5670,7 +5684,25 @@ async function cvCarregarAlertasGrafico() {
     if (!_ativoId) return;
     const { data } = await db.from('alertas').select('*').eq('ativo_id', _ativoId);
     if (data) {
-        _grAlertas = data.map(a => ({ preco: a.preco, id: a.id, habilitado: a.habilitado, created_at: a.created_at }));
+        // Alertas manuais
+        _grAlertas = data.filter(a => !a.tipo || a.tipo === 'manual')
+            .map(a => ({ preco: a.preco, id: a.id, habilitado: a.habilitado, created_at: a.created_at }));
+        // Fibs salvas
+        const fiboAlertas = data.filter(a => a.tipo === 'fibo');
+        if (fiboAlertas.length > 0) {
+            // Reconstrói fib a partir dos níveis 0% e 100%
+            const precos = fiboAlertas.map(a => parseFloat(a.preco));
+            const high = Math.max(...precos);
+            const low  = Math.min(...precos);
+            // Verifica se já existe essa fib
+            const jaExiste = _fibs.some(f => Math.abs(Math.max(f.p1,f.p2) - high) < 1 && Math.abs(Math.min(f.p1,f.p2) - low) < 1);
+            if (!jaExiste) {
+                _fibs.push({ p1: low, p2: high });
+                _indState.fib = true;
+                const btn = document.getElementById('cv-ind-fib');
+                if (btn) btn.classList.add('active');
+            }
+        }
     }
 }
 
@@ -5761,11 +5793,90 @@ async function cvGravarAlertaGrafico() {
     grDrawChart();
 }
 
+let _fibModalIdx = null;
+const FIB_NIVEIS = [
+    { r: 0,     label: '0%',     cor: '#FFFFFF' },
+    { r: 0.236, label: '23.6%',  cor: '#B2EBF2' },
+    { r: 0.382, label: '38.2%',  cor: '#26C6DA' },
+    { r: 0.5,   label: '50%',    cor: '#FFD700' },
+    { r: 0.618, label: '61.8%',  cor: '#FF7043' },
+    { r: 0.786, label: '78.6%',  cor: '#EF5350' },
+    { r: 1,     label: '100%',   cor: '#FFFFFF' },
+];
+
+function cvAbrirModalFib(idx) {
+    _fibModalIdx = idx;
+    const fib = _fibs[idx];
+    if (!fib) return;
+    const high = Math.max(fib.p1, fib.p2);
+    const low  = Math.min(fib.p1, fib.p2);
+    const diff = high - low;
+    const isUp = fib.p2 > fib.p1;
+    const list = document.getElementById('cv-fib-niveis-list');
+    list.innerHTML = FIB_NIVEIS.map(n => {
+        const preco = isUp ? low + diff * (1 - n.r) : high - diff * (1 - n.r);
+        return `<div style="display:flex;justify-content:space-between;">
+            <span style="color:${n.cor};font-weight:600;">${n.label}</span>
+            <span>${preco.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2})} USD</span>
+        </div>`;
+    }).join('');
+    document.getElementById('cv-fib-overlay').classList.add('active');
+}
+
+function cvFecharModalFib() {
+    document.getElementById('cv-fib-overlay').classList.remove('active');
+    _fibModalIdx = null;
+}
+
+async function cvGravarFibAlertas() {
+    if (_fibModalIdx === null) return;
+    const fib = _fibs[_fibModalIdx];
+    if (!fib || !_ativoId) return;
+    const high = Math.max(fib.p1, fib.p2);
+    const low  = Math.min(fib.p1, fib.p2);
+    const diff = high - low;
+    const isUp = fib.p2 > fib.p1;
+    // Deleta alertas fibo antigos deste ativo
+    await db.from('alertas').delete().eq('ativo_id', _ativoId).eq('tipo', 'fibo');
+    // Insere novos
+    const rows = FIB_NIVEIS.map(n => ({
+        ativo_id: _ativoId,
+        preco: isUp ? low + diff * (1 - n.r) : high - diff * (1 - n.r),
+        habilitado: true,
+        tipo: 'fibo'
+    }));
+    await db.from('alertas').insert(rows);
+    cvFecharModalFib();
+    await cvCarregarAlertasGrafico();
+    grDrawChart();
+}
+
+async function cvExcluirFibAlertas() {
+    if (!_ativoId) return;
+    await db.from('alertas').delete().eq('ativo_id', _ativoId).eq('tipo', 'fibo');
+    if (_fibModalIdx !== null) _fibs.splice(_fibModalIdx, 1);
+    cvFecharModalFib();
+    await cvCarregarAlertasGrafico();
+    grDrawChart();
+}
+
 function cvToggleFib() {
     _indState.fib = !_indState.fib;
-    if (!_indState.fib) { _fibAtual = null; } // fibs salvos permanecem
-
-
+    if (!_indState.fib) {
+        _fibAtual = null;
+    } else {
+        // Auto-plot: detecta máxima e mínima dos candles visíveis
+        const visible = Math.min(_grZoom, _grAllCandles.length);
+        const candles = _grAllCandles.slice(_grAllCandles.length - visible);
+        if (candles.length > 0) {
+            const high = Math.max(...candles.map(c => c.h));
+            const low  = Math.min(...candles.map(c => c.l));
+            // Adiciona fib automaticamente se não existir ainda
+            if (_fibs.length === 0) {
+                _fibs.push({ p1: low, p2: high });
+            }
+        }
+    }
     document.getElementById('cv-ind-fib').classList.toggle('active', _indState.fib);
     grDrawChart();
 }
