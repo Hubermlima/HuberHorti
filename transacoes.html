@@ -5813,14 +5813,36 @@ function cvAbrirModalFib(idx) {
     const diff = high - low;
     const isUp = fib.p2 > fib.p1;
     const list = document.getElementById('cv-fib-niveis-list');
-    list.innerHTML = FIB_NIVEIS.map(n => {
+    list.innerHTML = FIB_NIVEIS.map((n, i) => {
         const preco = isUp ? low + diff * (1 - n.r) : high - diff * (1 - n.r);
-        return `<div style="display:flex;justify-content:space-between;">
-            <span style="color:${n.cor};font-weight:600;">${n.label}</span>
-            <span>${preco.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2})} USD</span>
+        const isEditable = n.r === 0 || n.r === 1;
+        return `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <span style="font-weight:600;color:#1C1C1E;width:50px;">${n.label}</span>
+            ${isEditable
+                ? `<input id="fib-input-${i}" class="modal-input" type="number" value="${preco.toFixed(2)}" style="width:180px;margin:0;padding:6px 10px;font-size:14px;" oninput="cvRecalcFibNiveis(${idx})">`
+                : `<span id="fib-val-${i}" style="font-size:14px;color:#1C1C1E;">${preco.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2})}</span>`
+            }
         </div>`;
     }).join('');
     document.getElementById('cv-fib-overlay').classList.add('active');
+}
+
+function cvRecalcFibNiveis(fibIdx) {
+    const fib = _fibs[fibIdx];
+    if (!fib) return;
+    const val0 = parseFloat(document.getElementById('fib-input-0')?.value) || 0;
+    const val6 = parseFloat(document.getElementById('fib-input-6')?.value) || 0;
+    if (!val0 || !val6) return;
+    const newHigh = Math.max(val0, val6);
+    const newLow  = Math.min(val0, val6);
+    const newDiff = newHigh - newLow;
+    const isUp = fib.p2 > fib.p1;
+    FIB_NIVEIS.forEach((n, i) => {
+        if (n.r === 0 || n.r === 1) return;
+        const preco = isUp ? newLow + newDiff * (1 - n.r) : newHigh - newDiff * (1 - n.r);
+        const el = document.getElementById('fib-val-' + i);
+        if (el) el.textContent = preco.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
+    });
 }
 
 function cvFecharModalFib() {
@@ -5832,10 +5854,15 @@ async function cvGravarFibAlertas() {
     if (_fibModalIdx === null) return;
     const fib = _fibs[_fibModalIdx];
     if (!fib || !_ativoId) return;
-    const high = Math.max(fib.p1, fib.p2);
-    const low  = Math.min(fib.p1, fib.p2);
+    // Usa valores editados dos inputs se disponíveis
+    const val0 = parseFloat(document.getElementById('fib-input-0')?.value);
+    const val6 = parseFloat(document.getElementById('fib-input-6')?.value);
+    const high = val0 && val6 ? Math.max(val0, val6) : Math.max(fib.p1, fib.p2);
+    const low  = val0 && val6 ? Math.min(val0, val6) : Math.min(fib.p1, fib.p2);
+    // Atualiza fib no array com novos valores
+    fib.p1 = low; fib.p2 = high;
     const diff = high - low;
-    const isUp = fib.p2 > fib.p1;
+    const isUp = fib.p2 >= fib.p1;
     // Deleta alertas fibo antigos deste ativo
     await db.from('alertas').delete().eq('ativo_id', _ativoId).eq('tipo', 'fibo');
     // Insere novos
@@ -5861,27 +5888,21 @@ async function cvExcluirFibAlertas() {
 }
 
 function cvToggleFib() {
-    _indState.fib = !_indState.fib;
-    if (!_indState.fib) {
-        _fibAtual = null;
-    } else {
-        // Auto-plot: detecta máxima e mínima dos candles VISÍVEIS na tela
-        const total = _grAllCandles.length;
-        const visible = Math.min(_grZoom, total);
-        const extraRight = Math.floor(_grZoom * 0.15);
-        const maxOff = total + extraRight - visible;
-        const startIdx = Math.max(0, Math.min(maxOff, _grOffset === 999999 ? maxOff : _grOffset));
-        const candles = _grAllCandles.slice(startIdx, Math.min(startIdx + visible, total));
-        if (candles.length > 0) {
-            const high = Math.max(...candles.map(c => c.h));
-            const low  = Math.min(...candles.map(c => c.l));
-            // Adiciona fib automaticamente se não existir ainda
-            if (_fibs.length === 0) {
-                _fibs.push({ p1: low, p2: high });
-            }
-        }
+    // Auto-plot: detecta máxima e mínima dos candles VISÍVEIS na tela
+    const total = _grAllCandles.length;
+    const visible = Math.min(_grZoom, total);
+    const extraRight = Math.floor(_grZoom * 0.15);
+    const maxOff = total + extraRight - visible;
+    const startIdx = Math.max(0, Math.min(maxOff, _grOffset === 999999 ? maxOff : _grOffset));
+    const candles = _grAllCandles.slice(startIdx, Math.min(startIdx + visible, total));
+    if (candles.length > 0) {
+        const high = Math.max(...candles.map(c => c.h));
+        const low  = Math.min(...candles.map(c => c.l));
+        _fibs.push({ p1: low, p2: high });
+        _indState.fib = true;
     }
-    document.getElementById('cv-ind-fib').classList.toggle('active', _indState.fib);
+    // Botão nunca fica ativo
+    document.getElementById('cv-ind-fib').classList.remove('active');
     grDrawChart();
 }
 
