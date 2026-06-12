@@ -328,7 +328,14 @@ input[type=range]::-webkit-slider-runnable-track{border-radius:100px;}
 .cv-ind-btn.stoch.active{color:#FFF176;background:linear-gradient(180deg,#2e2a00 0%,#1e1c00 100%);}
 .cv-ind-btn.liq.active{color:#FF6B6B;background:linear-gradient(180deg,#2e0a0a 0%,#1e0606 100%);}
 .cv-ind-btn.fig.active{color:#FFD700;background:linear-gradient(180deg,#2e2a00 0%,#1e1c00 100%);}
-
+.cv-fig-menu{display:none;position:absolute;bottom:100%;right:0;background:rgba(19,23,34,0.97);border:0.5px solid rgba(255,255,255,0.12);padding:8px;gap:4px;z-index:210;border-radius:10px;min-width:200px;flex-direction:column;}
+.cv-fig-menu.active{display:flex;}
+.cv-fig-item{display:flex;align-items:center;gap:8px;cursor:pointer;padding:8px 10px;border-radius:7px;}
+.cv-fig-item:active{background:rgba(255,255,255,0.08);}
+.cv-fig-check{width:14px;height:14px;border-radius:50%;border:1.5px solid currentColor;flex-shrink:0;}
+.cv-fig-check.on{background:currentColor;}
+.cv-fig-lbl{font-size:12px;font-weight:700;font-family:-apple-system,sans-serif;color:#FFFFFF;}
+.cv-fig-vazia{font-size:12px;color:rgba(255,255,255,0.5);font-family:-apple-system,sans-serif;padding:8px 10px;}
 .cv-ind-btn.macd.active{color:#FF6B9D;background:linear-gradient(180deg,#2e0d1a 0%,#1e0810 100%);}
 .cv-ind-btn.vd.active{color:#FFD54F;background:linear-gradient(180deg,#2e2400 0%,#1e1800 100%);}
 
@@ -1025,7 +1032,10 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <button class="cv-ind-btn stoch" id="cv-ind-stoch" onclick="cvToggleSubInd('stoch')">
 <span class="btn-sigla">Sto</span><span class="btn-nome">Estocástico</span></button>
       <button class="cv-ind-btn liq" id="cv-ind-liq" onclick="cvToggleLiq()"><span class="btn-sigla">Liq</span><span class="btn-nome">Liquidações</span></button>
-      <button class="cv-ind-btn fig" id="cv-ind-fig" onclick="cvToggleFigMenu()"><span class="btn-sigla">Fig</span><span class="btn-nome">Figuras</span></button>
+      <div style="position:relative;width:100%;">
+        <div class="cv-fig-menu" id="cv-fig-menu"></div>
+        <button class="cv-ind-btn fig" id="cv-ind-fig" onclick="cvToggleFigMenu()"><span class="btn-sigla">Fig</span><span class="btn-nome">Figuras</span></button>
+      </div>
       <div class="cv-barra-sep"></div>
       <button class="cv-ind-btn" id="cv-ind-rel" onclick="cvAbrirRelPerf()" title="Performance Relativa"><span class="btn-sigla">%</span><span class="btn-nome">Perf. Relativa</span></button>
     </div>
@@ -5447,34 +5457,47 @@ function cvDesenharLiquidacoes(ctx, candles, PAD, chartW, chartH, W, toY) {
 // ── DETECÇÃO E DESENHO DE FIGURAS TÉCNICAS ──────────────────────
 
 function cvToggleFigMenu() {
-    const btn = document.getElementById('cv-ind-fig');
-    const ativo = btn.classList.contains('active');
-    if (ativo) {
+    const menu = document.getElementById('cv-fig-menu');
+    const btn  = document.getElementById('cv-ind-fig');
+    const aberto = menu.classList.contains('active');
+    if (aberto) {
+        menu.classList.remove('active');
         btn.classList.remove('active');
-        _indState.figAtivas.clear();
-        _figDetectadas = [];
-        grDrawChart();
         return;
     }
-    // Detecta figuras nos candles visíveis
-    const total = _grAllCandles.length;
-    const visible = Math.min(_grZoom, total);
-    const extraRight = Math.floor(_grZoom * 0.15);
-    const maxOff = total + extraRight - visible;
-    const effOffset = _grOffset === 999999 ? maxOff : Math.max(0, Math.min(maxOff, _grOffset));
-    const _visCandles = _grAllCandles.slice(effOffset, Math.min(effOffset + visible, total));
-    window._grFigOffset = effOffset;
-    _figDetectadas = cvDetectarFiguras(_visCandles);
-    // Ativa todas as figuras detectadas
-    _indState.figAtivas.clear();
-    _figDetectadas.forEach((_, i) => _indState.figAtivas.add(i));
+    // Detecta figuras e monta menu
+    _figDetectadas = cvDetectarFiguras(_grAllCandles);
+    cvRenderFigMenu(_figDetectadas);
+    menu.classList.add('active');
     btn.classList.add('active');
+}
+
+function cvRenderFigMenu(figs) {
+    const menu = document.getElementById('cv-fig-menu');
+    if (!figs.length) {
+        menu.innerHTML = '<div class="cv-fig-vazia">Nenhuma figura identificada</div>';
+        return;
+    }
+    menu.innerHTML = figs.map((f, i) => `
+        <div class="cv-fig-item" onclick="cvToggleFig(${i})">
+            <div class="cv-fig-check ${_indState.figAtivas.has(i)?'on':''}" style="color:${f.cor}"></div>
+            <span class="cv-fig-lbl" style="color:${f.cor}">${f.nome}</span>
+        </div>`).join('');
+}
+
+function cvToggleFig(idx) {
+    if (_indState.figAtivas.has(idx)) {
+        _indState.figAtivas.delete(idx);
+    } else {
+        _indState.figAtivas.add(idx);
+    }
+    cvRenderFigMenu(_figDetectadas);
     grDrawChart();
 }
 
 function cvDetectarFiguras(todos) {
     if (!todos || todos.length < 20) return [];
-    const candles = todos; // candles visíveis na view
+    const candles = todos.slice(-80); // últimos 80 candles
     const figs = [];
 
     // Calcula swing highs e lows
@@ -5650,11 +5673,9 @@ function cvDetectarFiguras(todos) {
 
 function cvDesenharFiguras(ctx, todos, PAD, chartW, chartH, W, H, toY) {
     if (!_figDetectadas.length || !_indState.figAtivas.size) return;
-    const effOffset = window._grFigOffset || 0;
-    const total = _grAllCandles.length;
-    const visible2 = Math.min(_grZoom, total);
-    const candles = _grAllCandles.slice(effOffset, Math.min(effOffset + visible2, total));
-    const startAll = effOffset;
+    const candles = todos.slice(-80);
+    const total = todos.length;
+    const startAll = total - 80;
 
     // Converte índice local (nos 80 candles) para X no canvas
     const visible = _grAllCandles.slice(
