@@ -1800,6 +1800,7 @@ async function salvarNova() {
         const liqToggle = document.getElementById('od-liquidacao-toggle');
         if (liqToggle && liqToggle.checked && _cvTradeId) {
             await db.from('trades').update({ operacional: false }).eq('id', _cvTradeId);
+            await db.from('alertas').delete().eq('ativo_id', _ativoId).in('tipo', ['alvo', 'stop']);
             _cvTradeId = null;
             _grStop = 0;
             if (_regAtual && !_indOculto.reguaA) { _regAtual.p2 = _precoAtual * 1.05; }
@@ -1962,6 +1963,14 @@ async function cvConfirmarNovoStop() {
         if (!error) {
             if (!window._cvTradeCache) window._cvTradeCache = {};
             Object.assign(window._cvTradeCache, payload);
+            // Sincroniza tabela alertas
+            await db.from('alertas').delete().eq('ativo_id', _ativoId).in('tipo', ['alvo', 'stop']);
+            const alertasRows = [];
+            const stopFinal = !isNaN(stopVal) && stopVal > 0 ? stopVal : _grStop;
+            const alvoFinal = !isNaN(alvoVal) && alvoVal > 0 ? alvoVal : (_regAtual ? _regAtual.p2 : 0);
+            if (stopFinal > 0) alertasRows.push({ ativo_id: _ativoId, preco: stopFinal, habilitado: stopAtivo, tipo: 'stop', nivel: stopRealizacao });
+            if (alvoFinal > 0) alertasRows.push({ ativo_id: _ativoId, preco: alvoFinal, habilitado: alvoAtivo, tipo: 'alvo', nivel: alvoRealizacao });
+            if (alertasRows.length > 0) await db.from('alertas').insert(alertasRows);
         }
     }
 
@@ -2075,6 +2084,12 @@ async function cvConfirmarGravarTrade() {
     }
     btn.disabled = false;
     if (!error) {
+        // Sincroniza alertas de alvo e stop
+        await db.from('alertas').delete().eq('ativo_id', _ativoId).in('tipo', ['alvo', 'stop']);
+        const alertasRows = [];
+        if (stop > 0) alertasRows.push({ ativo_id: _ativoId, preco: stop, habilitado: true, tipo: 'stop', nivel: 100 });
+        if (alvo > 0) alertasRows.push({ ativo_id: _ativoId, preco: alvo, habilitado: true, tipo: 'alvo', nivel: 100 });
+        if (alertasRows.length > 0) await db.from('alertas').insert(alertasRows);
         cvFecharGravarTrade();
         // Atualiza _grDir para refletir tipo do trade
         _grDir = _cvTradeTipo.toUpperCase();
@@ -2294,6 +2309,9 @@ async function cvFecharTargetModal() {
     const payload = {};
     if (_cvAlvoDisparado) { payload.alvo_ativo = false; if (window._cvTradeCache) window._cvTradeCache.alvo_ativo = false; }
     if (_cvStopDisparado) { payload.stop_ativo = false; if (window._cvTradeCache) window._cvTradeCache.stop_ativo = false; }
+    // Deleta alerta correspondente da tabela alertas
+    if (_cvAlvoDisparado) await db.from('alertas').delete().eq('ativo_id', _ativoId).eq('tipo', 'alvo');
+    if (_cvStopDisparado) await db.from('alertas').delete().eq('ativo_id', _ativoId).eq('tipo', 'stop');
     _cvAlvoDisparado = false;
     _cvStopDisparado = false;
     if (Object.keys(payload).length > 0) {
