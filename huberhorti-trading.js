@@ -43,7 +43,8 @@ async function buscarSubscription() {
 
 // ── Busca alertas ativos ──────────────────────────────────────────────────────
 async function buscarAlertas() {
-  return await sbFetch('/alertas?habilitado=eq.true&select=id,preco');
+  return await sbFetch('/alertas?habilitado=eq.true&select=id,preco,tipo,nivel');
+
 }
 
 // ── Busca trades operacionais com alvo/stop ativos ────────────────────────────
@@ -78,11 +79,21 @@ async function verificar(env) {
                    (precoAntes > preco && precoAtual <= preco);
     if (cruzou) {
       const dir = precoAtual > precoAntes ? '↗ Cruzando Acima' : '↘ Cruzando Abaixo';
-      await sendPush(subscription, JSON.stringify({
-        title: '🔔 Alerta de preço!',
-        body: `BTC/USD cruzou ${preco.toLocaleString('pt-BR', {minimumFractionDigits:2})} USD · ${dir}`,
-        tag: 'trading-alert'
-      }));
+const tipoLabel = alerta.tipo === 'alvo' ? '🎯 Alvo'
+    : alerta.tipo === 'stop'   ? '🛑 Stop'
+    : alerta.tipo === 'fibo'   ? '📐 Fibo'
+    : alerta.tipo === 'manual' ? '📌 Manual'
+    : '⚠️ Alerta';
+const nivelLabel = (alerta.tipo === 'alvo' || alerta.tipo === 'stop') && alerta.nivel
+    ? ` · Realizar ${alerta.nivel}%`
+    : alerta.tipo === 'fibo' && alerta.nivel
+    ? ` · ${alerta.nivel}%`
+    : '';
+await sendPush(subscription, JSON.stringify({
+  title: '🔔 Alerta de preço!',
+  body: `${tipoLabel} · BTC/USD ${preco.toLocaleString('pt-BR', {minimumFractionDigits:2})} USD${nivelLabel} · ${dir}`,
+  tag: 'trading-alert'
+}));
     }
   }
 
