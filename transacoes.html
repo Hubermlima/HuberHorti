@@ -1449,7 +1449,8 @@ async function init() {
                 document.getElementById('cv-ticker').textContent = _ticker;
         cvAbrir();
         await Promise.all([carregarTransacoes(), fetchFxRate()]);
-        // régua será inicializada quando o primeiro preço realtime chegar
+        // Carrega componentes fixos do banco
+        await cvCarregarFixos();
 
         return;
 
@@ -4510,18 +4511,21 @@ function grInitTouch() {
 
         function grGetDragTarget(yInterno) {
         const HIT = 50;
-        if (_grAlvo    > 0 && Math.abs(yInterno - grLineY(_grAlvo))    <= HIT) return 'alvo';
+        const locked = key => _prefComponentes[key]?.locked === true;
+        if (!locked('reguaA') && _grAlvo    > 0 && Math.abs(yInterno - grLineY(_grAlvo))    <= HIT) return 'alvo';
         if (_grEntrada > 0 && Math.abs(yInterno - grLineY(_grEntrada)) <= HIT) return 'entrada';
-        if (_grStop    > 0 && Math.abs(yInterno - grLineY(_grStop))    <= HIT) return 'stop';
+        if (!locked('reguaS') && _grStop    > 0 && Math.abs(yInterno - grLineY(_grStop))    <= HIT) return 'stop';
         const stopPrice = _grStop > 0 ? _grStop : _precoAtual * 0.95;
-        if (Math.abs(yInterno - grLineY(stopPrice)) <= HIT) return 'stop';
+        if (!locked('reguaS') && Math.abs(yInterno - grLineY(stopPrice)) <= HIT) return 'stop';
         // Níveis de suporte/resistência
         for (let i = 0; i < _grNiveis.length; i++) {
             if (Math.abs(yInterno - grLineY(_grNiveis[i].preco)) <= HIT) return 'nivel_' + i;
         }
         // Alertas
-        for (let i = 0; i < _grAlertas.length; i++) {
-            if (Math.abs(yInterno - grLineY(_grAlertas[i].preco)) <= HIT) return 'alerta_' + i;
+        if (!locked('alertas')) {
+            for (let i = 0; i < _grAlertas.length; i++) {
+                if (Math.abs(yInterno - grLineY(_grAlertas[i].preco)) <= HIT) return 'alerta_' + i;
+            }
         }
         return null;
     }
@@ -4574,7 +4578,7 @@ function grInitTouch() {
 
             }
             // Toque no handle da régua
-            if (_regAtual && window._regHandleX !== undefined && window._regHandleY !== undefined) {
+            if (_regAtual && window._regHandleX !== undefined && window._regHandleY !== undefined && !(_prefComponentes['reguaA']?.locked)) {
                 const hTocado = xInterno >= window._regHandleX && xInterno <= window._regHandleX + 14
                              && Math.abs(yInterno - window._regHandleY) < 20;
                 if (hTocado) {
@@ -5203,6 +5207,46 @@ function cvToggleOcultar(key) {
 function cvFecharOcultarIndicadores() {
     document.getElementById('cv-ocultar-menu').style.display = 'none';
     document.getElementById('cv-ocultar-overlay').style.display = 'none';
+}
+
+async function cvCarregarFixos() {
+    try {
+        const { data } = await db.from('preferencias').select('indicadores').single();
+        if (!data || !data.indicadores) return;
+        _prefComponentes = data.indicadores;
+        const pref = _prefComponentes;
+
+        // EMAs
+        if (pref.ema9?.fixo)      { _indState.ema9 = true;  document.getElementById('cv-chk-ema9') && cvToggleMed('ema9'); }
+        if (pref.ema21?.fixo)     { _indState.ema21 = true; document.getElementById('cv-chk-ema21') && cvToggleMed('ema21'); }
+        if (pref.ema50?.fixo)     { _indState.ema50 = true; document.getElementById('cv-chk-ema50') && cvToggleMed('ema50'); }
+        if (pref.ema200?.fixo !== false) { _indState.ema200 = true; } // default já true
+
+        // Bollinger
+        if (pref.bollinger?.fixo !== false) { _indState.bollinger = true; } // default já true
+
+        // Sub-indicadores
+        if (pref.vd?.fixo !== false)   { _indState.subInd = 'vd'; }
+        if (pref.rsi?.fixo)    { _indState.subInd = 'rsi'; }
+        if (pref.vol?.fixo)    { _indState.subInd = 'vol'; }
+        if (pref.macd?.fixo)   { _indState.subInd = 'macd'; }
+        if (pref.atr?.fixo)    { _indState.subInd = 'atr'; }
+        if (pref.obv?.fixo)    { _indState.subInd = 'obv'; }
+        if (pref.stoch?.fixo)  { _indState.subInd = 'stoch'; }
+
+        // Outros
+        if (pref.powerlaw?.fixo)  cvTogglePowerLaw();
+        if (pref.vwap?.fixo)      cvToggleInd('vwap');
+        if (pref.liq?.fixo)       cvToggleLiq();
+        if (pref.patterns?.fixo)  cvTogglePat();
+
+        // Visibilidade
+        Object.keys(pref).forEach(key => {
+            if (pref[key].visivel === false) _indOculto[key] = true;
+        });
+
+        grDrawChart();
+    } catch(e) {}
 }
 
 // ── Indicadores toggle ───────────────────────────────────────────
