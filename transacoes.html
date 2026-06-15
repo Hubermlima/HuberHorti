@@ -1907,7 +1907,7 @@ async function cvSelecionarAtivo(id, ticker) {
     document.getElementById('cv-var').textContent    = '—';
 
     // Reinicia o ambiente para o novo ativo
-    _grAllCandles = [];
+    _grAllCandles = []; _grCandlesD = []; _grCandlesW = [];
 _grOffset = 999999;
 _grEntrada = 0; _grStop = 0; _grAlvo = 0;
 _grTf = '4h';
@@ -2623,7 +2623,7 @@ function cvZoom(dir) {
 function cvSetTf(tf) {
     _grTf = tf;
     _grOffset = 999999;
-    _grAllCandles = [];
+    _grAllCandles = []; _grCandlesD = []; _grCandlesW = [];
     _wsLastDraw = Date.now();
 
     document.getElementById('cv-tf-15m').classList.toggle('active', tf==='15m');
@@ -2689,7 +2689,9 @@ function grSwitchTab(tab) {
 // ── Chart ─────────────────────────────────────────────────────────
 let _grChart = null;
 let _grTf = '4h';
-let _grAllCandles = [];
+let _grAllCandles = []; _grCandlesD = []; _grCandlesW = [];
+let _grCandlesD = [];  // candles diários para EMA MTF
+let _grCandlesW = [];  // candles semanais para EMA MTF
 let _grZonasCache = null; // {res: [], sup: []} — calculado uma vez por load
 
 let _grOffset = 999999;
@@ -2714,7 +2716,7 @@ let _regTrackingTimer = null;
 function grSetTf(tf) {
     _grTf = tf;
     _grOffset = 999999;
-    _grAllCandles = [];
+    _grAllCandles = []; _grCandlesD = []; _grCandlesW = [];
     document.getElementById('cv-tf-15m').classList.toggle('active', tf === '15m');
     document.getElementById('cv-tf-1h').classList.toggle('active', tf === '1h');
     document.getElementById('cv-tf-4h').classList.toggle('active', tf === '4h');
@@ -2753,8 +2755,18 @@ async function grRenderChart() {
             };
             const page1 = await fetchBin(null);
             const page2 = page1.length > 0 ? await fetchBin(page1[0].t - 1) : [];
-                        _grAllCandles = [...page2, ...page1];
-            _grZonasCache = null; // força recalculo
+            _grAllCandles = [...page2, ...page1];
+            _grZonasCache = null;
+
+            // Busca candles diários e semanais para EMA MTF (em paralelo)
+            try {
+                const [resD, resW] = await Promise.all([
+                    fetch(`https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=1d&limit=100`).then(r=>r.json()),
+                    fetch(`https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=1w&limit=50`).then(r=>r.json())
+                ]);
+                _grCandlesD = (Array.isArray(resD) ? resD : []).map(k => ({ t: k[0], c: parseFloat(k[4]) }));
+                _grCandlesW = (Array.isArray(resW) ? resW : []).map(k => ({ t: k[0], c: parseFloat(k[4]) }));
+            } catch(e) {}
         }
 
 
@@ -2971,6 +2983,109 @@ function grDrawCandles(candles, emptyRight) {
         if (_indState.ema21 && !_indOculto.ema21)  desenharLinha(ema21,  '#9C27B0', 1.2);
         if (_indState.ema50 && !_indOculto.ema50)  desenharLinha(ema50,  '#FF80AB', 1.2);
         if (_indState.ema200 && !_indOculto.ema200) desenharLinha(ema200, '#F5A623', 1.5);
+
+        // ── EMA 21 Diário (MTF) ───────────────────────────────────────
+        if (_indState.ema21d && !_indOculto.ema21d && _grCandlesD.length >= 21) {
+            const closesD = _grCandlesD.map(c => c.c);
+            const ema21dVals = grEMA(closesD, 21);
+            const ema21dAtual = ema21dVals[ema21dVals.length - 1];
+            if (ema21dAtual) {
+                // Plota como linha horizontal no valor atual da EMA 21D
+                const y = toY(ema21dAtual);
+                ctx.beginPath();
+                ctx.moveTo(PAD.left, y);
+                ctx.lineTo(W - PAD.right, y);
+                ctx.strokeStyle = '#FF6B35';
+                ctx.lineWidth = 1.5;
+                ctx.setLineDash([6, 3]);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                // Label
+                ctx.fillStyle = '#FF6B35';
+                ctx.font = 'bold 9px -apple-system, sans-serif';
+                ctx.fillText('EMA 21D', W - PAD.right - 52, y - 4);
+            }
+        }
+
+        // ── EMA 21 Semanal (MTF) ─────────────────────────────────────
+        if (_indState.ema21w && !_indOculto.ema21w && _grCandlesW.length >= 21) {
+            const closesW = _grCandlesW.map(c => c.c);
+            const ema21wVals = grEMA(closesW, 21);
+            const ema21wAtual = ema21wVals[ema21wVals.length - 1];
+            if (ema21wAtual) {
+                const y = toY(ema21wAtual);
+                ctx.beginPath();
+                ctx.moveTo(PAD.left, y);
+                ctx.lineTo(W - PAD.right, y);
+                ctx.strokeStyle = '#E91E8C';
+                ctx.lineWidth = 1.5;
+                ctx.setLineDash([6, 3]);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.fillStyle = '#E91E8C';
+                ctx.font = 'bold 9px -apple-system, sans-serif';
+                ctx.fillText('EMA 21S', W - PAD.right - 52, y - 4);
+            }
+        }
+
+        // ── Chandelier Exit ───────────────────────────────────────────
+        if (_indState.chandelier && !_indOculto.chandelier && candles.length >= 22) {
+            const period = 22;
+            const mult = 3;
+            const ceVals = [];
+            for (let i = period - 1; i < candles.length; i++) {
+                const slice = candles.slice(i - period + 1, i + 1);
+                // ATR
+                let atrSum = 0;
+                for (let j = 1; j < slice.length; j++) {
+                    const tr = Math.max(
+                        slice[j].h - slice[j].l,
+                        Math.abs(slice[j].h - slice[j-1].c),
+                        Math.abs(slice[j].l - slice[j-1].c)
+                    );
+                    atrSum += tr;
+                }
+                const atr = atrSum / (slice.length - 1);
+                const highestHigh = Math.max(...slice.map(c => c.h));
+                const lowestLow = Math.min(...slice.map(c => c.l));
+                const ceLong = lowestLow + mult * atr;   // suporte dinâmico (abaixo)
+                const ceShort = highestHigh - mult * atr; // resistência dinâmica (acima)
+                // Usa Long se bullish, Short se bearish
+                const close = slice[slice.length - 1].c;
+                const prev = ceVals.length > 0 ? ceVals[ceVals.length - 1] : null;
+                let val, bullish;
+                if (!prev) {
+                    bullish = true;
+                    val = ceLong;
+                } else {
+                    bullish = prev.bullish
+                        ? close > prev.val
+                        : close > ceShort;
+                    val = bullish ? Math.max(ceLong, prev.val || 0) : Math.min(ceShort, prev.val || 999999);
+                }
+                ceVals.push({ val, bullish });
+            }
+            // Extrai janela visível
+            const offset = candles.length - ceVals.length;
+            const ceJanela = candles.map((_, i) => {
+                const idx = i - offset;
+                return idx >= 0 ? ceVals[idx] : null;
+            });
+            // Desenha linha colorida por direção
+            for (let i = 1; i < ceJanela.length; i++) {
+                const cur = ceJanela[i], prev = ceJanela[i-1];
+                if (!cur || !prev) continue;
+                const x1 = PAD.left + ((i-1) / totalSlots) * chartW + cW / 2;
+                const x2 = PAD.left + (i / totalSlots) * chartW + cW / 2;
+                ctx.beginPath();
+                ctx.moveTo(x1, toY(prev.val));
+                ctx.lineTo(x2, toY(cur.val));
+                ctx.strokeStyle = cur.bullish ? '#26A69A' : '#EF5350';
+                ctx.lineWidth = 1.5;
+                ctx.setLineDash([]);
+                ctx.stroke();
+            }
+        }
 
         // ── Power Law ─────────────────────────────────────────────────
         if (_indState.powerlaw && !_indOculto.powerlaw) {
@@ -4959,8 +5074,10 @@ const _indState = {
     ema21:     false,
     ema50:     false,
     ema200:    true,   // EMA 200 ativa por padrão
+    ema21d:    false,  // EMA 21 diário
+    ema21w:    false,  // EMA 21 semanal
+    chandelier: false, // Chandelier Exit
     subInd:    'vd',
-
 
     fib:       false,
     reg:       false,
@@ -5100,31 +5217,34 @@ const _subIndLabels = {
 };
 
 const _todosComponentes = [
-    { key: 'ema9',      label: 'EMA 9',        tipo: 1 },
-    { key: 'ema21',     label: 'EMA 21',        tipo: 1 },
-    { key: 'ema50',     label: 'EMA 50',        tipo: 1 },
-    { key: 'ema200',    label: 'EMA 200',       tipo: 1 },
-    { key: 'bollinger', label: 'Bollinger',     tipo: 1 },
-    { key: 'powerlaw',  label: 'Power Law',     tipo: 1 },
-    { key: 'fib',       label: 'Fibonacci',     tipo: 2, tabela: 'alertas' },
-    { key: 'alertas',   label: 'Alertas',       tipo: 2, tabela: 'alertas' },
-    { key: 'patterns',  label: 'Padrões',       tipo: 1 },
-    { key: 'crosshair', label: 'Crosshair',     tipo: 1 },
-    { key: 'vd',        label: 'Volume Delta',  tipo: 1 },
-    { key: 'rsi',       label: 'RSI',           tipo: 1 },
-    { key: 'vol',       label: 'Volume',        tipo: 1 },
-    { key: 'macd',      label: 'MACD',          tipo: 1 },
-    { key: 'atr',       label: 'ATR',           tipo: 1 },
-    { key: 'vwap',      label: 'VWAP',          tipo: 1 },
-    { key: 'obv',       label: 'OBV',           tipo: 1 },
-    { key: 'stoch',     label: 'Estocástico',   tipo: 1 },
-    { key: 'liq',       label: 'Liquidações',   tipo: 1 },
-    { key: 'reguaS',    label: 'Régua S',       tipo: 2, tabela: 'trades' },
-    { key: 'reguaA',    label: 'Régua A',       tipo: 2, tabela: 'trades' },
+    { key: 'ema9',       label: 'EMA 9',           tipo: 1 },
+    { key: 'ema21',      label: 'EMA 21',           tipo: 1 },
+    { key: 'ema50',      label: 'EMA 50',           tipo: 1 },
+    { key: 'ema200',     label: 'EMA 200',          tipo: 1 },
+    { key: 'ema21d',     label: 'EMA 21 Diário',    tipo: 1 },
+    { key: 'ema21w',     label: 'EMA 21 Semanal',   tipo: 1 },
+    { key: 'chandelier', label: 'Chandelier Exit',  tipo: 1 },
+    { key: 'bollinger',  label: 'Bollinger',        tipo: 1 },
+    { key: 'powerlaw',   label: 'Power Law',        tipo: 1 },
+    { key: 'fib',        label: 'Fibonacci',        tipo: 2, tabela: 'alertas' },
+    { key: 'alertas',    label: 'Alertas',          tipo: 2, tabela: 'alertas' },
+    { key: 'patterns',   label: 'Padrões',          tipo: 1 },
+    { key: 'crosshair',  label: 'Crosshair',        tipo: 1 },
+    { key: 'vd',         label: 'Volume Delta',     tipo: 1 },
+    { key: 'rsi',        label: 'RSI',              tipo: 1 },
+    { key: 'vol',        label: 'Volume',           tipo: 1 },
+    { key: 'macd',       label: 'MACD',             tipo: 1 },
+    { key: 'atr',        label: 'ATR',              tipo: 1 },
+    { key: 'vwap',       label: 'VWAP',             tipo: 1 },
+    { key: 'obv',        label: 'OBV',              tipo: 1 },
+    { key: 'stoch',      label: 'Estocástico',      tipo: 1 },
+    { key: 'liq',        label: 'Liquidações',      tipo: 1 },
+    { key: 'reguaS',     label: 'Régua S',          tipo: 2, tabela: 'trades' },
+    { key: 'reguaA',     label: 'Régua A',          tipo: 2, tabela: 'trades' },
 ];
 
 // Locked — apenas os que faz sentido travar
-const _lockavel = ['ema9','ema21','ema50','ema200','bollinger','powerlaw','fib','alertas','reguaS','reguaA','vwap','crosshair'];
+const _lockavel = ['ema9','ema21','ema50','ema200','ema21d','ema21w','chandelier','bollinger','powerlaw','fib','alertas','reguaS','reguaA','vwap','crosshair'];
 
 async function cvCarregarPreferencias() {
     try {
@@ -5224,6 +5344,9 @@ function cvAtivarComponente(key) {
         case 'ema21':     if (!_indState.ema21)     cvToggleMed('ema21');     break;
         case 'ema50':     if (!_indState.ema50)     cvToggleMed('ema50');     break;
         case 'ema200':    if (!_indState.ema200)    cvToggleMed('ema200');    break;
+        case 'ema21d':    if (!_indState.ema21d)    cvToggleMed('ema21d');    break;
+        case 'ema21w':    if (!_indState.ema21w)    cvToggleMed('ema21w');    break;
+        case 'chandelier': if (!_indState.chandelier) cvToggleChandelier();   break;
         case 'bollinger': if (!_indState.bollinger) cvToggleBol();            break;
         case 'powerlaw':  if (!_indState.powerlaw)  cvTogglePowerLaw();       break;
         case 'patterns':  if (!_indState.patterns)  cvTogglePat();            break;
@@ -5248,6 +5371,9 @@ function cvDesativarComponente(key) {
         case 'ema21':     if (_indState.ema21)     cvToggleMed('ema21');     break;
         case 'ema50':     if (_indState.ema50)     cvToggleMed('ema50');     break;
         case 'ema200':    if (_indState.ema200)    cvToggleMed('ema200');    break;
+        case 'ema21d':    if (_indState.ema21d)    cvToggleMed('ema21d');    break;
+        case 'ema21w':    if (_indState.ema21w)    cvToggleMed('ema21w');    break;
+        case 'chandelier': if (_indState.chandelier) cvToggleChandelier();   break;
         case 'bollinger': if (_indState.bollinger) cvToggleBol();            break;
         case 'powerlaw':  if (_indState.powerlaw)  cvTogglePowerLaw();       break;
         case 'patterns':  if (_indState.patterns)  cvTogglePat();            break;
@@ -6354,8 +6480,20 @@ function cvToggleMed(key) {
         if (_indState[key]) chk.classList.add('on');
         else chk.classList.remove('on');
     }
-    // Atualiza botão Médias — ativo se qualquer EMA ligada
-    const anyMed = _indState.ema9 || _indState.ema21 || _indState.ema50 || _indState.ema200;
+    // Atualiza botão Médias — ativo se qualquer EMA ou MTF ligada
+    const anyMed = _indState.ema9 || _indState.ema21 || _indState.ema50 || _indState.ema200 || _indState.ema21d || _indState.ema21w;
+    document.getElementById('cv-ind-med').classList.toggle('active', anyMed);
+    grDrawChart();
+}
+
+function cvToggleChandelier() {
+    _indState.chandelier = !_indState.chandelier;
+    const chk = document.getElementById('cv-chk-chandelier');
+    if (chk) {
+        if (_indState.chandelier) chk.classList.add('on');
+        else chk.classList.remove('on');
+    }
+    const anyMed = _indState.ema9 || _indState.ema21 || _indState.ema50 || _indState.ema200 || _indState.ema21d || _indState.ema21w || _indState.chandelier;
     document.getElementById('cv-ind-med').classList.toggle('active', anyMed);
     grDrawChart();
 }
@@ -8197,6 +8335,20 @@ function cvRelPerfRenderLista() {
   <div class="cv-med-item" onclick="cvToggleMed('ema200')">
     <div class="cv-med-check on" style="color:#F5A623;" id="cv-chk-ema200"></div>
     <span class="cv-med-lbl" style="color:#F5A623;">200 Períodos</span>
+  </div>
+  <div style="height:0.5px;background:rgba(255,255,255,0.1);margin:4px 0;"></div>
+  <div class="cv-med-item" onclick="cvToggleMed('ema21d')">
+    <div class="cv-med-check" style="color:#FF6B35;" id="cv-chk-ema21d"></div>
+    <span class="cv-med-lbl" style="color:#FF6B35;">21 Diário</span>
+  </div>
+  <div class="cv-med-item" onclick="cvToggleMed('ema21w')">
+    <div class="cv-med-check" style="color:#E91E8C;" id="cv-chk-ema21w"></div>
+    <span class="cv-med-lbl" style="color:#E91E8C;">21 Semanal</span>
+  </div>
+  <div style="height:0.5px;background:rgba(255,255,255,0.1);margin:4px 0;"></div>
+  <div class="cv-med-item" onclick="cvToggleChandelier()">
+    <div class="cv-med-check" style="color:#26A69A;" id="cv-chk-chandelier"></div>
+    <span class="cv-med-lbl" style="color:#26A69A;">Chandelier Exit</span>
   </div>
 </div>
 <!-- Overlay -->
