@@ -124,7 +124,8 @@ export default {
     if (request.method === 'POST' && path === '/ai/sentimento') {
       try {
         const { funding, fundingDiag, oi, ratio, ratioDiag, score, preco } = await request.json();
-        const prompt = `Você é um analista sênior de trading de Bitcoin com foco em mercados de futuros. Analise os dados abaixo e escreva uma análise técnica em português brasileiro, cruzando os três indicadores entre si para identificar o padrão atual (ex: distribuição, acumulação, short squeeze, armadilha de alta, divergência). Seja direto e específico — diga o que o smart money está fazendo, o que o varejo está fazendo, e qual o risco real para quem está comprado ou vendido agora.\n\nDados:\n- BTC/USD: ${preco}\n- Funding Rate: ${funding}% (${fundingDiag}) — indica posicionamento do varejo\n- Open Interest: ${oi} — indica volume de posições abertas\n- Top Trader Ratio: ${ratio} (${ratioDiag}) — indica posicionamento do smart money\n- Score geral: ${score}\n\nCruze os dados: se OI está subindo mas TTR caindo, smart money está distribuindo para o varejo. Se funding positivo com TTR caindo, varejo comprado mas smart money saindo — sinal de topo local. Seja específico sobre o que está acontecendo agora e o que esperar a seguir. Sem formatação, só o parágrafo corrido.`;
+        const prompt = `Você é um analista sênior de trading de Bitcoin. Com base nos dados abaixo, escreva em português brasileiro:\n1. Funding Rate ${funding}% (${fundingDiag}): 1 frase explicando o que significa agora\n2. Open Interest ${oi}: 1 frase explicando o que significa agora\n3. Top Trader Ratio ${ratio} (${ratioDiag}): 1 frase explicando o que significa agora\nConclusão: 1-2 frases diretas sobre o cenário atual e o risco principal.\n\nBTC/USD: ${preco} | Score: ${score}\n\nSem introdução, sem formatação extra, só as 4 linhas.`;
+
 
         const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -135,7 +136,7 @@ export default {
     },
     body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 600,
+        max_tokens: 400,
         messages: [{ role: 'user', content: prompt }]
     })
 });
