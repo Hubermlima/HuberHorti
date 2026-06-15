@@ -1032,6 +1032,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <button class="cv-ind-btn pat" id="cv-ind-pat" onclick="cvTogglePat()"><span class="btn-sigla">Pat</span><span class="btn-nome">Padrões</span></button>
       <button class="cv-ind-btn atr" id="cv-ind-atr" onclick="cvToggleSubInd('atr')">
 <span class="btn-sigla">ATR</span><span class="btn-nome">Volatilidade</span></button>
+      <button class="cv-ind-btn" id="cv-ind-chandelier" onclick="cvToggleChandelier()"><span class="btn-sigla">CE</span><span class="btn-nome">Chandelier</span></button>
       <button class="cv-ind-btn vwap" id="cv-ind-vwap" onclick="cvToggleInd('vwap')"><span class="btn-sigla">VWAP</span><span class="btn-nome">Preço por Volume</span></button>
       <button class="cv-ind-btn obv" id="cv-ind-obv" onclick="cvToggleSubInd('obv')">
 <span class="btn-sigla">OBV</span><span class="btn-nome">Volume Balanço</span></button>
@@ -2990,7 +2991,6 @@ function grDrawCandles(candles, emptyRight) {
             const ema21dVals = grEMA(closesD, 21);
             const ema21dAtual = ema21dVals[ema21dVals.length - 1];
             if (ema21dAtual) {
-                // Plota como linha horizontal no valor atual da EMA 21D
                 const y = toY(ema21dAtual);
                 ctx.beginPath();
                 ctx.moveTo(PAD.left, y);
@@ -3000,10 +3000,15 @@ function grDrawCandles(candles, emptyRight) {
                 ctx.setLineDash([6, 3]);
                 ctx.stroke();
                 ctx.setLineDash([]);
-                // Label
+                // Pílula no eixo Y igual EMA 200
+                const bH = 16, bW = PAD.left - 4, bX = 3, bY = y - bH / 2;
                 ctx.fillStyle = '#FF6B35';
-                ctx.font = 'bold 9px -apple-system, sans-serif';
-                ctx.fillText('EMA 21D', W - PAD.right - 52, y - 4);
+                ctx.beginPath(); ctx.roundRect(bX, bY, bW, bH, 3); ctx.fill();
+                ctx.fillStyle = '#FFFFFF';
+                ctx.font = 'bold 10px -apple-system';
+                ctx.textAlign = 'right';
+                ctx.fillText(fmtN(ema21dAtual), bX + bW - 4, bY + bH - 3);
+                ctx.textAlign = 'left';
             }
         }
 
@@ -3022,56 +3027,67 @@ function grDrawCandles(candles, emptyRight) {
                 ctx.setLineDash([6, 3]);
                 ctx.stroke();
                 ctx.setLineDash([]);
+                // Pílula no eixo Y
+                const bH = 16, bW = PAD.left - 4, bX = 3, bY = y - bH / 2;
                 ctx.fillStyle = '#E91E8C';
-                ctx.font = 'bold 9px -apple-system, sans-serif';
-                ctx.fillText('EMA 21S', W - PAD.right - 52, y - 4);
+                ctx.beginPath(); ctx.roundRect(bX, bY, bW, bH, 3); ctx.fill();
+                ctx.fillStyle = '#FFFFFF';
+                ctx.font = 'bold 10px -apple-system';
+                ctx.textAlign = 'right';
+                ctx.fillText(fmtN(ema21wAtual), bX + bW - 4, bY + bH - 3);
+                ctx.textAlign = 'left';
             }
         }
 
         // ── Chandelier Exit ───────────────────────────────────────────
-        if (_indState.chandelier && !_indOculto.chandelier && candles.length >= 22) {
+        if (_indState.chandelier && !_indOculto.chandelier && allCandles.length >= 22) {
             const period = 22;
             const mult = 3;
             const ceVals = [];
-            for (let i = period - 1; i < candles.length; i++) {
-                const slice = candles.slice(i - period + 1, i + 1);
-                // ATR
+
+            for (let i = period; i < allCandles.length; i++) {
+                const slice = allCandles.slice(i - period, i);
+                // ATR médio
                 let atrSum = 0;
                 for (let j = 1; j < slice.length; j++) {
-                    const tr = Math.max(
+                    atrSum += Math.max(
                         slice[j].h - slice[j].l,
                         Math.abs(slice[j].h - slice[j-1].c),
                         Math.abs(slice[j].l - slice[j-1].c)
                     );
-                    atrSum += tr;
                 }
                 const atr = atrSum / (slice.length - 1);
                 const highestHigh = Math.max(...slice.map(c => c.h));
-                const lowestLow = Math.min(...slice.map(c => c.l));
-                const ceLong = lowestLow + mult * atr;   // suporte dinâmico (abaixo)
-                const ceShort = highestHigh - mult * atr; // resistência dinâmica (acima)
-                // Usa Long se bullish, Short se bearish
-                const close = slice[slice.length - 1].c;
+                const lowestLow  = Math.min(...slice.map(c => c.l));
+                const ceLong  = highestHigh - mult * atr;
+                const ceShort = lowestLow  + mult * atr;
+                const close = allCandles[i].c;
                 const prev = ceVals.length > 0 ? ceVals[ceVals.length - 1] : null;
                 let val, bullish;
                 if (!prev) {
-                    bullish = true;
-                    val = ceLong;
+                    bullish = close > ceLong;
+                    val = bullish ? ceLong : ceShort;
                 } else {
-                    bullish = prev.bullish
-                        ? close > prev.val
-                        : close > ceShort;
-                    val = bullish ? Math.max(ceLong, prev.val || 0) : Math.min(ceShort, prev.val || 999999);
+                    if (prev.bullish) {
+                        bullish = close > (prev.val < ceLong ? ceLong : prev.val);
+                        val = bullish ? Math.max(ceLong, prev.val) : ceShort;
+                    } else {
+                        bullish = close > ceShort;
+                        val = bullish ? ceLong : Math.min(ceShort, prev.val);
+                    }
                 }
                 ceVals.push({ val, bullish });
             }
-            // Extrai janela visível
-            const offset = candles.length - ceVals.length;
-            const ceJanela = candles.map((_, i) => {
-                const idx = i - offset;
-                return idx >= 0 ? ceVals[idx] : null;
-            });
-            // Desenha linha colorida por direção
+
+            // Extrai janela visível usando startIdx/visible do allCandles
+            const ceOffset = allCandles.length - period - ceVals.length;
+            const ceJanela = [];
+            for (let i = 0; i < visible; i++) {
+                const idx = (startIdx + i) - period - ceOffset;
+                ceJanela.push(idx >= 0 && idx < ceVals.length ? ceVals[idx] : null);
+            }
+
+            // Desenha linha suave colorida por direção
             for (let i = 1; i < ceJanela.length; i++) {
                 const cur = ceJanela[i], prev = ceJanela[i-1];
                 if (!cur || !prev) continue;
@@ -6493,8 +6509,8 @@ function cvToggleChandelier() {
         if (_indState.chandelier) chk.classList.add('on');
         else chk.classList.remove('on');
     }
-    const anyMed = _indState.ema9 || _indState.ema21 || _indState.ema50 || _indState.ema200 || _indState.ema21d || _indState.ema21w || _indState.chandelier;
-    document.getElementById('cv-ind-med').classList.toggle('active', anyMed);
+    const btn = document.getElementById('cv-ind-chandelier');
+    if (btn) btn.classList.toggle('active', _indState.chandelier);
     grDrawChart();
 }
 
@@ -8344,11 +8360,6 @@ function cvRelPerfRenderLista() {
   <div class="cv-med-item" onclick="cvToggleMed('ema21w')">
     <div class="cv-med-check" style="color:#E91E8C;" id="cv-chk-ema21w"></div>
     <span class="cv-med-lbl" style="color:#E91E8C;">21 Semanal</span>
-  </div>
-  <div style="height:0.5px;background:rgba(255,255,255,0.1);margin:4px 0;"></div>
-  <div class="cv-med-item" onclick="cvToggleChandelier()">
-    <div class="cv-med-check" style="color:#26A69A;" id="cv-chk-chandelier"></div>
-    <span class="cv-med-lbl" style="color:#26A69A;">Chandelier Exit</span>
   </div>
 </div>
 <!-- Overlay -->
