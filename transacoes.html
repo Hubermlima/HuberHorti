@@ -645,16 +645,19 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <div class="od-field-group">
         <div class="od-field-label">FUNDING RATE <span id="od-sent-loading" style="font-size:10px;color:#007AFF;display:none;">carregando...</span></div>
         <div class="od-field-display" id="od-sent-funding">—</div>
+        <div id="od-spark-funding" style="margin-top:8px;height:40px;"></div>
       </div>
       <div class="od-divider"></div>
       <div class="od-field-group">
         <div class="od-field-label">OPEN INTEREST</div>
         <div class="od-field-display" id="od-sent-oi">—</div>
+        <div id="od-spark-oi" style="margin-top:8px;height:40px;"></div>
       </div>
       <div class="od-divider"></div>
       <div class="od-field-group">
         <div class="od-field-label">TOP TRADER RATIO</div>
         <div class="od-field-display" id="od-sent-ratio">—</div>
+        <div id="od-spark-ratio" style="margin-top:8px;height:40px;"></div>
       </div>
       <div class="od-divider"></div>
       <div class="od-field-group">
@@ -7479,34 +7482,53 @@ async function odCarregarSentimento() {
     elNarrativa.textContent = "Analisando...";
     try {
         const [rFunding, rOI, rRatio] = await Promise.all([
-            fetch("https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&limit=2").then(r => r.json()),
-
-            fetch("https://fapi.binance.com/futures/data/openInterestHist?symbol=BTCUSDT&period=1h&limit=2").then(r => r.json()),
-
-
-            fetch("https://fapi.binance.com/futures/data/topLongShortAccountRatio?symbol=BTCUSDT&period=1h&limit=2").then(r => r.json())
-
+            fetch("https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&limit=20").then(r => r.json()),
+            fetch("https://fapi.binance.com/futures/data/openInterestHist?symbol=BTCUSDT&period=1h&limit=24").then(r => r.json()),
+            fetch("https://fapi.binance.com/futures/data/topLongShortAccountRatio?symbol=BTCUSDT&period=1h&limit=24").then(r => r.json())
         ]);
         const SVG_UP   = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="vertical-align:-2px"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18"/></svg>`;
         const SVG_DOWN = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="vertical-align:-2px"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 13.5 12 21m0 0-7.5-7.5M12 21V3"/></svg>`;
         const SVG_NEUT = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="vertical-align:-2px"><path stroke-linecap="round" stroke-linejoin="round" d="M7.5 21 3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5"/></svg>`;
 
-        const funding = parseFloat(rFunding[0]?.fundingRate || 0) * 100;
-const fundingAnterior = parseFloat(rFunding[1]?.fundingRate || 0) * 100;
-const fundingDelta = funding - fundingAnterior;
+        // Sparkline helper
+        function odSparkline(values, color) {
+            if (!values || values.length < 2) return '';
+            const W = 300, H = 40, P = 2;
+            const min = Math.min(...values), max = Math.max(...values);
+            const range = max - min || 1;
+            const pts = values.map((v, i) => {
+                const x = P + (i / (values.length - 1)) * (W - P * 2);
+                const y = H - P - ((v - min) / range) * (H - P * 2);
+                return `${x.toFixed(1)},${y.toFixed(1)}`;
+            }).join(' ');
+            const last = values[values.length - 1];
+            const lx = W - P, ly = H - P - ((last - min) / range) * (H - P * 2);
+            return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:40px;display:block;">
+                <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" opacity="0.8"/>
+                <circle cx="${lx}" cy="${ly.toFixed(1)}" r="3" fill="${color}"/>
+            </svg>`;
+        }
 
-const oiAtual = parseFloat(rOI[0]?.sumOpenInterest || 0) * _precoAtual / 1e9;
-const oiAnterior = parseFloat(rOI[1]?.sumOpenInterest || 0) * _precoAtual / 1e9;
-const oiDelta = oiAtual - oiAnterior;
+        // Funding
+        const fundingVals = [...rFunding].reverse().map(f => parseFloat(f.fundingRate || 0) * 100);
+        const funding = fundingVals[fundingVals.length - 1] || 0;
+        const fundingAnterior = fundingVals[fundingVals.length - 2] || funding;
+        const fundingDelta = funding - fundingAnterior;
+        window._cvFunding = funding;
 
-const ratio = parseFloat(rRatio[0]?.longShortRatio || 1);
-const ratioAnterior = parseFloat(rRatio[1]?.longShortRatio || 1);
-const ratioDelta = ratio - ratioAnterior;
+        // OI
+        const oiVals = [...rOI].map(o => parseFloat(o.sumOpenInterest || 0) * _precoAtual / 1e9);
+        const oiAtual = oiVals[oiVals.length - 1] || 0;
+        const oiAnterior = oiVals[oiVals.length - 2] || oiAtual;
+        const oiDelta = oiAtual - oiAnterior;
+        window._cvOI = oiAtual * 1e9;
 
-window._cvFunding = funding;
-window._cvOI = oiAtual * 1e9;
-window._cvTTR = ratio;
-
+        // Ratio
+        const ratioVals = [...rRatio].map(r => parseFloat(r.longShortRatio || 1));
+        const ratio = ratioVals[ratioVals.length - 1] || 1;
+        const ratioAnterior = ratioVals[ratioVals.length - 2] || ratio;
+        const ratioDelta = ratio - ratioAnterior;
+        window._cvTTR = ratio;
         let fundingDiag, fundingCor, fundingLongSvg, fundingShortSvg, fundingLongCor, fundingShortCor;
         if (funding < -0.01) {
             fundingDiag = "Shorts excessivos"; fundingCor = "#1B7A3E";
@@ -7525,19 +7547,16 @@ window._cvTTR = ratio;
             fundingLongSvg = SVG_DOWN; fundingLongCor = "#EF4444";
             fundingShortSvg = SVG_UP; fundingShortCor = "#10B981";
         }
-                const fundingDeltaStr = (fundingDelta >= 0 ? '+' : '') + fundingDelta.toFixed(4) + '%';
-        const fundingDeltaCor = fundingDelta > 0 ? '#EF4444' : fundingDelta < 0 ? '#10B981' : '#8E8E93';
-        elFunding.innerHTML = `<span style="font-weight:700;">${funding.toFixed(4)}%</span> <span style="font-size:11px;color:${fundingDeltaCor};margin-right:6px;">${fundingDeltaStr}</span><span style="font-size:12px;color:${fundingCor};margin-right:10px;">${fundingDiag}</span><span style="font-size:12px;font-weight:600;color:#8E8E93;">Long </span><span style="color:${fundingLongCor}">${fundingLongSvg}</span><span style="font-size:12px;font-weight:600;color:#8E8E93;margin-left:8px;">Short </span><span style="color:${fundingShortCor}">${fundingShortSvg}</span>`;
+        elFunding.innerHTML = `<span style="font-weight:700;">${funding.toFixed(4)}%</span> <span style="font-size:11px;color:${fundingDelta>0?'#EF4444':fundingDelta<0?'#10B981':'#8E8E93'};margin-right:6px;">${(fundingDelta>=0?'+':'')+fundingDelta.toFixed(4)}%</span><span style="font-size:12px;color:${fundingCor};margin-right:10px;">${fundingDiag}</span><span style="font-size:12px;font-weight:600;color:#8E8E93;">Long </span><span style="color:${fundingLongCor}">${fundingLongSvg}</span><span style="font-size:12px;font-weight:600;color:#8E8E93;margin-left:8px;">Short </span><span style="color:${fundingShortCor}">${fundingShortSvg}</span>`;
+        const elSparkFunding = document.getElementById('od-spark-funding');
+        if (elSparkFunding) elSparkFunding.innerHTML = odSparkline(fundingVals, funding < 0 ? '#10B981' : '#EF4444');
 
-        const oiNum = parseFloat(oiAtual);
-        const oiDiag = oiNum >= 5 ? "Alto" : "Baixo";
-        const oiCor = oiNum >= 5 ? "#FF9500" : "#8E8E93";
-        const oiDeltaStr = (oiDelta >= 0 ? '+' : '') + oiDelta.toFixed(2) + 'B';
-        const oiDeltaCor = oiDelta > 0 ? '#EF4444' : oiDelta < 0 ? '#10B981' : '#8E8E93';
-        elOI.innerHTML = `<span style="font-weight:700;">$${oiAtual.toFixed(2)}B</span> <span style="font-size:11px;color:${oiDeltaCor};margin-right:6px;">${oiDeltaStr}</span><span style="font-size:12px;color:${oiCor};margin-right:10px;">${oiDiag}</span><span style="font-size:12px;font-weight:600;color:#8E8E93;">Long </span><span style="color:#8E8E93">${SVG_NEUT}</span><span style="font-size:12px;font-weight:600;color:#8E8E93;margin-left:8px;">Short </span><span style="color:#8E8E93">${SVG_NEUT}</span>`;
+        const oiDiag = oiAtual >= 5 ? "Alto" : "Baixo";
+        const oiCor = oiAtual >= 5 ? "#FF9500" : "#8E8E93";
+        elOI.innerHTML = `<span style="font-weight:700;">$${oiAtual.toFixed(2)}B</span> <span style="font-size:11px;color:${oiDelta>0?'#EF4444':oiDelta<0?'#10B981':'#8E8E93'};margin-right:6px;">${(oiDelta>=0?'+':'')+oiDelta.toFixed(2)}B</span><span style="font-size:12px;color:${oiCor};margin-right:10px;">${oiDiag}</span><span style="font-size:12px;font-weight:600;color:#8E8E93;">Long </span><span style="color:#8E8E93">${SVG_NEUT}</span><span style="font-size:12px;font-weight:600;color:#8E8E93;margin-left:8px;">Short </span><span style="color:#8E8E93">${SVG_NEUT}</span>`;
+        const elSparkOI = document.getElementById('od-spark-oi');
+        if (elSparkOI) elSparkOI.innerHTML = odSparkline(oiVals, '#FF9500');
 
-
-        const ratio = parseFloat(rRatio[0]?.longShortRatio || 1);
         let ratioDiag, ratioCor, ratioLongSvg, ratioShortSvg, ratioLongCor, ratioShortCor;
         if (ratio > 1.2) {
             ratioDiag = "Smart money comprado"; ratioCor = "#1B7A3E";
@@ -7552,9 +7571,9 @@ window._cvTTR = ratio;
             ratioLongSvg = SVG_NEUT; ratioLongCor = "#8E8E93";
             ratioShortSvg = SVG_NEUT; ratioShortCor = "#8E8E93";
         }
-        const ratioDeltaStr = (ratioDelta >= 0 ? '+' : '') + ratioDelta.toFixed(2);
-        const ratioDeltaCor = ratioDelta > 0 ? '#10B981' : ratioDelta < 0 ? '#EF4444' : '#8E8E93';
-        elRatio.innerHTML = `<span style="font-weight:700;">${ratio.toFixed(2)}</span> <span style="font-size:11px;color:${ratioDeltaCor};margin-right:6px;">${ratioDeltaStr}</span><span style="font-size:12px;color:${ratioCor};margin-right:10px;">${ratioDiag}</span><span style="font-size:12px;font-weight:600;color:#8E8E93;">Long </span><span style="color:${ratioLongCor}">${ratioLongSvg}</span><span style="font-size:12px;font-weight:600;color:#8E8E93;margin-left:8px;">Short </span><span style="color:${ratioShortCor}">${ratioShortSvg}</span>`;
+        elRatio.innerHTML = `<span style="font-weight:700;">${ratio.toFixed(2)}</span> <span style="font-size:11px;color:${ratioDelta>0?'#10B981':ratioDelta<0?'#EF4444':'#8E8E93'};margin-right:6px;">${(ratioDelta>=0?'+':'')+ratioDelta.toFixed(2)}</span><span style="font-size:12px;color:${ratioCor};margin-right:10px;">${ratioDiag}</span><span style="font-size:12px;font-weight:600;color:#8E8E93;">Long </span><span style="color:${ratioLongCor}">${ratioLongSvg}</span><span style="font-size:12px;font-weight:600;color:#8E8E93;margin-left:8px;">Short </span><span style="color:${ratioShortCor}">${ratioShortSvg}</span>`;
+        const elSparkRatio = document.getElementById('od-spark-ratio');
+        if (elSparkRatio) elSparkRatio.innerHTML = odSparkline(ratioVals, ratio > 1 ? '#10B981' : '#EF4444');
 
         let score = 0;
         if (funding < -0.01) score++; else if (funding > 0.05) score--;
@@ -7563,7 +7582,7 @@ window._cvTTR = ratio;
         try {
                         const resIA = await fetch("https://huberhorti-push.huber-produtos.workers.dev/ai/sentimento", {
                 method: "POST", headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ funding: funding.toFixed(4), fundingDiag, oi: `$${oiB}B`, ratio: ratio.toFixed(2), ratioDiag, score: scoreLabel, preco: fmtN(_precoAtual) })
+                body: JSON.stringify({ funding: funding.toFixed(4), fundingDiag, oi: `$${oiAtual.toFixed(2)}B`, ratio: ratio.toFixed(2), ratioDiag, score: scoreLabel, preco: fmtN(_precoAtual) })
             });
 
             const dataIA = await resIA.json();
