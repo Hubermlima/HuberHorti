@@ -126,11 +126,22 @@ export default {
         const { funding, fundingDiag, oi, ratio, ratioDiag, score, preco } = await request.json();
         const prompt = `Você é um analista sênior de trading de Bitcoin com foco em mercados de futuros. Analise os dados abaixo e escreva uma análise técnica em português brasileiro, cruzando os três indicadores entre si para identificar o padrão atual (ex: distribuição, acumulação, short squeeze, armadilha de alta, divergência). Seja direto e específico — diga o que o smart money está fazendo, o que o varejo está fazendo, e qual o risco real para quem está comprado ou vendido agora.\n\nDados:\n- BTC/USD: ${preco}\n- Funding Rate: ${funding}% (${fundingDiag}) — indica posicionamento do varejo\n- Open Interest: ${oi} — indica volume de posições abertas\n- Top Trader Ratio: ${ratio} (${ratioDiag}) — indica posicionamento do smart money\n- Score geral: ${score}\n\nCruze os dados: se OI está subindo mas TTR caindo, smart money está distribuindo para o varejo. Se funding positivo com TTR caindo, varejo comprado mas smart money saindo — sinal de topo local. Seja específico sobre o que está acontecendo agora e o que esperar a seguir. Sem formatação, só o parágrafo corrido.`;
 
-        const aiResponse = await env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
-          messages: [{ role: 'user', content: prompt }],
-          max_tokens: 600
-        });
-        const narrativa = aiResponse.response || aiResponse.result?.response || 'Análise indisponível.';
+        const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+    },
+    body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 600,
+        messages: [{ role: 'user', content: prompt }]
+    })
+});
+const data = await res.json();
+const narrativa = data.content?.[0]?.text || 'Análise indisponível.';
+
         return Response.json({ narrativa }, { headers: CORS });
       } catch (e) {
         return Response.json({ narrativa: null, error: e.message }, { status: 500, headers: CORS });
