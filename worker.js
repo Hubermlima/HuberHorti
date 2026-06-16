@@ -123,8 +123,22 @@ export default {
             // ── Sentimento de Mercado via Cloudflare AI ───────────────────
     if (request.method === 'POST' && path === '/ai/sentimento') {
       try {
-        const { funding, fundingDiag, fundingDelta, oi, oiDelta, ratio, ratioDiag, ratioDelta, score, preco, varPct, tendencia, rsi, vd } = await request.json();
-const prompt = `Você é um analista sênior de trading de Bitcoin. Com base nos dados abaixo, escreva em português brasileiro relacionando cada indicador com a direção atual do preço:\n\nBTC/USD: ${preco} (${tendencia} ${varPct}% no dia)\nRSI: ${rsi} | Volume Delta: ${vd}\n\n1. Funding Rate ${funding}% (${fundingDiag}, variação ${fundingDelta}%): explique o que significa em relação ao preço ${tendencia}\n2. Open Interest ${oi} (variação ${oiDelta}%): explique o que significa em relação ao preço ${tendencia}\n3. Top Trader Ratio ${ratio} (${ratioDiag}, variação ${ratioDelta}%): explique o que significa em relação ao preço ${tendencia}\nConclusão: 1-2 frases sobre o risco principal dado esse contexto, considerando o RSI ${rsi} e VD ${vd}.\n\nScore: ${score}. Sem introdução, sem formatação, só as 4 linhas.`;
+        const { preco, varPct, precoHist, fundingHist, oiHist, ratioHist, rsi, vd } = await request.json();
+
+const tendencia = arr => {
+    if (!arr || arr.length < 2) return 'estável';
+    const delta = arr[arr.length-1] - arr[0];
+    const pct = Math.abs(delta / (arr[0] || 1) * 100);
+    if (pct < 0.1) return 'estável';
+    return delta > 0 ? 'subindo' : 'caindo';
+};
+const ultimo = arr => arr && arr.length ? arr[arr.length-1] : 'N/A';
+const precoDirecao = precoHist && precoHist.length >= 2
+    ? (precoHist[precoHist.length-1] > precoHist[precoHist.length-2] ? 'subindo' : 'caindo')
+    : (parseFloat(varPct) >= 0 ? 'subindo' : 'caindo');
+
+const prompt = `Você é um analista de Bitcoin. Analise os dados históricos abaixo e me dê um diagnóstico claro do que está acontecendo no mercado AGORA e o que fazer. Use linguagem simples, sem jargão. Quando os indicadores se contradizem, explique o conflito.\n\nCOTAÇÃO: $${preco} (${precoDirecao}, ${varPct}% no dia)\nHistórico de preços (últimos 20 períodos): ${JSON.stringify(precoHist)}\nRSI atual: ${rsi} | Volume Delta: ${vd}\n\nFUNDING RATE histórico (últimos 20 períodos): ${JSON.stringify(fundingHist)}\nValor atual: ${ultimo(fundingHist)}% | Tendência: ${tendencia(fundingHist)}\n\nOPEN INTEREST histórico em $B (últimos 20 períodos): ${JSON.stringify(oiHist)}\nValor atual: $${ultimo(oiHist)}B | Tendência: ${tendencia(oiHist)}\n\nTOP TRADER RATIO histórico (últimos 20 períodos): ${JSON.stringify(ratioHist)}\nValor atual: ${ultimo(ratioHist)} | Tendência: ${tendencia(ratioHist)}\n\nCom base em TODA essa sequência histórica, explique: 1) O que está acontecendo agora com o preço e por quê. 2) O que os grandes players estão fazendo. 3) O que o trader deve fazer agora. Seja direto e objetivo. Sem formatação, um parágrafo corrido.`;
+
 
 
 
