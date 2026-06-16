@@ -123,8 +123,8 @@ export default {
             // ── Sentimento de Mercado via Cloudflare AI ───────────────────
     if (request.method === 'POST' && path === '/ai/sentimento') {
       try {
-        const { funding, fundingDiag, oi, ratio, ratioDiag, score, preco } = await request.json();
-        const prompt = `Você é um analista sênior de trading de Bitcoin. Com base nos dados abaixo, escreva em português brasileiro:\n1. Funding Rate ${funding}% (${fundingDiag}): 1 frase explicando o que significa agora\n2. Open Interest ${oi}: 1 frase explicando o que significa agora\n3. Top Trader Ratio ${ratio} (${ratioDiag}): 1 frase explicando o que significa agora\nConclusão: 1-2 frases diretas sobre o cenário atual e o risco principal.\n\nBTC/USD: ${preco} | Score: ${score}\n\nSem introdução, sem formatação extra, só as 4 linhas.`;
+        const { funding, fundingDiag, fundingDelta, oi, oiDelta, ratio, ratioDiag, ratioDelta, score, preco, varPct, tendencia } = await request.json();
+        const prompt = `Você é um analista sênior de trading de Bitcoin. Com base nos dados abaixo, escreva em português brasileiro relacionando cada indicador com a direção atual do preço:\n\nBTC/USD: ${preco} (${tendencia} ${varPct}% no dia)\n\n1. Funding Rate ${funding}% (${fundingDiag}, variação ${fundingDelta}%): explique o que significa em relação ao preço ${tendencia}\n2. Open Interest ${oi} (variação ${oiDelta}%): explique o que significa em relação ao preço ${tendencia}\n3. Top Trader Ratio ${ratio} (${ratioDiag}, variação ${ratioDelta}%): explique o que significa em relação ao preço ${tendencia}\nConclusão: 1-2 frases sobre o risco principal dado esse contexto.\n\nScore: ${score}. Sem introdução, sem formatação, só as 4 linhas.`;
 
 
         const res = await fetch('https://api.anthropic.com/v1/messages', {
