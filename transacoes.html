@@ -7740,6 +7740,7 @@ async function excluirTransacao() {
 function abrirOrderDesk() {
     document.getElementById('modal-nova').classList.add('active');
     odCarregarSentimento();
+    odConectarLiquidacoes();
     // Preenche campos estáticos
     const fmtUSD2 = v => 'USD ' + parseFloat(v||0).toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
     const fmtBTC  = v => parseFloat(v||0).toFixed(8).replace('.', ',') + ' BTC';
@@ -7820,6 +7821,53 @@ function odFecharInfo() {
     document.getElementById('od-info-overlay').style.display = 'none';
 }
 
+// ── WebSocket de Liquidações ──────────────────────────────────────
+let _odLiqWs = null;
+let _odLiqLongs = 0;   // USD liquidados de longs
+let _odLiqShorts = 0;  // USD liquidados de shorts
+let _odLiqHist = [];   // histórico para sparkline
+
+function odConectarLiquidacoes() {
+    if (_odLiqWs && _odLiqWs.readyState === WebSocket.OPEN) return;
+    _odLiqLongs = 0;
+    _odLiqShorts = 0;
+    _odLiqHist = [];
+    _odLiqWs = new WebSocket('wss://fstream.binance.com/ws/btcusdt@forceOrder');
+    _odLiqWs.onmessage = (e) => {
+        try {
+            const msg = JSON.parse(e.data);
+            const o = msg.o;
+            if (!o) return;
+            const val = parseFloat(o.q || 0) * parseFloat(o.p || 0);
+            if (o.S === 'SELL') _odLiqLongs += val;   // long liquidado = ordem de venda forçada
+            else if (o.S === 'BUY') _odLiqShorts += val; // short liquidado = ordem de compra forçada
+            odAtualizarLiquidacoes();
+        } catch(e) {}
+    };
+    _odLiqWs.onerror = () => {};
+    _odLiqWs.onclose = () => { _odLiqWs = null; };
+}
+
+function odDesconectarLiquidacoes() {
+    if (_odLiqWs) { _odLiqWs.close(); _odLiqWs = null; }
+}
+
+function odAtualizarLiquidacoes() {
+    const el = document.getElementById('od-sent-liq');
+    if (!el) return;
+    const total = _odLiqLongs + _odLiqShorts;
+    const fmt = v => v >= 1e6 ? `$${(v/1e6).toFixed(2)}M` : `$${(v/1e3).toFixed(0)}K`;
+    const diag = _odLiqLongs > _odLiqShorts * 1.5 ? 'Longs Liquidados' 
+               : _odLiqShorts > _odLiqLongs * 1.5 ? 'Shorts Liquidados' 
+               : total > 0 ? 'Equilibrado' : 'Aguardando...';
+    const cor = _odLiqLongs > _odLiqShorts * 1.5 ? '#EF4444' 
+              : _odLiqShorts > _odLiqLongs * 1.5 ? '#10B981' 
+              : '#8E8E93';
+    el.innerHTML = total > 0 
+        ? `<span style="font-weight:700;">${fmt(total)}</span> <span style="font-size:11px;color:#EF4444;margin-right:4px;">L: ${fmt(_odLiqLongs)}</span><span style="font-size:11px;color:#10B981;margin-right:6px;">S: ${fmt(_odLiqShorts)}</span><span style="font-size:12px;color:${cor};">${diag}</span>`
+        : `<span style="color:#8E8E93;font-size:13px;">Aguardando liquidações...</span>`;
+}
+
 async function odCarregarSentimento() {
     const loading = document.getElementById("od-sent-loading");
     const elFunding = document.getElementById("od-sent-funding");
@@ -7830,13 +7878,12 @@ async function odCarregarSentimento() {
     loading.style.display = "inline";
     elNarrativa.textContent = "Analisando...";
     try {
-        const [rFunding, rOI, rRatio, rLSR, rTaker, rLiq] = await Promise.all([
+        const [rFunding, rOI, rRatio, rLSR, rTaker] = await Promise.all([
             fetch("https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&limit=20").then(r => r.json()),
             fetch("https://fapi.binance.com/futures/data/openInterestHist?symbol=BTCUSDT&period=1h&limit=24").then(r => r.json()),
             fetch("https://fapi.binance.com/futures/data/topLongShortAccountRatio?symbol=BTCUSDT&period=1h&limit=24").then(r => r.json()),
             fetch("https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=BTCUSDT&period=1h&limit=24").then(r => r.json()),
-            fetch("https://fapi.binance.com/futures/data/takerlongshortRatio?symbol=BTCUSDT&period=1h&limit=24").then(r => r.json()),
-            fetch("https://fapi.binance.com/fapi/v1/forceOrders?symbol=BTCUSDT&limit=100").then(r => r.json())
+            fetch("https://fapi.binance.com/futures/data/takerlongshortRatio?symbol=BTCUSDT&period=1h&limit=24").then(r => r.json())
         ]);
         const SVG_UP   = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="vertical-align:-2px"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18"/></svg>`;
         const SVG_DOWN = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="vertical-align:-2px"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 13.5 12 21m0 0-7.5-7.5M12 21V3"/></svg>`;
@@ -7967,19 +8014,7 @@ const takerDiag = taker > 1.05 ? 'Compradores Agressivos' : taker < 0.95 ? 'Vend
             if (elSparkTaker) elSparkTaker.innerHTML = odSparkline(takerVals, taker > 0.5 ? '#10B981' : '#EF4444');
         }
 
-        // ── Liquidações ───────────────────────────────────────────────
-        const elLiq = document.getElementById('od-sent-liq');
-        if (elLiq && Array.isArray(rLiq)) {
-            const liqLongs = rLiq.filter(l => l.side === 'SELL').reduce((s, l) => s + parseFloat(l.origQty || 0) * parseFloat(l.price || 0), 0);
-            const liqShorts = rLiq.filter(l => l.side === 'BUY').reduce((s, l) => s + parseFloat(l.origQty || 0) * parseFloat(l.price || 0), 0);
-            const totalLiq = liqLongs + liqShorts;
-            const liqDiag = liqLongs > liqShorts * 1.5 ? 'Longs Liquidados' : liqShorts > liqLongs * 1.5 ? 'Shorts Liquidados' : 'Equilibrado';
-            const liqCor = liqLongs > liqShorts * 1.5 ? '#EF4444' : liqShorts > liqLongs * 1.5 ? '#10B981' : '#8E8E93';
-            const fmt = v => v >= 1e6 ? `$${(v/1e6).toFixed(2)}M` : `$${(v/1e3).toFixed(0)}K`;
-            elLiq.innerHTML = `<span style="font-weight:700;">${fmt(totalLiq)}</span> <span style="font-size:11px;color:#EF4444;margin-right:4px;">L: ${fmt(liqLongs)}</span><span style="font-size:11px;color:#10B981;margin-right:6px;">S: ${fmt(liqShorts)}</span><span style="font-size:12px;color:${liqCor};">${liqDiag}</span>`;
-            const elSparkLiq = document.getElementById('od-spark-liq');
-            if (elSparkLiq) elSparkLiq.innerHTML = '';
-        }
+        odAtualizarLiquidacoes();
 
         // Gera inequação com base nos indicadores
         const elNarrativa = document.getElementById("od-sent-narrativa");
@@ -8231,7 +8266,8 @@ function limparBoleta() {
 }
 
 function odSetTab(idx) {
-    if (idx === 0) odCarregarSentimento();
+    if (idx === 0) { odCarregarSentimento(); odConectarLiquidacoes(); }
+    else odDesconectarLiquidacoes();
     if (idx === 5) { var bt = document.getElementById('boleta-ticker'); if (bt) bt.textContent = _ticker || '—'; }
     for (let i = 0; i <= 5; i++) {
         document.getElementById('od-tab-' + i).classList.toggle('active', i === idx);
