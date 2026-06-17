@@ -644,6 +644,17 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       </div>
       <div class="od-divider"></div>
 
+      <!-- VOLUME DELTA — COINBASE -->
+      <div style="padding:10px 0;">
+        <div style="margin-bottom:4px;">
+          <span onclick="odMostrarInfo('vdcb')" style="font-size:11px;font-weight:600;color:#1C1C1E;letter-spacing:0.4px;text-transform:uppercase;cursor:pointer;">VOLUME DELTA (SPOT) — COINBASE <span style="color:#007AFF;">ⓘ</span></span>
+        </div>
+        <div id="od-sent-vd-cb" style="font-size:13px;font-weight:500;color:#1C1C1E;margin-bottom:2px;">—</div>
+        <div id="od-vd-cb-cvd" style="font-size:11px;color:#8E8E93;margin-bottom:6px;">CVD: —</div>
+        <div id="od-spark-vd-cb" style="height:40px;"></div>
+      </div>
+      <div class="od-divider"></div>
+
       <!-- VOLUME DELTA -->
       <div style="padding:10px 0;">
         <div style="margin-bottom:4px;">
@@ -7840,6 +7851,7 @@ const _odInfoTextos = {
     ttrpos: { titulo: 'Top Trader Ratio ($)', texto: 'MEDIDO EM DÓLARES (volume em $ das posições), não em quantidade de contas — diferente do Top Trader Ratio comum.\n\nMostra para cada $1 vendido pelos top traders, quantos $ estão comprados. Pondera pelo TAMANHO da posição, não pela quantidade de traders.\n\nExemplo: 1 trader com $50M comprado pesa muito mais que 9 traders com $1M vendido cada — esse indicador capta isso, o Account Ratio normal não.\n\n📈 Subindo → mais dinheiro institucional comprado nos futuros → spot tende a SUBIR (direta)\n📉 Caindo → mais dinheiro institucional vendido nos futuros → spot tende a CAIR (direta)\n\nÉ a versão mais fiel do "smart money real" — segue o dinheiro, não a quantidade de gente.' },
     lsr: { titulo: 'Long/Short Ratio Geral', texto: 'Proporção de contas compradas vs vendidas de TODOS os traders (varejo + institucionais).\n\n📈 LSR subindo → maioria comprada → spot tende a SUBIR (direta)\n📉 LSR caindo → maioria vendida → spot tende a CAIR (direta)\n\nComparado com o TTR permite separar o posicionamento institucional do varejista.' },
     vd: { titulo: 'Volume Delta (Spot)', texto: 'Diferença entre compras e vendas a mercado no spot — único indicador direto do mercado real.\n\n📈 VD positivo + candle verde → compradores dominam → alta confirmada (direta)\n📈 VD negativo + candle verde → vendedores tentaram mas compradores passivos seguraram → força compradora latente\n📉 VD positivo + candle vermelho → compradores tentaram mas vendedores seguraram → fraqueza latente\n📉 VD negativo + candle vermelho → vendedores dominam → queda confirmada (direta)' },
+    vdcb: { titulo: 'Volume Delta (Spot) — Coinbase', texto: 'Mesmo cálculo do Volume Delta, mas usando os trades da Coinbase em vez da Binance.\n\nA diferença é quem gera o fluxo: Binance reflete o mercado global/offshore (majoritariamente retail). Coinbase é a maior corretora regulada dos EUA, usada por fundos e instituições que não operam na Binance por questão regulatória.\n\n📈 Convergindo com o VD da Binance → o movimento tem participação ampla (retail + institucional)\n📉 Divergindo do VD da Binance → o fluxo institucional americano está indo num sentido diferente do resto do mercado — sinal de "smart money" se posicionando contra o fluxo geral.\n\nCVD mostrado é o acumulado dos últimos buckets de trades — serve como contexto, não substitui o valor instantâneo.' },
 };
 
 function odMostrarInfo(key) {
@@ -7857,6 +7869,86 @@ function odFecharInfo() {
     document.getElementById('od-info-overlay').style.display = 'none';
 }
 
+// Sparkline helper (usado por todos os cards do Order Desk)
+function odSparkline(values, color) {
+    if (!values || values.length < 2) return '';
+    const W = 300, H = 40, P = 2;
+    const min = Math.min(...values), max = Math.max(...values);
+    const range = max - min || 1;
+    const pts = values.map((v, i) => {
+        const x = P + (i / (values.length - 1)) * (W - P * 2);
+        const y = H - P - ((v - min) / range) * (H - P * 2);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+    const last = values[values.length - 1];
+    const lx = W - P, ly = H - P - ((last - min) / range) * (H - P * 2);
+    // Média móvel de 5 períodos
+    const mmPeriod = 5;
+    const mmPts = values.map((v, i) => {
+        if (i < mmPeriod - 1) return null;
+        const slice = values.slice(i - mmPeriod + 1, i + 1);
+        const mm = slice.reduce((s, v) => s + v, 0) / mmPeriod;
+        const x = P + (i / (values.length - 1)) * (W - P * 2);
+        const y = H - P - ((mm - min) / range) * (H - P * 2);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).filter(Boolean).join(' ');
+    return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:40px;display:block;">
+        <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" opacity="0.8"/>
+        <polyline points="${mmPts}" fill="none" stroke="rgba(0,0,0,0.3)" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="4,3"/>
+        <circle cx="${lx}" cy="${ly.toFixed(1)}" r="3" fill="${color}"/>
+    </svg>`;
+}
+
+// Helper: Bullish/Bearish baseado na média móvel de 5 períodos (usado por todos os cards)
+function diagMedia(vals, inverso = false) {
+    const period = 5;
+    const slice = vals.slice(-period);
+    const mm = slice.reduce((s, v) => s + v, 0) / slice.length;
+    const atual = vals[vals.length - 1];
+    const bullish = inverso ? atual < mm : atual > mm;
+    return { diag: bullish ? 'Bullish' : 'Bearish', cor: bullish ? '#10B981' : '#EF4444' };
+}
+
+// ── Volume Delta (Spot) — Coinbase ──────────────────────────────────
+// Fluxo de ordens do mercado americano (institucional/regulado), via trades públicos da Coinbase.
+async function odCarregarVDCoinbase() {
+    const elVDCB = document.getElementById('od-sent-vd-cb');
+    if (!elVDCB) return;
+    try {
+        const cbSymbol = (_ticker || 'BTC/USD').toUpperCase().replace('/', '-');
+        const r = await fetch(`https://api.exchange.coinbase.com/products/${cbSymbol}/trades?limit=300`);
+        const trades = await r.json();
+        if (!Array.isArray(trades) || trades.length === 0) return;
+        // A API retorna do mais recente para o mais antigo — inverte para ordem cronológica
+        const ordenados = [...trades].reverse();
+        const numBuckets = 24;
+        const bucketSize = Math.max(1, Math.ceil(ordenados.length / numBuckets));
+        const vdValsCB = [];
+        for (let i = 0; i < ordenados.length; i += bucketSize) {
+            let delta = 0;
+            ordenados.slice(i, i + bucketSize).forEach(t => {
+                const size = parseFloat(t.size || 0);
+                // ⚠️ Na Coinbase, "side" indica o lado do MAKER, não do taker.
+                // side: "sell" → maker vendeu → taker comprou (compra agressiva)
+                // side: "buy"  → maker comprou → taker vendeu (venda agressiva)
+                if (t.side === 'sell') delta += size;
+                else if (t.side === 'buy') delta -= size;
+            });
+            vdValsCB.push(delta);
+        }
+        const vdAtualCB = vdValsCB[vdValsCB.length - 1] || 0;
+        const vdResCB = diagMedia(vdValsCB);
+        const cvdCB = vdValsCB.reduce((s, d) => s + d, 0);
+        elVDCB.innerHTML = `<span style="font-weight:700;color:${vdResCB.cor}">${(vdAtualCB >= 0 ? '+' : '') + vdAtualCB.toFixed(3)}</span> <span style="font-size:12px;font-weight:600;color:${vdResCB.cor};">${vdResCB.diag}</span>`;
+        const elSparkVDCB = document.getElementById('od-spark-vd-cb');
+        if (elSparkVDCB) elSparkVDCB.innerHTML = odSparkline(vdValsCB, vdAtualCB >= 0 ? '#10B981' : '#EF4444');
+        const elCvdCB = document.getElementById('od-vd-cb-cvd');
+        if (elCvdCB) elCvdCB.innerHTML = `CVD: <span style="font-weight:700;color:${cvdCB >= 0 ? '#10B981' : '#EF4444'}">${(cvdCB >= 0 ? '+' : '') + cvdCB.toFixed(3)}</span>`;
+    } catch (e) {
+        console.log('Coinbase VD fetch error:', e.message);
+    }
+}
+
 async function odCarregarSentimento() {
     const loading = document.getElementById("od-sent-loading");
     const elFunding = document.getElementById("od-sent-funding");
@@ -7866,6 +7958,7 @@ async function odCarregarSentimento() {
     if (!elFunding) return;
     loading.style.display = "inline";
     elNarrativa.textContent = "Analisando...";
+    odCarregarVDCoinbase();
     try {
         const [rFunding, rOI, rRatio, rLSR, rTTRPos] = await Promise.all([
             fetch("https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&limit=20").then(r => r.json()),
@@ -7877,36 +7970,6 @@ async function odCarregarSentimento() {
         const SVG_UP   = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="vertical-align:-2px"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18"/></svg>`;
         const SVG_DOWN = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="vertical-align:-2px"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 13.5 12 21m0 0-7.5-7.5M12 21V3"/></svg>`;
         const SVG_NEUT = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="vertical-align:-2px"><path stroke-linecap="round" stroke-linejoin="round" d="M7.5 21 3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5"/></svg>`;
-
-        // Sparkline helper
-        function odSparkline(values, color) {
-            if (!values || values.length < 2) return '';
-            const W = 300, H = 40, P = 2;
-            const min = Math.min(...values), max = Math.max(...values);
-            const range = max - min || 1;
-            const pts = values.map((v, i) => {
-                const x = P + (i / (values.length - 1)) * (W - P * 2);
-                const y = H - P - ((v - min) / range) * (H - P * 2);
-                return `${x.toFixed(1)},${y.toFixed(1)}`;
-            }).join(' ');
-            const last = values[values.length - 1];
-            const lx = W - P, ly = H - P - ((last - min) / range) * (H - P * 2);
-            // Média móvel de 5 períodos
-            const mmPeriod = 5;
-            const mmPts = values.map((v, i) => {
-                if (i < mmPeriod - 1) return null;
-                const slice = values.slice(i - mmPeriod + 1, i + 1);
-                const mm = slice.reduce((s, v) => s + v, 0) / mmPeriod;
-                const x = P + (i / (values.length - 1)) * (W - P * 2);
-                const y = H - P - ((mm - min) / range) * (H - P * 2);
-                return `${x.toFixed(1)},${y.toFixed(1)}`;
-            }).filter(Boolean).join(' ');
-            return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:40px;display:block;">
-                <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" opacity="0.8"/>
-                <polyline points="${mmPts}" fill="none" stroke="rgba(0,0,0,0.3)" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="4,3"/>
-                <circle cx="${lx}" cy="${ly.toFixed(1)}" r="3" fill="${color}"/>
-            </svg>`;
-        }
 
         // Funding
         const fundingVals = [...rFunding].reverse().map(f => parseFloat(f.fundingRate || 0) * 100);
@@ -7928,15 +7991,6 @@ async function odCarregarSentimento() {
         const ratioAnterior = ratioVals[ratioVals.length - 2] || ratio;
         const ratioDelta = ratioAnterior > 0 ? ((ratio - ratioAnterior) / ratioAnterior * 100) : 0;
         window._cvTTR = ratio;
-        // Helper: Bullish/Bearish baseado na média móvel de 5 períodos
-        const diagMedia = (vals, inverso = false) => {
-            const period = 5;
-            const slice = vals.slice(-period);
-            const mm = slice.reduce((s, v) => s + v, 0) / slice.length;
-            const atual = vals[vals.length - 1];
-            const bullish = inverso ? atual < mm : atual > mm;
-            return { diag: bullish ? 'Bullish' : 'Bearish', cor: bullish ? '#10B981' : '#EF4444' };
-        };
 
         // Funding (inverso: negativo = bullish)
         const fRes = diagMedia(fundingVals, true);
