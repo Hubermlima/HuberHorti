@@ -705,26 +705,6 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       </div>
       <div class="od-divider"></div>
 
-      <!-- TAKER BUY/SELL -->
-      <div style="padding:10px 0;">
-        <div style="margin-bottom:4px;">
-          <span onclick="odMostrarInfo('taker')" style="font-size:11px;font-weight:600;color:#1C1C1E;letter-spacing:0.4px;text-transform:uppercase;cursor:pointer;">TAKER BUY/SELL <span style="color:#007AFF;">ⓘ</span></span>
-        </div>
-        <div id="od-sent-taker" style="font-size:13px;font-weight:500;color:#1C1C1E;margin-bottom:6px;">—</div>
-        <div id="od-spark-taker" style="height:40px;"></div>
-      </div>
-      <div class="od-divider"></div>
-
-      <!-- LIQUIDAÇÕES -->
-      <div style="padding:10px 0;">
-        <div style="margin-bottom:4px;">
-          <span onclick="odMostrarInfo('liq')" style="font-size:11px;font-weight:600;color:#1C1C1E;letter-spacing:0.4px;text-transform:uppercase;cursor:pointer;">LIQUIDAÇÕES <span style="color:#007AFF;">ⓘ</span></span>
-        </div>
-        <div id="od-sent-liq" style="font-size:13px;font-weight:500;color:#1C1C1E;margin-bottom:6px;">—</div>
-        <div id="od-spark-liq" style="height:40px;"></div>
-      </div>
-      <div class="od-divider"></div>
-
       <!-- CONCLUSÃO -->
       <div style="padding:10px 0;">
         <div style="font-size:11px;font-weight:600;color:#1C1C1E;letter-spacing:0.4px;text-transform:uppercase;margin-bottom:6px;">CONCLUSÃO</div>
@@ -7796,7 +7776,6 @@ async function excluirTransacao() {
 function abrirOrderDesk() {
     document.getElementById('modal-nova').classList.add('active');
     odCarregarSentimento();
-    odConectarLiquidacoes();
     // Preenche campos estáticos
     const fmtUSD2 = v => 'USD ' + parseFloat(v||0).toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
     const fmtBTC  = v => parseFloat(v||0).toFixed(8).replace('.', ',') + ' BTC';
@@ -7860,8 +7839,6 @@ const _odInfoTextos = {
     ttr: { titulo: 'Top Trader Ratio', texto: 'Proporção de posições compradas vs vendidas dos maiores traders (institucionais).\n\n📈 TTR subindo → institucionais comprando futuros → spot tende a SUBIR (direta)\n📉 TTR caindo → institucionais vendendo futuros → spot tende a CAIR (direta)\n\nÉ o indicador mais relevante — o smart money tem informação e capital para mover o mercado.\n\n⚠️ Mede QUANTIDADE DE CONTAS, não dinheiro. Um trader com $50M pesa igual a um com $10K.' },
     ttrpos: { titulo: 'Top Trader Ratio ($)', texto: 'MEDIDO EM DÓLARES (volume em $ das posições), não em quantidade de contas — diferente do Top Trader Ratio comum.\n\nMostra para cada $1 vendido pelos top traders, quantos $ estão comprados. Pondera pelo TAMANHO da posição, não pela quantidade de traders.\n\nExemplo: 1 trader com $50M comprado pesa muito mais que 9 traders com $1M vendido cada — esse indicador capta isso, o Account Ratio normal não.\n\n📈 Subindo → mais dinheiro institucional comprado nos futuros → spot tende a SUBIR (direta)\n📉 Caindo → mais dinheiro institucional vendido nos futuros → spot tende a CAIR (direta)\n\nÉ a versão mais fiel do "smart money real" — segue o dinheiro, não a quantidade de gente.' },
     lsr: { titulo: 'Long/Short Ratio Geral', texto: 'Proporção de contas compradas vs vendidas de TODOS os traders (varejo + institucionais).\n\n📈 LSR subindo → maioria comprada → spot tende a SUBIR (direta)\n📉 LSR caindo → maioria vendida → spot tende a CAIR (direta)\n\nComparado com o TTR permite separar o posicionamento institucional do varejista.' },
-    taker: { titulo: 'Taker Buy/Sell', texto: 'Volume de ordens agressivas de compra vs venda nos futuros.\n\n📈 Taker > 1 → compradores agressivos nos futuros → spot SOBE (direta)\n📉 Taker < 1 → vendedores agressivos nos futuros → pode ser hedge/arbitragem → spot pode SUBIR (inversa)\n\nAtenção: Taker vendedor nos futuros pode ser hedge de quem está comprado no spot — nesse caso o spot tende a subir.' },
-    liq: { titulo: 'Liquidações', texto: 'Volume de posições forçadas a fechar por falta de margem.\n\n📉 Liquidação de longs → venda forçada nos futuros → spot CAIR (direta)\n📈 Liquidação de shorts → compra forçada nos futuros → short squeeze → spot SOBE (inversa)\n\nLiquidações em cascata são os movimentos mais violentos do mercado.' },
     vd: { titulo: 'Volume Delta (Spot)', texto: 'Diferença entre compras e vendas a mercado no spot — único indicador direto do mercado real.\n\n📈 VD positivo + candle verde → compradores dominam → alta confirmada (direta)\n📈 VD negativo + candle verde → vendedores tentaram mas compradores passivos seguraram → força compradora latente\n📉 VD positivo + candle vermelho → compradores tentaram mas vendedores seguraram → fraqueza latente\n📉 VD negativo + candle vermelho → vendedores dominam → queda confirmada (direta)' },
 };
 
@@ -7880,53 +7857,6 @@ function odFecharInfo() {
     document.getElementById('od-info-overlay').style.display = 'none';
 }
 
-// ── WebSocket de Liquidações ──────────────────────────────────────
-let _odLiqWs = null;
-let _odLiqLongs = 0;   // USD liquidados de longs
-let _odLiqShorts = 0;  // USD liquidados de shorts
-let _odLiqHist = [];   // histórico para sparkline
-
-function odConectarLiquidacoes() {
-    if (_odLiqWs && _odLiqWs.readyState === WebSocket.OPEN) return;
-    _odLiqLongs = 0;
-    _odLiqShorts = 0;
-    _odLiqHist = [];
-    _odLiqWs = new WebSocket('wss://fstream.binance.com/ws/btcusdt@forceOrder');
-    _odLiqWs.onmessage = (e) => {
-        try {
-            const msg = JSON.parse(e.data);
-            const o = msg.o;
-            if (!o) return;
-            const val = parseFloat(o.q || 0) * parseFloat(o.p || 0);
-            if (o.S === 'SELL') _odLiqLongs += val;   // long liquidado = ordem de venda forçada
-            else if (o.S === 'BUY') _odLiqShorts += val; // short liquidado = ordem de compra forçada
-            odAtualizarLiquidacoes();
-        } catch(e) {}
-    };
-    _odLiqWs.onerror = () => {};
-    _odLiqWs.onclose = () => { _odLiqWs = null; };
-}
-
-function odDesconectarLiquidacoes() {
-    if (_odLiqWs) { _odLiqWs.close(); _odLiqWs = null; }
-}
-
-function odAtualizarLiquidacoes() {
-    const el = document.getElementById('od-sent-liq');
-    if (!el) return;
-    const total = _odLiqLongs + _odLiqShorts;
-    const fmt = v => v >= 1e6 ? `$${(v/1e6).toFixed(2)}M` : `$${(v/1e3).toFixed(0)}K`;
-    const diag = _odLiqLongs > _odLiqShorts * 1.5 ? 'Longs Liquidados' 
-               : _odLiqShorts > _odLiqLongs * 1.5 ? 'Shorts Liquidados' 
-               : total > 0 ? 'Equilibrado' : 'Aguardando...';
-    const cor = _odLiqLongs > _odLiqShorts * 1.5 ? '#EF4444' 
-              : _odLiqShorts > _odLiqLongs * 1.5 ? '#10B981' 
-              : '#8E8E93';
-    el.innerHTML = total > 0 
-        ? `<span style="font-weight:700;">${fmt(total)}</span> <span style="font-size:11px;color:#EF4444;margin-right:4px;">L: ${fmt(_odLiqLongs)}</span><span style="font-size:11px;color:#10B981;margin-right:6px;">S: ${fmt(_odLiqShorts)}</span><span style="font-size:12px;color:${cor};">${diag}</span>`
-        : `<span style="color:#8E8E93;font-size:13px;">Aguardando liquidações...</span>`;
-}
-
 async function odCarregarSentimento() {
     const loading = document.getElementById("od-sent-loading");
     const elFunding = document.getElementById("od-sent-funding");
@@ -7937,12 +7867,11 @@ async function odCarregarSentimento() {
     loading.style.display = "inline";
     elNarrativa.textContent = "Analisando...";
     try {
-        const [rFunding, rOI, rRatio, rLSR, rTaker, rTTRPos] = await Promise.all([
+        const [rFunding, rOI, rRatio, rLSR, rTTRPos] = await Promise.all([
             fetch("https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&limit=20").then(r => r.json()),
             fetch("https://fapi.binance.com/futures/data/openInterestHist?symbol=BTCUSDT&period=1h&limit=24").then(r => r.json()),
             fetch("https://fapi.binance.com/futures/data/topLongShortAccountRatio?symbol=BTCUSDT&period=1h&limit=24").then(r => r.json()),
             fetch("https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=BTCUSDT&period=1h&limit=24").then(r => r.json()),
-            fetch("https://fapi.binance.com/futures/data/takerlongshortRatio?symbol=BTCUSDT&period=1h&limit=24").then(r => r.json()),
             fetch("https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol=BTCUSDT&period=1h&limit=24").then(r => r.json())
         ]);
         const SVG_UP   = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="vertical-align:-2px"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18"/></svg>`;
@@ -8053,21 +7982,6 @@ async function odCarregarSentimento() {
             const elSparkLSR = document.getElementById('od-spark-lsr');
             if (elSparkLSR) elSparkLSR.innerHTML = odSparkline(lsrVals, lsrRes.cor);
         }
-
-        // ── Taker Buy/Sell ────────────────────────────────────────────
-        const elTaker = document.getElementById('od-sent-taker');
-        if (elTaker && Array.isArray(rTaker)) {
-            const takerVals = rTaker.map(r => parseFloat(r.buySellRatio || 1));
-            const taker = takerVals[takerVals.length - 1] || 1;
-            const takerAnterior = takerVals[takerVals.length - 2] || taker;
-            const takerDelta = takerAnterior > 0 ? ((taker - takerAnterior) / takerAnterior * 100) : 0;
-            const takerRes = diagMedia(takerVals); // subindo = bullish
-            elTaker.innerHTML = `<span style="font-weight:700;">${taker.toFixed(3)}</span> <span style="font-size:11px;color:${takerDelta>0?'#10B981':takerDelta<0?'#EF4444':'#8E8E93'};margin-right:6px;">${(takerDelta>=0?'+':'')+takerDelta.toFixed(2)}%</span><span style="font-size:12px;font-weight:600;color:${takerRes.cor};">${takerRes.diag}</span>`;
-            const elSparkTaker = document.getElementById('od-spark-taker');
-            if (elSparkTaker) elSparkTaker.innerHTML = odSparkline(takerVals, taker > 0.5 ? '#10B981' : '#EF4444');
-        }
-
-        odAtualizarLiquidacoes();
 
         // ── Volume Delta (Spot) ───────────────────────────────────────
         const elVD = document.getElementById('od-sent-vd');
@@ -8337,8 +8251,7 @@ function limparBoleta() {
 }
 
 function odSetTab(idx) {
-    if (idx === 0) { odCarregarSentimento(); odConectarLiquidacoes(); }
-    else odDesconectarLiquidacoes();
+    if (idx === 0) { odCarregarSentimento(); }
     if (idx === 5) { var bt = document.getElementById('boleta-ticker'); if (bt) bt.textContent = _ticker || '—'; }
     for (let i = 0; i <= 5; i++) {
         document.getElementById('od-tab-' + i).classList.toggle('active', i === idx);
