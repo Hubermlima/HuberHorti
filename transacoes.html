@@ -7855,7 +7855,7 @@ const _odInfoTextos = {
     ttrpos: { titulo: 'Top Trader Ratio ($)', texto: 'MEDIDO EM DÓLARES (volume em $ das posições), não em quantidade de contas — diferente do Top Trader Ratio comum.\n\nMostra para cada $1 vendido pelos top traders, quantos $ estão comprados. Pondera pelo TAMANHO da posição, não pela quantidade de traders.\n\nExemplo: 1 trader com $50M comprado pesa muito mais que 9 traders com $1M vendido cada — esse indicador capta isso, o Account Ratio normal não.\n\n📈 Subindo → mais dinheiro institucional comprado nos futuros → spot tende a SUBIR (direta)\n📉 Caindo → mais dinheiro institucional vendido nos futuros → spot tende a CAIR (direta)\n\nÉ a versão mais fiel do "smart money real" — segue o dinheiro, não a quantidade de gente.' },
     lsr: { titulo: 'Long/Short Ratio Geral', texto: 'Proporção de contas compradas vs vendidas de TODOS os traders (varejo + institucionais).\n\n📈 LSR subindo → maioria comprada → spot tende a SUBIR (direta)\n📉 LSR caindo → maioria vendida → spot tende a CAIR (direta)\n\nComparado com o TTR permite separar o posicionamento institucional do varejista.' },
     vd: { titulo: 'Volume Delta (Spot)', texto: 'Diferença entre compras e vendas a mercado no spot — único indicador direto do mercado real.\n\n📈 VD positivo + candle verde → compradores dominam → alta confirmada (direta)\n📈 VD negativo + candle verde → vendedores tentaram mas compradores passivos seguraram → força compradora latente\n📉 VD positivo + candle vermelho → compradores tentaram mas vendedores seguraram → fraqueza latente\n📉 VD negativo + candle vermelho → vendedores dominam → queda confirmada (direta)' },
-    vdcb: { titulo: 'Volume Delta (Spot) — Coinbase', texto: 'Mesmo conceito do Volume Delta, mas usando o fluxo de trades da Coinbase em vez da Binance, via WebSocket em tempo real, agregado em janelas fixas de 1 minuto (últimos 24 minutos).\\n\\nA diferença é quem gera o fluxo: Binance reflete o mercado global/offshore (majoritariamente retail). Coinbase é a maior corretora regulada dos EUA, usada por fundos e instituições que não operam na Binance por questão regulatória.\\n\\n📈 Convergindo com o VD da Binance → o movimento tem participação ampla (retail + institucional)\\n📉 Divergindo do VD da Binance → o fluxo institucional americano está indo num sentido diferente do resto do mercado — sinal de "smart money" se posicionando contra o fluxo geral.\\n\\nAo abrir o Order Desk, a leitura começa do zero e leva até 24 minutos pra preencher a janela completa. CVD é o acumulado dos minutos já coletados.' },
+    vdcb: { titulo: 'Volume Delta (Spot) — Coinbase', texto: 'Mesmo conceito do Volume Delta, mas usando o fluxo de trades da Coinbase em vez da Binance, via WebSocket em tempo real.\n\nPra ser comparável com o VD da Binance, cada "vela" aqui usa o MESMO período do timeframe selecionado no gráfico (15min, 1h ou 4h). Exceção: se o gráfico estiver em 1 dia ou 1 semana, esperar 24 velas levaria semanas — nesse caso a janela cai pra 1h fixo, e aparece um aviso (⚠) informando que não está na mesma escala do gráfico.\n\nA diferença entre as duas é quem gera o fluxo: Binance reflete o mercado global/offshore (majoritariamente retail). Coinbase é a maior corretora regulada dos EUA, usada por fundos e instituições que não operam na Binance por questão regulatória.\n\n📈 Convergindo com o VD da Binance → o movimento tem participação ampla (retail + institucional)\n📉 Divergindo do VD da Binance → o fluxo institucional americano está indo num sentido diferente do resto do mercado — sinal de "smart money" se posicionando contra o fluxo geral.\n\nAo abrir o Order Desk, a leitura começa do zero e leva até 24 velas pra preencher a janela completa. CVD é o acumulado das velas já coletadas.' },
 };
 
 function odMostrarInfo(key) {
@@ -7922,17 +7922,29 @@ function fmtSinal(v, decimals = 2) {
 
 // ── Volume Delta (Spot) — Coinbase ──────────────────────────────────
 // Fluxo de ordens do mercado americano (institucional/regulado).
-// Usa WebSocket público + janelas de TEMPO FIXO (1 min cada), não "últimos N trades" —
-// assim o valor de cada leitura é comparável com a leitura anterior, independente de quão
-// rápido o book está girando no momento.
+// Usa WebSocket público + janelas de TEMPO FIXO, na MESMA escala da vela atual do gráfico
+// (Binance) — assim os dois cards são comparáveis (mesma unidade de tempo).
 let _cbVdWs = null;
 let _cbVdBuckets = [];           // [{tStart, delta}] em ordem cronológica, máx CB_VD_NUM_BUCKETS
-const CB_VD_BUCKET_MS = 60000;   // 1 minuto por bucket
-const CB_VD_NUM_BUCKETS = 24;    // últimos 24 minutos
+let _cbVdBucketMs = 4 * 60 * 60000;
+let _cbVdTfLabel = '4h';
+let _cbVdAlinhado = true;
 let _cbVdRenderPendente = false;
+const CB_VD_NUM_BUCKETS = 24;
+
+function cbVdParametrosTf() {
+    // Usa o mesmo período da vela do gráfico (Binance), pra ficar comparável.
+    // Excessão: 1 dia / 1 semana — esperar 24 velas levaria 24+ dias pra preencher a
+    // janela, o que é impraticável numa conexão que reinicia a cada abertura do Order
+    // Desk. Nesses casos cai pra 1h fixo, e avisamos visualmente que não está alinhado.
+    if (_grTf === '15m') return { ms: 15 * 60000, label: '15min', alinhado: true };
+    if (_grTf === '1h')  return { ms: 60 * 60000, label: '1h', alinhado: true };
+    if (_grTf === '4h')  return { ms: 4 * 60 * 60000, label: '4h', alinhado: true };
+    return { ms: 60 * 60000, label: '1h', alinhado: false }; // 1day / 1week
+}
 
 function cbVdRegistrarTrade(side, size, tMs) {
-    const bucketStart = Math.floor(tMs / CB_VD_BUCKET_MS) * CB_VD_BUCKET_MS;
+    const bucketStart = Math.floor(tMs / _cbVdBucketMs) * _cbVdBucketMs;
     let atual = _cbVdBuckets[_cbVdBuckets.length - 1];
     if (!atual || atual.tStart !== bucketStart) {
         atual = { tStart: bucketStart, delta: 0 };
@@ -7951,9 +7963,10 @@ function cbVdRenderizar() {
     const elSparkVDCB = document.getElementById('od-spark-vd-cb');
     const elCvdCB = document.getElementById('od-vd-cb-cvd');
     if (!elVDCB) return;
+    const avisoEscala = _cbVdAlinhado ? '' : ` <span style="color:#FF9500;">⚠ escala 1h, gráfico em ${_grTf === '1day' ? '1d' : '1sem'}</span>`;
     const n = _cbVdBuckets.length;
     if (n < 2) {
-        elVDCB.innerHTML = `<span style="font-weight:500;color:#8E8E93;">Coletando dados (${n}/${CB_VD_NUM_BUCKETS} min)...</span>`;
+        elVDCB.innerHTML = `<span style="font-weight:500;color:#8E8E93;">Coletando dados (${n}/${CB_VD_NUM_BUCKETS} velas de ${_cbVdTfLabel})...</span>${avisoEscala}`;
         if (elCvdCB) elCvdCB.innerHTML = `CVD: —`;
         return;
     }
@@ -7961,15 +7974,19 @@ function cbVdRenderizar() {
     const vdAtualCB = vdValsCB[vdValsCB.length - 1] || 0;
     const vdResCB = diagMedia(vdValsCB);
     const cvdCB = vdValsCB.reduce((s, d) => s + d, 0);
-    elVDCB.innerHTML = `<span style="font-weight:700;color:${vdResCB.cor}">${fmtSinal(vdAtualCB, 3)}</span> <span style="font-size:12px;font-weight:600;color:${vdResCB.cor};">${vdResCB.diag}</span>`;
+    elVDCB.innerHTML = `<span style="font-weight:700;color:${vdResCB.cor}">${fmtSinal(vdAtualCB, 3)}</span> <span style="font-size:12px;font-weight:600;color:${vdResCB.cor};">${vdResCB.diag}</span>${avisoEscala}`;
     if (elSparkVDCB) elSparkVDCB.innerHTML = odSparkline(vdValsCB, vdAtualCB >= 0 ? '#10B981' : '#EF4444');
-    if (elCvdCB) elCvdCB.innerHTML = `CVD (${n} min): <span style="font-weight:700;color:${cvdCB >= 0 ? '#10B981' : '#EF4444'}">${fmtSinal(cvdCB, 3)}</span>`;
+    if (elCvdCB) elCvdCB.innerHTML = `CVD (${n} velas de ${_cbVdTfLabel}): <span style="font-weight:700;color:${cvdCB >= 0 ? '#10B981' : '#EF4444'}">${fmtSinal(cvdCB, 3)}</span>`;
 }
 
 function cbConectarVD() {
     if (_cbVdWs && _cbVdWs.readyState === WebSocket.OPEN) return;
     const elVDCB = document.getElementById('od-sent-vd-cb');
     if (!elVDCB) return;
+    const params = cbVdParametrosTf();
+    _cbVdBucketMs = params.ms;
+    _cbVdTfLabel = params.label;
+    _cbVdAlinhado = params.alinhado;
     _cbVdBuckets = [];
     cbVdRenderizar();
     const cbSymbol = (_ticker || 'BTC/USD').toUpperCase().replace('/', '-');
