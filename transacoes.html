@@ -7827,7 +7827,10 @@ function abrirOrderDesk() {
         });
     }
 }
-function fecharModal(id) { document.getElementById(id).classList.remove('active'); }
+function fecharModal(id) {
+    if (id === 'modal-nova') cbDesconectarVD();
+    document.getElementById(id).classList.remove('active');
+}
 function fecharModalFora(e, id) { if (e.target === document.getElementById(id)) fecharModal(id); }
 function calcularTaxa() {
     const selT = document.getElementById('seg-track-nova');
@@ -7852,7 +7855,7 @@ const _odInfoTextos = {
     ttrpos: { titulo: 'Top Trader Ratio ($)', texto: 'MEDIDO EM DÓLARES (volume em $ das posições), não em quantidade de contas — diferente do Top Trader Ratio comum.\n\nMostra para cada $1 vendido pelos top traders, quantos $ estão comprados. Pondera pelo TAMANHO da posição, não pela quantidade de traders.\n\nExemplo: 1 trader com $50M comprado pesa muito mais que 9 traders com $1M vendido cada — esse indicador capta isso, o Account Ratio normal não.\n\n📈 Subindo → mais dinheiro institucional comprado nos futuros → spot tende a SUBIR (direta)\n📉 Caindo → mais dinheiro institucional vendido nos futuros → spot tende a CAIR (direta)\n\nÉ a versão mais fiel do "smart money real" — segue o dinheiro, não a quantidade de gente.' },
     lsr: { titulo: 'Long/Short Ratio Geral', texto: 'Proporção de contas compradas vs vendidas de TODOS os traders (varejo + institucionais).\n\n📈 LSR subindo → maioria comprada → spot tende a SUBIR (direta)\n📉 LSR caindo → maioria vendida → spot tende a CAIR (direta)\n\nComparado com o TTR permite separar o posicionamento institucional do varejista.' },
     vd: { titulo: 'Volume Delta (Spot)', texto: 'Diferença entre compras e vendas a mercado no spot — único indicador direto do mercado real.\n\n📈 VD positivo + candle verde → compradores dominam → alta confirmada (direta)\n📈 VD negativo + candle verde → vendedores tentaram mas compradores passivos seguraram → força compradora latente\n📉 VD positivo + candle vermelho → compradores tentaram mas vendedores seguraram → fraqueza latente\n📉 VD negativo + candle vermelho → vendedores dominam → queda confirmada (direta)' },
-    vdcb: { titulo: 'Volume Delta (Spot) — Coinbase', texto: 'Mesmo cálculo do Volume Delta, mas usando os trades da Coinbase em vez da Binance.\n\nA diferença é quem gera o fluxo: Binance reflete o mercado global/offshore (majoritariamente retail). Coinbase é a maior corretora regulada dos EUA, usada por fundos e instituições que não operam na Binance por questão regulatória.\n\n📈 Convergindo com o VD da Binance → o movimento tem participação ampla (retail + institucional)\n📉 Divergindo do VD da Binance → o fluxo institucional americano está indo num sentido diferente do resto do mercado — sinal de "smart money" se posicionando contra o fluxo geral.\n\nCVD mostrado é o acumulado dos últimos buckets de trades — serve como contexto, não substitui o valor instantâneo.' },
+    vdcb: { titulo: 'Volume Delta (Spot) — Coinbase', texto: 'Mesmo conceito do Volume Delta, mas usando o fluxo de trades da Coinbase em vez da Binance, via WebSocket em tempo real, agregado em janelas fixas de 1 minuto (últimos 24 minutos).\\n\\nA diferença é quem gera o fluxo: Binance reflete o mercado global/offshore (majoritariamente retail). Coinbase é a maior corretora regulada dos EUA, usada por fundos e instituições que não operam na Binance por questão regulatória.\\n\\n📈 Convergindo com o VD da Binance → o movimento tem participação ampla (retail + institucional)\\n📉 Divergindo do VD da Binance → o fluxo institucional americano está indo num sentido diferente do resto do mercado — sinal de "smart money" se posicionando contra o fluxo geral.\\n\\nAo abrir o Order Desk, a leitura começa do zero e leva até 24 minutos pra preencher a janela completa. CVD é o acumulado dos minutos já coletados.' },
 };
 
 function odMostrarInfo(key) {
@@ -7918,45 +7921,81 @@ function fmtSinal(v, decimals = 2) {
 }
 
 // ── Volume Delta (Spot) — Coinbase ──────────────────────────────────
-// Fluxo de ordens do mercado americano (institucional/regulado), via trades públicos da Coinbase.
-async function odCarregarVDCoinbase() {
+// Fluxo de ordens do mercado americano (institucional/regulado).
+// Usa WebSocket público + janelas de TEMPO FIXO (1 min cada), não "últimos N trades" —
+// assim o valor de cada leitura é comparável com a leitura anterior, independente de quão
+// rápido o book está girando no momento.
+let _cbVdWs = null;
+let _cbVdBuckets = [];           // [{tStart, delta}] em ordem cronológica, máx CB_VD_NUM_BUCKETS
+const CB_VD_BUCKET_MS = 60000;   // 1 minuto por bucket
+const CB_VD_NUM_BUCKETS = 24;    // últimos 24 minutos
+let _cbVdRenderPendente = false;
+
+function cbVdRegistrarTrade(side, size, tMs) {
+    const bucketStart = Math.floor(tMs / CB_VD_BUCKET_MS) * CB_VD_BUCKET_MS;
+    let atual = _cbVdBuckets[_cbVdBuckets.length - 1];
+    if (!atual || atual.tStart !== bucketStart) {
+        atual = { tStart: bucketStart, delta: 0 };
+        _cbVdBuckets.push(atual);
+        if (_cbVdBuckets.length > CB_VD_NUM_BUCKETS) _cbVdBuckets.shift();
+    }
+    // ⚠️ Na Coinbase, "side" indica o lado do MAKER, não do taker.
+    // side: "sell" → maker vendeu → taker comprou (compra agressiva)
+    // side: "buy"  → maker comprou → taker vendeu (venda agressiva)
+    if (side === 'sell') atual.delta += size;
+    else if (side === 'buy') atual.delta -= size;
+}
+
+function cbVdRenderizar() {
+    const elVDCB = document.getElementById('od-sent-vd-cb');
+    const elSparkVDCB = document.getElementById('od-spark-vd-cb');
+    const elCvdCB = document.getElementById('od-vd-cb-cvd');
+    if (!elVDCB) return;
+    const n = _cbVdBuckets.length;
+    if (n < 2) {
+        elVDCB.innerHTML = `<span style="font-weight:500;color:#8E8E93;">Coletando dados (${n}/${CB_VD_NUM_BUCKETS} min)...</span>`;
+        if (elCvdCB) elCvdCB.innerHTML = `CVD: —`;
+        return;
+    }
+    const vdValsCB = _cbVdBuckets.map(b => b.delta);
+    const vdAtualCB = vdValsCB[vdValsCB.length - 1] || 0;
+    const vdResCB = diagMedia(vdValsCB);
+    const cvdCB = vdValsCB.reduce((s, d) => s + d, 0);
+    elVDCB.innerHTML = `<span style="font-weight:700;color:${vdResCB.cor}">${fmtSinal(vdAtualCB, 3)}</span> <span style="font-size:12px;font-weight:600;color:${vdResCB.cor};">${vdResCB.diag}</span>`;
+    if (elSparkVDCB) elSparkVDCB.innerHTML = odSparkline(vdValsCB, vdAtualCB >= 0 ? '#10B981' : '#EF4444');
+    if (elCvdCB) elCvdCB.innerHTML = `CVD (${n} min): <span style="font-weight:700;color:${cvdCB >= 0 ? '#10B981' : '#EF4444'}">${fmtSinal(cvdCB, 3)}</span>`;
+}
+
+function cbConectarVD() {
+    if (_cbVdWs && _cbVdWs.readyState === WebSocket.OPEN) return;
     const elVDCB = document.getElementById('od-sent-vd-cb');
     if (!elVDCB) return;
-    try {
-        const cbSymbol = (_ticker || 'BTC/USD').toUpperCase().replace('/', '-');
-        const r = await fetch(`https://api.exchange.coinbase.com/products/${cbSymbol}/trades?limit=300`);
-        const trades = await r.json();
-        if (!Array.isArray(trades) || trades.length === 0) return;
-        // A API retorna do mais recente para o mais antigo — inverte para ordem cronológica
-        const ordenados = [...trades].reverse();
-        const numBuckets = 24;
-        const total = ordenados.length;
-        const vdValsCB = [];
-        for (let k = 0; k < numBuckets; k++) {
-            const ini = Math.floor(k * total / numBuckets);
-            const fim = Math.floor((k + 1) * total / numBuckets);
-            let delta = 0;
-            ordenados.slice(ini, fim).forEach(t => {
-                const size = parseFloat(t.size || 0);
-                // ⚠️ Na Coinbase, "side" indica o lado do MAKER, não do taker.
-                // side: "sell" → maker vendeu → taker comprou (compra agressiva)
-                // side: "buy"  → maker comprou → taker vendeu (venda agressiva)
-                if (t.side === 'sell') delta += size;
-                else if (t.side === 'buy') delta -= size;
-            });
-            vdValsCB.push(delta);
-        }
-        const vdAtualCB = vdValsCB[vdValsCB.length - 1] || 0;
-        const vdResCB = diagMedia(vdValsCB);
-        const cvdCB = vdValsCB.reduce((s, d) => s + d, 0);
-        elVDCB.innerHTML = `<span style="font-weight:700;color:${vdResCB.cor}">${fmtSinal(vdAtualCB, 3)}</span> <span style="font-size:12px;font-weight:600;color:${vdResCB.cor};">${vdResCB.diag}</span>`;
-        const elSparkVDCB = document.getElementById('od-spark-vd-cb');
-        if (elSparkVDCB) elSparkVDCB.innerHTML = odSparkline(vdValsCB, vdAtualCB >= 0 ? '#10B981' : '#EF4444');
-        const elCvdCB = document.getElementById('od-vd-cb-cvd');
-        if (elCvdCB) elCvdCB.innerHTML = `CVD: <span style="font-weight:700;color:${cvdCB >= 0 ? '#10B981' : '#EF4444'}">${fmtSinal(cvdCB, 3)}</span>`;
-    } catch (e) {
-        console.log('Coinbase VD fetch error:', e.message);
-    }
+    _cbVdBuckets = [];
+    cbVdRenderizar();
+    const cbSymbol = (_ticker || 'BTC/USD').toUpperCase().replace('/', '-');
+    _cbVdWs = new WebSocket('wss://ws-feed.exchange.coinbase.com');
+    _cbVdWs.onopen = () => {
+        if (_cbVdWs) _cbVdWs.send(JSON.stringify({ type: 'subscribe', channels: [{ name: 'matches', product_ids: [cbSymbol] }] }));
+    };
+    _cbVdWs.onmessage = (e) => {
+        try {
+            const msg = JSON.parse(e.data);
+            if (msg.type !== 'match' && msg.type !== 'last_match') return;
+            const size = parseFloat(msg.size || 0);
+            const tMs = new Date(msg.time).getTime();
+            cbVdRegistrarTrade(msg.side, size, tMs);
+            if (!_cbVdRenderPendente) {
+                _cbVdRenderPendente = true;
+                setTimeout(() => { cbVdRenderizar(); _cbVdRenderPendente = false; }, 1000);
+            }
+        } catch (err) {}
+    };
+    _cbVdWs.onerror = () => {};
+    _cbVdWs.onclose = () => { _cbVdWs = null; };
+}
+
+function cbDesconectarVD() {
+    if (_cbVdWs) { _cbVdWs.close(); _cbVdWs = null; }
 }
 
 async function odCarregarSentimento() {
@@ -7968,7 +8007,7 @@ async function odCarregarSentimento() {
     if (!elFunding) return;
     loading.style.display = "inline";
     elNarrativa.textContent = "Analisando...";
-    odCarregarVDCoinbase();
+    cbConectarVD();
     try {
         const [rFunding, rOI, rRatio, rLSR, rTTRPos] = await Promise.all([
             fetch("https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&limit=20").then(r => r.json()),
@@ -8319,6 +8358,7 @@ function limparBoleta() {
 
 function odSetTab(idx) {
     if (idx === 0) { odCarregarSentimento(); }
+    else cbDesconectarVD();
     if (idx === 5) { var bt = document.getElementById('boleta-ticker'); if (bt) bt.textContent = _ticker || '—'; }
     for (let i = 0; i <= 5; i++) {
         document.getElementById('od-tab-' + i).classList.toggle('active', i === idx);
