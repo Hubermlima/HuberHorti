@@ -7882,6 +7882,62 @@ function odPararRefreshMercado() {
     }
 }
 
+// Sparkline (barras clicáveis) — precisa estar no escopo global porque o onclick
+// injetado via innerHTML chama essa função fora do contexto de odCarregarSentimento.
+function odSparkline(values, color, id, decimais, sufixo) {
+    if (!values || values.length < 2) return '';
+    id = id || 'spk' + Math.random().toString(36).slice(2, 8);
+    decimais = decimais === undefined ? 2 : decimais;
+    sufixo = sufixo || '';
+    const W = 300, H = 40, P = 2;
+    const min = Math.min(...values), max = Math.max(...values);
+    const range = max - min || 1;
+    const n = values.length;
+    const slot = (W - P * 2) / n;
+    const barW = Math.max(1.5, slot * 0.65);
+    const bars = values.map((v, i) => {
+        const x = P + i * slot + (slot - barW) / 2;
+        const h = Math.max(1.5, ((v - min) / range) * (H - P * 2));
+        const y = H - P - h;
+        const isLast = i === n - 1;
+        const valorAttr = v.toFixed(6);
+        return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="1" fill="${color}" opacity="${isLast ? 1 : 0.5}" style="cursor:pointer;" onclick="odSparkMostrarValor(event,'${id}',${valorAttr},'${sufixo}',${decimais})"/>`;
+    }).join('');
+    // Média móvel de 5 períodos, como referência por cima das barras
+    const mmPeriod = 5;
+    const mmPts = values.map((v, i) => {
+        if (i < mmPeriod - 1) return null;
+        const slice = values.slice(i - mmPeriod + 1, i + 1);
+        const mm = slice.reduce((s, v) => s + v, 0) / mmPeriod;
+        const x = P + i * slot + slot / 2;
+        const y = H - P - ((mm - min) / range) * (H - P * 2);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).filter(Boolean).join(' ');
+    return `<div style="position:relative;">
+        <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:40px;display:block;">
+            ${bars}
+            <polyline points="${mmPts}" fill="none" stroke="rgba(0,0,0,0.35)" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="4,3" style="pointer-events:none;"/>
+        </svg>
+        <div id="spark-tip-${id}" style="display:none;position:absolute;top:-22px;background:#1C1C1E;color:#fff;font-size:11px;font-weight:600;padding:2px 7px;border-radius:5px;white-space:nowrap;pointer-events:none;z-index:10;"></div>
+    </div>`;
+}
+
+function odSparkMostrarValor(ev, id, valor, sufixo, decimais) {
+    const tip = document.getElementById('spark-tip-' + id);
+    if (!tip) return;
+    const svgEl = ev.target.closest('svg');
+    const wrap = svgEl.parentElement;
+    const rectBars = ev.target.getBoundingClientRect();
+    const wrapRect = wrap.getBoundingClientRect();
+    tip.textContent = valor.toFixed(decimais) + sufixo;
+    let left = (rectBars.left - wrapRect.left) + (rectBars.width / 2) - 20;
+    left = Math.max(0, Math.min(wrapRect.width - 44, left));
+    tip.style.left = left + 'px';
+    tip.style.display = 'block';
+    clearTimeout(tip._odHideTimeout);
+    tip._odHideTimeout = setTimeout(() => { tip.style.display = 'none'; }, 2500);
+}
+
 async function odCarregarSentimento() {
     const loading = document.getElementById("od-sent-loading");
     const elFunding = document.getElementById("od-sent-funding");
@@ -7902,61 +7958,6 @@ async function odCarregarSentimento() {
         const SVG_UP   = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="vertical-align:-2px"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18"/></svg>`;
         const SVG_DOWN = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="vertical-align:-2px"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 13.5 12 21m0 0-7.5-7.5M12 21V3"/></svg>`;
         const SVG_NEUT = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="vertical-align:-2px"><path stroke-linecap="round" stroke-linejoin="round" d="M7.5 21 3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5"/></svg>`;
-
-        // Sparkline helper
-        function odSparkline(values, color, id, decimais, sufixo) {
-            if (!values || values.length < 2) return '';
-            id = id || 'spk' + Math.random().toString(36).slice(2, 8);
-            decimais = decimais === undefined ? 2 : decimais;
-            sufixo = sufixo || '';
-            const W = 300, H = 40, P = 2;
-            const min = Math.min(...values), max = Math.max(...values);
-            const range = max - min || 1;
-            const n = values.length;
-            const slot = (W - P * 2) / n;
-            const barW = Math.max(1.5, slot * 0.65);
-            const bars = values.map((v, i) => {
-                const x = P + i * slot + (slot - barW) / 2;
-                const h = Math.max(1.5, ((v - min) / range) * (H - P * 2));
-                const y = H - P - h;
-                const isLast = i === n - 1;
-                const valorAttr = v.toFixed(6);
-                return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="1" fill="${color}" opacity="${isLast ? 1 : 0.5}" style="cursor:pointer;" onclick="odSparkMostrarValor(event,'${id}',${valorAttr},'${sufixo}',${decimais})"/>`;
-            }).join('');
-            // Média móvel de 5 períodos, como referência por cima das barras
-            const mmPeriod = 5;
-            const mmPts = values.map((v, i) => {
-                if (i < mmPeriod - 1) return null;
-                const slice = values.slice(i - mmPeriod + 1, i + 1);
-                const mm = slice.reduce((s, v) => s + v, 0) / mmPeriod;
-                const x = P + i * slot + slot / 2;
-                const y = H - P - ((mm - min) / range) * (H - P * 2);
-                return `${x.toFixed(1)},${y.toFixed(1)}`;
-            }).filter(Boolean).join(' ');
-            return `<div style="position:relative;">
-                <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:40px;display:block;">
-                    ${bars}
-                    <polyline points="${mmPts}" fill="none" stroke="rgba(0,0,0,0.35)" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="4,3" style="pointer-events:none;"/>
-                </svg>
-                <div id="spark-tip-${id}" style="display:none;position:absolute;top:-22px;background:#1C1C1E;color:#fff;font-size:11px;font-weight:600;padding:2px 7px;border-radius:5px;white-space:nowrap;pointer-events:none;z-index:10;"></div>
-            </div>`;
-        }
-
-        function odSparkMostrarValor(ev, id, valor, sufixo, decimais) {
-            const tip = document.getElementById('spark-tip-' + id);
-            if (!tip) return;
-            const svgEl = ev.target.closest('svg');
-            const wrap = svgEl.parentElement;
-            const rectBars = ev.target.getBoundingClientRect();
-            const wrapRect = wrap.getBoundingClientRect();
-            tip.textContent = valor.toFixed(decimais) + sufixo;
-            let left = (rectBars.left - wrapRect.left) + (rectBars.width / 2) - 20;
-            left = Math.max(0, Math.min(wrapRect.width - 44, left));
-            tip.style.left = left + 'px';
-            tip.style.display = 'block';
-            clearTimeout(tip._odHideTimeout);
-            tip._odHideTimeout = setTimeout(() => { tip.style.display = 'none'; }, 2500);
-        }
 
         // Funding
         const fundingVals = [...rFunding].reverse().map(f => parseFloat(f.fundingRate || 0) * 100);
