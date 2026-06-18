@@ -8008,12 +8008,13 @@ async function odCarregarSentimento() {
 
         // ── Top Trader Position Ratio ($) ──────────────────────────────
         const elTTRPos = document.getElementById('od-sent-ttrpos');
+        let ttrPos = ratio, ttrPosDelta = 0, ttrPosRes = ttrRes;
         if (elTTRPos && Array.isArray(rTTRPos)) {
             const ttrPosVals = rTTRPos.map(r => parseFloat(r.longShortRatio || 1));
-            const ttrPos = ttrPosVals[ttrPosVals.length - 1] || 1;
+            ttrPos = ttrPosVals[ttrPosVals.length - 1] || 1;
             const ttrPosAnterior = ttrPosVals[ttrPosVals.length - 2] || ttrPos;
-            const ttrPosDelta = ttrPosAnterior > 0 ? ((ttrPos - ttrPosAnterior) / ttrPosAnterior * 100) : 0;
-            const ttrPosRes = diagMedia(ttrPosVals);
+            ttrPosDelta = ttrPosAnterior > 0 ? ((ttrPos - ttrPosAnterior) / ttrPosAnterior * 100) : 0;
+            ttrPosRes = diagMedia(ttrPosVals);
             elTTRPos.innerHTML = `<span style="font-weight:700;">${ttrPos.toFixed(2)}</span> <span style="font-size:11px;color:${ttrPosDelta>0?'#10B981':ttrPosDelta<0?'#EF4444':'#8E8E93'};margin-right:6px;">${(ttrPosDelta>=0?'+':'')+ttrPosDelta.toFixed(2)}%</span><span style="font-size:12px;font-weight:600;color:${ttrPosRes.cor};">${ttrPosRes.diag}</span>`;
             const elSparkTTRPos = document.getElementById('od-spark-ttrpos');
             if (elSparkTTRPos) elSparkTTRPos.innerHTML = odSparkline(ttrPosVals, ttrPosRes.cor, 'ttrpos', 2, '');
@@ -8021,12 +8022,13 @@ async function odCarregarSentimento() {
 
         // ── Long/Short Ratio Geral ────────────────────────────────────
         const elLSR = document.getElementById('od-sent-lsr');
+        let lsr = 1, lsrDelta = 0, lsrRes = { diag: 'Bearish', cor: '#EF4444' };
         if (elLSR && Array.isArray(rLSR)) {
             const lsrVals = rLSR.map(r => parseFloat(r.longShortRatio || 1));
-            const lsr = lsrVals[lsrVals.length - 1] || 1;
+            lsr = lsrVals[lsrVals.length - 1] || 1;
             const lsrAnterior = lsrVals[lsrVals.length - 2] || lsr;
-            const lsrDelta = lsrAnterior > 0 ? ((lsr - lsrAnterior) / lsrAnterior * 100) : 0;
-            const lsrRes = diagMedia(lsrVals, true); // inverso: subindo = bearish
+            lsrDelta = lsrAnterior > 0 ? ((lsr - lsrAnterior) / lsrAnterior * 100) : 0;
+            lsrRes = diagMedia(lsrVals, true); // inverso: subindo = bearish
 
             elLSR.innerHTML = `<span style="font-weight:700;">${lsr.toFixed(2)}</span> <span style="font-size:11px;color:${lsrDelta>0?'#10B981':lsrDelta<0?'#EF4444':'#8E8E93'};margin-right:6px;">${(lsrDelta>=0?'+':'')+lsrDelta.toFixed(2)}%</span><span style="font-size:12px;font-weight:600;color:${lsrRes.cor};">${lsrRes.diag}</span>`;
             const elSparkLSR = document.getElementById('od-spark-lsr');
@@ -8044,38 +8046,72 @@ async function odCarregarSentimento() {
             if (elSparkVD) elSparkVD.innerHTML = odSparkline(vdVals, vdAtual >= 0 ? '#10B981' : '#EF4444', 'vd', 2, '');
         }
 
-        // Gera inequação com base nos indicadores consensuais
+        // Gera narrativa em frases curtas + conclusão, cruzando os indicadores
         const elNarrativa = document.getElementById("od-sent-narrativa");
 
-        const bullishLado = [];
-        const bearishLado = [];
+        // Estado "grandes" (Top Trader Ratio + Top Trader Ratio $)
+        const grandesComprado1 = ratio > 1, grandesComprado2 = ttrPos > 1;
+        const grandesBull = ttrRes.diag === 'Bullish' && ttrPosRes.diag === 'Bullish';
+        const grandesBear = ttrRes.diag === 'Bearish' && ttrPosRes.diag === 'Bearish';
+        let fraseGrandes;
+        if (grandesComprado1 === grandesComprado2) {
+            const lado = grandesComprado1 ? 'comprados' : 'vendidos';
+            if (grandesBull) fraseGrandes = grandesComprado1 ? `grandes traders seguem ${lado}, em alta` : `grandes traders reduzindo a posição vendida`;
+            else if (grandesBear) fraseGrandes = grandesComprado1 ? `grandes traders seguem ${lado}, mas perdendo força` : `grandes traders seguem ${lado}, intensificando`;
+            else fraseGrandes = `grandes traders seguem ${lado}, sinal misto`;
+        } else {
+            fraseGrandes = 'Top Trader Ratio e Top Trader Ratio ($) divergem entre si — sinal misto entre contas e capital dos grandes traders';
+        }
 
-        // Funding Rate — negativo = bullish, positivo = bearish
-        if (funding < 0) bullishLado.push('Funding');
-        else if (funding > 0.002) bearishLado.push('Funding');
+        // Estado "geral" (LSR)
+        const geralComprado = lsr > 1;
+        const fraseLSR = geralComprado
+            ? (lsrDelta >= 0 ? 'mercado geral aumentando posição comprada' : 'mercado geral reduzindo posição comprada')
+            : (lsrDelta >= 0 ? 'mercado geral reduzindo posição vendida' : 'mercado geral aumentando posição vendida');
 
-        // TTR — > 1 = bullish, < 1 = bearish
-        if (ratio > 1) bullishLado.push('TTR');
-        else bearishLado.push('TTR');
+        // Funding
+        const fraseFunding = funding < 0 ? 'negativo, vendedor pagando comprador' : funding > 0 ? 'positivo, comprador pagando vendedor' : 'neutro';
 
-        // LSR Geral
-        const lsrEl = document.getElementById('od-sent-lsr');
-        const lsrVal = lsrEl ? parseFloat(lsrEl.textContent) : 1;
-        if (lsrVal > 1.1) bullishLado.push('LSR');
-        else if (lsrVal < 0.9) bearishLado.push('LSR');
+        // OI
+        const fraseOI = oiDelta >= 0 ? 'subindo, novas posições entrando' : 'caindo, posições sendo fechadas';
 
-        // VD Spot
-        const vdVal = window._vdAtual || 0;
-        if (vdVal > 0) bullishLado.push('VD');
-        else if (vdVal < 0) bearishLado.push('VD');
+        // Conclusão: cruza grandes vs. geral, reforça com funding, tempera com OI
+        const geralBull = lsrRes.diag === 'Bullish';
+        let vies, motivo;
+        if (grandesBull && !geralBull) {
+            vies = 'alta moderado';
+            motivo = `puxado pela divergência entre grandes (${grandesComprado1 ? 'comprados' : 'reduzindo posição vendida'}) e o resto do mercado (recuando)`;
+        } else if (grandesBear && geralBull) {
+            vies = 'baixa moderado';
+            motivo = 'puxado pela divergência entre grandes (recuando) e o resto do mercado (mais agressivo)';
+        } else if (grandesBull && geralBull) {
+            vies = 'alta';
+            motivo = 'com grandes traders e mercado geral apontando na mesma direção — sinal mais forte que o normal';
+        } else if (grandesBear && !geralBull) {
+            vies = 'baixa';
+            motivo = 'com grandes traders e mercado geral apontando na mesma direção — sinal mais forte que o normal';
+        } else {
+            vies = 'neutro/misto';
+            motivo = 'sem alinhamento claro entre os indicadores principais';
+        }
+        const reforcoFunding = (funding < 0 && (vies.startsWith('alta'))) ? ', reforçado pelo funding negativo'
+            : (funding > 0 && vies.startsWith('baixa')) ? ', reforçado pelo funding positivo'
+            : (funding < 0 && vies.startsWith('baixa')) ? ', mesmo com funding negativo (contradição a observar)'
+            : (funding > 0 && vies.startsWith('alta')) ? ', mesmo com funding positivo (contradição a observar)'
+            : '';
+        const temperoOI = oiDelta >= 0
+            ? '. Convicção mais sólida, com Open Interest subindo'
+            : '. Sem convicção forte ainda, por causa do OI em queda';
 
-        // Monta inequação
-        const esq = bullishLado.length > 0 ? bullishLado.join(' + ') : '—';
-        const dir = bearishLado.length > 0 ? bearishLado.join(' + ') : '—';
-        const sinal = bullishLado.length >= bearishLado.length ? '>' : '<';
-        const inequacao = `${esq} ${sinal} ${dir}`;
+        const narrativaHtml = `<div style="font-size:13px;font-weight:500;line-height:1.5;margin-bottom:8px;">`
+            + `<b>Top Trader Ratio e Top Trader Ratio ($):</b> ${fraseGrandes}.<br>`
+            + `<b>Long/Short Ratio:</b> ${fraseLSR}.<br>`
+            + `<b>Funding Rate:</b> ${fraseFunding}.<br>`
+            + `<b>Open Interest:</b> ${fraseOI}.`
+            + `</div>`
+            + `<div style="font-size:14px;font-weight:700;">Conclusão: viés de ${vies}${motivo ? ', ' + motivo : ''}${reforcoFunding}${temperoOI}.</div>`;
 
-        if (elNarrativa) elNarrativa.textContent = inequacao;
+        if (elNarrativa) elNarrativa.innerHTML = narrativaHtml;
 
     } catch(e) { 
         const elNarrativa = document.getElementById("od-sent-narrativa");
