@@ -173,7 +173,7 @@
   }
   .extrato-header {
     display: grid;
-    grid-template-columns: 72px 52px 1fr 80px 80px 80px;
+    grid-template-columns: 26px 72px 52px 1fr 80px 80px 80px;
     padding: 10px 14px;
     background: var(--surface);
     border-bottom: 1px solid var(--border);
@@ -184,17 +184,40 @@
     text-transform: uppercase;
     letter-spacing: 0.4px;
   }
-  .extrato-header span:nth-child(n+4) { text-align: right; }
+  .extrato-header span:nth-child(n+5) { text-align: right; }
 
+  /* LINHA VENDA */
   .extrato-row {
     display: grid;
-    grid-template-columns: 72px 52px 1fr 80px 80px 80px;
+    grid-template-columns: 26px 72px 52px 1fr 80px 80px 80px;
     padding: 11px 14px;
     border-bottom: 0.5px solid var(--border-lt);
     align-items: center;
     background: var(--surface);
   }
   .extrato-row:last-child { border-bottom: none; }
+
+  .extrato-row .r-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    user-select: none;
+  }
+  .toggle-btn {
+    width: 18px; height: 18px;
+    border: 1.5px solid var(--accent);
+    border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--accent);
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1;
+    flex-shrink: 0;
+    background: var(--surface);
+    transition: background 0.15s;
+  }
+  .toggle-btn:active { background: #EFF6FF; }
 
   .extrato-row .r-data  { font-size: 11px; color: var(--txt); }
   .extrato-row .r-doc   { font-size: 11px; color: var(--txt); font-weight: 600; }
@@ -204,6 +227,26 @@
   .extrato-row .r-pgto  { color: var(--green); }
   .extrato-row .r-debito-pos  { color: var(--red); }
   .extrato-row .r-debito-zero { color: var(--green); }
+
+  /* LINHAS DE PAGAMENTO (filhas) */
+  .pgto-group { display: none; }
+  .pgto-group.aberto { display: block; }
+
+  .pgto-row {
+    display: grid;
+    grid-template-columns: 26px 72px 52px 1fr 80px 80px 80px;
+    padding: 9px 14px;
+    border-bottom: 0.5px solid var(--border-lt);
+    align-items: center;
+    background: #FAFAFA;
+  }
+  .pgto-row:last-child { border-bottom: none; }
+  .pgto-row .r-data { font-size: 11px; color: var(--txt-sub); }
+  .pgto-row .r-orig { font-size: 11px; color: var(--txt-sub); font-weight: 400; }
+  .pgto-row .r-num  { font-size: 12px; font-weight: 700; text-align: right; display: block; width: 100%; }
+  .pgto-row .r-pgto { color: var(--green); }
+  .pgto-row .r-debito-pos  { color: var(--red); }
+  .pgto-row .r-debito-zero { color: var(--green); }
 
   /* ESTADOS */
   .vazio {
@@ -299,13 +342,13 @@ function renderExtrato(movimentos, notas) {
     return;
   }
 
-  const eventos = [];
+  // Monta eventos
+  const vendas = notas.map(n => ({
+    tipo: 'venda', data: n.data, doc: n.id,
+    valor: parseFloat(n.total_venda || 0)
+  }));
 
-  notas.forEach(n => {
-    eventos.push({ tipo: 'venda', data: n.data, doc: n.id, orig: '—', valor: parseFloat(n.total_venda || 0) });
-  });
-
-    movimentos.forEach(m => {
+  const pgtos = movimentos.map(m => {
     const forma = capitalize(m.forma || '');
     const tipo  = (m.tipo || '').toLowerCase().trim();
     let orig;
@@ -316,51 +359,84 @@ function renderExtrato(movimentos, notas) {
     } else {
       orig = forma || '—';
     }
-    eventos.push({ tipo: 'pgto', data: m.data, doc: '', orig, valor: parseFloat(m.valor || 0) });
+    return { tipo: 'pgto', data: m.data, orig, valor: parseFloat(m.valor || 0) };
   });
 
+  // Ordena vendas por data
+  vendas.sort((a, b) => new Date(a.data) - new Date(b.data));
+  pgtos.sort((a, b) => new Date(a.data) - new Date(b.data));
 
-  // Ordena cronologicamente; empate: venda antes de pgto
-  eventos.sort((a, b) => {
-    const diff = new Date(a.data) - new Date(b.data);
-    if (diff !== 0) return diff;
-    if (a.tipo === 'venda' && b.tipo === 'pgto') return -1;
-    if (a.tipo === 'pgto'  && b.tipo === 'venda') return 1;
-    return 0;
+  // Agrupa pgtos por período: cada pgto vai para a venda imediatamente anterior
+  // Pgtos antes da primeira venda ficam num grupo "avulso" no topo
+  const grupos = vendas.map((v, i) => ({
+    venda: v,
+    pgtos: []
+  }));
+
+  pgtos.forEach(p => {
+    const dataP = new Date(p.data);
+    // Encontra a última venda com data <= data do pgto
+    let idx = -1;
+    for (let i = 0; i < vendas.length; i++) {
+      if (new Date(vendas[i].data) <= dataP) idx = i;
+      else break;
+    }
+    if (idx >= 0) grupos[idx].pgtos.push(p);
+    // pgtos antes de qualquer venda são ignorados (caso raro)
   });
 
-  const totalVendas = notas.reduce((s, n) => s + parseFloat(n.total_venda || 0), 0);
-  const totalPgtos  = movimentos.reduce((s, m) => s + parseFloat(m.valor || 0), 0);
+  // Totais
+  const totalVendas = vendas.reduce((s, v) => s + v.valor, 0);
+  const totalPgtos  = pgtos.reduce((s, p) => s + p.valor, 0);
   const debFinal    = totalVendas - totalPgtos;
   const quitado     = debFinal <= 0.005;
 
+  // Renderiza com débito corrido
   let debito = 0;
-  const linhas = eventos.map(ev => {
-    if (ev.tipo === 'venda') debito += ev.valor;
-    else                     debito -= ev.valor;
+  let linhas = '';
 
-    const debDisplay = Math.max(0, debito);
-    const dataFmt    = formatarData(ev.data);
-    const debCls     = debDisplay <= 0.005 ? 'r-num r-debito-zero' : 'r-num r-debito-pos';
+  grupos.forEach((g, gi) => {
+    // Linha da venda
+    debito += g.venda.valor;
+    const debV       = Math.max(0, debito);
+    const debClsV    = debV <= 0.005 ? 'r-num r-debito-zero' : 'r-num r-debito-pos';
+    const dataVFmt   = formatarData(g.venda.data);
+    const docStr     = g.venda.doc ? '#' + String(g.venda.doc).slice(-4) : '';
+    const temPgtos   = g.pgtos.length > 0;
+    const groupId    = `grupo-${gi}`;
 
-    const colVenda = ev.tipo === 'venda'
-      ? `<span class="r-num r-venda">${fmtVal(ev.valor)}</span>`
-      : `<span class="r-num" style="color:var(--border-lt)">—</span>`;
-
-    const colPgto = ev.tipo === 'pgto'
-      ? `<span class="r-num r-pgto">${fmtVal(ev.valor)}</span>`
-      : `<span class="r-num" style="color:var(--border-lt)">—</span>`;
-
-    return `
+    linhas += `
       <div class="extrato-row">
-        <span class="r-data">${dataFmt}</span>
-        <span class="r-doc">${ev.doc ? '#' + String(ev.doc).slice(-4) : ''}</span>
-        <span class="r-orig">${ev.orig}</span>
-        ${colVenda}
-        ${colPgto}
-        <span class="${debCls}">${fmtVal(debDisplay)}</span>
-      </div>`;
-  }).join('');
+        <span class="r-toggle">
+          ${temPgtos ? `<span class="toggle-btn" onclick="toggleGrupo('${groupId}', this)">+</span>` : ''}
+        </span>
+        <span class="r-data">${dataVFmt}</span>
+        <span class="r-doc">${docStr}</span>
+        <span class="r-orig">Pedido</span>
+        <span class="r-num r-venda">${fmtVal(g.venda.valor)}</span>
+        <span class="r-num" style="color:var(--border-lt)">—</span>
+        <span class="${debClsV}">${fmtVal(debV)}</span>
+      </div>
+      <div class="pgto-group" id="${groupId}">`;
+
+    g.pgtos.forEach(p => {
+      debito -= p.valor;
+      const debP    = Math.max(0, debito);
+      const debClsP = debP <= 0.005 ? 'r-num r-debito-zero' : 'r-num r-debito-pos';
+      linhas += `
+        <div class="pgto-row">
+          <span></span>
+          <span class="r-data">${formatarData(p.data)}</span>
+          <span></span>
+          <span class="r-orig">${p.orig}</span>
+          <span class="r-num" style="color:var(--border-lt)">—</span>
+          <span class="r-num r-pgto">${fmtVal(p.valor)}</span>
+          <span class="${debClsP}">${fmtVal(debP)}</span>
+        </div>`;
+    });
+
+    linhas += `</div>`;
+  });
 
   el.innerHTML = `
     <div class="resumo-card">
@@ -380,6 +456,7 @@ function renderExtrato(movimentos, notas) {
     <div class="extrato-card">
       <div class="extrato-table">
         <div class="extrato-header">
+          <span></span>
           <span>Data</span>
           <span>Doc</span>
           <span>Origem</span>
@@ -391,6 +468,12 @@ function renderExtrato(movimentos, notas) {
       </div>
     </div>
   `;
+}
+
+function toggleGrupo(id, btn) {
+  const grupo = document.getElementById(id);
+  const aberto = grupo.classList.toggle('aberto');
+  btn.textContent = aberto ? '−' : '+';
 }
 
 function fmtVal(v) {
