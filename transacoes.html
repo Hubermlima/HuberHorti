@@ -2026,12 +2026,10 @@ function cvIniciarNovoTrade() {
     _cvTradeId = null;
     _cvTradeTipo = 'long';
     _cvTradeOperacional = false;
-    _grStop = 0;
-    _grPm = _precoAtual > 0 ? _precoAtual : 0;
-    if (!_regAtual) _regAtual = { p1: _grPm, p2: 0 };
-    _regAtual.p1 = _grPm;
-    _regAtual.p2 = _precoAtual > 0 ? _precoAtual * 1.05 : 0;
     window._cvTradeCache = null;
+    // PM, Stop e Alvo permanecem com os valores atuais — o usuário arrasta
+    // as réguas a partir daí. Só garante que _regAtual exista.
+    if (!_regAtual) _regAtual = { p1: _grPm, p2: 0 };
     // Destrava as réguas de Alvo e Stop, caso estivessem travadas
     if (_prefComponentes['reguaA']) _prefComponentes['reguaA'].locked = false;
     if (_prefComponentes['reguaS']) _prefComponentes['reguaS'].locked = false;
@@ -2296,162 +2294,6 @@ function odLiquidacaoToggle(checked) {
     } else {
         track.style.background = '#3A3A3C';
         thumb.style.transform = 'translateX(0)';
-    }
-}
-
-// ── Gravar Trade ─────────────────────────────────────────────────
-let _cvTradeModalLocked = false; // true quando edita o Principal: trava Tipo e Modo
-
-async function cvAbrirGravarTrade() {
-    if (!_ativoId) return;
-    const fmtV = v => parseFloat(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
-    const editando = !!_cvTradeId;
-    let pm, stop, alvo, dataAbertura;
-    if (editando) {
-        // Edição de um trade já carregado (Principal ou Simulação) — via clique
-        // na lista, ou via _cvTradeId já carregado no início do app (Principal).
-        const t = window._cvTradeCache || {};
-        pm   = _grPm;
-        stop = _grStop;
-        alvo = _regAtual ? _regAtual.p2 : 0;
-        dataAbertura = t.data_abertura || new Date().toISOString().substring(0,10);
-        _cvTradeTipo = t.tipo || _cvTradeTipo || 'long';
-        _cvTradeOperacional = !!t.operacional;
-        _cvTradeModalLocked = !!t.operacional; // Principal: Tipo e Modo não são editáveis aqui
-    } else {
-        // Criação de um trade novo (nenhuma linha da lista foi clicada antes)
-        const _c = calcularConsolidado();
-        pm   = _c.pm > 0 ? _c.pm : (_c.pmShort > 0 ? _c.pmShort : 0);
-        stop = _grStop > 0 ? _grStop : (_precoAtual * 0.95);
-        alvo = _regAtual ? _regAtual.p2 : (_precoAtual * 1.05);
-        const sorted = [..._transacoes].sort((a,b)=>new Date(a.data)-new Date(b.data));
-        dataAbertura = sorted.length > 0 ? sorted[0].data.substring(0,10) : new Date().toISOString().substring(0,10);
-        _cvTradeTipo = _c.qtdAberta > 0 ? 'long' : 'short';
-        _cvTradeOperacional = false; // sempre nasce em Simulação
-        _cvTradeModalLocked = false;
-    }
-    // Preenche modal
-    document.getElementById('cv-trade-pm').textContent   = fmtV(pm);
-    document.getElementById('cv-trade-stop').textContent = fmtV(stop);
-    document.getElementById('cv-trade-alvo').textContent = fmtV(alvo);
-    document.getElementById('cv-trade-data').textContent = dataAbertura;
-    cvTradeSetTipo(_cvTradeTipo);
-    cvTradeRenderOperacional();
-    cvTradeAplicarLock();
-    document.getElementById('cv-trade-overlay').classList.add('active');
-}
-
-function cvTradeAplicarLock() {
-    const tipoRow = document.getElementById('cv-trade-btn-long').parentElement;
-    const modoRow = document.getElementById('cv-trade-btn-sim').parentElement;
-    [tipoRow, modoRow].forEach(el => {
-        el.style.opacity = _cvTradeModalLocked ? '0.45' : '1';
-        el.style.pointerEvents = _cvTradeModalLocked ? 'none' : 'auto';
-    });
-}
-
-async function cvTradeSetOperacional(flag) {
-    if (flag) {
-        // Valida se já existe um Principal pra esse ativo antes de permitir
-        const { data: existente } = await db.from('trades')
-            .select('id')
-            .eq('ativo_id', _ativoId)
-            .eq('operacional', true)
-            .eq('simulacao', false)
-            .maybeSingle();
-        if (existente && existente.id !== _cvTradeId) {
-            alert('Já existe um trade Operacional para este ativo. Para substituí-lo, use a Liquidação Total ou promova uma simulação pelo fluxo próprio.');
-            return;
-        }
-    }
-    _cvTradeOperacional = flag;
-    cvTradeRenderOperacional();
-}
-
-function cvTradeRenderOperacional() {
-    const btnSim = document.getElementById('cv-trade-btn-sim');
-    const btnOp  = document.getElementById('cv-trade-btn-op');
-    btnSim.className = 'cv-trade-tipo-btn' + (!_cvTradeOperacional ? ' active-neutral' : '');
-    btnOp.className  = 'cv-trade-tipo-btn' + (_cvTradeOperacional ? ' active-neutral' : '');
-}
-
-function cvFecharGravarTrade() {
-    document.getElementById('cv-trade-overlay').classList.remove('active');
-}
-
-function cvTradeSetTipo(tipo) {
-    _cvTradeTipo = tipo;
-    const btnL = document.getElementById('cv-trade-btn-long');
-    const btnS = document.getElementById('cv-trade-btn-short');
-    btnL.className = 'cv-trade-tipo-btn' + (tipo === 'long' ? ' active-long' : '');
-    btnS.className = 'cv-trade-tipo-btn' + (tipo === 'short' ? ' active-short' : '');
-}
-
-async function cvConfirmarGravarTrade() {
-    const btn = document.getElementById('cv-trade-btn-save');
-    btn.disabled = true;
-    const pm    = _grPm;
-    const stop  = _grStop > 0 ? _grStop : (_precoAtual * 0.95);
-    const alvo  = _regAtual ? _regAtual.p2 : (_precoAtual * 1.05);
-    let dataAbertura;
-    if (_cvTradeId && window._cvTradeCache && window._cvTradeCache.data_abertura) {
-        dataAbertura = window._cvTradeCache.data_abertura;
-    } else {
-        const sorted = [..._transacoes].sort((a,b)=>new Date(a.data)-new Date(b.data));
-        dataAbertura = sorted.length > 0 ? sorted[0].data.substring(0,10) : new Date().toISOString().substring(0,10);
-    }
-
-    // Revalida duplicidade de Operacional por segurança (race condition)
-    if (_cvTradeOperacional) {
-        const { data: existente } = await db.from('trades')
-            .select('id')
-            .eq('ativo_id', _ativoId)
-            .eq('operacional', true)
-            .eq('simulacao', false)
-            .maybeSingle();
-        if (existente && existente.id !== _cvTradeId) {
-            btn.disabled = false;
-            alert('Já existe um trade Operacional para este ativo. Não foi possível gravar.');
-            return;
-        }
-    }
-
-    const payload = {
-        ativo_id: _ativoId,
-        tipo: _cvTradeTipo,
-        pm,
-        stop,
-        alvo,
-        data_abertura: dataAbertura,
-        operacional: _cvTradeOperacional,
-        simulacao: !_cvTradeOperacional
-    };
-    let error, savedId = _cvTradeId;
-    if (_cvTradeId) {
-        ({ error } = await db.from('trades').update(payload).eq('id', _cvTradeId));
-    } else {
-        const { data: d, error: e } = await db.from('trades').insert(payload).select().single();
-        error = e;
-        if (d) savedId = d.id;
-    }
-    btn.disabled = false;
-    if (!error) {
-        // Sincroniza alertas de alvo e stop — ligados a esse trade específico
-        await db.from('alertas').delete().eq('trade_id', savedId);
-        const alertasRows = [];
-        if (stop > 0) alertasRows.push({ ativo_id: _ativoId, trade_id: savedId, preco: stop, habilitado: true, tipo: 'stop', nivel: 100 });
-        if (alvo > 0) alertasRows.push({ ativo_id: _ativoId, trade_id: savedId, preco: alvo, habilitado: true, tipo: 'alvo', nivel: 100 });
-        if (alertasRows.length > 0) await db.from('alertas').insert(alertasRows);
-        cvFecharGravarTrade();
-        odCarregarTrades();
-        // Só atualiza o estado do gráfico se esse trade for o Operacional
-        if (_cvTradeOperacional) {
-            _cvTradeId = savedId;
-            _grDir = _cvTradeTipo.toUpperCase();
-            grDrawChart();
-        }
-    } else {
-        alert('Erro ao gravar: ' + error.message);
     }
 }
 
