@@ -2106,12 +2106,12 @@ async function cvConfirmarNovoStop() {
             if (!window._cvTradeCache) window._cvTradeCache = {};
             Object.assign(window._cvTradeCache, payload);
             // Sincroniza tabela alertas
-            await db.from('alertas').delete().eq('ativo_id', _ativoId).in('tipo', ['alvo', 'stop']);
+            await db.from('alertas').delete().eq('trade_id', _cvTradeId);
             const alertasRows = [];
             const stopFinal = !isNaN(stopVal) && stopVal > 0 ? stopVal : _grStop;
             const alvoFinal = !isNaN(alvoVal) && alvoVal > 0 ? alvoVal : (_regAtual ? _regAtual.p2 : 0);
-            if (stopFinal > 0) alertasRows.push({ ativo_id: _ativoId, preco: stopFinal, habilitado: stopAtivo, tipo: 'stop', nivel: stopRealizacao });
-            if (alvoFinal > 0) alertasRows.push({ ativo_id: _ativoId, preco: alvoFinal, habilitado: alvoAtivo, tipo: 'alvo', nivel: alvoRealizacao });
+            if (stopFinal > 0) alertasRows.push({ ativo_id: _ativoId, trade_id: _cvTradeId, preco: stopFinal, habilitado: stopAtivo, tipo: 'stop', nivel: stopRealizacao });
+            if (alvoFinal > 0) alertasRows.push({ ativo_id: _ativoId, trade_id: _cvTradeId, preco: alvoFinal, habilitado: alvoAtivo, tipo: 'alvo', nivel: alvoRealizacao });
             if (alertasRows.length > 0) await db.from('alertas').insert(alertasRows);
         }
     }
@@ -2161,24 +2161,36 @@ function odLiquidacaoToggle(checked) {
 }
 
 // ── Gravar Trade ─────────────────────────────────────────────────
+let _cvTradeModalLocked = false; // true quando edita o Principal: trava Tipo e Modo
+
 async function cvAbrirGravarTrade() {
     if (!_ativoId) return;
     const fmtV = v => parseFloat(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
-    // PM do consolidado
-    const _c = calcularConsolidado();
-    const pm  = _c.pm > 0 ? _c.pm : (_c.pmShort > 0 ? _c.pmShort : 0);
-    // Stop e alvo das réguas
-    const stop = _grStop > 0 ? _grStop : (_precoAtual * 0.95);
-    const alvo = _regAtual ? _regAtual.p2 : (_precoAtual * 1.05);
-    // Data da primeira transação
-    const sorted = [..._transacoes].sort((a,b)=>new Date(a.data)-new Date(b.data));
-    const dataAbertura = sorted.length > 0 ? sorted[0].data.substring(0,10) : new Date().toISOString().substring(0,10);
-    // Esse modal, ao ser aberto pelo menu, sempre cria um registro NOVO.
-    // Editar um trade já existente (Principal ou Simulação) é feito clicando
-    // na linha dele na lista da aba Trades (carrega aqui com _cvTradeId setado).
-    _cvTradeId   = null;
-    _cvTradeTipo = _c.qtdAberta > 0 ? 'long' : 'short';
-    _cvTradeOperacional = false; // sempre nasce em Simulação
+    const editando = !!_cvTradeId;
+    let pm, stop, alvo, dataAbertura;
+    if (editando) {
+        // Edição de um trade já carregado (Principal ou Simulação) — via clique
+        // na lista, ou via _cvTradeId já carregado no início do app (Principal).
+        const t = window._cvTradeCache || {};
+        pm   = _grPm;
+        stop = _grStop;
+        alvo = _regAtual ? _regAtual.p2 : 0;
+        dataAbertura = t.data_abertura || new Date().toISOString().substring(0,10);
+        _cvTradeTipo = t.tipo || _cvTradeTipo || 'long';
+        _cvTradeOperacional = !!t.operacional;
+        _cvTradeModalLocked = !!t.operacional; // Principal: Tipo e Modo não são editáveis aqui
+    } else {
+        // Criação de um trade novo (nenhuma linha da lista foi clicada antes)
+        const _c = calcularConsolidado();
+        pm   = _c.pm > 0 ? _c.pm : (_c.pmShort > 0 ? _c.pmShort : 0);
+        stop = _grStop > 0 ? _grStop : (_precoAtual * 0.95);
+        alvo = _regAtual ? _regAtual.p2 : (_precoAtual * 1.05);
+        const sorted = [..._transacoes].sort((a,b)=>new Date(a.data)-new Date(b.data));
+        dataAbertura = sorted.length > 0 ? sorted[0].data.substring(0,10) : new Date().toISOString().substring(0,10);
+        _cvTradeTipo = _c.qtdAberta > 0 ? 'long' : 'short';
+        _cvTradeOperacional = false; // sempre nasce em Simulação
+        _cvTradeModalLocked = false;
+    }
     // Preenche modal
     document.getElementById('cv-trade-pm').textContent   = fmtV(pm);
     document.getElementById('cv-trade-stop').textContent = fmtV(stop);
@@ -2186,7 +2198,17 @@ async function cvAbrirGravarTrade() {
     document.getElementById('cv-trade-data').textContent = dataAbertura;
     cvTradeSetTipo(_cvTradeTipo);
     cvTradeRenderOperacional();
+    cvTradeAplicarLock();
     document.getElementById('cv-trade-overlay').classList.add('active');
+}
+
+function cvTradeAplicarLock() {
+    const tipoRow = document.getElementById('cv-trade-btn-long').parentElement;
+    const modoRow = document.getElementById('cv-trade-btn-sim').parentElement;
+    [tipoRow, modoRow].forEach(el => {
+        el.style.opacity = _cvTradeModalLocked ? '0.45' : '1';
+        el.style.pointerEvents = _cvTradeModalLocked ? 'none' : 'auto';
+    });
 }
 
 async function cvTradeSetOperacional(flag) {
@@ -2229,12 +2251,16 @@ function cvTradeSetTipo(tipo) {
 async function cvConfirmarGravarTrade() {
     const btn = document.getElementById('cv-trade-btn-save');
     btn.disabled = true;
-    const _c    = calcularConsolidado();
-    const pm    = _c.pm > 0 ? _c.pm : (_c.pmShort > 0 ? _c.pmShort : 0);
+    const pm    = _grPm;
     const stop  = _grStop > 0 ? _grStop : (_precoAtual * 0.95);
     const alvo  = _regAtual ? _regAtual.p2 : (_precoAtual * 1.05);
-    const sorted = [..._transacoes].sort((a,b)=>new Date(a.data)-new Date(b.data));
-    const dataAbertura = sorted.length > 0 ? sorted[0].data.substring(0,10) : new Date().toISOString().substring(0,10);
+    let dataAbertura;
+    if (_cvTradeId && window._cvTradeCache && window._cvTradeCache.data_abertura) {
+        dataAbertura = window._cvTradeCache.data_abertura;
+    } else {
+        const sorted = [..._transacoes].sort((a,b)=>new Date(a.data)-new Date(b.data));
+        dataAbertura = sorted.length > 0 ? sorted[0].data.substring(0,10) : new Date().toISOString().substring(0,10);
+    }
 
     // Revalida duplicidade de Operacional por segurança (race condition)
     if (_cvTradeOperacional) {
@@ -2297,6 +2323,7 @@ async function cvCarregarTradeOperacional() {
     if (trade) {
         _cvTradeId   = trade.id;
         _cvTradeTipo = trade.tipo;
+        _cvTradeOperacional = true;
         _grDir       = trade.tipo.toUpperCase();
         _grStop      = trade.stop || 0;
         _cvTradeAlvoPendente = trade.alvo || 0;
@@ -2308,6 +2335,7 @@ async function cvCarregarTradeOperacional() {
     } else {
         _cvTradeId   = null;
         _cvTradeTipo = 'long';
+        _cvTradeOperacional = false;
         _grDir       = 'LONG';
         _grStop      = 0;
         _cvTradeAlvoPendente = 0;
@@ -2501,8 +2529,8 @@ async function cvFecharTargetModal() {
     if (_cvAlvoDisparado) { payload.alvo_ativo = false; if (window._cvTradeCache) window._cvTradeCache.alvo_ativo = false; }
     if (_cvStopDisparado) { payload.stop_ativo = false; if (window._cvTradeCache) window._cvTradeCache.stop_ativo = false; }
     // Deleta alerta correspondente da tabela alertas
-    if (_cvAlvoDisparado) await db.from('alertas').delete().eq('ativo_id', _ativoId).eq('tipo', 'alvo');
-    if (_cvStopDisparado) await db.from('alertas').delete().eq('ativo_id', _ativoId).eq('tipo', 'stop');
+    if (_cvAlvoDisparado) await db.from('alertas').delete().eq('trade_id', _cvTradeId).eq('tipo', 'alvo');
+    if (_cvStopDisparado) await db.from('alertas').delete().eq('trade_id', _cvTradeId).eq('tipo', 'stop');
     _cvAlvoDisparado = false;
     _cvStopDisparado = false;
     if (Object.keys(payload).length > 0) {
@@ -8622,6 +8650,8 @@ function limparBoleta() {
 }
 
 // ── Aba Trades (Fase 1 — leitura) ────────────────────────────────────
+let _odTradesCache = [];
+
 async function odCarregarTrades() {
     const container = document.getElementById('od-trades-list');
     if (!container || !_ativoId) return;
@@ -8636,11 +8666,12 @@ async function odCarregarTrades() {
         container.innerHTML = '<div style="padding:24px 0;text-align:center;color:#8E8E93;font-size:13px;">Erro ao carregar trades</div>';
         return;
     }
-    if (!data || data.length === 0) {
+    _odTradesCache = data || [];
+    if (_odTradesCache.length === 0) {
         container.innerHTML = '<div style="padding:24px 0;text-align:center;color:#8E8E93;font-size:13px;">Nenhum trade encontrado</div>';
         return;
     }
-    container.innerHTML = data.map(odRenderTradeRow).join('');
+    container.innerHTML = _odTradesCache.map(odRenderTradeRow).join('');
 }
 
 function odCalcularRR(t) {
@@ -8668,10 +8699,28 @@ function odRenderTradeRow(t) {
     const rr = odCalcularRR(t);
     const rrStr = rr === null ? '—' : rr.toFixed(2) + 'R';
     const rrColor = rr === null ? '#8E8E93' : (rr >= 1 ? '#16A34A' : '#DC2626');
-    return `<div class="od-trade-row" data-trade-id="${t.id}">
+    return `<div class="od-trade-row" data-trade-id="${t.id}" onclick="odClicarTradeRow('${t.id}')" style="cursor:pointer;">
         <span class="od-trade-row-label">${label}</span>
         <span class="od-trade-row-rr" style="color:${rrColor}">${rrStr}</span>
     </div>`;
+}
+
+// Clique numa linha da lista — carrega o ambiente do gráfico (régua, PM,
+// stop, alvo, tipo) com os valores salvos daquele trade específico
+// (Principal ou Simulação), e fecha o Order Desk pra revelar o gráfico atualizado.
+function odClicarTradeRow(id) {
+    const t = _odTradesCache.find(x => String(x.id) === String(id));
+    if (!t) return;
+    _cvTradeId          = t.id;
+    _cvTradeTipo         = t.tipo || 'long';
+    _cvTradeOperacional  = !!t.operacional;
+    _grPm   = parseFloat(t.pm) || 0;
+    _grStop = parseFloat(t.stop) || 0;
+    _grDir  = _cvTradeTipo.toUpperCase();
+    _regAtual = { p1: _grPm, p2: parseFloat(t.alvo) || 0 };
+    window._cvTradeCache = t;
+    fecharModal('modal-nova');
+    grDrawChart();
 }
 
 function odSetTab(idx) {
