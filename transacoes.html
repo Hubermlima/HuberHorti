@@ -1087,7 +1087,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <button class="cv-ind-btn" id="cv-ind-alerta" onclick="cvToggleAlerta()"><span class="btn-sigla"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0"/></svg></span><span class="btn-nome">Alerta</span></button>
 
       <button class="cv-ind-btn reg" id="cv-ind-reg"><span class="btn-sigla">Reg</span><span class="btn-nome">Régua %</span></button>
-      <button class="cv-ind-btn tl" id="cv-ind-tl" onclick="cvToggleTrend()"><span class="btn-sigla">TL</span><span class="btn-nome">Tendência</span></button>
+      <button class="cv-ind-btn tl" id="cv-ind-tl" onclick="cvToggleTrend()" ontouchstart="cvTrendColorPressStart()" ontouchend="cvTrendColorPressEnd()"><span class="btn-sigla"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="20" x2="20" y2="4"/><circle cx="4" cy="20" r="2" fill="currentColor" stroke="none"/><circle cx="20" cy="4" r="2" fill="currentColor" stroke="none"/></svg></span><span class="btn-nome">Tendência</span></button>
       <button class="cv-ind-btn pat" id="cv-ind-pat" onclick="cvTogglePat()"><span class="btn-sigla">Pat</span><span class="btn-nome">Padrões</span></button>
       <button class="cv-ind-btn atr" id="cv-ind-atr" onclick="cvToggleSubInd('atr')">
 <span class="btn-sigla">ATR</span><span class="btn-nome">Volatilidade</span></button>
@@ -1594,6 +1594,7 @@ async function carregarTransacoes() {
     renderizar();
     await cvCarregarTradeOperacional();
     await cvCarregarAlertasGrafico();
+    await cvCarregarTrendlines();
     grDrawChart();
 }
 
@@ -2937,9 +2938,14 @@ let _grDroneRange = null;
 
 let _fibs = [];          // array de fibs salvos: [{p1, p2}]
 let _fibAtual = null;    // fib sendo desenhado agora: {p1, p2}
-let _trendlines = [];    // linhas de tendência salvas: [{i1,p1,i2,p2}]
-let _trendAtual = null;  // linha sendo desenhada agora: {i1,p1,i2,p2}
+let _trendlines = [];    // linhas de tendência salvas: [{id,t1,p1,t2,p2,cor}]
+let _trendAtual = null;  // linha sendo desenhada agora: {i1,p1,i2,p2,cor}
 let _trendDrawing = false;
+let _trendDragging = null; // {li, end:'1'|'2'} — arrastando ponta de linha existente
+let _trendColor = '#FFD700';
+const _trendPaletteColors = ['#FFD700','#42A5F5','#EF5350','#66BB6A','#AB47BC','#FFFFFF'];
+let _trendColorPressTimer = null;
+let _trendLongPressFired = false;
 let _grNiveis = [];      // array de níveis: [{preco, tipo}] tipo: 'sup'|'res'
 let _grAlertas = [];     // array de alertas: [{preco, id, habilitado}]
 
@@ -4356,14 +4362,18 @@ ctx.globalAlpha = 1;
 }
 
         // ── Linhas de Tendência ────────────────────────────────────
-        const trendsParaDesenhar = [..._trendlines, ...(_trendAtual ? [_trendAtual] : [])];
+        const trendsSalvasComoIdx = _trendlines.map(tl => ({
+            i1: grTimeToIndex(tl.t1), p1: tl.p1, i2: grTimeToIndex(tl.t2), p2: tl.p2, cor: tl.cor || '#FFD700'
+        }));
+        const trendsParaDesenhar = [...trendsSalvasComoIdx, ...(_trendAtual ? [_trendAtual] : [])];
         if (trendsParaDesenhar.length > 0) {
             const toXIdx = absIdx => PAD.left + ((absIdx - startIdx) / totalSlots) * chartW + cW / 2;
             trendsParaDesenhar.forEach(tl => {
                 const x1 = toXIdx(tl.i1), y1 = toY(tl.p1);
                 const x2 = toXIdx(tl.i2), y2 = toY(tl.p2);
+                const cor = tl.cor || _trendColor;
                 ctx.save();
-                ctx.strokeStyle = '#FFD700';
+                ctx.strokeStyle = cor;
                 ctx.lineWidth = 2;
                 ctx.setLineDash([]);
                 ctx.beginPath();
@@ -4371,7 +4381,7 @@ ctx.globalAlpha = 1;
                 ctx.lineTo(x2, y2);
                 ctx.stroke();
                 // Pontas
-                ctx.fillStyle = '#FFD700';
+                ctx.fillStyle = cor;
                 ctx.beginPath(); ctx.arc(x1, y1, 3.5, 0, Math.PI * 2); ctx.fill();
                 ctx.beginPath(); ctx.arc(x2, y2, 3.5, 0, Math.PI * 2); ctx.fill();
                 ctx.restore();
@@ -4986,12 +4996,27 @@ function grInitTouch() {
                 e.preventDefault();
                 return;
             }
-            // Modo Trendline ativo — suspende outros gestos, toque inicia a linha
+            // Modo Trendline ativo — suspende outros gestos
             if (_indState.trend) {
+                const HITT = 40;
+                let foundDrag = null;
+                for (let li = 0; li < _trendlines.length; li++) {
+                    const tl = _trendlines[li];
+                    const x1 = grIndexToX(grTimeToIndex(tl.t1)), y1 = grLineY(tl.p1);
+                    const x2 = grIndexToX(grTimeToIndex(tl.t2)), y2 = grLineY(tl.p2);
+                    if (Math.hypot(ex2 - x1, ey2 - y1) <= HITT) { foundDrag = { li, end: '1' }; break; }
+                    if (Math.hypot(ex2 - x2, ey2 - y2) <= HITT) { foundDrag = { li, end: '2' }; break; }
+                }
+                if (foundDrag) {
+                    _trendDragging = foundDrag;
+                    e.preventDefault();
+                    return;
+                }
+                // Toque fora de pontas existentes — inicia linha nova
                 const idx0 = grXToIndex(ex2);
                 const price0 = grToPrice(ey2);
                 _trendDrawing = true;
-                _trendAtual = { i1: idx0, p1: price0, i2: idx0, p2: price0 };
+                _trendAtual = { i1: idx0, p1: price0, i2: idx0, p2: price0, cor: _trendColor };
                 e.preventDefault();
                 return;
             }
@@ -5088,6 +5113,19 @@ function grInitTouch() {
 
     canvas.addEventListener('touchmove', e => {
         if (e.touches.length === 1) {
+            if (_trendDragging) {
+                const xc = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (canvas.width / canvas.getBoundingClientRect().width);
+                const yc = toCanvasY(e.touches[0].clientY);
+                const idx = grXToIndex(xc), price = grToPrice(yc);
+                const tl = _trendlines[_trendDragging.li];
+                if (tl) {
+                    if (_trendDragging.end === '1') { tl.t1 = grIndexToTime(idx); tl.p1 = price; }
+                    else { tl.t2 = grIndexToTime(idx); tl.p2 = price; }
+                }
+                grDrawChart();
+                e.preventDefault();
+                return;
+            }
             if (_trendDrawing && _trendAtual) {
                 const xc = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (canvas.width / canvas.getBoundingClientRect().width);
                 const yc = toCanvasY(e.touches[0].clientY);
@@ -5170,10 +5208,24 @@ function grInitTouch() {
 
     canvas.addEventListener('touchend', e => {
     isDragging = false;
+    if (_trendDragging) {
+        const tl = _trendlines[_trendDragging.li];
+        _trendDragging = null;
+        if (tl) cvSalvarTrendline(tl);
+        grDrawChart();
+        return;
+    }
     if (_trendDrawing) {
         _trendDrawing = false;
         if (_trendAtual && (Math.abs(_trendAtual.i2 - _trendAtual.i1) > 0.3 || Math.abs(_trendAtual.p2 - _trendAtual.p1) > 0)) {
-            _trendlines.push({ ..._trendAtual });
+            const novo = {
+                id: null,
+                t1: grIndexToTime(_trendAtual.i1), p1: _trendAtual.p1,
+                t2: grIndexToTime(_trendAtual.i2), p2: _trendAtual.p2,
+                cor: _trendAtual.cor || _trendColor
+            };
+            _trendlines.push(novo);
+            cvSalvarTrendline(novo);
         }
         _trendAtual = null;
         grDrawChart();
@@ -6560,6 +6612,61 @@ function cvToggleNivel(tipo) {
     grDrawChart();
 }
 
+function grTimeToIndex(t) {
+    const arr = _grAllCandles;
+    if (!arr || arr.length === 0) return 0;
+    let lo = 0, hi = arr.length - 1;
+    if (t <= arr[0].t) return 0;
+    if (t >= arr[hi].t) return hi;
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (arr[mid].t < t) lo = mid + 1; else hi = mid;
+    }
+    if (lo > 0) {
+        const t0 = arr[lo - 1].t, t1 = arr[lo].t;
+        if (t1 > t0) return (lo - 1) + (t - t0) / (t1 - t0);
+    }
+    return lo;
+}
+
+function grIndexToTime(idx) {
+    const arr = _grAllCandles;
+    if (!arr || arr.length === 0) return Date.now();
+    const i0 = Math.floor(idx), frac = idx - i0;
+    if (i0 < 0) {
+        const interval = arr.length > 1 ? (arr[1].t - arr[0].t) : 60000;
+        return Math.round(arr[0].t + idx * interval);
+    }
+    if (i0 >= arr.length - 1) {
+        const interval = arr.length > 1 ? (arr[arr.length - 1].t - arr[arr.length - 2].t) : 60000;
+        return Math.round(arr[arr.length - 1].t + (idx - (arr.length - 1)) * interval);
+    }
+    return Math.round(arr[i0].t + frac * (arr[i0 + 1].t - arr[i0].t));
+}
+
+async function cvCarregarTrendlines() {
+    if (!_ativoId) return;
+    const { data } = await db.from('trendlines').select('*').eq('ativo_id', _ativoId);
+    _trendlines = (data || []).map(r => ({ id: r.id, t1: r.t1, p1: parseFloat(r.p1), t2: r.t2, p2: parseFloat(r.p2), cor: r.cor || '#FFD700' }));
+}
+
+async function cvSalvarTrendline(tl) {
+    if (!_ativoId) return;
+    if (tl.id) {
+        await db.from('trendlines').update({ t1: tl.t1, p1: tl.p1, t2: tl.t2, p2: tl.p2, cor: tl.cor }).eq('id', tl.id);
+    } else {
+        const { data } = await db.from('trendlines').insert({ ativo_id: _ativoId, t1: tl.t1, p1: tl.p1, t2: tl.t2, p2: tl.p2, cor: tl.cor }).select().single();
+        if (data) tl.id = data.id;
+    }
+}
+
+async function cvApagarTrendline(idx) {
+    const tl = _trendlines[idx];
+    if (tl && tl.id) await db.from('trendlines').delete().eq('id', tl.id);
+    _trendlines.splice(idx, 1);
+    grDrawChart();
+}
+
 async function cvCarregarAlertasGrafico() {
     if (!_ativoId) return;
     const { data } = await db.from('alertas').select('*').eq('ativo_id', _ativoId);
@@ -6809,10 +6916,28 @@ function cvToggleReg() {
 }
 
 function cvToggleTrend() {
+    if (_trendLongPressFired) { _trendLongPressFired = false; return; }
     _indState.trend = !_indState.trend;
-    if (!_indState.trend) { _trendAtual = null; _trendDrawing = false; }
+    if (!_indState.trend) { _trendAtual = null; _trendDrawing = false; _trendDragging = null; }
     document.getElementById('cv-ind-tl').classList.toggle('active', _indState.trend);
     grDrawChart();
+}
+
+function cvTrendColorPressStart() {
+    _trendLongPressFired = false;
+    _trendColorPressTimer = setTimeout(() => {
+        _trendLongPressFired = true;
+        const i = _trendPaletteColors.indexOf(_trendColor);
+        _trendColor = _trendPaletteColors[(i + 1) % _trendPaletteColors.length];
+        const btn = document.getElementById('cv-ind-tl');
+        if (btn) btn.style.color = _trendColor;
+        _trendColorPressTimer = null;
+        grDrawChart();
+    }, 500);
+}
+
+function cvTrendColorPressEnd() {
+    if (_trendColorPressTimer) { clearTimeout(_trendColorPressTimer); _trendColorPressTimer = null; }
 }
 
 
