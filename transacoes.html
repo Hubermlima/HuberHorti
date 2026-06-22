@@ -2942,6 +2942,9 @@ let _trendlines = [];    // linhas de tendência salvas: [{id,t1,p1,t2,p2,cor}]
 let _trendAtual = null;  // linha sendo desenhada agora: {i1,p1,i2,p2,cor}
 let _trendDrawing = false;
 let _trendDragging = null; // {li, end:'1'|'2'} — arrastando ponta de linha existente
+let _trendDeleteTimer = null;
+let _trendDeletePending = null; // {li}
+let _trendDeleteStartX = 0, _trendDeleteStartY = 0;
 let _trendColor = '#FFD700';
 const _trendPaletteColors = ['#FFD700','#42A5F5','#EF5350','#66BB6A','#AB47BC','#FFFFFF'];
 let _trendColorPressTimer = null;
@@ -5012,6 +5015,31 @@ function grInitTouch() {
                     e.preventDefault();
                     return;
                 }
+                // Toque no corpo de uma linha existente — toque longo apaga
+                let foundBody = null;
+                for (let li = 0; li < _trendlines.length; li++) {
+                    const tl = _trendlines[li];
+                    const x1 = grIndexToX(grTimeToIndex(tl.t1)), y1 = grLineY(tl.p1);
+                    const x2 = grIndexToX(grTimeToIndex(tl.t2)), y2 = grLineY(tl.p2);
+                    const dx = x2 - x1, dy = y2 - y1;
+                    const lenSq = dx * dx + dy * dy;
+                    let t = lenSq > 0 ? ((ex2 - x1) * dx + (ey2 - y1) * dy) / lenSq : 0;
+                    t = Math.max(0, Math.min(1, t));
+                    const px = x1 + t * dx, py = y1 + t * dy;
+                    if (Math.hypot(ex2 - px, ey2 - py) <= 18) { foundBody = li; break; }
+                }
+                if (foundBody !== null) {
+                    _trendDeletePending = { li: foundBody };
+                    _trendDeleteStartX = ex2; _trendDeleteStartY = ey2;
+                    _trendDeleteTimer = setTimeout(() => {
+                        if (_trendDeletePending) {
+                            cvApagarTrendline(_trendDeletePending.li);
+                            _trendDeletePending = null;
+                        }
+                    }, 500);
+                    e.preventDefault();
+                    return;
+                }
                 // Toque fora de pontas existentes — inicia linha nova
                 const idx0 = grXToIndex(ex2);
                 const price0 = grToPrice(ey2);
@@ -5113,6 +5141,16 @@ function grInitTouch() {
 
     canvas.addEventListener('touchmove', e => {
         if (e.touches.length === 1) {
+            if (_trendDeletePending) {
+                const xc = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (canvas.width / canvas.getBoundingClientRect().width);
+                const yc = toCanvasY(e.touches[0].clientY);
+                if (Math.hypot(xc - _trendDeleteStartX, yc - _trendDeleteStartY) > 12) {
+                    clearTimeout(_trendDeleteTimer);
+                    _trendDeletePending = null;
+                }
+                e.preventDefault();
+                return;
+            }
             if (_trendDragging) {
                 const xc = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (canvas.width / canvas.getBoundingClientRect().width);
                 const yc = toCanvasY(e.touches[0].clientY);
@@ -5208,6 +5246,11 @@ function grInitTouch() {
 
     canvas.addEventListener('touchend', e => {
     isDragging = false;
+    if (_trendDeletePending) {
+        clearTimeout(_trendDeleteTimer);
+        _trendDeletePending = null;
+        return;
+    }
     if (_trendDragging) {
         const tl = _trendlines[_trendDragging.li];
         _trendDragging = null;
