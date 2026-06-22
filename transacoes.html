@@ -98,10 +98,12 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:#F2F4F8;color:#1C1C1E
 .od-tabs::-webkit-scrollbar{display:none;}
 .od-tab{flex-shrink:0;padding:7px 14px 9px;border:1px solid transparent;border-bottom:none;background:transparent;border-radius:8px 8px 0 0;font-size:13px;font-weight:600;color:#1C1C1E;font-family:'Plus Jakarta Sans',sans-serif;cursor:pointer;white-space:nowrap;transition:all 0.15s;position:relative;bottom:-1px;}
 .od-tab.active{background:#FFFFFF;color:#1C1C1E;font-weight:700;border-color:#E5E5EA;border-bottom-color:#FFFFFF;}
-.od-trade-row{display:flex;align-items:center;justify-content:space-between;padding:14px 4px;border-bottom:0.5px solid #E5E5EA;}
+.od-trade-row{display:flex;flex-direction:column;gap:4px;padding:12px 4px;border-bottom:0.5px solid #E5E5EA;}
 .od-trade-row:last-child{border-bottom:none;}
+.od-trade-row-top{display:flex;align-items:center;justify-content:space-between;}
 .od-trade-row-label{font-size:14px;font-weight:600;color:#1C1C1E;font-family:'Plus Jakarta Sans',sans-serif;}
 .od-trade-row-rr{font-size:14px;font-weight:700;font-family:'Plus Jakarta Sans',sans-serif;}
+.od-trade-row-sub{display:flex;align-items:center;justify-content:space-between;font-size:12px;font-weight:600;font-family:'Plus Jakarta Sans',sans-serif;}
 /* Conteudo */
 .od-content{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;background:#FFFFFF;}
 .od-pane{display:none;padding:4px 16px 24px;}
@@ -7925,6 +7927,7 @@ function abrirOrderDesk() {
     document.getElementById('modal-nova').classList.add('active');
     odCarregarSentimento();
     odCarregarTrades();
+    odIniciarRefreshTrades();
     const paneMercado = document.getElementById('od-pane-1');
     if (paneMercado && paneMercado.classList.contains('active')) odIniciarRefreshMercado();
     // Preenche campos estáticos
@@ -7967,7 +7970,7 @@ function abrirOrderDesk() {
     }
 }
 function fecharModal(id) {
-    if (id === 'modal-nova') odPararRefreshMercado();
+    if (id === 'modal-nova') { odPararRefreshMercado(); odPararRefreshTrades(); }
     document.getElementById(id).classList.remove('active');
 }
 function fecharModalFora(e, id) { if (e.target === document.getElementById(id)) fecharModal(id); }
@@ -8727,7 +8730,13 @@ function odCalcularRR(t) {
     if (dir === 'short') { risco = stop - pm; retorno = pm - alvo; }
     else { risco = pm - stop; retorno = alvo - pm; }
     if (risco <= 0) return null;
-    return retorno / risco;
+    return { rr: retorno / risco, risco, retorno, pm, dir };
+}
+
+// Quantidade real aberta do Principal (Long ou Short), pra converter risco/retorno em USD
+function odQtdPrincipal(tipo) {
+    const _c = calcularConsolidado();
+    return (tipo || '').toLowerCase() === 'short' ? _c.qtdShort : _c.qtdAberta;
 }
 
 function odFormatarDataAbertura(d) {
@@ -8739,13 +8748,61 @@ function odFormatarDataAbertura(d) {
 
 function odRenderTradeRow(t) {
     const label = t.operacional ? 'Operacional' : odFormatarDataAbertura(t.data_abertura);
-    const rr = odCalcularRR(t);
-    const rrStr = rr === null ? '—' : rr.toFixed(2) + 'R';
-    const rrColor = rr === null ? '#8E8E93' : (rr >= 1 ? '#16A34A' : '#DC2626');
+    const dirLabel = (t.tipo || 'long').toLowerCase() === 'short' ? 'Short' : 'Long';
+    const dirColor = (t.tipo || 'long').toLowerCase() === 'short' ? '#DC2626' : '#16A34A';
+    const calc = odCalcularRR(t);
+    const rrStr = calc === null ? '—' : calc.rr.toFixed(2) + 'R';
+    const rrColor = calc === null ? '#8E8E93' : (calc.rr >= 1 ? '#16A34A' : '#DC2626');
+
+    let linha2 = '';
+    if (calc !== null) {
+        if (t.operacional) {
+            const qtd = odQtdPrincipal(t.tipo);
+            if (qtd > 0) {
+                const riscoUSD = calc.risco * qtd;
+                const retornoUSD = calc.retorno * qtd;
+                linha2 = `<div class="od-trade-row-sub">
+                    <span style="color:#DC2626;">Risco: -${riscoUSD.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})} USD</span>
+                    <span style="color:#16A34A;">Retorno: +${retornoUSD.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})} USD</span>
+                </div>`;
+            }
+        } else {
+            const riscoPct = (calc.risco / calc.pm) * 100;
+            const retornoPct = (calc.retorno / calc.pm) * 100;
+            linha2 = `<div class="od-trade-row-sub">
+                <span style="color:#DC2626;">Risco: -${riscoPct.toFixed(1)}%</span>
+                <span style="color:#16A34A;">Retorno: +${retornoPct.toFixed(1)}%</span>
+            </div>`;
+        }
+    }
+
     return `<div class="od-trade-row" data-trade-id="${t.id}" onclick="odClicarTradeRow('${t.id}')" style="cursor:pointer;">
-        <span class="od-trade-row-label">${label}</span>
-        <span class="od-trade-row-rr" style="color:${rrColor}">${rrStr}</span>
+        <div class="od-trade-row-top">
+            <span class="od-trade-row-label">${label} <span style="color:${dirColor};font-weight:700;">· ${dirLabel}</span></span>
+            <span class="od-trade-row-rr" style="color:${rrColor}">${rrStr}</span>
+        </div>
+        ${linha2}
     </div>`;
+}
+
+// ── Atualização ao vivo da aba Trades — só redesenha (sem chamada de rede),
+// usando _precoAtual que já é mantido fresco em background por outro processo.
+let _odTradesRefreshInterval = null;
+const OD_TRADES_REFRESH_MS = 2000;
+function odIniciarRefreshTrades() {
+    if (_odTradesRefreshInterval) return;
+    _odTradesRefreshInterval = setInterval(() => {
+        const container = document.getElementById('od-trades-list');
+        if (container && _odTradesCache.length > 0) {
+            container.innerHTML = _odTradesCache.map(odRenderTradeRow).join('');
+        }
+    }, OD_TRADES_REFRESH_MS);
+}
+function odPararRefreshTrades() {
+    if (_odTradesRefreshInterval) {
+        clearInterval(_odTradesRefreshInterval);
+        _odTradesRefreshInterval = null;
+    }
 }
 
 // Clique numa linha da lista — só carrega o ambiente do gráfico (régua, PM,
@@ -8769,7 +8826,8 @@ function odClicarTradeRow(id) {
 }
 
 function odSetTab(idx) {
-    if (idx === 0) { odCarregarTrades(); }
+    if (idx === 0) { odCarregarTrades(); odIniciarRefreshTrades(); }
+    else { odPararRefreshTrades(); }
     if (idx === 1) { odCarregarSentimento(); odIniciarRefreshMercado(); }
     else { odPararRefreshMercado(); }
     if (idx === 6) { var bt = document.getElementById('boleta-ticker'); if (bt) bt.textContent = _ticker || '—'; }
