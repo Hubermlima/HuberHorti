@@ -9339,7 +9339,11 @@ async function odCalcularScoreConfluencia() {
         const binInterval = intervalMap[tf] || '4h';
         const binSymbol = ((_ticker || 'BTC/USD').replace('/', '').replace('-', '').toUpperCase()
             .replace('USD', 'USDT').replace('USDTT', 'USDT'));
-        const data = await fetch(`https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=${binInterval}&limit=250`).then(r => r.json());
+        const [data, dataD, dataW] = await Promise.all([
+            fetch(`https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=${binInterval}&limit=250`).then(r => r.json()),
+            fetch(`https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=1d&limit=100`).then(r => r.json()),
+            fetch(`https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=1w&limit=50`).then(r => r.json())
+        ]);
         if (!Array.isArray(data) || data.length < 30) {
             status.textContent = 'Histórico insuficiente pra esse timeframe.';
             btn.disabled = false;
@@ -9384,6 +9388,7 @@ async function odCalcularScoreConfluencia() {
             const m = slice.reduce((a, b) => a + b, 0) / slice.length;
             return Math.sqrt(slice.reduce((a, b) => a + (b - m) * (b - m), 0) / slice.length);
         };
+        const pctVsPreco = (valor) => ((precoAtual - valor) / valor) * 100;
 
         const ema9 = ema(closes, 9), ema21 = ema(closes, 21), ema50 = ema(closes, 50), ema200 = ema(closes, 200);
         const rsiV = rsiUltimo(closes, 14);
@@ -9399,30 +9404,46 @@ async function odCalcularScoreConfluencia() {
         const hh14 = Math.max(...highs.slice(-14)), ll14 = Math.min(...lows.slice(-14));
         const stochK = hh14 > ll14 ? ((precoAtual - ll14) / (hh14 - ll14)) * 100 : 50;
 
+        // EMA21 Diária e Semanal — não dependem do timeframe selecionado, sempre 1D/1W
+        let ema21d = null, ema21w = null;
+        if (Array.isArray(dataD) && dataD.length >= 21) ema21d = ema(dataD.map(k => parseFloat(k[4])), 21);
+        if (Array.isArray(dataW) && dataW.length >= 21) ema21w = ema(dataW.map(k => parseFloat(k[4])), 21);
+
+        const fmtPreco = v => v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const fmtPct = v => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
+
         // ── Votos: cada indicador técnico vota +1 (alta) / -1 (baixa) comparando com a cotação atual ──
         const votosTecnicos = [
-            { nome: 'Preço vs EMA9',   voto: precoAtual > ema9 ? 1 : -1 },
-            { nome: 'Preço vs EMA21',  voto: precoAtual > ema21 ? 1 : -1 },
-            { nome: 'Preço vs EMA50',  voto: precoAtual > ema50 ? 1 : -1 },
-            { nome: 'Preço vs EMA200', voto: precoAtual > ema200 ? 1 : -1 },
-            { nome: 'RSI (14)',        voto: rsiV > 50 ? 1 : -1 },
-            { nome: 'MACD vs Sinal',   voto: macdLine > macdSignal ? 1 : -1 },
-            { nome: 'Bollinger %B',    voto: bbPercB > 0.5 ? 1 : -1 },
-            { nome: 'Volume Delta',    voto: vdUltimo > 0 ? 1 : -1 },
-            { nome: 'OBV (tendência)', voto: obvTendencia > 0 ? 1 : -1 },
-            { nome: 'Stochastic %K',   voto: stochK > 50 ? 1 : -1 }
+            { nome: 'Preço vs EMA9',   voto: precoAtual > ema9 ? 1 : -1,   detalhe: `${fmtPreco(ema9)} (${fmtPct(pctVsPreco(ema9))})` },
+            { nome: 'Preço vs EMA21',  voto: precoAtual > ema21 ? 1 : -1,  detalhe: `${fmtPreco(ema21)} (${fmtPct(pctVsPreco(ema21))})` },
+            { nome: 'Preço vs EMA50',  voto: precoAtual > ema50 ? 1 : -1,  detalhe: `${fmtPreco(ema50)} (${fmtPct(pctVsPreco(ema50))})` },
+            { nome: 'Preço vs EMA200', voto: precoAtual > ema200 ? 1 : -1, detalhe: `${fmtPreco(ema200)} (${fmtPct(pctVsPreco(ema200))})` },
+            { nome: 'RSI (14)',        voto: rsiV > 50 ? 1 : -1,          detalhe: rsiV.toFixed(1) },
+            { nome: 'MACD vs Sinal',   voto: macdLine > macdSignal ? 1 : -1, detalhe: `${macdLine.toFixed(1)} vs ${macdSignal.toFixed(1)}` },
+            { nome: 'Bollinger %B',    voto: bbPercB > 0.5 ? 1 : -1,       detalhe: `${(bbPercB * 100).toFixed(1)}%` },
+            { nome: 'Volume Delta',    voto: vdUltimo > 0 ? 1 : -1,        detalhe: vdUltimo.toFixed(2) },
+            { nome: 'OBV (tendência)', voto: obvTendencia > 0 ? 1 : -1,    detalhe: obvTendencia.toFixed(0) },
+            { nome: 'Stochastic %K',   voto: stochK > 50 ? 1 : -1,         detalhe: `${stochK.toFixed(1)}%` }
         ];
+        if (ema21d !== null) votosTecnicos.push({ nome: 'Preço vs EMA21 Diário',  voto: precoAtual > ema21d ? 1 : -1, detalhe: `${fmtPreco(ema21d)} (${fmtPct(pctVsPreco(ema21d))})` });
+        if (ema21w !== null) votosTecnicos.push({ nome: 'Preço vs EMA21 Semanal', voto: precoAtual > ema21w ? 1 : -1, detalhe: `${fmtPreco(ema21w)} (${fmtPct(pctVsPreco(ema21w))})` });
 
         // ── Votos dos indicadores da aba Mercado, se já carregados (mesma leitura Bullish/Bearish de lá) ──
         const votosMercado = [];
-        if (window._odComboValores && window._odCorrelacoes !== undefined) {
-            const mapaNomes = { oi: 'Open Interest', ttrpos: 'Top Trader ($)', ttr: 'Top Trader (contas)', lsr: 'L/S Ratio', funding: 'Funding Rate', vd: 'Volume Delta (Spot)' };
-            // Reaproveita o sinal Bullish/Bearish calculado na aba Mercado, armazenado em window._odComboDiag se existir
-        }
         if (window._odComboDiag) {
+            const fmtsMercado = {
+                oi: v => '$' + v.toFixed(2) + 'B',
+                ttrpos: v => v.toFixed(2),
+                ttr: v => v.toFixed(2),
+                lsr: v => v.toFixed(2),
+                funding: v => v.toFixed(4) + '%',
+                vd: v => (v >= 0 ? '+' : '') + v.toFixed(2)
+            };
             Object.keys(window._odComboDiag).forEach(k => {
                 const d = window._odComboDiag[k];
-                if (d) votosMercado.push({ nome: d.nome, voto: d.bullish ? 1 : -1 });
+                const val = window._odComboValores && window._odComboValores[k] ? window._odComboValores[k].v : null;
+                const detalhe = (val !== null && fmtsMercado[k]) ? fmtsMercado[k](val) : '';
+                if (d) votosMercado.push({ nome: d.nome, voto: d.bullish ? 1 : -1, detalhe });
             });
         }
 
@@ -9434,6 +9455,14 @@ async function odCalcularScoreConfluencia() {
         else if (score <= -maxScore * 0.3) { label = 'Viés de Baixa'; cor = '#DC2626'; }
         else { label = 'Neutro / Sem confluência clara'; cor = '#8E8E93'; }
 
+        const linhaVoto = v => `<div style="display:flex;justify-content:space-between;align-items:baseline;padding:6px 0;border-bottom:1px solid #F2F4F8;font-size:13px;gap:8px;">
+                <span style="color:#1C1C1E;">${v.nome}</span>
+                <span style="text-align:right;">
+                    <span style="color:#8E8E93;font-size:12px;margin-right:6px;">${v.detalhe || ''}</span>
+                    <span style="font-weight:700;color:${v.voto > 0 ? '#16A34A' : '#DC2626'};">${v.voto > 0 ? 'Alta' : 'Baixa'}</span>
+                </span>
+            </div>`;
+
         status.textContent = '';
         out.innerHTML = `
             <div style="text-align:center;padding:16px 0;border-bottom:1px solid #E5E5EA;margin-bottom:12px;">
@@ -9441,17 +9470,11 @@ async function odCalcularScoreConfluencia() {
                 <div style="font-size:15px;font-weight:700;color:${cor};margin-top:4px;">${label}</div>
                 <div style="font-size:12px;color:#8E8E93;margin-top:2px;">${todosVotos.filter(v => v.voto > 0).length} de alta · ${todosVotos.filter(v => v.voto < 0).length} de baixa (de ${maxScore})</div>
             </div>
-            <div style="font-size:11px;font-weight:600;color:#1C1C1E;letter-spacing:0.4px;text-transform:uppercase;margin-bottom:8px;">INDICADORES TÉCNICOS (${tf})</div>
-            ` + votosTecnicos.map(v => `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #F2F4F8;font-size:13px;">
-                <span style="color:#1C1C1E;">${v.nome}</span>
-                <span style="font-weight:700;color:${v.voto > 0 ? '#16A34A' : '#DC2626'};">${v.voto > 0 ? 'Alta' : 'Baixa'}</span>
-            </div>`).join('') +
+            <div style="font-size:11px;font-weight:600;color:#1C1C1E;letter-spacing:0.4px;text-transform:uppercase;margin-bottom:8px;">INDICADORES TÉCNICOS (${tf} · D · W)</div>
+            ` + votosTecnicos.map(linhaVoto).join('') +
             (votosMercado.length > 0 ? `
             <div style="font-size:11px;font-weight:600;color:#1C1C1E;letter-spacing:0.4px;text-transform:uppercase;margin:14px 0 8px;">INDICADORES DE MERCADO</div>
-            ` + votosMercado.map(v => `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #F2F4F8;font-size:13px;">
-                <span style="color:#1C1C1E;">${v.nome}</span>
-                <span style="font-weight:700;color:${v.voto > 0 ? '#16A34A' : '#DC2626'};">${v.voto > 0 ? 'Alta' : 'Baixa'}</span>
-            </div>`).join('') : `
+            ` + votosMercado.map(linhaVoto).join('') : `
             <div style="font-size:12px;color:#8E8E93;margin-top:12px;">Abra a aba Mercado uma vez nessa sessão pra incluir OI, TTR, TTR$, L/S Ratio, Funding e Volume Delta (Spot) no score também.</div>`);
     } catch (e) {
         status.textContent = 'Erro ao calcular: ' + e.message;
