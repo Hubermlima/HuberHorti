@@ -1069,6 +1069,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
 
       <button class="cv-ind-btn reg" id="cv-ind-reg"><span class="btn-sigla">Reg</span><span class="btn-nome">Régua %</span></button>
       <button class="cv-ind-btn tl" id="cv-ind-tl" onclick="cvToggleTrend()" ontouchstart="cvTrendColorPressStart()" ontouchend="cvTrendColorPressEnd()"><span class="btn-sigla"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="20" x2="20" y2="4"/><circle cx="4" cy="20" r="2" fill="currentColor" stroke="none"/><circle cx="20" cy="4" r="2" fill="currentColor" stroke="none"/></svg></span><span class="btn-nome">Tendência</span></button>
+      <button class="cv-ind-btn bandeira" id="cv-ind-bandeira" onclick="cvToggleBandeira()"><span class="btn-sigla"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="19" x2="15" y2="7"/><line x1="9" y1="21" x2="21" y2="9"/></svg></span><span class="btn-nome">Bandeira</span></button>
       <button class="cv-ind-btn pat" id="cv-ind-pat" onclick="cvTogglePat()"><span class="btn-sigla">Pat</span><span class="btn-nome">Padrões</span></button>
       <button class="cv-ind-btn atr" id="cv-ind-atr" onclick="cvToggleSubInd('atr')">
 <span class="btn-sigla">ATR</span><span class="btn-nome">Volatilidade</span></button>
@@ -2922,6 +2923,14 @@ let _fibAtual = null;    // fib sendo desenhado agora: {p1, p2}
 let _trendlines = [];    // linhas de tendência salvas: [{id,t1,p1,t2,p2,cor}]
 let _trendAtual = null;  // linha sendo desenhada agora: {i1,p1,i2,p2,cor}
 let _trendDrawing = false;
+
+// ── Bandeira: desenho em 2 etapas — mastro (linha) depois canal (paralela) ──
+let _bandeiraStep = null;          // null | 'mastro' | 'canal'
+let _bandeiraMastroAtual = null;   // {i1,p1,i2,p2} — durante o arrasto da etapa 1
+let _bandeiraMastroFinal = null;   // {t1,p1,t2,p2} — mastro já fixado, aguardando o canal
+let _bandeiraOffsetAtual = 0;      // distância (preço) da paralela durante o arrasto da etapa 2
+let _bandeiraDesenhandoCanal = false;
+let _bandeiras = [];                // bandeiras finalizadas: [{mastro:{t1,p1,t2,p2}, offset, cor}]
 let _trendDragging = null; // {li, end:'1'|'2'} — arrastando ponta de linha existente
 let _trendDeleteTimer = null;
 let _trendDeletePending = null; // {li}
@@ -4372,6 +4381,50 @@ ctx.globalAlpha = 1;
             });
         }
 
+        // ── Bandeiras (Alta/Baixa): mastro + canal paralelo ──────────
+        const toXIdx2 = absIdx => PAD.left + ((absIdx - startIdx) / totalSlots) * chartW + cW / 2;
+        const desenharBandeira = (m, offset, cor) => {
+            const i1 = grTimeToIndex(m.t1), i2 = grTimeToIndex(m.t2);
+            const x1 = toXIdx2(i1), y1 = toY(m.p1);
+            const x2 = toXIdx2(i2), y2 = toY(m.p2);
+            const y1b = toY(m.p1 + offset), y2b = toY(m.p2 + offset);
+            // Preenchimento do canal (retângulo inclinado)
+            ctx.save();
+            ctx.beginPath();
+            ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.lineTo(x2, y2b); ctx.lineTo(x1, y1b);
+            ctx.closePath();
+            ctx.globalAlpha = 0.18;
+            ctx.fillStyle = cor;
+            ctx.fill();
+            ctx.globalAlpha = 1;
+            // Mastro
+            ctx.strokeStyle = cor;
+            ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+            // Paralela (canal)
+            ctx.beginPath(); ctx.moveTo(x1, y1b); ctx.lineTo(x2, y2b); ctx.stroke();
+            ctx.fillStyle = cor;
+            ctx.beginPath(); ctx.arc(x1, y1, 3.5, 0, Math.PI * 2); ctx.fill();
+            ctx.beginPath(); ctx.arc(x2, y2, 3.5, 0, Math.PI * 2); ctx.fill();
+            ctx.restore();
+        };
+        _bandeiras.forEach(b => desenharBandeira(b.mastro, b.offset, b.cor));
+        // Mastro em progresso (etapa 1, ainda sendo arrastado)
+        if (_bandeiraStep === 'mastro' && _bandeiraMastroAtual) {
+            const x1 = toXIdx2(_bandeiraMastroAtual.i1), y1 = toY(_bandeiraMastroAtual.p1);
+            const x2 = toXIdx2(_bandeiraMastroAtual.i2), y2 = toY(_bandeiraMastroAtual.p2);
+            ctx.save();
+            ctx.strokeStyle = _bandeiraMastroAtual.p2 >= _bandeiraMastroAtual.p1 ? '#26A69A' : '#EF5350';
+            ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+            ctx.restore();
+        }
+        // Canal em progresso (etapa 2, mastro já fixo, arrastando a paralela)
+        if (_bandeiraStep === 'canal' && _bandeiraMastroFinal) {
+            const corPreview = _bandeiraMastroFinal.p2 >= _bandeiraMastroFinal.p1 ? '#26A69A' : '#EF5350';
+            desenharBandeira(_bandeiraMastroFinal, _bandeiraOffsetAtual, corPreview);
+        }
+
         // ── Mapa de Liquidez ─────────────────────────────────────
 
         if (_indState.liq) {
@@ -4980,6 +5033,29 @@ function grInitTouch() {
                 e.preventDefault();
                 return;
             }
+            // Modo Bandeira ativo — suspende outros gestos. 2 etapas: mastro, depois canal.
+            if (_indState.bandeira) {
+                if (_bandeiraStep === 'canal') {
+                    // Etapa 2: início do arrasto que define a distância da paralela (canal)
+                    const idxToque = grXToIndex(ex2);
+                    const priceToque = grToPrice(ey2);
+                    const m = _bandeiraMastroFinal;
+                    const i1m = grTimeToIndex(m.t1), i2m = grTimeToIndex(m.t2);
+                    const slope = (m.p2 - m.p1) / (i2m - i1m || 1);
+                    const precoMastroNoToque = m.p1 + slope * (idxToque - i1m);
+                    _bandeiraOffsetAtual = priceToque - precoMastroNoToque;
+                    _bandeiraDesenhandoCanal = true;
+                    e.preventDefault();
+                    return;
+                }
+                // Etapa 1: início do arrasto que define o mastro (a linha)
+                const idx0 = grXToIndex(ex2);
+                const price0 = grToPrice(ey2);
+                _bandeiraStep = 'mastro';
+                _bandeiraMastroAtual = { i1: idx0, p1: price0, i2: idx0, p2: price0 };
+                e.preventDefault();
+                return;
+            }
             // Modo Trendline ativo — suspende outros gestos
             if (_indState.trend) {
                 const HITT = 40;
@@ -5122,6 +5198,29 @@ function grInitTouch() {
 
     canvas.addEventListener('touchmove', e => {
         if (e.touches.length === 1) {
+            if (_bandeiraDesenhandoCanal) {
+                const xc = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (canvas.width / canvas.getBoundingClientRect().width);
+                const yc = toCanvasY(e.touches[0].clientY);
+                const idxToque = grXToIndex(xc);
+                const priceToque = grToPrice(yc);
+                const m = _bandeiraMastroFinal;
+                const i1m = grTimeToIndex(m.t1), i2m = grTimeToIndex(m.t2);
+                const slope = (m.p2 - m.p1) / (i2m - i1m || 1);
+                const precoMastroNoToque = m.p1 + slope * (idxToque - i1m);
+                _bandeiraOffsetAtual = priceToque - precoMastroNoToque;
+                grDrawChart();
+                e.preventDefault();
+                return;
+            }
+            if (_bandeiraStep === 'mastro' && _bandeiraMastroAtual) {
+                const xc = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (canvas.width / canvas.getBoundingClientRect().width);
+                const yc = toCanvasY(e.touches[0].clientY);
+                _bandeiraMastroAtual.i2 = grXToIndex(xc);
+                _bandeiraMastroAtual.p2 = grToPrice(yc);
+                grDrawChart();
+                e.preventDefault();
+                return;
+            }
             if (_trendDeletePending) {
                 const xc = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (canvas.width / canvas.getBoundingClientRect().width);
                 const yc = toCanvasY(e.touches[0].clientY);
@@ -5227,6 +5326,31 @@ function grInitTouch() {
 
     canvas.addEventListener('touchend', e => {
     isDragging = false;
+    if (_bandeiraDesenhandoCanal) {
+        _bandeiraDesenhandoCanal = false;
+        const m = _bandeiraMastroFinal;
+        const cor = m.p2 >= m.p1 ? '#26A69A' : '#EF5350'; // mastro subindo = bandeira de alta (verde), descendo = baixa (vermelho)
+        _bandeiras.push({ mastro: { ...m }, offset: _bandeiraOffsetAtual, cor });
+        _bandeiraStep = null;
+        _bandeiraMastroFinal = null;
+        _bandeiraOffsetAtual = 0;
+        grDrawChart();
+        return;
+    }
+    if (_bandeiraStep === 'mastro') {
+        if (_bandeiraMastroAtual && (Math.abs(_bandeiraMastroAtual.i2 - _bandeiraMastroAtual.i1) > 0.3 || Math.abs(_bandeiraMastroAtual.p2 - _bandeiraMastroAtual.p1) > 0)) {
+            _bandeiraMastroFinal = {
+                t1: grIndexToTime(_bandeiraMastroAtual.i1), p1: _bandeiraMastroAtual.p1,
+                t2: grIndexToTime(_bandeiraMastroAtual.i2), p2: _bandeiraMastroAtual.p2
+            };
+            _bandeiraStep = 'canal'; // próximo toque já desenha o canal, sem precisar de botão
+        } else {
+            _bandeiraStep = null; // arrasto muito curto, cancela
+        }
+        _bandeiraMastroAtual = null;
+        grDrawChart();
+        return;
+    }
     if (_trendDeletePending) {
         clearTimeout(_trendDeleteTimer);
         _trendDeletePending = null;
@@ -5496,6 +5620,7 @@ const _indState = {
 
     fib:       false,
     trend:     false,
+    bandeira:  false,
     reg:       false,
     patterns:  false,
     vwap:      false,
@@ -6956,6 +7081,17 @@ function cvToggleTrend() {
     document.getElementById('cv-ind-tl').classList.toggle('active', _indState.trend);
     grDrawChart();
 }
+
+function cvToggleBandeira() {
+    _indState.bandeira = !_indState.bandeira;
+    if (!_indState.bandeira) {
+        _bandeiraStep = null; _bandeiraMastroAtual = null; _bandeiraMastroFinal = null;
+        _bandeiraOffsetAtual = 0; _bandeiraDesenhandoCanal = false;
+    }
+    document.getElementById('cv-ind-bandeira').classList.toggle('active', _indState.bandeira);
+    grDrawChart();
+}
+
 
 function cvTrendColorPressStart() {
     _trendLongPressFired = false;
