@@ -9418,8 +9418,8 @@ async function odCalcularScoreConfluencia() {
             { nome: 'Preço vs EMA21',  voto: precoAtual > ema21 ? 1 : -1,  detalhe: `${fmtPreco(ema21)} (${fmtPct(pctVsPreco(ema21))})` },
             { nome: 'Preço vs EMA50',  voto: precoAtual > ema50 ? 1 : -1,  detalhe: `${fmtPreco(ema50)} (${fmtPct(pctVsPreco(ema50))})` },
             { nome: 'Preço vs EMA200', voto: precoAtual > ema200 ? 1 : -1, detalhe: `${fmtPreco(ema200)} (${fmtPct(pctVsPreco(ema200))})` },
-            { nome: 'RSI (14)',        voto: rsiV > 50 ? 1 : -1,          detalhe: `${rsiV.toFixed(1)} (${((rsiV - 50) / 50 * 100 >= 0 ? '+' : '')}${((rsiV - 50) / 50 * 100).toFixed(1)}%)` },
-            { nome: 'MACD vs Sinal',   voto: macdLine > macdSignal ? 1 : -1, detalhe: `${macdLine.toFixed(1)} vs ${macdSignal.toFixed(1)} (${(((macdLine - macdSignal) / Math.abs(macdSignal || macdLine || 1) * 100) >= 0 ? '+' : '')}${((macdLine - macdSignal) / Math.abs(macdSignal || macdLine || 1) * 100).toFixed(1)}%)` },
+            { nome: 'RSI (14)',        voto: rsiV > 50 ? 1 : -1,          detalhe: rsiV.toFixed(1) },
+            { nome: 'MACD vs Sinal',   voto: macdLine > macdSignal ? 1 : -1, detalhe: `${macdLine.toFixed(1)} vs ${macdSignal.toFixed(1)}` },
             { nome: 'Bollinger %B',    voto: bbPercB > 0.5 ? 1 : -1,       detalhe: `${(bbPercB * 100).toFixed(1)}%` },
             { nome: 'Volume Delta',    voto: vdUltimo > 0 ? 1 : -1,        detalhe: vdUltimo.toFixed(2) },
             { nome: 'OBV (tendência)', voto: obvTendencia > 0 ? 1 : -1,    detalhe: obvTendencia.toFixed(0) },
@@ -9427,6 +9427,44 @@ async function odCalcularScoreConfluencia() {
         ];
         if (ema21d !== null) votosTecnicos.push({ nome: 'Preço vs EMA21 Diário',  voto: precoAtual > ema21d ? 1 : -1, detalhe: `${fmtPreco(ema21d)} (${fmtPct(pctVsPreco(ema21d))})` });
         if (ema21w !== null) votosTecnicos.push({ nome: 'Preço vs EMA21 Semanal', voto: precoAtual > ema21w ? 1 : -1, detalhe: `${fmtPreco(ema21w)} (${fmtPct(pctVsPreco(ema21w))})` });
+
+        // ── Suporte/Resistência: usa os níveis manuais já marcados no gráfico (_grNiveis) ──
+        if (Array.isArray(_grNiveis) && _grNiveis.length > 0) {
+            const resistencias = _grNiveis.filter(n => n.tipo === 'res').map(n => n.preco);
+            const suportes = _grNiveis.filter(n => n.tipo === 'sup').map(n => n.preco);
+            const resAcima = resistencias.filter(p => p > precoAtual);
+            const supAbaixo = suportes.filter(p => p < precoAtual);
+            const resMaisProxima = resAcima.length > 0 ? Math.min(...resAcima) : null;
+            const supMaisProximo = supAbaixo.length > 0 ? Math.max(...supAbaixo) : null;
+            let votoSR = null, detalheSR = '';
+            if (resMaisProxima === null && resistencias.length > 0) { votoSR = 1; detalheSR = `rompeu res. ${fmtPreco(Math.max(...resistencias))}`; }
+            else if (supMaisProximo === null && suportes.length > 0) { votoSR = -1; detalheSR = `rompeu sup. ${fmtPreco(Math.min(...suportes))}`; }
+            else if (resMaisProxima !== null && supMaisProximo !== null) {
+                const distRes = resMaisProxima - precoAtual, distSup = precoAtual - supMaisProximo;
+                votoSR = distSup < distRes ? 1 : -1;
+                detalheSR = `S ${fmtPreco(supMaisProximo)} · R ${fmtPreco(resMaisProxima)}`;
+            } else if (resMaisProxima !== null) { votoSR = precoAtual > resMaisProxima ? 1 : -1; detalheSR = `R ${fmtPreco(resMaisProxima)}`; }
+            else if (supMaisProximo !== null) { votoSR = precoAtual > supMaisProximo ? 1 : -1; detalheSR = `S ${fmtPreco(supMaisProximo)}`; }
+            if (votoSR !== null) votosTecnicos.push({ nome: 'Suporte/Resistência', voto: votoSR, detalhe: detalheSR });
+        }
+
+        // ── Fibonacci: usa o último fibo desenhado no gráfico (_fibs / _fibAtual) ──
+        const fiboAtivo = (_fibAtual && Math.abs(_fibAtual.p2 - _fibAtual.p1) > 0) ? _fibAtual : (_fibs.length > 0 ? _fibs[_fibs.length - 1] : null);
+        if (fiboAtivo) {
+            const fibHigh = Math.max(fiboAtivo.p1, fiboAtivo.p2);
+            const fibLow = Math.min(fiboAtivo.p1, fiboAtivo.p2);
+            const diffFib = fibHigh - fibLow;
+            const isUpFib = fiboAtivo.p2 > fiboAtivo.p1;
+            if (diffFib > 0) {
+                const rAtual = isUpFib ? 1 - (precoAtual - fibLow) / diffFib : 1 - (fibHigh - precoAtual) / diffFib;
+                let votoFib;
+                if (rAtual < 0.382) votoFib = isUpFib ? 1 : -1;
+                else if (rAtual > 0.618) votoFib = isUpFib ? -1 : 1;
+                else votoFib = (rAtual < 0.5) === isUpFib ? 1 : -1;
+                votosTecnicos.push({ nome: 'Fibonacci', voto: votoFib, detalhe: `${(rAtual * 100).toFixed(1)}% retração` });
+            }
+        }
+
 
         // ── Votos dos indicadores da aba Mercado, se já carregados (mesma leitura Bullish/Bearish de lá) ──
         const votosMercado = [];
@@ -9455,15 +9493,11 @@ async function odCalcularScoreConfluencia() {
         else if (score <= -maxScore * 0.3) { label = 'Viés de Baixa'; cor = '#DC2626'; }
         else { label = 'Neutro / Sem confluência clara'; cor = '#8E8E93'; }
 
-        const setaSvgConf = (positivo, cor) => positivo
-            ? `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" fill="none" viewBox="0 0 24 24" stroke-width="3" stroke="${cor}"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18"/></svg>`
-            : `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" fill="none" viewBox="0 0 24 24" stroke-width="3" stroke="${cor}"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 13.5 12 21m0 0-7.5-7.5M12 21V3"/></svg>`;
-
         const linhaVoto = v => `<div style="display:flex;justify-content:space-between;align-items:baseline;padding:6px 0;border-bottom:1px solid #F2F4F8;font-size:13px;gap:8px;">
         <span style="color:#1C1C1E;">${v.nome}</span>
         <span style="text-align:right;">
             <span style="color:#000000;font-size:12px;margin-right:6px;">${v.detalhe || ''}</span>
-            <span style="font-weight:700;color:${v.voto > 0 ? '#16A34A' : '#DC2626'};display:inline-flex;align-items:center;gap:2px;">${setaSvgConf(v.voto > 0, v.voto > 0 ? '#16A34A' : '#DC2626')}${v.voto > 0 ? 'A' : 'B'}</span>
+            <span style="font-weight:700;color:${v.voto > 0 ? '#16A34A' : '#DC2626'};">${v.voto > 0 ? 'Alta' : 'Baixa'}</span>
         </span>
     </div>`;
 
