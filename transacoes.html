@@ -653,7 +653,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
         </div>
         <div class="od-divider"></div>
         <div style="padding-top:8px;">
-          <button onclick="odRodarBacktestConfluencia()" id="od-confluencia-btn" style="width:100%;background:#1C1C1E;color:#FFFFFF;border:none;border-radius:10px;padding:12px;font-size:14px;font-weight:700;cursor:pointer;">Medir poder preditivo (90 dias)</button>
+          <button onclick="odCalcularScoreConfluencia()" id="od-confluencia-btn" style="width:100%;background:#1C1C1E;color:#FFFFFF;border:none;border-radius:10px;padding:12px;font-size:14px;font-weight:700;cursor:pointer;">Calcular score de confluência</button>
           <div id="od-confluencia-status" style="text-align:center;font-size:12px;color:#8E8E93;margin-top:8px;"></div>
         </div>
         <div id="od-confluencia-resultados" style="margin-top:12px;"></div>
@@ -8523,6 +8523,16 @@ async function odCarregarSentimento() {
             window._odCorrelacoes[k] = pearson(window._odCombo.preco, window._odCombo[k]);
         });
 
+        // Diagnóstico Bullish/Bearish de cada indicador de Mercado, pra reaproveitar no score de Confluência
+        window._odComboDiag = {
+            oi: { nome: 'Open Interest', bullish: oiRes.diag === 'Bullish' },
+            ttrpos: { nome: 'Top Trader ($)', bullish: ttrPosRes.diag === 'Bullish' },
+            ttr: { nome: 'Top Trader (contas)', bullish: ttrRes.diag === 'Bullish' },
+            lsr: { nome: 'L/S Ratio', bullish: lsrRes.diag === 'Bullish' },
+            funding: { nome: 'Funding Rate', bullish: fRes.diag === 'Bullish' },
+            vd: { nome: 'Volume Delta (Spot)', bullish: vdRes.diag === 'Bullish' }
+        };
+
         odMontarChipsCombo();
         odDesenharCombo();
 
@@ -9098,13 +9108,13 @@ function odConfluenciaTfChange(tf) {
 
 // ── Backtest de poder preditivo: mede correlação entre o sinal de cada indicador
 // HOJE e o retorno do preço K candles NO FUTURO (não simultâneo) ────────────
-async function odRodarBacktestConfluencia() {
+async function odCalcularScoreConfluencia() {
     const btn = document.getElementById('od-confluencia-btn');
     const status = document.getElementById('od-confluencia-status');
     const out = document.getElementById('od-confluencia-resultados');
     if (!btn) return;
     btn.disabled = true;
-    status.textContent = 'Buscando histórico...';
+    status.textContent = 'Lendo indicadores...';
     out.innerHTML = '';
     try {
         const tf = _odConfluenciaTf || '4h';
@@ -9112,11 +9122,8 @@ async function odRodarBacktestConfluencia() {
         const binInterval = intervalMap[tf] || '4h';
         const binSymbol = ((_ticker || 'BTC/USD').replace('/', '').replace('-', '').toUpperCase()
             .replace('USD', 'USDT').replace('USDTT', 'USDT'));
-        // 90 dias de histórico: ~540 candles de 4h (ajusta limite conforme o TF)
-        const candlesPerDay = tf === '15m' ? 96 : tf === '1h' ? 24 : tf === '4h' ? 6 : tf === '1d' ? 1 : (1 / 7);
-        const limit = Math.min(1000, Math.max(100, Math.round(candlesPerDay * 90)));
-        const data = await fetch(`https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=${binInterval}&limit=${limit}`).then(r => r.json());
-        if (!Array.isArray(data) || data.length < 60) {
+        const data = await fetch(`https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=${binInterval}&limit=250`).then(r => r.json());
+        if (!Array.isArray(data) || data.length < 30) {
             status.textContent = 'Histórico insuficiente pra esse timeframe.';
             btn.disabled = false;
             return;
@@ -9126,118 +9133,109 @@ async function odRodarBacktestConfluencia() {
         const lows = data.map(k => parseFloat(k[3]));
         const vols = data.map(k => parseFloat(k[5]));
         const takerBuy = data.map(k => parseFloat(k[9]));
-        const n = closes.length;
+        const precoAtual = closes[closes.length - 1];
 
-        status.textContent = `Calculando indicadores em ${n} candles...`;
-
-        // ── Helpers de indicadores históricos (array completo, ponto a ponto) ──
+        // ── Helpers (só precisam do último valor, mas calculam a série pra chegar nele certo) ──
         const ema = (vals, period) => {
             const k = 2 / (period + 1);
-            const out = new Array(vals.length).fill(null);
             let prev = vals[0];
-            out[0] = prev;
+            for (let i = 1; i < vals.length; i++) prev = vals[i] * k + prev * (1 - k);
+            return prev;
+        };
+        const emaSerie = (vals, period) => {
+            const k = 2 / (period + 1);
+            const out = new Array(vals.length); let prev = vals[0]; out[0] = prev;
             for (let i = 1; i < vals.length; i++) { prev = vals[i] * k + prev * (1 - k); out[i] = prev; }
             return out;
         };
-        const rsi = (vals, period = 14) => {
-            const out = new Array(vals.length).fill(50);
+        const rsiUltimo = (vals, period = 14) => {
             let avgGain = 0, avgLoss = 0;
             for (let i = 1; i < vals.length; i++) {
                 const diff = vals[i] - vals[i - 1];
                 const gain = Math.max(diff, 0), loss = Math.max(-diff, 0);
                 if (i <= period) { avgGain += gain / period; avgLoss += loss / period; }
                 else { avgGain = (avgGain * (period - 1) + gain) / period; avgLoss = (avgLoss * (period - 1) + loss) / period; }
-                out[i] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
             }
-            return out;
+            return avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
         };
-        const sma = (vals, period) => vals.map((_, i) => {
-            if (i < period - 1) return vals[i];
-            let s = 0; for (let j = i - period + 1; j <= i; j++) s += vals[j];
-            return s / period;
-        });
-        const stdDev = (vals, period) => vals.map((_, i) => {
-            if (i < period - 1) return 0;
-            const slice = vals.slice(i - period + 1, i + 1);
-            const m = slice.reduce((a, b) => a + b, 0) / period;
-            return Math.sqrt(slice.reduce((a, b) => a + (b - m) * (b - m), 0) / period);
-        });
+        const sma = (vals, period) => {
+            const slice = vals.slice(-period);
+            return slice.reduce((a, b) => a + b, 0) / slice.length;
+        };
+        const stdDevUltimo = (vals, period) => {
+            const slice = vals.slice(-period);
+            const m = slice.reduce((a, b) => a + b, 0) / slice.length;
+            return Math.sqrt(slice.reduce((a, b) => a + (b - m) * (b - m), 0) / slice.length);
+        };
 
         const ema9 = ema(closes, 9), ema21 = ema(closes, 21), ema50 = ema(closes, 50), ema200 = ema(closes, 200);
-        const rsiVals = rsi(closes, 14);
-        const macdLine = ema(closes, 12).map((v, i) => v - ema(closes, 26)[i]);
-        const macdSignal = ema(macdLine, 9);
-        const bbMid = sma(closes, 20), bbStd = stdDev(closes, 20);
-        const bbPercB = closes.map((c, i) => bbStd[i] > 0 ? (c - (bbMid[i] - 2 * bbStd[i])) / (4 * bbStd[i]) : 0.5);
-        const vd = takerBuy.map((tb, i) => 2 * tb - vols[i]); // Volume Delta por candle
-        let obvAcc = 0;
-        const obv = closes.map((c, i) => { if (i > 0) obvAcc += c > closes[i - 1] ? vols[i] : c < closes[i - 1] ? -vols[i] : 0; return obvAcc; });
-        const stochK = closes.map((c, i) => {
-            if (i < 14) return 50;
-            const hh = Math.max(...highs.slice(i - 13, i + 1)), ll = Math.min(...lows.slice(i - 13, i + 1));
-            return hh > ll ? ((c - ll) / (hh - ll)) * 100 : 50;
-        });
+        const rsiV = rsiUltimo(closes, 14);
+        const macdSerie = emaSerie(closes, 12).map((v, i) => v - emaSerie(closes, 26)[i]);
+        const macdLine = macdSerie[macdSerie.length - 1];
+        const macdSignalSerie = emaSerie(macdSerie, 9);
+        const macdSignal = macdSignalSerie[macdSignalSerie.length - 1];
+        const bbMid = sma(closes, 20), bbStd = stdDevUltimo(closes, 20);
+        const bbPercB = bbStd > 0 ? (precoAtual - (bbMid - 2 * bbStd)) / (4 * bbStd) : 0.5;
+        const vdUltimo = 2 * takerBuy[takerBuy.length - 1] - vols[vols.length - 1];
+        let obvAcc = 0; const obvSerie = closes.map((c, i) => { if (i > 0) obvAcc += c > closes[i - 1] ? vols[i] : c < closes[i - 1] ? -vols[i] : 0; return obvAcc; });
+        const obvTendencia = obvSerie[obvSerie.length - 1] - obvSerie[Math.max(0, obvSerie.length - 6)];
+        const hh14 = Math.max(...highs.slice(-14)), ll14 = Math.min(...lows.slice(-14));
+        const stochK = hh14 > ll14 ? ((precoAtual - ll14) / (hh14 - ll14)) * 100 : 50;
 
-        // Cada "sinal" é a distância normalizada do preço/indicador ao seu próprio nível neutro,
-        // pra virar uma série contínua comparável (não um voto binário ainda — isso é a etapa de medição).
-        const indicadores = {
-            'Preço vs EMA9':   closes.map((c, i) => (c - ema9[i]) / ema9[i]),
-            'Preço vs EMA21':  closes.map((c, i) => (c - ema21[i]) / ema21[i]),
-            'Preço vs EMA50':  closes.map((c, i) => (c - ema50[i]) / ema50[i]),
-            'Preço vs EMA200': closes.map((c, i) => (c - ema200[i]) / ema200[i]),
-            'RSI (14)':        rsiVals.map(v => v - 50),
-            'MACD vs Sinal':   macdLine.map((v, i) => v - macdSignal[i]),
-            'Bollinger %B':    bbPercB.map(v => v - 0.5),
-            'Volume Delta':    vd,
-            'OBV (variação)':  obv.map((v, i) => i > 0 ? v - obv[i - 1] : 0),
-            'Stochastic %K':   stochK.map(v => v - 50)
-        };
+        // ── Votos: cada indicador técnico vota +1 (alta) / -1 (baixa) comparando com a cotação atual ──
+        const votosTecnicos = [
+            { nome: 'Preço vs EMA9',   voto: precoAtual > ema9 ? 1 : -1 },
+            { nome: 'Preço vs EMA21',  voto: precoAtual > ema21 ? 1 : -1 },
+            { nome: 'Preço vs EMA50',  voto: precoAtual > ema50 ? 1 : -1 },
+            { nome: 'Preço vs EMA200', voto: precoAtual > ema200 ? 1 : -1 },
+            { nome: 'RSI (14)',        voto: rsiV > 50 ? 1 : -1 },
+            { nome: 'MACD vs Sinal',   voto: macdLine > macdSignal ? 1 : -1 },
+            { nome: 'Bollinger %B',    voto: bbPercB > 0.5 ? 1 : -1 },
+            { nome: 'Volume Delta',    voto: vdUltimo > 0 ? 1 : -1 },
+            { nome: 'OBV (tendência)', voto: obvTendencia > 0 ? 1 : -1 },
+            { nome: 'Stochastic %K',   voto: stochK > 50 ? 1 : -1 }
+        ];
 
-        // ── Retorno futuro: preço K candles à frente vs preço agora (não simultâneo) ──
-        const K = 3; // ~12h à frente num candle de 4h
-        const forwardReturn = new Array(n).fill(null);
-        for (let i = 0; i < n - K; i++) forwardReturn[i] = (closes[i + K] - closes[i]) / closes[i];
+        // ── Votos dos indicadores da aba Mercado, se já carregados (mesma leitura Bullish/Bearish de lá) ──
+        const votosMercado = [];
+        if (window._odComboValores && window._odCorrelacoes !== undefined) {
+            const mapaNomes = { oi: 'Open Interest', ttrpos: 'Top Trader ($)', ttr: 'Top Trader (contas)', lsr: 'L/S Ratio', funding: 'Funding Rate', vd: 'Volume Delta (Spot)' };
+            // Reaproveita o sinal Bullish/Bearish calculado na aba Mercado, armazenado em window._odComboDiag se existir
+        }
+        if (window._odComboDiag) {
+            Object.keys(window._odComboDiag).forEach(k => {
+                const d = window._odComboDiag[k];
+                if (d) votosMercado.push({ nome: d.nome, voto: d.bullish ? 1 : -1 });
+            });
+        }
 
-        const pearson = (x, y) => {
-            const pares = [];
-            for (let i = 0; i < x.length; i++) if (x[i] != null && y[i] != null && !isNaN(x[i]) && !isNaN(y[i])) pares.push([x[i], y[i]]);
-            const m = pares.length;
-            if (m < 10) return null;
-            const mx = pares.reduce((s, p) => s + p[0], 0) / m;
-            const my = pares.reduce((s, p) => s + p[1], 0) / m;
-            let num = 0, dx2 = 0, dy2 = 0;
-            for (const [a, b] of pares) { const dx = a - mx, dy = b - my; num += dx * dy; dx2 += dx * dx; dy2 += dy * dy; }
-            const den = Math.sqrt(dx2 * dy2);
-            return den > 0 ? num / den : 0;
-        };
+        const todosVotos = [...votosTecnicos, ...votosMercado];
+        const score = todosVotos.reduce((s, v) => s + v.voto, 0);
+        const maxScore = todosVotos.length;
+        let label, cor;
+        if (score >= maxScore * 0.3) { label = 'Viés de Alta'; cor = '#16A34A'; }
+        else if (score <= -maxScore * 0.3) { label = 'Viés de Baixa'; cor = '#DC2626'; }
+        else { label = 'Neutro / Sem confluência clara'; cor = '#8E8E93'; }
 
-        // Poder preditivo: indicador no candle i vs retorno futuro a partir do candle i
-        const resultados = Object.keys(indicadores).map(nome => {
-            const r = pearson(indicadores[nome], forwardReturn);
-            return { nome, r };
-        }).filter(r => r.r !== null).sort((a, b) => Math.abs(b.r) - Math.abs(a.r));
-
-        window._odConfluenciaResultados = resultados;
-        window._odConfluenciaSeries = indicadores;
-
-        status.textContent = `${n} candles · retorno futuro de ${K} candles (≈${(K * (tf === '4h' ? 4 : tf === '1h' ? 1 : tf === '1d' ? 24 : 0.25)).toFixed(0)}h à frente)`;
+        status.textContent = '';
         out.innerHTML = `
-            <div style="font-size:11px;font-weight:600;color:#1C1C1E;letter-spacing:0.4px;text-transform:uppercase;margin-bottom:8px;">PODER PREDITIVO (r vs retorno futuro)</div>
-            ` + resultados.map(rr => {
-                const cor = Math.abs(rr.r) >= 0.3 ? (rr.r >= 0 ? '#16A34A' : '#DC2626') : '#8E8E93';
-                const pct = Math.min(100, Math.abs(rr.r) * 100);
-                return `<div style="margin-bottom:8px;">
-                    <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:600;color:#1C1C1E;">
-                        <span>${rr.nome}</span><span style="color:${cor};">r ${rr.r >= 0 ? '+' : ''}${rr.r.toFixed(2)}</span>
-                    </div>
-                    <div style="height:5px;background:#E5E5EA;border-radius:3px;margin-top:3px;overflow:hidden;">
-                        <div style="height:100%;width:${pct}%;background:${cor};"></div>
-                    </div>
-                </div>`;
-            }).join('') + `
-            <div style="font-size:11px;color:#8E8E93;margin-top:12px;line-height:1.5;">
-                r mede se esse indicador, no momento em que é lido, historicamente antecipou o retorno dos candles seguintes — não a correlação simultânea. |r| acima de ~0.3 já é considerado relevante nesse tipo de medição; acima de 0.5 é forte.
-            </div>`;
+            <div style="text-align:center;padding:16px 0;border-bottom:1px solid #E5E5EA;margin-bottom:12px;">
+                <div style="font-size:32px;font-weight:800;color:${cor};">${score > 0 ? '+' : ''}${score}</div>
+                <div style="font-size:15px;font-weight:700;color:${cor};margin-top:4px;">${label}</div>
+                <div style="font-size:12px;color:#8E8E93;margin-top:2px;">${todosVotos.filter(v => v.voto > 0).length} de alta · ${todosVotos.filter(v => v.voto < 0).length} de baixa (de ${maxScore})</div>
+            </div>
+            <div style="font-size:11px;font-weight:600;color:#1C1C1E;letter-spacing:0.4px;text-transform:uppercase;margin-bottom:8px;">INDICADORES TÉCNICOS (${tf})</div>
+            ` + votosTecnicos.map(v => `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #F2F4F8;font-size:13px;">
+                <span style="color:#1C1C1E;">${v.nome}</span>
+                <span style="font-weight:700;color:${v.voto > 0 ? '#16A34A' : '#DC2626'};">${v.voto > 0 ? 'Alta' : 'Baixa'}</span>
+            </div>`).join('') +
+            (votosMercado.length > 0 ? `
+            <div style="font-size:11px;font-weight:600;color:#1C1C1E;letter-spacing:0.4px;text-transform:uppercase;margin:14px 0 8px;">INDICADORES DE MERCADO</div>
+            ` + votosMercado.map(v => `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #F2F4F8;font-size:13px;">
+                <span style="color:#1C1C1E;">${v.nome}</span>
+                <span style="font-weight:700;color:${v.voto > 0 ? '#16A34A' : '#DC2626'};">${v.voto > 0 ? 'Alta' : 'Baixa'}</span>
+            </div>`).join('') : `
+            <div style="font-size:12px;color:#8E8E93;margin-top:12px;">Abra a aba Mercado uma vez nessa sessão pra incluir OI, TTR, TTR$, L/S Ratio, Funding e Volume Delta (Spot) no score também.</div>`);
     } catch (e) {
         status.textContent = 'Erro ao calcular: ' + e.message;
     } finally {
