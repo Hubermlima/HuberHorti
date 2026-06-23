@@ -2931,6 +2931,9 @@ let _bandeiraMastroFinal = null;   // {t1,p1,t2,p2} — mastro já fixado, aguar
 let _bandeiraOffsetAtual = 0;      // distância (preço) da paralela durante o arrasto da etapa 2
 let _bandeiraDesenhandoCanal = false;
 let _bandeiras = [];                // bandeiras finalizadas: [{mastro:{t1,p1,t2,p2}, offset, cor}]
+let _bandeiraDeletePending = null;
+let _bandeiraDeleteTimer = null;
+let _bandeiraDeleteStartX = 0, _bandeiraDeleteStartY = 0;
 let _trendDragging = null; // {li, end:'1'|'2'} — arrastando ponta de linha existente
 let _trendDeleteTimer = null;
 let _trendDeletePending = null; // {li}
@@ -5048,6 +5051,31 @@ function grInitTouch() {
                     e.preventDefault();
                     return;
                 }
+                // Toque no mastro de uma bandeira existente — toque longo apaga
+                let foundBandeira = null;
+                for (let bi = 0; bi < _bandeiras.length; bi++) {
+                    const m = _bandeiras[bi].mastro;
+                    const x1 = grIndexToX(grTimeToIndex(m.t1)), y1 = grLineY(m.p1);
+                    const x2 = grIndexToX(grTimeToIndex(m.t2)), y2 = grLineY(m.p2);
+                    const dx = x2 - x1, dy = y2 - y1;
+                    const lenSq = dx * dx + dy * dy;
+                    let t = lenSq > 0 ? ((ex2 - x1) * dx + (ey2 - y1) * dy) / lenSq : 0;
+                    t = Math.max(0, Math.min(1, t));
+                    const px = x1 + t * dx, py = y1 + t * dy;
+                    if (Math.hypot(ex2 - px, ey2 - py) <= 18) { foundBandeira = bi; break; }
+                }
+                if (foundBandeira !== null) {
+                    _bandeiraDeletePending = { bi: foundBandeira };
+                    _bandeiraDeleteStartX = ex2; _bandeiraDeleteStartY = ey2;
+                    _bandeiraDeleteTimer = setTimeout(() => {
+                        if (_bandeiraDeletePending) {
+                            cvApagarBandeira(_bandeiraDeletePending.bi);
+                            _bandeiraDeletePending = null;
+                        }
+                    }, 500);
+                    e.preventDefault();
+                    return;
+                }
                 // Etapa 1: início do arrasto que define o mastro (a linha)
                 const idx0 = grXToIndex(ex2);
                 const price0 = grToPrice(ey2);
@@ -5198,6 +5226,16 @@ function grInitTouch() {
 
     canvas.addEventListener('touchmove', e => {
         if (e.touches.length === 1) {
+            if (_bandeiraDeletePending) {
+                const xc = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (canvas.width / canvas.getBoundingClientRect().width);
+                const yc = toCanvasY(e.touches[0].clientY);
+                if (Math.hypot(xc - _bandeiraDeleteStartX, yc - _bandeiraDeleteStartY) > 12) {
+                    clearTimeout(_bandeiraDeleteTimer);
+                    _bandeiraDeletePending = null;
+                }
+                e.preventDefault();
+                return;
+            }
             if (_bandeiraDesenhandoCanal) {
                 const xc = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (canvas.width / canvas.getBoundingClientRect().width);
                 const yc = toCanvasY(e.touches[0].clientY);
@@ -5326,11 +5364,18 @@ function grInitTouch() {
 
     canvas.addEventListener('touchend', e => {
     isDragging = false;
+    if (_bandeiraDeletePending) {
+        clearTimeout(_bandeiraDeleteTimer);
+        _bandeiraDeletePending = null;
+        return;
+    }
     if (_bandeiraDesenhandoCanal) {
         _bandeiraDesenhandoCanal = false;
         const m = _bandeiraMastroFinal;
         const cor = m.p2 >= m.p1 ? '#26A69A' : '#EF5350'; // mastro subindo = bandeira de alta (verde), descendo = baixa (vermelho)
-        _bandeiras.push({ mastro: { ...m }, offset: _bandeiraOffsetAtual, cor });
+        const novaBandeira = { id: null, mastro: { ...m }, offset: _bandeiraOffsetAtual, cor };
+        _bandeiras.push(novaBandeira);
+        cvSalvarBandeira(novaBandeira);
         _bandeiraStep = null;
         _bandeiraMastroFinal = null;
         _bandeiraOffsetAtual = 0;
@@ -6806,7 +6851,11 @@ function grIndexToTime(idx) {
 async function cvCarregarTrendlines() {
     if (!_ativoId) return;
     const { data } = await db.from('trendlines').select('*').eq('ativo_id', _ativoId);
-    _trendlines = (data || []).map(r => ({ id: r.id, t1: r.t1, p1: parseFloat(r.p1), t2: r.t2, p2: parseFloat(r.p2), cor: r.cor || '#FFD700' }));
+    const rows = data || [];
+    _trendlines = rows.filter(r => r.offset_preco === null || r.offset_preco === undefined)
+        .map(r => ({ id: r.id, t1: r.t1, p1: parseFloat(r.p1), t2: r.t2, p2: parseFloat(r.p2), cor: r.cor || '#FFD700' }));
+    _bandeiras = rows.filter(r => r.offset_preco !== null && r.offset_preco !== undefined)
+        .map(r => ({ id: r.id, mastro: { t1: r.t1, p1: parseFloat(r.p1), t2: r.t2, p2: parseFloat(r.p2) }, offset: parseFloat(r.offset_preco), cor: r.cor || '#26A69A' }));
 }
 
 async function cvSalvarTrendline(tl) {
@@ -6823,6 +6872,24 @@ async function cvApagarTrendline(idx) {
     const tl = _trendlines[idx];
     if (tl && tl.id) await db.from('trendlines').delete().eq('id', tl.id);
     _trendlines.splice(idx, 1);
+    grDrawChart();
+}
+
+async function cvSalvarBandeira(b) {
+    if (!_ativoId) return;
+    const m = b.mastro;
+    if (b.id) {
+        await db.from('trendlines').update({ t1: m.t1, p1: m.p1, t2: m.t2, p2: m.p2, cor: b.cor, offset_preco: b.offset }).eq('id', b.id);
+    } else {
+        const { data } = await db.from('trendlines').insert({ ativo_id: _ativoId, t1: m.t1, p1: m.p1, t2: m.t2, p2: m.p2, cor: b.cor, offset_preco: b.offset }).select().single();
+        if (data) b.id = data.id;
+    }
+}
+
+async function cvApagarBandeira(idx) {
+    const b = _bandeiras[idx];
+    if (b && b.id) await db.from('trendlines').delete().eq('id', b.id);
+    _bandeiras.splice(idx, 1);
     grDrawChart();
 }
 
