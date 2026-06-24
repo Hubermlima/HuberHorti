@@ -2438,7 +2438,7 @@ async function cvAtualizarPrecoRealTime() {
             varEl.style.color = novaVar >= 0 ? '#26A69A' : '#EF5350';
         }
                 // R/R atual no topbar — dinâmico: converge pro R/R final quando o preço bate o alvo
-                        const rrEl = document.getElementById('cv-rr');
+                const rrEl = document.getElementById('cv-rr');
                 const dirTopbar2 = (_grDir || 'LONG').toUpperCase();
                 const riscoTopbar2 = dirTopbar2 === 'SHORT' ? (_grStop - _grPm) : (_grPm - _grStop);
                 if (rrEl && _grPm > 0 && _grStop > 0 && riscoTopbar2 > 0) {
@@ -2446,6 +2446,10 @@ async function cvAtualizarPrecoRealTime() {
                     const rrV = avancoTopbar2 / riscoTopbar2;
                     rrEl.textContent = 'R/R ' + rrV.toFixed(2);
                     rrEl.style.color = rrV >= 2 ? '#26A69A' : rrV >= 1 ? '#F59E0B' : '#EF5350';
+                    rrEl.style.display = 'inline';
+                } else if (rrEl && _grPm > 0 && _grStop > 0) {
+                    rrEl.textContent = 'Sem risco';
+                    rrEl.style.color = '#26A69A';
                     rrEl.style.display = 'inline';
                 } else if (rrEl) {
                     rrEl.style.display = 'none';
@@ -2637,6 +2641,10 @@ function cvIniciarRealTime() {
                     const rrV = avancoTopbarWs / riscoTopbarWs;
                     rrEl.textContent = 'R/R ' + rrV.toFixed(2);
                     rrEl.style.color = rrV >= 2 ? '#26A69A' : rrV >= 1 ? '#F59E0B' : '#EF5350';
+                    rrEl.style.display = 'inline';
+                } else if (rrEl && _grPm > 0 && _grStop > 0) {
+                    rrEl.textContent = 'Sem risco';
+                    rrEl.style.color = '#26A69A';
                     rrEl.style.display = 'inline';
                 } else if (rrEl) {
                     rrEl.style.display = 'none';
@@ -3827,7 +3835,9 @@ const bbAlta = !!window._bbFlagAlta;
         if (!_indOculto.reguaS) {
             const stopPrice = _grStop > 0 ? _grStop : _precoAtual * 0.95;
             if (!_grStop) _grStop = stopPrice;
-            const color = '#E91E8C';
+            const dirStopCor = (_grDir || 'LONG').toUpperCase();
+            const stopEmZonaDeLucro = _grPm > 0 && (dirStopCor === 'SHORT' ? stopPrice <= _grPm : stopPrice >= _grPm);
+            const color = stopEmZonaDeLucro ? '#16A34A' : '#E91E8C';
             const y = toY(stopPrice);
             // Área colorida entre PM e Stop
                         if (_grPm > 0) {
@@ -9137,8 +9147,13 @@ function odCalcularRR(t) {
     let risco, retorno;
     if (dir === 'short') { risco = stop - pm; retorno = pm - alvo; }
     else { risco = pm - stop; retorno = alvo - pm; }
-    if (risco <= 0) return null;
-    return { rr: retorno / risco, risco, retorno, pm, dir };
+    if (risco <= 0) {
+        // Stop movido pra dentro da zona de lucro: não tem mais "risco" de perda,
+        // é um trade sem risco (risk-free) — o Stop já garante lucro mínimo.
+        const lucroGarantido = dir === 'short' ? (pm - stop) : (stop - pm);
+        return { riskFree: true, lucroGarantido, retorno, pm, stop, alvo, dir };
+    }
+    return { riskFree: false, rr: retorno / risco, risco, retorno, pm, stop, alvo, dir };
 }
 
 // Quantidade real aberta do Principal (Long ou Short), pra converter risco/retorno em USD
@@ -9159,8 +9174,8 @@ function odRenderTradeRow(t) {
     const dirLabel = (t.tipo || 'long').toLowerCase() === 'short' ? 'Short' : 'Long';
     const dirColor = (t.tipo || 'long').toLowerCase() === 'short' ? '#DC2626' : '#16A34A';
     const calc = odCalcularRR(t);
-    const rrStr = calc === null ? '—' : calc.rr.toFixed(2) + 'R';
-    const rrColor = calc === null ? '#8E8E93' : (calc.rr >= 1 ? '#16A34A' : '#DC2626');
+    const rrStr = calc === null ? '—' : (calc.riskFree ? 'Sem risco' : calc.rr.toFixed(2) + 'R');
+    const rrColor = calc === null ? '#8E8E93' : (calc.riskFree ? '#16A34A' : (calc.rr >= 1 ? '#16A34A' : '#DC2626'));
 
     const setaSvg = (positivo, cor) => positivo
         ? `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" fill="none" viewBox="0 0 24 24" stroke-width="3" stroke="${cor}" style="vertical-align:-1px;margin-right:2px;"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18"/></svg>`
@@ -9189,6 +9204,17 @@ if (fonteData) {
         if (t.operacional) {
             const qtd = odQtdPrincipal(t.tipo);
             if (qtd > 0) {
+                if (calc.riskFree) {
+                    const lucroGarantidoUSD = calc.lucroGarantido * qtd;
+                    const potencialUSD = calc.retorno * qtd;
+                    linhas += linhaMetrica('Lucro garantido', `+${lucroGarantidoUSD.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})} USD`, '#16A34A', false);
+                    linhas += linhaMetrica('Potencial até alvo', `+${potencialUSD.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})} USD`, '#16A34A', false);
+                    if (_precoAtual > 0) {
+                        const pnlUSD = (calc.dir === 'short' ? (calc.pm - _precoAtual) : (_precoAtual - calc.pm)) * qtd;
+                        const pnlCor = pnlUSD >= 0 ? '#16A34A' : '#DC2626';
+                        linhas += linhaMetrica('P&L atual', `${pnlUSD >= 0 ? '+' : ''}${pnlUSD.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})} USD`, pnlCor, true);
+                    }
+                } else {
                 const riscoUSD = calc.risco * qtd;
                 const retornoUSD = calc.retorno * qtd;
                 linhas += linhaMetrica('Risco', `-${riscoUSD.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})} USD`, '#DC2626', false);
@@ -9202,8 +9228,20 @@ if (fonteData) {
                     const pctMov = calc.rr > 0 ? (rrAtual / calc.rr) * 100 : 0;
                     linhas += linhaMetrica('R/R atual', `${rrAtual >= 0 ? '+' : ''}${rrAtual.toFixed(2)}R · ${setaSvg(pctMov >= 0, rrAtualCor)}${pctMov >= 0 ? '+' : ''}${pctMov.toFixed(1)}%`, rrAtualCor, false);
                 }
+                }
             }
         } else {
+            if (calc.riskFree) {
+                const lucroGarantidoPct = (calc.lucroGarantido / calc.pm) * 100;
+                const potencialPct = (calc.retorno / calc.pm) * 100;
+                linhas += linhaMetrica('Lucro garantido', `+${lucroGarantidoPct.toFixed(1)}%`, '#16A34A', false);
+                linhas += linhaMetrica('Potencial até alvo', `+${potencialPct.toFixed(1)}%`, '#16A34A', false);
+                if (_precoAtual > 0) {
+                    const pnlPct = ((calc.dir === 'short' ? (calc.pm - _precoAtual) : (_precoAtual - calc.pm)) / calc.pm) * 100;
+                    const pnlCor = pnlPct >= 0 ? '#16A34A' : '#DC2626';
+                    linhas += linhaMetrica('P&L atual', `${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`, pnlCor, true);
+                }
+            } else {
             const riscoPct = (calc.risco / calc.pm) * 100;
             const retornoPct = (calc.retorno / calc.pm) * 100;
             linhas += linhaMetrica('Risco', `-${riscoPct.toFixed(1)}%`, '#DC2626', false);
@@ -9216,6 +9254,7 @@ if (fonteData) {
                 const rrAtualCor = rrAtual >= 0 ? '#16A34A' : '#DC2626';
                 const pctMov = calc.rr > 0 ? (rrAtual / calc.rr) * 100 : 0;
                 linhas += linhaMetrica('R/R atual', `${rrAtual >= 0 ? '+' : ''}${rrAtual.toFixed(2)}R · ${setaSvg(pctMov >= 0, rrAtualCor)}${pctMov >= 0 ? '+' : ''}${pctMov.toFixed(1)}%`, rrAtualCor, false);
+            }
             }
         }
     }
