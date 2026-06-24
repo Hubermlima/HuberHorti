@@ -1045,6 +1045,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <button class="cv-ind-btn reg" id="cv-ind-reg"><span class="btn-sigla">Reg</span><span class="btn-nome">Régua %</span></button>
       <button class="cv-ind-btn tl" id="cv-ind-tl" onclick="cvToggleTrend()" ontouchstart="cvTrendColorPressStart()" ontouchend="cvTrendColorPressEnd()"><span class="btn-sigla"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="20" x2="20" y2="4"/><circle cx="4" cy="20" r="2" fill="currentColor" stroke="none"/><circle cx="20" cy="4" r="2" fill="currentColor" stroke="none"/></svg></span><span class="btn-nome">Tendência</span></button>
       <button class="cv-ind-btn bandeira" id="cv-ind-bandeira" onclick="cvToggleBandeira()"><span class="btn-sigla"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="19" x2="15" y2="7"/><line x1="9" y1="21" x2="21" y2="9"/></svg></span><span class="btn-nome">Bandeira</span></button>
+      <button class="cv-ind-btn medida" id="cv-ind-medida" onclick="cvToggleMedida()"><span class="btn-sigla"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="6" y1="4" x2="18" y2="4"/><line x1="12" y1="4" x2="12" y2="20"/><line x1="6" y1="20" x2="18" y2="20"/></svg></span><span class="btn-nome">Medida</span></button>
       <button class="cv-ind-btn pat" id="cv-ind-pat" onclick="cvTogglePat()"><span class="btn-sigla">Pat</span><span class="btn-nome">Padrões</span></button>
       <button class="cv-ind-btn atr" id="cv-ind-atr" onclick="cvToggleSubInd('atr')">
 <span class="btn-sigla">ATR</span><span class="btn-nome">Volatilidade</span></button>
@@ -2883,6 +2884,11 @@ let _bandeiraOffsetAtual = 0;      // distância (preço) da paralela durante o 
 let _bandeiraDesenhandoCanal = false;
 let _bandeiras = [];                // bandeiras finalizadas: [{mastro:{t1,p1,t2,p2}, offset, cor}]
 let _bandeiraDeletePending = null;
+
+// ── Régua de Medição: descartável, mostra % e USD entre dois pontos ──
+let _medidaAtual = null;     // {i1,p1,i2,p2} durante o arrasto
+let _medidaDrawing = false;
+let _medidaFlashTimer = null;
 let _bandeiraDeleteTimer = null;
 let _bandeiraDeleteStartX = 0, _bandeiraDeleteStartY = 0;
 let _trendDragging = null; // {li, end:'1'|'2'} — arrastando ponta de linha existente
@@ -4405,6 +4411,46 @@ ctx.globalAlpha = 1;
             desenharBandeira(_bandeiraMastroFinal, _bandeiraOffsetAtual, corPreview);
         }
 
+        // ── Régua de Medição: descartável, linha + caixa com % e USD ──
+        if (_medidaAtual) {
+            const corMedida = '#8B5CF6';
+            const x1 = toXIdx2(_medidaAtual.i1), y1 = toY(_medidaAtual.p1);
+            const x2 = toXIdx2(_medidaAtual.i2), y2 = toY(_medidaAtual.p2);
+            ctx.save();
+            ctx.strokeStyle = corMedida;
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 4]);
+            ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.fillStyle = corMedida;
+            ctx.beginPath(); ctx.arc(x1, y1, 4, 0, Math.PI * 2); ctx.fill();
+            ctx.beginPath(); ctx.arc(x2, y2, 4, 0, Math.PI * 2); ctx.fill();
+
+            const diffUSD = _medidaAtual.p2 - _medidaAtual.p1;
+            const diffPct = _medidaAtual.p1 > 0 ? (diffUSD / _medidaAtual.p1) * 100 : 0;
+            const corValor = diffUSD >= 0 ? '#26A69A' : '#EF5350';
+            const texto1 = `${diffPct >= 0 ? '+' : ''}${diffPct.toFixed(2)}%`;
+            const texto2 = `${diffUSD >= 0 ? '+' : ''}${fmtN(diffUSD)} USD`;
+            ctx.font = 'bold 13px -apple-system';
+            const boxW = Math.max(ctx.measureText(texto1).width, ctx.measureText(texto2).width) + 24;
+            const boxH = 46;
+            let boxX = (x1 + x2) / 2 - boxW / 2;
+            let boxY = Math.min(y1, y2) - boxH - 10;
+            if (boxY < PAD.top) boxY = Math.max(y1, y2) + 10;
+            boxX = Math.max(PAD.left + 4, Math.min(W - PAD.right - boxW - 4, boxX));
+            ctx.fillStyle = 'rgba(19,23,34,0.92)';
+            ctx.beginPath(); ctx.roundRect(boxX, boxY, boxW, boxH, 8); ctx.fill();
+            ctx.strokeStyle = corMedida; ctx.lineWidth = 1.5;
+            ctx.beginPath(); ctx.roundRect(boxX, boxY, boxW, boxH, 8); ctx.stroke();
+            ctx.textAlign = 'center';
+            ctx.fillStyle = corValor;
+            ctx.font = 'bold 14px -apple-system';
+            ctx.fillText(texto1, boxX + boxW / 2, boxY + 19);
+            ctx.font = 'bold 12px -apple-system';
+            ctx.fillText(texto2, boxX + boxW / 2, boxY + 36);
+            ctx.restore();
+        }
+
         // ── Mapa de Liquidez ─────────────────────────────────────
 
         if (_indState.liq) {
@@ -5013,6 +5059,15 @@ function grInitTouch() {
                 e.preventDefault();
                 return;
             }
+            // Modo Medida ativo — descartável, suspende outros gestos
+            if (_indState.medida) {
+                const idx0 = grXToIndex(ex2);
+                const price0 = grToPrice(ey2);
+                _medidaDrawing = true;
+                _medidaAtual = { i1: idx0, p1: price0, i2: idx0, p2: price0 };
+                e.preventDefault();
+                return;
+            }
             // Modo Bandeira ativo — suspende outros gestos. 2 etapas: mastro, depois canal.
             if (_indState.bandeira) {
                 if (_bandeiraStep === 'canal') {
@@ -5203,6 +5258,15 @@ function grInitTouch() {
 
     canvas.addEventListener('touchmove', e => {
         if (e.touches.length === 1) {
+            if (_medidaDrawing && _medidaAtual) {
+                const xc = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (canvas.width / canvas.getBoundingClientRect().width);
+                const yc = toCanvasY(e.touches[0].clientY);
+                _medidaAtual.i2 = grXToIndex(xc);
+                _medidaAtual.p2 = grToPrice(yc);
+                grDrawChart();
+                e.preventDefault();
+                return;
+            }
             if (_bandeiraDeletePending) {
                 const xc = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (canvas.width / canvas.getBoundingClientRect().width);
                 const yc = toCanvasY(e.touches[0].clientY);
@@ -5341,6 +5405,13 @@ function grInitTouch() {
 
     canvas.addEventListener('touchend', e => {
     isDragging = false;
+    if (_medidaDrawing) {
+        _medidaDrawing = false;
+        grDrawChart(); // mostra o resultado final fixo por um instante
+        clearTimeout(_medidaFlashTimer);
+        _medidaFlashTimer = setTimeout(() => { _medidaAtual = null; grDrawChart(); }, 1200);
+        return;
+    }
     if (_bandeiraDeletePending) {
         clearTimeout(_bandeiraDeleteTimer);
         _bandeiraDeletePending = null;
@@ -5643,6 +5714,7 @@ const _indState = {
     fib:       false,
     trend:     false,
     bandeira:  false,
+    medida:    false,
     reg:       false,
     patterns:  false,
     vwap:      false,
@@ -7220,6 +7292,16 @@ function cvToggleBandeira() {
         _bandeiraOffsetAtual = 0; _bandeiraDesenhandoCanal = false;
     }
     document.getElementById('cv-ind-bandeira').classList.toggle('active', _indState.bandeira);
+    grDrawChart();
+}
+
+function cvToggleMedida() {
+    _indState.medida = !_indState.medida;
+    if (!_indState.medida) {
+        _medidaAtual = null; _medidaDrawing = false;
+        clearTimeout(_medidaFlashTimer);
+    }
+    document.getElementById('cv-ind-medida').classList.toggle('active', _indState.medida);
     grDrawChart();
 }
 
