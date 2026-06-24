@@ -4411,19 +4411,12 @@ ctx.globalAlpha = 1;
             desenharBandeira(_bandeiraMastroFinal, _bandeiraOffsetAtual, corPreview);
         }
 
-        // ── Régua de Medição: linha + marcações horizontais + caixa lateral ──
+        // ── Régua de Medição: descartável, linha + caixa com % e USD ──
         if (_medidaAtual) {
             const corMedida = '#8B5CF6';
             const x1 = toXIdx2(_medidaAtual.i1), y1 = toY(_medidaAtual.p1);
             const x2 = toXIdx2(_medidaAtual.i2), y2 = toY(_medidaAtual.p2);
             ctx.save();
-            // Linhas horizontais de início e fim, atravessando o gráfico
-            ctx.strokeStyle = corMedida + '99';
-            ctx.lineWidth = 1;
-            ctx.setLineDash([4, 4]);
-            ctx.beginPath(); ctx.moveTo(PAD.left, y1); ctx.lineTo(W - PAD.right, y1); ctx.stroke();
-            ctx.beginPath(); ctx.moveTo(PAD.left, y2); ctx.lineTo(W - PAD.right, y2); ctx.stroke();
-            // Linha principal entre os dois pontos
             ctx.strokeStyle = corMedida;
             ctx.lineWidth = 2;
             ctx.setLineDash([5, 4]);
@@ -4441,19 +4434,10 @@ ctx.globalAlpha = 1;
             ctx.font = 'bold 13px -apple-system';
             const boxW = Math.max(ctx.measureText(texto1).width, ctx.measureText(texto2).width) + 24;
             const boxH = 46;
-            // Caixa ao LADO da linha vertical (não acima/abaixo — evita o dedo cobrir)
-            const meioY = (y1 + y2) / 2;
-            let boxY = Math.max(PAD.top + 4, Math.min(H - PAD.bottom - boxH - 4, meioY - boxH / 2));
-            const espacoDireita = (W - PAD.right) - Math.max(x1, x2);
-            const espacoEsquerda = Math.min(x1, x2) - PAD.left;
-            let boxX;
-            if (espacoDireita >= boxW + 14 || espacoDireita >= espacoEsquerda) {
-                boxX = Math.max(x1, x2) + 14;
-            } else {
-                boxX = Math.min(x1, x2) - boxW - 14;
-            }
+            let boxX = (x1 + x2) / 2 - boxW / 2;
+            let boxY = Math.min(y1, y2) - boxH - 10;
+            if (boxY < PAD.top) boxY = Math.max(y1, y2) + 10;
             boxX = Math.max(PAD.left + 4, Math.min(W - PAD.right - boxW - 4, boxX));
-            window._medidaBoxRect = { x: boxX, y: boxY, w: boxW, h: boxH };
             ctx.fillStyle = 'rgba(19,23,34,0.92)';
             ctx.beginPath(); ctx.roundRect(boxX, boxY, boxW, boxH, 8); ctx.fill();
             ctx.strokeStyle = corMedida; ctx.lineWidth = 1.5;
@@ -5029,9 +5013,9 @@ function grInitTouch() {
         if (!pmTravado && _grPm > 0 && Math.abs(yInterno - grLineY(_grPm)) <= HIT) return 'pm';
         if (!locked('reguaA') && _grAlvo    > 0 && Math.abs(yInterno - grLineY(_grAlvo))    <= HIT) return 'alvo';
         if (_grEntrada > 0 && Math.abs(yInterno - grLineY(_grEntrada)) <= HIT) return 'entrada';
-        if (!locked('reguaS') && _grStop    > 0 && Math.abs(yInterno - grLineY(_grStop))    <= HIT) return 'stop';
+        if (_grStop    > 0 && Math.abs(yInterno - grLineY(_grStop))    <= HIT) return 'stop';
         const stopPrice = _grStop > 0 ? _grStop : _precoAtual * 0.95;
-        if (!locked('reguaS') && Math.abs(yInterno - grLineY(stopPrice)) <= HIT) return 'stop';
+        if (Math.abs(yInterno - grLineY(stopPrice)) <= HIT) return 'stop';
         // Níveis de suporte/resistência
         for (let i = 0; i < _grNiveis.length; i++) {
             if (Math.abs(yInterno - grLineY(_grNiveis[i].preco)) <= HIT) return 'nivel_' + i;
@@ -5075,27 +5059,8 @@ function grInitTouch() {
                 e.preventDefault();
                 return;
             }
-            // Modo Medida ativo — toque na medida já finalizada apaga; senão inicia/substitui
+            // Modo Medida ativo — descartável, suspende outros gestos
             if (_indState.medida) {
-                if (_medidaAtual && !_medidaDrawing) {
-                    const r = window._medidaBoxRect;
-                    const naCaixa = r && ex2 >= r.x && ex2 <= r.x + r.w && ey2 >= r.y && ey2 <= r.y + r.h;
-                    const lx1 = grIndexToX(_medidaAtual.i1), ly1 = grLineY(_medidaAtual.p1);
-                    const lx2 = grIndexToX(_medidaAtual.i2), ly2 = grLineY(_medidaAtual.p2);
-                    const dx = lx2 - lx1, dy = ly2 - ly1;
-                    const lenSq = dx * dx + dy * dy;
-                    let t = lenSq > 0 ? ((ex2 - lx1) * dx + (ey2 - ly1) * dy) / lenSq : 0;
-                    t = Math.max(0, Math.min(1, t));
-                    const px = lx1 + t * dx, py = ly1 + t * dy;
-                    const naLinha = Math.hypot(ex2 - px, ey2 - py) <= 18;
-                    if (naCaixa || naLinha) {
-                        _medidaAtual = null;
-                        window._medidaBoxRect = null;
-                        grDrawChart();
-                        e.preventDefault();
-                        return;
-                    }
-                }
                 const idx0 = grXToIndex(ex2);
                 const price0 = grToPrice(ey2);
                 _medidaDrawing = true;
@@ -5372,7 +5337,10 @@ function grInitTouch() {
                 const novoPreco = grToPrice(yInterno);
                                 if (_grDragLine === 'pm') _grPm = novoPreco;
                                 else if (_grDragLine === 'entrada') _grEntrada = novoPreco;
-                else if (_grDragLine === 'stop') { _grStop = novoPreco; window._stopJanelaVisivel = true; window._stopHandleDragged = true; }
+                else if (_grDragLine === 'stop') {
+                    if (!(_prefComponentes['reguaS']?.locked)) { _grStop = novoPreco; window._stopHandleDragged = true; }
+                    window._stopJanelaVisivel = true;
+                }
                 else if (_grDragLine === 'alvo') _grAlvo = novoPreco;
                                 else if (_grDragLine && _grDragLine.startsWith('nivel_')) {
                     const idx = parseInt(_grDragLine.split('_')[1]);
@@ -5442,7 +5410,9 @@ function grInitTouch() {
     isDragging = false;
     if (_medidaDrawing) {
         _medidaDrawing = false;
-        grDrawChart(); // permanece fixa na tela até um novo toque sobre ela
+        grDrawChart(); // mostra o resultado final fixo por um instante
+        clearTimeout(_medidaFlashTimer);
+        _medidaFlashTimer = setTimeout(() => { _medidaAtual = null; grDrawChart(); }, 1200);
         return;
     }
     if (_bandeiraDeletePending) {
