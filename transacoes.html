@@ -9290,6 +9290,7 @@ async function odCalcularScoreConfluencia() {
             return;
         }
         const closes = data.map(k => parseFloat(k[4]));
+        const opens = data.map(k => parseFloat(k[1]));
         const highs = data.map(k => parseFloat(k[2]));
         const lows = data.map(k => parseFloat(k[3]));
         const vols = data.map(k => parseFloat(k[5]));
@@ -9318,6 +9319,18 @@ async function odCalcularScoreConfluencia() {
                 else { avgGain = (avgGain * (period - 1) + gain) / period; avgLoss = (avgLoss * (period - 1) + loss) / period; }
             }
             return avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+        };
+        const rsiSerie = (vals, period = 14) => {
+            const out = new Array(vals.length).fill(50);
+            let avgGain = 0, avgLoss = 0;
+            for (let i = 1; i < vals.length; i++) {
+                const diff = vals[i] - vals[i - 1];
+                const gain = Math.max(diff, 0), loss = Math.max(-diff, 0);
+                if (i <= period) { avgGain += gain / period; avgLoss += loss / period; }
+                else { avgGain = (avgGain * (period - 1) + gain) / period; avgLoss = (avgLoss * (period - 1) + loss) / period; }
+                out[i] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+            }
+            return out;
         };
         const sma = (vals, period) => {
             const slice = vals.slice(-period);
@@ -9462,22 +9475,89 @@ async function odCalcularScoreConfluencia() {
         else if (score <= -maxScore * 0.3) { label = 'Viés de Baixa'; cor = '#DC2626'; }
         else { label = 'Neutro / Sem confluência clara'; cor = '#8E8E93'; }
 
-        // ── Ação sugerida: direção do trade operacional ativo x momentum de curto prazo x OI ──
+        // ── Ação sugerida: detecta topo/fundo do pullback formando, na direção contrária ao trade ──
         let acao = null;
         const dirOperacional = (_grDir || '').toUpperCase();
         if (dirOperacional !== 'LONG' && dirOperacional !== 'SHORT') {
             acao = { texto: 'Nenhum trade operacional ativo — abra um trade pra identificar pullbacks de reforço.', cor: '#8E8E93' };
         } else {
-            const tendenciaPrincipal = dirOperacional === 'SHORT' ? -1 : 1;
-            const grupoEmas = votosTecnicosAgrupados.find(v => v.nome === 'EMAs (9/21/50/200)');
-            const grupoRsiStoch = votosTecnicosAgrupados.find(v => v.nome === 'RSI + Stochastic');
-            const oiDiag = window._odComboDiag && window._odComboDiag.oi;
-            const oiVoto = oiDiag ? (oiDiag.bullish ? 1 : -1) : tendenciaPrincipal;
-            const alinhados = [grupoEmas, grupoRsiStoch, { voto: oiVoto }].filter(g => g && g.voto === tendenciaPrincipal).length;
-            if (alinhados === 3) {
+            const isShort = dirOperacional === 'SHORT';
+            const rsiSerieCompleta = rsiSerie(closes, 14);
+            const N = closes.length;
+            const JANELA = 25; // candles pra trás onde procurar o swing extremo
+
+            // Passo 2: acha o swing extremo mais recente (fundo p/ short, topo p/ long), com 2 vizinhos de cada lado
+            let swingIdx = null;
+            for (let i = N - 3; i >= Math.max(2, N - JANELA); i--) {
+                if (isShort) {
+                    if (lows[i] < lows[i - 1] && lows[i] < lows[i - 2] && lows[i] < lows[i + 1] && lows[i] < lows[i + 2]) { swingIdx = i; break; }
+                } else {
+                    if (highs[i] > highs[i - 1] && highs[i] > highs[i - 2] && highs[i] > highs[i + 1] && highs[i] > highs[i + 2]) { swingIdx = i; break; }
+                }
+            }
+
+            if (swingIdx === null) {
                 acao = { texto: 'Aguardar pullback.', cor: '#8E8E93' };
             } else {
-                acao = { texto: 'Risco alto de pullback.', cor: '#F59E0B' };
+                // Passo 3: confirma que o preço já se moveu a favor do pullback desde o swing
+                const emPullback = isShort ? (precoAtual > lows[swingIdx]) : (precoAtual < highs[swingIdx]);
+                if (!emPullback) {
+                    acao = { texto: 'Aguardar pullback.', cor: '#8E8E93' };
+                } else {
+                    // Barreira: preço perto (≤0.5%) de S/R, Fibo ou alguma EMA ativa
+                    const candidatosBarreira = [];
+                    if (Array.isArray(_grNiveis)) _grNiveis.forEach(nv => candidatosBarreira.push(nv.preco));
+                    if (fiboAtivo) {
+                        const fH = Math.max(fiboAtivo.p1, fiboAtivo.p2), fL = Math.min(fiboAtivo.p1, fiboAtivo.p2), fD = fH - fL;
+                        const upFib = fiboAtivo.p2 > fiboAtivo.p1;
+                        [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1].forEach(r => candidatosBarreira.push(upFib ? fL + fD * (1 - r) : fH - fD * (1 - r)));
+                    }
+                    [ema9, ema21, ema50, ema200].forEach(v => { if (v != null) candidatosBarreira.push(v); });
+                    const temBarreira = candidatosBarreira.some(p => p > 0 && Math.abs(precoAtual - p) / precoAtual <= 0.005);
+
+                    // Gatilho A: divergência (ou virada simples) no RSI durante o pullback
+                    let gatilhoOscilador = false;
+                    const picos = []; // {idx, preco, rsi} — topos (short) ou fundos (long) dentro do pullback
+                    for (let i = swingIdx + 2; i < N - 1; i++) {
+                        if (isShort) { if (highs[i] > highs[i - 1] && highs[i] > highs[i + 1]) picos.push({ idx: i, preco: highs[i], rsi: rsiSerieCompleta[i] }); }
+                        else { if (lows[i] < lows[i - 1] && lows[i] < lows[i + 1]) picos.push({ idx: i, preco: lows[i], rsi: rsiSerieCompleta[i] }); }
+                    }
+                    if (picos.length >= 2) {
+                        const p1 = picos[picos.length - 2], p2 = picos[picos.length - 1];
+                        gatilhoOscilador = isShort ? (p2.preco > p1.preco && p2.rsi < p1.rsi) : (p2.preco < p1.preco && p2.rsi > p1.rsi);
+                    } else {
+                        // fallback: virada simples nos últimos 3 valores de RSI
+                        const r = rsiSerieCompleta.slice(-3);
+                        gatilhoOscilador = isShort ? (r[0] < r[1] && r[1] > r[2]) : (r[0] > r[1] && r[1] < r[2]);
+                    }
+
+                    // Gatilho B: padrão de candle de reversão na direção certa, num dos últimos 2 candles
+                    const padroesAlta = new Set(['martelo', 'engolfo alta', 'morning star', 'tweezer bottom', 'harami alta']);
+                    const padroesBaixa = new Set(['enforcado', 'estrela cadente', 'engolfo baixa', 'evening star', 'tweezer top', 'harami baixa']);
+                    const setProcurado = isShort ? padroesBaixa : padroesAlta;
+                    let gatilhoCandle = false;
+                    for (let i = N - 2; i < N; i++) {
+                        const c = { o: opens[i], h: highs[i], l: lows[i], c: closes[i] };
+                        const c1 = { o: opens[i - 1], h: highs[i - 1], l: lows[i - 1], c: closes[i - 1] };
+                        const corp = Math.abs(c.c - c.o), rng = c.h - c.l;
+                        if (rng === 0) continue;
+                        const si = Math.min(c.o, c.c) - c.l, ss = c.h - Math.max(c.o, c.c);
+                        const isAlta = c.c >= c.o, isBaixa = c.c < c.o;
+                        if (isShort) {
+                            if (ss >= corp * 2.5 && si <= corp * 0.3 && c1.c >= c1.o) { gatilhoCandle = true; break; } // estrela cadente/enforcado
+                            if (isBaixa && c1.c >= c1.o && c.o >= c1.c && c.c <= c1.o) { gatilhoCandle = true; break; } // engolfo de baixa
+                        } else {
+                            if (si >= corp * 2.5 && ss <= corp * 0.3 && c1.c < c1.o) { gatilhoCandle = true; break; } // martelo
+                            if (isAlta && c1.c < c1.o && c.o <= c1.c && c.c >= c1.o) { gatilhoCandle = true; break; } // engolfo de alta
+                        }
+                    }
+
+                    if (temBarreira && (gatilhoOscilador || gatilhoCandle)) {
+                        acao = { texto: 'Risco alto de pullback.', cor: '#F59E0B' };
+                    } else {
+                        acao = { texto: 'Aguardar pullback.', cor: '#8E8E93' };
+                    }
+                }
             }
         }
 
