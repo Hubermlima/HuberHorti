@@ -2009,7 +2009,8 @@ function cvIniciarNovoTrade() {
     if (!_regAtual) _regAtual = { p1: _grPm, p2: 0 };
     // Destrava as réguas de Alvo e Stop, caso estivessem travadas
     if (_prefComponentes['reguaA']) _prefComponentes['reguaA'].locked = false;
-    if (_prefComponentes['reguaS']) _prefComponentes['reguaS'].locked = false;
+    if (_prefComponentes['reguaS']) { _prefComponentes['reguaS'].locked = false; _prefComponentes['reguaS'].pilotoAutomatico = false; }
+    _pilotoAutoUltimoGravado = null;
     // Ativa o modo régua (necessário pra arrastar o Alvo)
     _indState.reg = true;
     const btnReg = document.getElementById('cv-ind-reg');
@@ -2972,6 +2973,7 @@ const startIdx = Math.max(0, Math.min(maxOff, _grOffset));
 function grDrawCandles(candles, emptyRight) {
         emptyRight = emptyRight || 0;
         window._compValores = {};
+        cvSincronizarPilotoAutomatico();
     const canvas = document.getElementById('gr-chart-canvas');
     const ctx = canvas.getContext('2d');
         const W = canvas.width, H = canvas.height;
@@ -5875,6 +5877,14 @@ async function cvAbrirOcultarIndicadores() {
             <div style="display:flex;justify-content:center;">${podeLock ? check(c.key,'locked',pref.locked) : '<span style="color:#C7C7CC;font-size:16px;">—</span>'}</div>
             <div style="display:flex;justify-content:center;">${check(c.key,'visivel',pref.visivel)}</div>
         </div>`;
+        if (c.key === 'reguaS') {
+            html += `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:0.5px solid #F2F4F8;background:rgba(22,163,74,0.05);margin:0 -4px;padding-left:4px;padding-right:4px;border-radius:8px;">
+                <span style="font-size:12px;color:#1C1C1E;font-family:-apple-system,sans-serif;">↳ Piloto Automático (segue o Chandelier)</span>
+                <input type="checkbox" id="cv-chk-piloto-auto" ${pref.pilotoAutomatico ? 'checked' : ''}
+                    onchange="cvTogglePilotoAutomatico(this.checked)"
+                    style="width:18px;height:18px;cursor:pointer;accent-color:#16A34A;flex-shrink:0;">
+            </div>`;
+        }
     });
 
     lista.innerHTML = html;
@@ -5890,6 +5900,82 @@ function cvTogglePref(key, campo, valor) {
         _indOculto[key] = !valor;
         grDrawChart();
     }
+}
+
+function cvTogglePilotoAutomatico(ativo) {
+    if (!_prefComponentes['reguaS']) _prefComponentes['reguaS'] = { fixo: false, locked: false, visivel: false };
+    _prefComponentes['reguaS'].pilotoAutomatico = ativo;
+    _prefComponentes['reguaS'].locked = ativo; // trava o drag manual enquanto o piloto estiver ativo
+    const chkLocked = document.querySelector(`input[onchange="cvTogglePref('reguaS','locked',this.checked)"]`);
+    if (chkLocked) chkLocked.checked = ativo;
+    _pilotoAutoUltimoGravado = null; // força reavaliar/gravar na próxima checagem
+    cvSalvarPreferencias();
+    if (ativo) cvSincronizarPilotoAutomatico();
+}
+
+// ── Piloto Automático da Régua S: calcula o Chandelier (22, 3x ATR) de forma
+// independente do indicador visual, e sincroniza o Stop quando ele melhorar ──
+let _pilotoAutoUltimoGravado = null;
+
+function calcularChandelierAtual() {
+    const period = 22, mult = 3;
+    const candles = _grAllCandles;
+    if (!candles || candles.length < period + 1) return null;
+    let prev = null;
+    for (let i = period; i < candles.length; i++) {
+        const slice = candles.slice(i - period, i);
+        let atrSum = 0;
+        for (let j = 1; j < slice.length; j++) {
+            atrSum += Math.max(
+                slice[j].h - slice[j].l,
+                Math.abs(slice[j].h - slice[j - 1].c),
+                Math.abs(slice[j].l - slice[j - 1].c)
+            );
+        }
+        const atr = atrSum / (slice.length - 1);
+        const highestHigh = Math.max(...slice.map(c => c.h));
+        const lowestLow = Math.min(...slice.map(c => c.l));
+        const ceLong = highestHigh - mult * atr;
+        const ceShort = lowestLow + mult * atr;
+        const close = candles[i].c;
+        let val, bullish;
+        if (!prev) {
+            bullish = close > ceLong;
+            val = bullish ? ceLong : ceShort;
+        } else {
+            if (prev.bullish) {
+                bullish = close > (prev.val < ceLong ? ceLong : prev.val);
+                val = bullish ? Math.max(ceLong, prev.val) : ceShort;
+            } else {
+                bullish = close > ceShort;
+                val = bullish ? ceLong : Math.min(ceShort, prev.val);
+            }
+        }
+        prev = { val, bullish };
+    }
+    return prev;
+}
+
+async function cvSincronizarPilotoAutomatico() {
+    if (!_prefComponentes.reguaS || !_prefComponentes.reguaS.pilotoAutomatico) return;
+    if (!_grPm || !_grStop || !_cvTradeId) return;
+    if (window._pilotoAutoSincronizando) return;
+    const ce = calcularChandelierAtual();
+    if (!ce) return;
+    const dir = (_grDir || 'LONG').toUpperCase();
+    const novoValor = ce.val;
+    // Só melhora, nunca piora (trava no melhor já alcançado)
+    const maisFavoravel = dir === 'SHORT' ? (novoValor < _grStop) : (novoValor > _grStop);
+    if (!maisFavoravel) return;
+    if (_pilotoAutoUltimoGravado === novoValor) return; // já está sincronizado com esse valor
+    window._pilotoAutoSincronizando = true;
+    _grStop = novoValor;
+    _pilotoAutoUltimoGravado = novoValor;
+    try {
+        await db.from('trades').update({ stop: novoValor }).eq('id', _cvTradeId);
+    } catch (e) {}
+    grDrawChart();
+    window._pilotoAutoSincronizando = false;
 }
 
 function cvToggleOcultar(key) {
