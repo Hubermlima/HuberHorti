@@ -1007,8 +1007,19 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <div id="cv-minimap-handle" style="display:flex;align-items:center;justify-content:center;height:16px;flex-shrink:0;cursor:row-resize;touch-action:none;">
         <div style="width:36px;height:4px;border-radius:100px;background:rgba(255,255,255,0.25);"></div>
       </div>
-      <div style="display:flex;align-items:center;justify-content:space-between;padding:5px 12px 3px;flex-shrink:0;gap:8px;">
-        <span id="cv-minimap-tf-label" style="font-size:10px;font-weight:700;color:#8E8E93;letter-spacing:0.5px;text-transform:uppercase;">Visão geral</span>
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:5px 12px 3px;flex-shrink:0;gap:8px;flex-wrap:wrap;row-gap:4px;">
+        <div style="display:flex;align-items:center;gap:6px;">
+          <span style="font-size:10px;font-weight:700;color:#8E8E93;letter-spacing:0.5px;text-transform:uppercase;flex-shrink:0;">Mapa</span>
+          <select id="cv-minimap-tf-select" onchange="cvMinimapSetTfOverride(this.value)" style="background:#1c1f2a;color:#FFFFFF;border:1px solid rgba(255,255,255,0.15);border-radius:6px;font-size:10px;font-weight:700;padding:2px 4px;font-family:'Plus Jakarta Sans',sans-serif;flex-shrink:0;">
+            <option value="">Auto</option>
+            <option value="1h">1H</option>
+            <option value="4h">4H</option>
+            <option value="1d">Diário</option>
+            <option value="1w">Semanal</option>
+            <option value="1M">Mensal</option>
+          </select>
+          <span id="cv-minimap-tf-label" style="font-size:10px;font-weight:500;color:#8E8E93;white-space:nowrap;">· histórico completo</span>
+        </div>
         <div style="display:flex;align-items:center;gap:6px;">
           <button type="button" class="cv-minimap-ema-btn" id="cv-minimap-ema-21" onclick="cvMinimapToggleEma(21)" style="display:flex;align-items:center;gap:4px;background:transparent;border:1px solid rgba(212,153,255,0.55);border-radius:100px;padding:2px 8px 2px 4px;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;">
             <span class="cv-minimap-ema-dot" style="width:9px;height:9px;border-radius:50%;border:1.5px solid #D499FF;display:inline-block;"></span>
@@ -2921,6 +2932,11 @@ try {
     if (alturaSalva) _cvMinimapAlturaPct = Math.max(_cvMinimapAlturaMin, Math.min(_cvMinimapAlturaMax, parseFloat(alturaSalva)));
 } catch (e) {}
 let _cvMinimapCrosshairIdx = null; // índice tocado/arrastado, pra mostrar data+preço
+let _cvMinimapTfOverride = null; // null = automático (um nível acima do gráfico principal); senão, valor fixo escolhido pelo usuário
+try {
+    const tfSalvo = localStorage.getItem('cvMinimapTfOverride');
+    if (tfSalvo) _cvMinimapTfOverride = tfSalvo;
+} catch (e) {}
 
 let _grOffset = 999999;
 let _grZoom = 40;
@@ -5900,7 +5916,7 @@ function grLineY(price) {
 // "montar" o desenho na memória. Opt-in, como um indicador na barra lateral.
 // ─────────────────────────────────────────────────────────────
 
-// Timeframe mapeado (um nível acima) + intervalo Binance
+// Timeframe mapeado (um nível acima) + intervalo Binance — ou fixo, se o usuário escolher no combobox
 function cvMinimapConfig() {
     const map = {
         '15m':  { bin: '1h', label: '1H'  },
@@ -5909,7 +5925,22 @@ function cvMinimapConfig() {
         '1day': { bin: '1w', label: 'Semanal' },
         '1week':{ bin: '1M', label: 'Mensal' }
     };
+    if (_cvMinimapTfOverride) {
+        const labels = { '1h': '1H', '4h': '4H', '1d': 'Diário', '1w': 'Semanal', '1M': 'Mensal' };
+        return { bin: _cvMinimapTfOverride, label: labels[_cvMinimapTfOverride] || _cvMinimapTfOverride };
+    }
     return map[_grTf] || map['4h'];
+}
+
+// Troca o timeframe do minimapa manualmente (combobox) — "" volta pro automático
+function cvMinimapSetTfOverride(valor) {
+    _cvMinimapTfOverride = valor || null;
+    try {
+        if (_cvMinimapTfOverride) localStorage.setItem('cvMinimapTfOverride', _cvMinimapTfOverride);
+        else localStorage.removeItem('cvMinimapTfOverride');
+    } catch (e) {}
+    _cvMinimapChaveCache = ''; // força reload com o novo timeframe
+    if (_cvMinimapAtivo) cvMinimapCarregar();
 }
 
 function cvToggleMinimapa() {
@@ -5923,6 +5954,8 @@ function cvToggleMinimapa() {
         // Sempre abre sincronizado nos candles mais recentes do gráfico principal
         _grOffset = 999999;
         grDrawChart();
+        const sel = document.getElementById('cv-minimap-tf-select');
+        if (sel) sel.value = _cvMinimapTfOverride || '';
     }
 
     // Recalcula tamanho do canvas principal (a área disponível mudou)
@@ -5974,6 +6007,8 @@ async function cvMinimapCarregar() {
     }
     const label = document.getElementById('cv-minimap-tf-label');
     if (label) label.textContent = `${cfg.label} · histórico completo`;
+    const sel = document.getElementById('cv-minimap-tf-select');
+    if (sel) sel.value = _cvMinimapTfOverride || '';
     cvDesenharMinimapa();
 }
 
@@ -6086,7 +6121,7 @@ function cvDesenharMinimapa() {
         ctx.font = 'bold 8px -apple-system';
         const txtW = ctx.measureText(label).width;
         const bw = txtW + 8, bh = 11;
-        const bx = W - padRight - bw, by = y - bh / 2;
+        const bx = padLeft, by = y - bh / 2;
         ctx.fillStyle = cor;
         ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 3); ctx.fill();
         ctx.fillStyle = corTexto || '#FFFFFF';
