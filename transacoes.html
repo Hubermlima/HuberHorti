@@ -6282,17 +6282,21 @@ function cvMinimapTimeToIndex(arr, t) {
     return span > 0 ? lo + (t - arr[lo].t) / span : lo;
 }
 
-// Toque/arrasto no minimapa: salta a janela do gráfico principal pro ponto tocado
-// e mostra o crosshair (data + preço) enquanto o dedo estiver na tela.
+// Toque com 1 dedo — mesma lógica do gráfico principal:
+// por padrão arrasta = rola o histórico; se o dedo ficar quase parado por 500ms,
+// ativa o crosshair (que passa a seguir o arrasto); solta e ele persiste; um novo
+// toque simples (sem arrastar) sobre o crosshair já ativo fecha ele.
 (function cvInitMinimapaTouch() {
     const setup = () => {
         const canvas = document.getElementById('cv-minimap-canvas');
         if (!canvas || canvas._cvMinimapInit) return;
         canvas._cvMinimapInit = true;
 
-        const LIMIAR_SCROLL = 8; // px de arrasto antes de virar scroll em vez de crosshair
-        let gestoStartX = 0, gestoStartScrollIdx = 0, gestoModo = null; // null|'crosshair'|'scroll'|'fechado'
-        let mouseDown = false;
+        let touchStartX = 0;
+        let isDragging = false;
+        let longPressActive = false;
+        let longPressTimer = null;
+        let scrollStartIdx = 0;
 
         function visivelTotal() {
             const totalC = _cvMinimapCandles.length;
@@ -6305,61 +6309,78 @@ function cvMinimapTimeToIndex(arr, t) {
             return Math.round(ratio * (visivelTotal() - 1));
         }
 
-        // Início do toque: se já tinha crosshair ativo, fecha (igual ao gráfico principal);
-        // senão, já mostra o crosshair na posição tocada (pode virar scroll se arrastar).
-        function iniciarGesto(clientX) {
-            const dados = _cvMinimapCandles;
-            if (!_cvMinimapAtivo || !dados || dados.length < 2) return;
-            if (_prefComponentes['minimapa']?.locked) { gestoModo = 'fechado'; return; }
-            gestoStartX = clientX;
-            gestoStartScrollIdx = _cvMinimapScrollIdx;
+        function travado() {
+            return !!(_prefComponentes['minimapa']?.locked);
+        }
 
-            if (_cvMinimapCrosshairIdx !== null) {
-                _cvMinimapCrosshairIdx = null;
-                cvDesenharMinimapa();
-                gestoModo = 'fechado';
-                return;
-            }
-            gestoModo = 'crosshair';
-            _cvMinimapCrosshairIdx = posicaoParaIdx(clientX);
+        function aplicarScroll(deltaX) {
+            const dados = _cvMinimapCandles;
+            const pxPorCandle = window._cvMinimapPxPorCandle || 4;
+            const deltaCandles = Math.round(deltaX / pxPorCandle);
+            const totalCompleto = dados.length;
+            const visivelN = visivelTotal();
+            const maxStartIdx = totalCompleto - visivelN;
+            _cvMinimapScrollIdx = Math.max(0, Math.min(maxStartIdx, scrollStartIdx - deltaCandles));
             cvDesenharMinimapa();
         }
 
-        // Arrasto: enquanto o dedo ficar quase parado, segue mostrando o crosshair.
-        // Se mover mais que o limiar na horizontal, vira scroll (rola pro passado/futuro).
-        function moverGesto(clientX) {
-            if (!_cvMinimapAtivo || gestoModo === null || gestoModo === 'fechado') return;
-            if (_prefComponentes['minimapa']?.locked) return;
-            const deltaX = clientX - gestoStartX;
+        function onStart(clientX) {
+            if (!_cvMinimapAtivo || travado()) return;
+            const dados = _cvMinimapCandles;
+            if (!dados || dados.length < 2) return;
 
-            if (gestoModo === 'crosshair' && Math.abs(deltaX) > LIMIAR_SCROLL) {
-                gestoModo = 'scroll';
+            // Toque simples fecha o crosshair se já estava ativo — igual ao gráfico principal
+            if (longPressActive) {
+                longPressActive = false;
+                clearTimeout(longPressTimer);
                 _cvMinimapCrosshairIdx = null;
+                cvDesenharMinimapa();
+                return;
             }
 
-            if (gestoModo === 'scroll') {
-                const dados = _cvMinimapCandles;
-                const pxPorCandle = window._cvMinimapPxPorCandle || 4;
-                const deltaCandles = Math.round(deltaX / pxPorCandle);
-                const totalCompleto = dados.length;
-                const visivelN = visivelTotal();
-                const maxStartIdx = totalCompleto - visivelN;
-                _cvMinimapScrollIdx = Math.max(0, Math.min(maxStartIdx, gestoStartScrollIdx - deltaCandles));
-                cvDesenharMinimapa();
-            } else {
+            touchStartX = clientX;
+            isDragging = true;
+            scrollStartIdx = _cvMinimapScrollIdx;
+            longPressTimer = setTimeout(() => {
+                if (isDragging) {
+                    longPressActive = true;
+                    isDragging = false;
+                    _cvMinimapCrosshairIdx = posicaoParaIdx(clientX);
+                    cvDesenharMinimapa();
+                }
+            }, 500);
+        }
+
+        function onMove(clientX) {
+            if (!_cvMinimapAtivo || travado()) return;
+            if (longPressActive) {
                 _cvMinimapCrosshairIdx = posicaoParaIdx(clientX);
                 cvDesenharMinimapa();
+                return;
+            }
+            if (isDragging) {
+                const dxAbs = Math.abs(clientX - touchStartX);
+                if (dxAbs > 8 && !longPressActive) clearTimeout(longPressTimer);
+                aplicarScroll(clientX - touchStartX);
             }
         }
 
-        canvas.addEventListener('touchstart', e => { iniciarGesto(e.touches[0].clientX); e.preventDefault(); }, { passive: false });
-        canvas.addEventListener('touchmove', e => { moverGesto(e.touches[0].clientX); e.preventDefault(); }, { passive: false });
-        canvas.addEventListener('mousedown', e => { mouseDown = true; iniciarGesto(e.clientX); e.preventDefault(); });
-        document.addEventListener('mousemove', e => { if (mouseDown) moverGesto(e.clientX); });
-        document.addEventListener('mouseup', () => { mouseDown = false; });
+        function onEnd() {
+            isDragging = false;
+            if (!longPressActive) clearTimeout(longPressTimer);
+            // Crosshair persiste se já estava ativo — não fecha ao soltar.
+        }
+
+        canvas.addEventListener('touchstart', e => { onStart(e.touches[0].clientX); e.preventDefault(); }, { passive: false });
+        canvas.addEventListener('touchmove', e => { onMove(e.touches[0].clientX); e.preventDefault(); }, { passive: false });
+        canvas.addEventListener('touchend', onEnd, { passive: true });
+        canvas.addEventListener('touchcancel', onEnd, { passive: true });
+
+        let mouseDown = false;
+        canvas.addEventListener('mousedown', e => { mouseDown = true; onStart(e.clientX); e.preventDefault(); });
+        document.addEventListener('mousemove', e => { if (mouseDown) onMove(e.clientX); });
+        document.addEventListener('mouseup', () => { if (mouseDown) { mouseDown = false; onEnd(); } });
         canvas.addEventListener('contextmenu', e => e.preventDefault());
-        // Crosshair persiste depois de soltar o dedo — igual ao gráfico principal.
-        // Só fecha em um novo toque (sem arrastar) ou trocando de timeframe/ativo.
     };
     setup();
     document.addEventListener('DOMContentLoaded', setup);
