@@ -2020,7 +2020,7 @@ async function cvSelecionarAtivo(id, ticker) {
     // Reinicia o ambiente para o novo ativo
     _grAllCandles = []; _grCandlesD = []; _grCandlesW = [];
 _grOffset = 999999;
-_cvMinimapChaveCache = '';
+_cvMinimapChaveCache = ''; _cvMinimapScrollIdx = null;
 _grEntrada = 0; _grStop = 0; _grAlvo = 0;
 _grTf = '4h';
 _precoAtual = 0;
@@ -2842,7 +2842,7 @@ function cvSetTf(tf) {
     _grOffset = 999999;
     _grAllCandles = []; _grCandlesD = []; _grCandlesW = [];
     _wsLastDraw = Date.now();
-    _cvMinimapChaveCache = ''; // tf mudou → minimapa precisa remapear/recarregar
+    _cvMinimapChaveCache = ''; _cvMinimapScrollIdx = null; // tf mudou → minimapa precisa remapear/recarregar
 
     document.getElementById('cv-tf-15m').classList.toggle('active', tf==='15m');
     document.getElementById('cv-tf-1h').classList.toggle('active', tf==='1h');
@@ -2934,6 +2934,8 @@ try {
     if (alturaSalva) _cvMinimapAlturaPct = Math.max(_cvMinimapAlturaMin, Math.min(_cvMinimapAlturaMax, parseFloat(alturaSalva)));
 } catch (e) {}
 let _cvMinimapCrosshairIdx = null; // índice tocado/arrastado, pra mostrar data+preço
+let _cvMinimapVisivelN = 90; // quantos candles ficam visíveis de cada vez (sem comprimir o histórico todo)
+let _cvMinimapScrollIdx = null; // índice inicial da janela visível — null = mais recentes
 let _cvMinimapTfOverride = null; // null = automático (um nível acima do gráfico principal); senão, valor fixo escolhido pelo usuário
 try {
     const tfSalvo = localStorage.getItem('cvMinimapTfOverride');
@@ -5941,7 +5943,7 @@ function cvMinimapSetTfOverride(valor) {
         if (_cvMinimapTfOverride) localStorage.setItem('cvMinimapTfOverride', _cvMinimapTfOverride);
         else localStorage.removeItem('cvMinimapTfOverride');
     } catch (e) {}
-    _cvMinimapChaveCache = ''; // força reload com o novo timeframe
+    _cvMinimapChaveCache = ''; _cvMinimapScrollIdx = null; // força reload com o novo timeframe
     if (_cvMinimapAtivo) cvMinimapCarregar();
 }
 
@@ -5955,6 +5957,7 @@ function cvToggleMinimapa() {
     if (_cvMinimapAtivo) {
         // Sempre abre sincronizado nos candles mais recentes do gráfico principal
         _grOffset = 999999;
+        _cvMinimapScrollIdx = null;
         grDrawChart();
         const sel = document.getElementById('cv-minimap-tf-select');
         if (sel) sel.value = _cvMinimapTfOverride || '';
@@ -6041,13 +6044,24 @@ function cvDesenharMinimapa() {
     const W = canvas.width, H = canvas.height;
     ctx.clearRect(0, 0, W, H);
     if (!_cvMinimapAtivo || _indOculto.minimapa) return;
-    const dados = _cvMinimapCandles;
-    if (!dados || dados.length < 2) return;
+    const dadosCompletos = _cvMinimapCandles;
+    if (!dadosCompletos || dadosCompletos.length < 2) return;
+
+    // Mostra só uma janela recente (scrollável) em vez do histórico inteiro comprimido —
+    // os candles ficam no mesmo tamanho legível; pra ver mais pro passado, arrasta.
+    const totalCompleto = dadosCompletos.length;
+    const visivelN = Math.min(_cvMinimapVisivelN, totalCompleto);
+    const maxStartIdx = totalCompleto - visivelN;
+    if (_cvMinimapScrollIdx === null) _cvMinimapScrollIdx = maxStartIdx; // padrão: candles mais recentes
+    const startIdx = Math.max(0, Math.min(maxStartIdx, _cvMinimapScrollIdx));
+    _cvMinimapScrollIdx = startIdx;
+    const dados = dadosCompletos.slice(startIdx, startIdx + visivelN);
 
     const total = dados.length;
     const padLeft = 4, padRight = 16, padY = 6;
     const innerW = W - padLeft - padRight;
     const innerH = H - padY * 2;
+    window._cvMinimapPxPorCandle = innerW / total; // usado pelo handler de arrasto/scroll
 
     let minP = Infinity, maxP = -Infinity;
     for (let i = 0; i < total; i++) {
@@ -6095,13 +6109,16 @@ function cvDesenharMinimapa() {
         ctx.fillRect(x - candleBodyW / 2, yTop, candleBodyW, altura);
     }
 
-    // EMAs opcionais (21/50/200) — multi-seleção, por cima dos mini-candles
-    const closesArr = dados.map(d => d.c);
+    // EMAs opcionais (21/50/200) — multi-seleção, por cima dos mini-candles.
+    // Calculadas sobre o histórico COMPLETO (lookback correto), mas só a fatia
+    // dentro da janela visível é desenhada.
+    const closesCompletos = dadosCompletos.map(d => d.c);
     const emaCores = { 21: '#D499FF', 50: '#FF8FC4', 200: '#FFD166' };
     [21, 50, 200].forEach(periodo => {
         if (!_cvMinimapEmas[periodo]) return;
-        const emaVals = cvMinimapEMA(closesArr, periodo);
-        if (!emaVals) return;
+        const emaCompleto = cvMinimapEMA(closesCompletos, periodo);
+        if (!emaCompleto) return;
+        const emaVals = emaCompleto.slice(startIdx, startIdx + total);
         ctx.beginPath();
         ctx.strokeStyle = emaCores[periodo];
         ctx.lineWidth = 1.3;
@@ -6236,34 +6253,75 @@ function cvMinimapTimeToIndex(arr, t) {
         if (!canvas || canvas._cvMinimapInit) return;
         canvas._cvMinimapInit = true;
 
-        function mover(clientX) {
-            const dados = _cvMinimapCandles;
-            if (!_cvMinimapAtivo || !dados || dados.length < 2) return;
-            if (_prefComponentes['minimapa']?.locked) return; // travado: sem interação
-            const rect = canvas.getBoundingClientRect();
-            const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-            const idx = Math.round(ratio * (dados.length - 1));
-            _cvMinimapCrosshairIdx = idx;
-            cvDesenharMinimapa();
+        const LIMIAR_SCROLL = 8; // px de arrasto antes de virar scroll em vez de crosshair
+        let gestoStartX = 0, gestoStartScrollIdx = 0, gestoModo = null; // null|'crosshair'|'scroll'|'fechado'
+        let mouseDown = false;
+
+        function visivelTotal() {
+            return Math.min(_cvMinimapVisivelN, _cvMinimapCandles.length);
         }
 
-        // Toque novo: se o crosshair já estava ativo, fecha (igual ao gráfico principal);
-        // senão, abre na posição tocada.
-        function aoTocar(clientX) {
+        function posicaoParaIdx(clientX) {
+            const rect = canvas.getBoundingClientRect();
+            const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+            return Math.round(ratio * (visivelTotal() - 1));
+        }
+
+        // Início do toque: se já tinha crosshair ativo, fecha (igual ao gráfico principal);
+        // senão, já mostra o crosshair na posição tocada (pode virar scroll se arrastar).
+        function iniciarGesto(clientX) {
+            const dados = _cvMinimapCandles;
+            if (!_cvMinimapAtivo || !dados || dados.length < 2) return;
+            if (_prefComponentes['minimapa']?.locked) { gestoModo = 'fechado'; return; }
+            gestoStartX = clientX;
+            gestoStartScrollIdx = _cvMinimapScrollIdx;
+
             if (_cvMinimapCrosshairIdx !== null) {
                 _cvMinimapCrosshairIdx = null;
                 cvDesenharMinimapa();
+                gestoModo = 'fechado';
                 return;
             }
-            mover(clientX);
+            gestoModo = 'crosshair';
+            _cvMinimapCrosshairIdx = posicaoParaIdx(clientX);
+            cvDesenharMinimapa();
         }
 
-        canvas.addEventListener('touchstart', e => { aoTocar(e.touches[0].clientX); e.preventDefault(); }, { passive: false });
-        canvas.addEventListener('touchmove', e => { mover(e.touches[0].clientX); e.preventDefault(); }, { passive: false });
-        canvas.addEventListener('mousedown', e => { aoTocar(e.clientX); e.preventDefault(); });
+        // Arrasto: enquanto o dedo ficar quase parado, segue mostrando o crosshair.
+        // Se mover mais que o limiar na horizontal, vira scroll (rola pro passado/futuro).
+        function moverGesto(clientX) {
+            if (!_cvMinimapAtivo || gestoModo === null || gestoModo === 'fechado') return;
+            if (_prefComponentes['minimapa']?.locked) return;
+            const deltaX = clientX - gestoStartX;
+
+            if (gestoModo === 'crosshair' && Math.abs(deltaX) > LIMIAR_SCROLL) {
+                gestoModo = 'scroll';
+                _cvMinimapCrosshairIdx = null;
+            }
+
+            if (gestoModo === 'scroll') {
+                const dados = _cvMinimapCandles;
+                const pxPorCandle = window._cvMinimapPxPorCandle || 4;
+                const deltaCandles = Math.round(deltaX / pxPorCandle);
+                const totalCompleto = dados.length;
+                const visivelN = visivelTotal();
+                const maxStartIdx = totalCompleto - visivelN;
+                _cvMinimapScrollIdx = Math.max(0, Math.min(maxStartIdx, gestoStartScrollIdx - deltaCandles));
+                cvDesenharMinimapa();
+            } else {
+                _cvMinimapCrosshairIdx = posicaoParaIdx(clientX);
+                cvDesenharMinimapa();
+            }
+        }
+
+        canvas.addEventListener('touchstart', e => { iniciarGesto(e.touches[0].clientX); e.preventDefault(); }, { passive: false });
+        canvas.addEventListener('touchmove', e => { moverGesto(e.touches[0].clientX); e.preventDefault(); }, { passive: false });
+        canvas.addEventListener('mousedown', e => { mouseDown = true; iniciarGesto(e.clientX); e.preventDefault(); });
+        document.addEventListener('mousemove', e => { if (mouseDown) moverGesto(e.clientX); });
+        document.addEventListener('mouseup', () => { mouseDown = false; });
         canvas.addEventListener('contextmenu', e => e.preventDefault());
         // Crosshair persiste depois de soltar o dedo — igual ao gráfico principal.
-        // Só fecha em um novo toque (aoTocar) ou trocando de timeframe/ativo.
+        // Só fecha em um novo toque (sem arrastar) ou trocando de timeframe/ativo.
     };
     setup();
     document.addEventListener('DOMContentLoaded', setup);
