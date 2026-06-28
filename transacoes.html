@@ -1004,6 +1004,9 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
     </div>
     <!-- Minimapa panorâmico: visão de linha de um timeframe acima, oculto por padrão (ativado como indicador) -->
     <div id="cv-minimap-wrap" style="display:none;flex-direction:column;flex-shrink:0;background:#0c0f16;border-top:1px solid rgba(255,255,255,0.1);user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;">
+      <div id="cv-minimap-handle" style="display:flex;align-items:center;justify-content:center;height:16px;flex-shrink:0;cursor:row-resize;touch-action:none;">
+        <div style="width:36px;height:4px;border-radius:100px;background:rgba(255,255,255,0.25);"></div>
+      </div>
       <div style="display:flex;align-items:center;justify-content:space-between;padding:5px 12px 3px;flex-shrink:0;gap:8px;">
         <span id="cv-minimap-tf-label" style="font-size:10px;font-weight:700;color:#8E8E93;letter-spacing:0.5px;text-transform:uppercase;">Visão geral</span>
         <div style="display:flex;align-items:center;gap:6px;">
@@ -2911,6 +2914,12 @@ let _cvMinimapAtivo = false;
 let _cvMinimapCandles = [];
 let _cvMinimapChaveCache = ''; // evita refetch redundante
 let _cvMinimapEmas = { 21: false, 50: false, 200: false };
+let _cvMinimapAlturaPct = 0.28; // fração da altura total do container — ajustável via handle (máx 0.5)
+const _cvMinimapAlturaMin = 0.14, _cvMinimapAlturaMax = 0.5;
+try {
+    const alturaSalva = localStorage.getItem('cvMinimapAlturaPct');
+    if (alturaSalva) _cvMinimapAlturaPct = Math.max(_cvMinimapAlturaMin, Math.min(_cvMinimapAlturaMax, parseFloat(alturaSalva)));
+} catch (e) {}
 let _cvMinimapCrosshairIdx = null; // índice tocado/arrastado, pra mostrar data+preço
 
 let _grOffset = 999999;
@@ -2976,9 +2985,9 @@ async function grRenderChart() {
     const canvasWrap = document.getElementById('gr-chart-canvas-wrap') || container;
     const minimapWrap = document.getElementById('cv-minimap-wrap');
     if (minimapWrap && _cvMinimapAtivo) {
-        // Mesma altura usada para o painel de sub-indicadores (RSI/MACD/Volume): 28% da altura + padding inferior
+        // Altura ajustável pelo handle (mín 14%, máx 50% da altura total do container)
         const alturaTotal = container.clientHeight;
-        const alturaMinimapa = Math.floor(alturaTotal * 0.28) + _grPAD.bottom;
+        const alturaMinimapa = Math.round(alturaTotal * _cvMinimapAlturaPct);
         minimapWrap.style.height = alturaMinimapa + 'px';
     }
     const canvas = document.getElementById('gr-chart-canvas');
@@ -6159,6 +6168,56 @@ function cvMinimapTimeToIndex(arr, t) {
         // (gesto cancelado pelo sistema, etc.), garante que o crosshair não fique preso na tela.
         document.addEventListener('touchend', () => { if (_cvMinimapCrosshairIdx !== null) soltar(); }, { passive: true });
         document.addEventListener('mouseup', () => { if (_cvMinimapCrosshairIdx !== null) soltar(); });
+    };
+    setup();
+    document.addEventListener('DOMContentLoaded', setup);
+    setTimeout(setup, 800);
+})();
+
+// Handle de redimensionamento do painel do minimapa (arrasto vertical, 14%–50% da altura)
+(function cvInitMinimapaHandle() {
+    const setup = () => {
+        const handle = document.getElementById('cv-minimap-handle');
+        if (!handle || handle._cvHandleInit) return;
+        handle._cvHandleInit = true;
+
+        let arrastando = false, startY = 0, startAlturaPx = 0, containerH = 0;
+
+        function inicio(clientY) {
+            const container = document.getElementById('gr-chart-container');
+            const wrap = document.getElementById('cv-minimap-wrap');
+            if (!container || !wrap) return;
+            arrastando = true;
+            startY = clientY;
+            startAlturaPx = wrap.getBoundingClientRect().height;
+            containerH = container.clientHeight;
+        }
+
+        function mover(clientY) {
+            if (!arrastando || !containerH) return;
+            const deltaY = startY - clientY; // arrastar pra cima = aumenta
+            const minPx = containerH * _cvMinimapAlturaMin;
+            const maxPx = containerH * _cvMinimapAlturaMax;
+            const novaAlturaPx = Math.max(minPx, Math.min(maxPx, startAlturaPx + deltaY));
+            _cvMinimapAlturaPct = novaAlturaPx / containerH;
+            const wrap = document.getElementById('cv-minimap-wrap');
+            wrap.style.height = novaAlturaPx + 'px';
+            grRenderChart();
+        }
+
+        function fim() {
+            if (!arrastando) return;
+            arrastando = false;
+            try { localStorage.setItem('cvMinimapAlturaPct', String(_cvMinimapAlturaPct)); } catch (e) {}
+        }
+
+        handle.addEventListener('touchstart', e => { inicio(e.touches[0].clientY); e.preventDefault(); }, { passive: false });
+        handle.addEventListener('touchmove', e => { mover(e.touches[0].clientY); e.preventDefault(); }, { passive: false });
+        handle.addEventListener('touchend', fim, { passive: true });
+        handle.addEventListener('touchcancel', fim, { passive: true });
+        handle.addEventListener('mousedown', e => { inicio(e.clientY); e.preventDefault(); });
+        document.addEventListener('mousemove', e => { if (arrastando) mover(e.clientY); });
+        document.addEventListener('mouseup', fim);
     };
     setup();
     document.addEventListener('DOMContentLoaded', setup);
