@@ -5923,8 +5923,10 @@ function cvToggleMinimapa() {
 
 function cvMinimapSetPeriodo(v) {
     _cvMinimapPeriodo = parseInt(v, 10) || 30;
-    _cvMinimapChaveCache = ''; // força reload
-    if (_cvMinimapAtivo) cvMinimapCarregar();
+    if (_cvMinimapAtivo) {
+        if (_cvMinimapCandles.length) cvDesenharMinimapa(); // já tem o histórico completo, só redesenha a janela
+        else cvMinimapCarregar();
+    }
 }
 
 // Toggle multi-seleção das EMAs do minimapa (pode ligar mais de uma ao mesmo tempo)
@@ -5949,14 +5951,16 @@ async function cvMinimapCarregar() {
     const cfg = cvMinimapConfig();
     const binSymbol = ((_ticker || 'BTC/USD').replace('/', '').replace('-', '').toUpperCase()
         .replace('USD', 'USDT').replace('USDTT', 'USDT'));
-    const chave = `${binSymbol}|${cfg.bin}|${_cvMinimapPeriodo}`;
+    // Busca sempre o histórico máximo disponível (1000 candles) — o combobox de período
+    // só decide quanto desse histórico é exibido na tela, não quanto é carregado.
+    // Isso garante lookback suficiente pra EMA21/50/200 ficarem corretas mesmo em períodos curtos.
+    const chave = `${binSymbol}|${cfg.bin}`;
     if (chave === _cvMinimapChaveCache && _cvMinimapCandles.length) {
         cvDesenharMinimapa();
         return;
     }
-    const limit = Math.max(10, Math.min(1000, Math.ceil(_cvMinimapPeriodo / cfg.dias)));
     try {
-        const url = `https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=${cfg.bin}&limit=${limit}`;
+        const url = `https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=${cfg.bin}&limit=1000`;
         const r = await fetch(url);
         const d = await r.json();
         _cvMinimapCandles = (Array.isArray(d) ? d : []).map(k => ({
@@ -5981,10 +5985,17 @@ function cvDesenharMinimapa() {
     const W = canvas.width, H = canvas.height;
     ctx.clearRect(0, 0, W, H);
     if (!_cvMinimapAtivo) return;
-    const dados = _cvMinimapCandles;
-    if (!dados || dados.length < 2) return;
+    const dadosCompletos = _cvMinimapCandles;
+    if (!dadosCompletos || dadosCompletos.length < 2) return;
 
+    // Histórico completo fica carregado (serve de lookback pras EMAs),
+    // mas só a janela do período selecionado (30/60/90d) aparece na tela.
+    const cfg = cvMinimapConfig();
+    const janelaN = Math.max(2, Math.min(dadosCompletos.length, Math.ceil(_cvMinimapPeriodo / cfg.dias)));
+    const startSlice = dadosCompletos.length - janelaN;
+    const dados = dadosCompletos.slice(startSlice);
     const total = dados.length;
+
     const padX = 4, padY = 6;
     const innerW = W - padX * 2;
     const innerH = H - padY * 2;
@@ -6022,20 +6033,22 @@ function cvDesenharMinimapa() {
     ctx.fillStyle = 'rgba(255,255,255,0.16)';
     ctx.fill();
 
-    // EMAs opcionais (21/50/200) — multi-seleção
-    const closesArr = dados.map(d => d.c);
+    // EMAs opcionais (21/50/200) — calculadas sobre o histórico COMPLETO (lookback
+    // correto), mas só a parte dentro da janela exibida é desenhada.
+    const closesCompletos = dadosCompletos.map(d => d.c);
     const emaCores = { 21: '#9C27B0', 50: '#FF80AB', 200: '#F5A623' };
     [21, 50, 200].forEach(periodo => {
         if (!_cvMinimapEmas[periodo]) return;
-        const emaVals = cvMinimapEMA(closesArr, periodo);
-        if (!emaVals) return;
+        const emaCompleta = cvMinimapEMA(closesCompletos, periodo);
+        if (!emaCompleta) return;
+        const emaVals = emaCompleta.slice(startSlice);
         ctx.beginPath();
         ctx.strokeStyle = emaCores[periodo];
         ctx.lineWidth = 1.1;
         let started = false;
         for (let i = 0; i < total; i++) {
             const v = emaVals[i];
-            if (v === null) { started = false; continue; }
+            if (v === null || v === undefined) { started = false; continue; }
             const x = toX(i), y = toY(v);
             if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
         }
@@ -6083,8 +6096,12 @@ function cvMinimapTimeToIndex(arr, t) {
         canvas._cvMinimapInit = true;
 
         function mover(clientX) {
-            const dados = _cvMinimapCandles;
-            if (!_cvMinimapAtivo || !dados || dados.length < 2 || !_grAllCandles.length) return;
+            const dadosCompletos = _cvMinimapCandles;
+            if (!_cvMinimapAtivo || !dadosCompletos || dadosCompletos.length < 2 || !_grAllCandles.length) return;
+            // Mesmo recorte usado no desenho: só a janela do período selecionado é "tocável"
+            const cfg = cvMinimapConfig();
+            const janelaN = Math.max(2, Math.min(dadosCompletos.length, Math.ceil(_cvMinimapPeriodo / cfg.dias)));
+            const dados = dadosCompletos.slice(dadosCompletos.length - janelaN);
             const rect = canvas.getBoundingClientRect();
             const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
             const idx = Math.round(ratio * (dados.length - 1));
