@@ -2020,7 +2020,7 @@ async function cvSelecionarAtivo(id, ticker) {
     // Reinicia o ambiente para o novo ativo
     _grAllCandles = []; _grCandlesD = []; _grCandlesW = [];
 _grOffset = 999999;
-_cvMinimapChaveCache = ''; _cvMinimapScrollIdx = null;
+_cvMinimapChaveCache = ''; _cvMinimapScrollIdx = null; _cvMinimapUltimoRangeKey = null;
 _grEntrada = 0; _grStop = 0; _grAlvo = 0;
 _grTf = '4h';
 _precoAtual = 0;
@@ -2842,7 +2842,7 @@ function cvSetTf(tf) {
     _grOffset = 999999;
     _grAllCandles = []; _grCandlesD = []; _grCandlesW = [];
     _wsLastDraw = Date.now();
-    _cvMinimapChaveCache = ''; _cvMinimapScrollIdx = null; // tf mudou → minimapa precisa remapear/recarregar
+    _cvMinimapChaveCache = ''; _cvMinimapScrollIdx = null; _cvMinimapUltimoRangeKey = null; // tf mudou → minimapa precisa remapear/recarregar
 
     document.getElementById('cv-tf-15m').classList.toggle('active', tf==='15m');
     document.getElementById('cv-tf-1h').classList.toggle('active', tf==='1h');
@@ -2936,6 +2936,7 @@ try {
 let _cvMinimapCrosshairIdx = null; // índice tocado/arrastado, pra mostrar data+preço
 let _cvMinimapVisivelN = 90; // quantos candles ficam visíveis de cada vez (sem comprimir o histórico todo)
 let _cvMinimapScrollIdx = null; // índice inicial da janela visível — null = mais recentes
+let _cvMinimapUltimoRangeKey = null; // detecta quando o gráfico principal de fato mudou de janela
 let _cvMinimapTfOverride = null; // null = automático (um nível acima do gráfico principal); senão, valor fixo escolhido pelo usuário
 try {
     const tfSalvo = localStorage.getItem('cvMinimapTfOverride');
@@ -5943,7 +5944,7 @@ function cvMinimapSetTfOverride(valor) {
         if (_cvMinimapTfOverride) localStorage.setItem('cvMinimapTfOverride', _cvMinimapTfOverride);
         else localStorage.removeItem('cvMinimapTfOverride');
     } catch (e) {}
-    _cvMinimapChaveCache = ''; _cvMinimapScrollIdx = null; // força reload com o novo timeframe
+    _cvMinimapChaveCache = ''; _cvMinimapScrollIdx = null; _cvMinimapUltimoRangeKey = null; // força reload com o novo timeframe
     if (_cvMinimapAtivo) cvMinimapCarregar();
 }
 
@@ -5957,7 +5958,7 @@ function cvToggleMinimapa() {
     if (_cvMinimapAtivo) {
         // Sempre abre sincronizado nos candles mais recentes do gráfico principal
         _grOffset = 999999;
-        _cvMinimapScrollIdx = null;
+        _cvMinimapScrollIdx = null; _cvMinimapUltimoRangeKey = null;
         grDrawChart();
         const sel = document.getElementById('cv-minimap-tf-select');
         if (sel) sel.value = _cvMinimapTfOverride || '';
@@ -6052,6 +6053,20 @@ function cvDesenharMinimapa() {
     const totalCompleto = dadosCompletos.length;
     const visivelN = Math.min(_cvMinimapVisivelN, totalCompleto);
     const maxStartIdx = totalCompleto - visivelN;
+
+    // Auto-acompanhamento: se o gráfico PRINCIPAL se moveu desde o último desenho,
+    // recentraliza o minimapa nessa janela. Só roda quando a janela do principal de
+    // fato mudou — assim não sobrescreve um scroll manual feito direto no minimapa.
+    const range = window._grVisibleTRange;
+    const rangeKey = range && range.from !== undefined ? `${range.from}|${range.to}` : null;
+    if (rangeKey !== null && rangeKey !== _cvMinimapUltimoRangeKey) {
+        const idxFrom = cvMinimapTimeToIndex(dadosCompletos, range.from);
+        const idxTo = cvMinimapTimeToIndex(dadosCompletos, range.to);
+        const centerIdx = (idxFrom + idxTo) / 2;
+        _cvMinimapScrollIdx = Math.round(centerIdx - visivelN / 2);
+        _cvMinimapUltimoRangeKey = rangeKey;
+    }
+
     if (_cvMinimapScrollIdx === null) _cvMinimapScrollIdx = maxStartIdx; // padrão: candles mais recentes
     const startIdx = Math.max(0, Math.min(maxStartIdx, _cvMinimapScrollIdx));
     _cvMinimapScrollIdx = startIdx;
@@ -6076,7 +6091,6 @@ function cvDesenharMinimapa() {
     // Destaca, por TEMPO, a janela atualmente visível no gráfico principal —
     // só o preenchimento suave, sem borda, pra não criar uma "parede" vertical
     // cortando os candles mais recentes.
-    const range = window._grVisibleTRange;
     if (range && range.from !== undefined) {
         const idxFrom = cvMinimapTimeToIndex(dados, range.from);
         const idxTo = cvMinimapTimeToIndex(dados, range.to);
