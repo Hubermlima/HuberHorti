@@ -2923,6 +2923,10 @@ let _cvMinimapAtivo = false;
 let _cvMinimapCandles = [];
 let _cvMinimapChaveCache = ''; // evita refetch redundante
 let _cvMinimapEmas = { 21: false, 50: false, 200: false };
+try {
+    const emasSalvas = localStorage.getItem('cvMinimapEmas');
+    if (emasSalvas) Object.assign(_cvMinimapEmas, JSON.parse(emasSalvas));
+} catch (e) {}
 let _cvMinimapAlturaPct = 0.28; // fração da altura total do container — ajustável via handle (máx 0.5)
 const _cvMinimapAlturaMin = 0.14, _cvMinimapAlturaMax = 0.5;
 try {
@@ -5954,6 +5958,7 @@ function cvToggleMinimapa() {
         grDrawChart();
         const sel = document.getElementById('cv-minimap-tf-select');
         if (sel) sel.value = _cvMinimapTfOverride || '';
+        cvMinimapSincronizarBotoesEma();
     }
 
     // Recalcula tamanho do canvas principal (a área disponível mudou)
@@ -5967,7 +5972,16 @@ function cvMinimapToggleEma(periodo) {
     _cvMinimapEmas[periodo] = !_cvMinimapEmas[periodo];
     const btn = document.getElementById('cv-minimap-ema-' + periodo);
     if (btn) btn.classList.toggle('active', _cvMinimapEmas[periodo]);
+    try { localStorage.setItem('cvMinimapEmas', JSON.stringify(_cvMinimapEmas)); } catch (e) {}
     cvDesenharMinimapa(); // só redesenha — não precisa refazer fetch
+}
+
+// Aplica visualmente o estado salvo das EMAs nos botões (chamado ao ativar o minimapa)
+function cvMinimapSincronizarBotoesEma() {
+    [21, 50, 200].forEach(periodo => {
+        const btn = document.getElementById('cv-minimap-ema-' + periodo);
+        if (btn) btn.classList.toggle('active', !!_cvMinimapEmas[periodo]);
+    });
 }
 
 // Calcula EMA alinhada ao tamanho original do array (preenche com null no início)
@@ -6233,23 +6247,23 @@ function cvMinimapTimeToIndex(arr, t) {
             cvDesenharMinimapa();
         }
 
-        function soltar() {
-            _cvMinimapCrosshairIdx = null;
-            cvDesenharMinimapa();
+        // Toque novo: se o crosshair já estava ativo, fecha (igual ao gráfico principal);
+        // senão, abre na posição tocada.
+        function aoTocar(clientX) {
+            if (_cvMinimapCrosshairIdx !== null) {
+                _cvMinimapCrosshairIdx = null;
+                cvDesenharMinimapa();
+                return;
+            }
+            mover(clientX);
         }
 
-        canvas.addEventListener('touchstart', e => { mover(e.touches[0].clientX); e.preventDefault(); }, { passive: false });
+        canvas.addEventListener('touchstart', e => { aoTocar(e.touches[0].clientX); e.preventDefault(); }, { passive: false });
         canvas.addEventListener('touchmove', e => { mover(e.touches[0].clientX); e.preventDefault(); }, { passive: false });
-        canvas.addEventListener('touchend', soltar, { passive: true });
-        canvas.addEventListener('touchcancel', soltar, { passive: true });
-        canvas.addEventListener('mousedown', e => { mover(e.clientX); e.preventDefault(); });
-        canvas.addEventListener('mouseup', soltar);
-        canvas.addEventListener('mouseleave', soltar);
+        canvas.addEventListener('mousedown', e => { aoTocar(e.clientX); e.preventDefault(); });
         canvas.addEventListener('contextmenu', e => e.preventDefault());
-        // Rede de segurança: se o touchend/mouseup do canvas não disparar por algum motivo
-        // (gesto cancelado pelo sistema, etc.), garante que o crosshair não fique preso na tela.
-        document.addEventListener('touchend', () => { if (_cvMinimapCrosshairIdx !== null) soltar(); }, { passive: true });
-        document.addEventListener('mouseup', () => { if (_cvMinimapCrosshairIdx !== null) soltar(); });
+        // Crosshair persiste depois de soltar o dedo — igual ao gráfico principal.
+        // Só fecha em um novo toque (aoTocar) ou trocando de timeframe/ativo.
     };
     setup();
     document.addEventListener('DOMContentLoaded', setup);
