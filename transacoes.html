@@ -333,6 +333,7 @@ input[type=range]::-webkit-slider-runnable-track{border-radius:100px;}
 .cv-ind-btn.obv.active{color:#A5D6A7;background:linear-gradient(180deg,#0d2810 0%,#081808 100%);}
 .cv-ind-btn.stoch.active{color:#FFF176;background:linear-gradient(180deg,#2e2a00 0%,#1e1c00 100%);}
 .cv-ind-btn.liq.active{color:#FF6B6B;background:linear-gradient(180deg,#2e0a0a 0%,#1e0606 100%);}
+.cv-ind-btn.map.active{color:#5AC8FA;background:linear-gradient(180deg,#0d2430 0%,#081720 100%);}
 .cv-ind-btn.fig.active{color:#FFD700;background:linear-gradient(180deg,#2e2a00 0%,#1e1c00 100%);}
 .cv-fig-menu{display:none;position:absolute;bottom:100%;right:0;background:rgba(19,23,34,0.97);border:0.5px solid rgba(255,255,255,0.12);padding:8px;gap:4px;z-index:210;border-radius:10px;min-width:200px;flex-direction:column;}
 .cv-fig-menu.active{display:flex;}
@@ -991,11 +992,23 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
   <!-- Chart container wrapper com botões laterais -->
 
   <!-- Chart container (preservado) -->
-  <div id="gr-chart-container" style="position:relative;flex:1;background:#131722;">
-    <canvas id="gr-chart-canvas" style="width:100%;height:100%;display:block;" onclick="if(_tickerDropdownAberto){cvToggleTickerDropdown();}"></canvas>
-    <!-- Minimapa panorâmico: visão de linha do histórico completo de topos e fundos -->
-    <div id="cv-minimap-wrap" style="position:absolute;left:0;right:0;bottom:0;height:54px;z-index:6;background:rgba(10,14,22,0.78);border-top:1px solid rgba(255,255,255,0.08);backdrop-filter:blur(2px);">
-      <canvas id="cv-minimap-canvas" style="width:100%;height:100%;display:block;"></canvas>
+  <div id="gr-chart-container" style="position:relative;flex:1;background:#131722;display:flex;flex-direction:column;overflow:hidden;">
+    <div id="gr-chart-canvas-wrap" style="position:relative;flex:1;min-height:0;">
+      <canvas id="gr-chart-canvas" style="width:100%;height:100%;display:block;" onclick="if(_tickerDropdownAberto){cvToggleTickerDropdown();}"></canvas>
+    </div>
+    <!-- Minimapa panorâmico: visão de linha de um timeframe acima, oculto por padrão (ativado como indicador) -->
+    <div id="cv-minimap-wrap" style="display:none;flex-direction:column;flex-shrink:0;height:90px;background:#0c0f16;border-top:1px solid rgba(255,255,255,0.1);">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:5px 12px 3px;flex-shrink:0;">
+        <span id="cv-minimap-tf-label" style="font-size:10px;font-weight:700;color:#8E8E93;letter-spacing:0.5px;text-transform:uppercase;">Visão geral</span>
+        <select id="cv-minimap-periodo" onchange="cvMinimapSetPeriodo(this.value)" style="background:#1c1f2a;color:#FFFFFF;border:1px solid rgba(255,255,255,0.15);border-radius:6px;font-size:11px;font-weight:600;padding:2px 6px;font-family:'Plus Jakarta Sans',sans-serif;">
+          <option value="30">30 dias</option>
+          <option value="60">60 dias</option>
+          <option value="90">90 dias</option>
+        </select>
+      </div>
+      <div style="position:relative;flex:1;min-height:0;">
+        <canvas id="cv-minimap-canvas" style="width:100%;height:100%;display:block;"></canvas>
+      </div>
     </div>
 <!-- stop input removido — usar modal Stop & Alvo
 -->
@@ -1014,6 +1027,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <button class="cv-zoom-btn" onclick="cvZoom('+')"><span class="btn-sigla">+</span><span class="btn-nome">Ampliar</span></button>
       <button class="cv-zoom-btn" onclick="cvZoom('-')"><span class="btn-sigla">−</span><span class="btn-nome">Reduzir</span></button>
       <button class="cv-zoom-btn" id="cv-btn-drone" onclick="cvZoom('drone')"><span class="btn-sigla">🛸</span><span class="btn-nome">Drone</span></button>
+      <button class="cv-ind-btn map" id="cv-ind-minimap" onclick="cvToggleMinimapa()"><span class="btn-sigla">🗺️</span><span class="btn-nome">Mapa Geral</span></button>
       <span id="gr-periodo" style="display:none;"></span>
             <div class="cv-barra-sep"></div>
       <button class="cv-ind-btn active" id="cv-ind-tipo-candle" onclick="cvSetTipoGrafico('candle')" title="Candles">
@@ -1979,6 +1993,7 @@ async function cvSelecionarAtivo(id, ticker) {
     // Reinicia o ambiente para o novo ativo
     _grAllCandles = []; _grCandlesD = []; _grCandlesW = [];
 _grOffset = 999999;
+_cvMinimapChaveCache = '';
 _grEntrada = 0; _grStop = 0; _grAlvo = 0;
 _grTf = '4h';
 _precoAtual = 0;
@@ -1995,6 +2010,7 @@ _precoAtual = 0;
 
                 await grRenderChart();
     cvIniciarRealTime();
+    if (_cvMinimapAtivo) cvMinimapCarregar();
     cvAtualizarSaldo();
     await Promise.all([carregarTransacoes(), fetchFxRate()]);
     await cvCarregarTradeOperacional();
@@ -2799,13 +2815,17 @@ function cvSetTf(tf) {
     _grOffset = 999999;
     _grAllCandles = []; _grCandlesD = []; _grCandlesW = [];
     _wsLastDraw = Date.now();
+    _cvMinimapChaveCache = ''; // tf mudou → minimapa precisa remapear/recarregar
 
     document.getElementById('cv-tf-15m').classList.toggle('active', tf==='15m');
     document.getElementById('cv-tf-1h').classList.toggle('active', tf==='1h');
     document.getElementById('cv-tf-4h').classList.toggle('active', tf==='4h');
     document.getElementById('cv-tf-1d').classList.toggle('active', tf==='1day');
     document.getElementById('cv-tf-1s').classList.toggle('active', tf==='1week');
-    grRenderChart().then(() => { grInitTouch(); grInitFloatDrag(); grCalcularComGlobais(); cvIniciarRealTime(); });
+    grRenderChart().then(() => {
+        grInitTouch(); grInitFloatDrag(); grCalcularComGlobais(); cvIniciarRealTime();
+        if (_cvMinimapAtivo) cvMinimapCarregar();
+    });
 }
 
 let _cvSetupId = null, _cvDir = 'long';
@@ -2871,6 +2891,12 @@ let _grCandlesD = [];  // candles diários para EMA MTF
 let _grCandlesW = [];  // candles semanais para EMA MTF
 let _grZonasCache = null; // {res: [], sup: []} — calculado uma vez por load
 
+// ── Minimapa panorâmico (timeframe acima, opt-in via barra de indicadores) ──
+let _cvMinimapAtivo = false;
+let _cvMinimapPeriodo = 30; // dias
+let _cvMinimapCandles = [];
+let _cvMinimapChaveCache = ''; // evita refetch redundante
+
 let _grOffset = 999999;
 let _grZoom = 40;
 let _grDrone = false;
@@ -2931,13 +2957,15 @@ function grSetTf(tf) {
 
 async function grRenderChart() {
     const container = document.getElementById('gr-chart-container');
+    const canvasWrap = document.getElementById('gr-chart-canvas-wrap') || container;
     const canvas = document.getElementById('gr-chart-canvas');
-    canvas.width = container.clientWidth;
-    canvas.height = container.clientHeight - 10;
+    canvas.width = canvasWrap.clientWidth;
+    canvas.height = canvasWrap.clientHeight - 10;
     const miniCanvas = document.getElementById('cv-minimap-canvas');
-    if (miniCanvas) {
-        miniCanvas.width = container.clientWidth;
-        miniCanvas.height = miniCanvas.parentElement.clientHeight;
+    if (miniCanvas && _cvMinimapAtivo) {
+        const miniHolder = miniCanvas.parentElement;
+        miniCanvas.width = miniHolder.clientWidth;
+        miniCanvas.height = miniHolder.clientHeight;
     }
     const step = _grTf === '15m' ? 900 : _grTf === '1h' ? 3600 : _grTf === '4h' ? 14400 : _grTf === '1day' ? 86400 : 604800;
     const limit = 800;
@@ -3005,6 +3033,9 @@ function grDrawCandles(candles, emptyRight) {
         emptyRight = emptyRight || 0;
         window._compValores = {};
         cvSincronizarPilotoAutomatico();
+        if (candles && candles.length) {
+            window._grVisibleTRange = { from: candles[0].t, to: candles[candles.length - 1].t };
+        }
     const canvas = document.getElementById('gr-chart-canvas');
     const ctx = canvas.getContext('2d');
         const W = canvas.width, H = canvas.height;
@@ -5035,7 +5066,9 @@ ctx.globalAlpha = 1;
             }
         }
     }
-    try { cvDesenharMinimapa(); } catch(e) { console.log('Minimapa error:', e.message); }
+    if (_cvMinimapAtivo) {
+        try { cvDesenharMinimapa(); } catch(e) { console.log('Minimapa error:', e.message); }
+    }
 }
 
 // Touch scroll, zoom e drag de linhas
@@ -5830,62 +5863,115 @@ function grLineY(price) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// MINIMAPA PANORÂMICO — visão de linha de TODO o histórico carregado,
-// para enxergar topos e fundos sem precisar "montar" o desenho na memória.
+// MINIMAPA PANORÂMICO — visão de linha de um timeframe ACIMA do atual
+// (ex: no 4H mostra o Diário), pra enxergar topos e fundos sem precisar
+// "montar" o desenho na memória. Opt-in, como um indicador na barra lateral.
 // ─────────────────────────────────────────────────────────────
+
+// Timeframe mapeado (um nível acima) + intervalo Binance + duração em dias de 1 candle
+function cvMinimapConfig() {
+    const map = {
+        '15m':  { bin: '1h', dias: 1/24,  label: '1H'  },
+        '1h':   { bin: '4h', dias: 1/6,   label: '4H'  },
+        '4h':   { bin: '1d', dias: 1,     label: 'Diário' },
+        '1day': { bin: '1w', dias: 7,     label: 'Semanal' },
+        '1week':{ bin: '1M', dias: 30,    label: 'Mensal' }
+    };
+    return map[_grTf] || map['4h'];
+}
+
+function cvToggleMinimapa() {
+    _cvMinimapAtivo = !_cvMinimapAtivo;
+    const btn = document.getElementById('cv-ind-minimap');
+    if (btn) btn.classList.toggle('active', _cvMinimapAtivo);
+    const wrap = document.getElementById('cv-minimap-wrap');
+    if (wrap) wrap.style.display = _cvMinimapAtivo ? 'flex' : 'none';
+
+    // Recalcula tamanho do canvas principal (a área disponível mudou)
+    grRenderChart();
+
+    if (_cvMinimapAtivo) cvMinimapCarregar();
+}
+
+function cvMinimapSetPeriodo(v) {
+    _cvMinimapPeriodo = parseInt(v, 10) || 30;
+    _cvMinimapChaveCache = ''; // força reload
+    if (_cvMinimapAtivo) cvMinimapCarregar();
+}
+
+async function cvMinimapCarregar() {
+    const cfg = cvMinimapConfig();
+    const binSymbol = ((_ticker || 'BTC/USD').replace('/', '').replace('-', '').toUpperCase()
+        .replace('USD', 'USDT').replace('USDTT', 'USDT'));
+    const chave = `${binSymbol}|${cfg.bin}|${_cvMinimapPeriodo}`;
+    if (chave === _cvMinimapChaveCache && _cvMinimapCandles.length) {
+        cvDesenharMinimapa();
+        return;
+    }
+    const limit = Math.max(10, Math.min(1000, Math.ceil(_cvMinimapPeriodo / cfg.dias)));
+    try {
+        const url = `https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=${cfg.bin}&limit=${limit}`;
+        const r = await fetch(url);
+        const d = await r.json();
+        _cvMinimapCandles = (Array.isArray(d) ? d : []).map(k => ({
+            t: k[0], h: parseFloat(k[2]), l: parseFloat(k[3]), c: parseFloat(k[4])
+        }));
+        _cvMinimapChaveCache = chave;
+    } catch (e) {
+        console.log('Minimapa fetch error:', e.message);
+        _cvMinimapCandles = [];
+    }
+    const label = document.getElementById('cv-minimap-tf-label');
+    if (label) label.textContent = `${cfg.label} · ${_cvMinimapPeriodo}d`;
+    const sel = document.getElementById('cv-minimap-periodo');
+    if (sel) sel.value = String(_cvMinimapPeriodo);
+    cvDesenharMinimapa();
+}
+
 function cvDesenharMinimapa() {
     const canvas = document.getElementById('cv-minimap-canvas');
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     const W = canvas.width, H = canvas.height;
     ctx.clearRect(0, 0, W, H);
-    if (!_grAllCandles || _grAllCandles.length < 2) return;
+    if (!_cvMinimapAtivo) return;
+    const dados = _cvMinimapCandles;
+    if (!dados || dados.length < 2) return;
 
-    const total = _grAllCandles.length;
+    const total = dados.length;
     const padX = 4, padY = 6;
     const innerW = W - padX * 2;
     const innerH = H - padY * 2;
 
-    // Range de preço considerando máximas e mínimas (topos/fundos reais, não só fechamento)
     let minP = Infinity, maxP = -Infinity;
     for (let i = 0; i < total; i++) {
-        const c = _grAllCandles[i];
-        const lo = (c.l !== undefined ? c.l : c.c);
-        const hi = (c.h !== undefined ? c.h : c.c);
-        if (lo < minP) minP = lo;
-        if (hi > maxP) maxP = hi;
+        if (dados[i].l < minP) minP = dados[i].l;
+        if (dados[i].h > maxP) maxP = dados[i].h;
     }
     if (minP === maxP) { minP -= 1; maxP += 1; }
 
     const toX = (i) => padX + (i / (total - 1)) * innerW;
     const toY = (p) => padY + innerH - ((p - minP) / (maxP - minP)) * innerH;
 
-    // Janela atualmente visível no gráfico principal (mesma lógica de grDrawChart)
-    const visible = Math.min(_grZoom, total);
-    const maxOff = total + Math.floor(_grZoom * 0.5);
-    const startIdx = Math.max(0, Math.min(maxOff, _grOffset === 999999 ? total - visible : _grOffset));
-    const endIdx = Math.min(total - 1, startIdx + visible - 1);
-
-    // Destaca a janela visível com um retângulo claro
-    const xStart = toX(Math.min(startIdx, total - 1));
-    const xEnd = toX(Math.max(0, Math.min(endIdx, total - 1)));
-    ctx.fillStyle = 'rgba(255,255,255,0.10)';
-    ctx.fillRect(xStart, 0, Math.max(2, xEnd - xStart), H);
-    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(xStart + 0.5, 0.5, Math.max(1, xEnd - xStart), H - 1);
+    // Destaca, por TEMPO, a janela atualmente visível no gráfico principal
+    const range = window._grVisibleTRange;
+    if (range && range.from !== undefined) {
+        const idxFrom = cvMinimapTimeToIndex(dados, range.from);
+        const idxTo = cvMinimapTimeToIndex(dados, range.to);
+        const xStart = toX(Math.max(0, Math.min(total - 1, idxFrom)));
+        const xEnd = toX(Math.max(0, Math.min(total - 1, idxTo)));
+        ctx.fillStyle = 'rgba(255,255,255,0.10)';
+        ctx.fillRect(xStart, 0, Math.max(2, xEnd - xStart), H);
+        ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(xStart + 0.5, 0.5, Math.max(1, xEnd - xStart), H - 1);
+    }
 
     // Área sombreada entre máxima e mínima (textura dos topos/fundos)
     ctx.beginPath();
-    ctx.moveTo(toX(0), toY(_grAllCandles[0].h !== undefined ? _grAllCandles[0].h : _grAllCandles[0].c));
-    for (let i = 1; i < total; i++) {
-        const c = _grAllCandles[i];
-        ctx.lineTo(toX(i), toY(c.h !== undefined ? c.h : c.c));
-    }
-    for (let i = total - 1; i >= 0; i--) {
-        const c = _grAllCandles[i];
-        ctx.lineTo(toX(i), toY(c.l !== undefined ? c.l : c.c));
-    }
+    ctx.moveTo(toX(0), toY(dados[0].h));
+    for (let i = 1; i < total; i++) ctx.lineTo(toX(i), toY(dados[i].h));
+    for (let i = total - 1; i >= 0; i--) ctx.lineTo(toX(i), toY(dados[i].l));
     ctx.closePath();
     ctx.fillStyle = 'rgba(0,122,255,0.12)';
     ctx.fill();
@@ -5895,20 +5981,35 @@ function cvDesenharMinimapa() {
     ctx.strokeStyle = '#5AC8FA';
     ctx.lineWidth = 1.3;
     for (let i = 0; i < total; i++) {
-        const x = toX(i), y = toY(_grAllCandles[i].c);
+        const x = toX(i), y = toY(dados[i].c);
         if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     }
     ctx.stroke();
 
     // Ponto do preço atual
-    const lastC = _grAllCandles[total - 1].c;
     ctx.beginPath();
-    ctx.arc(toX(total - 1), toY(lastC), 2.4, 0, Math.PI * 2);
+    ctx.arc(toX(total - 1), toY(dados[total - 1].c), 2.4, 0, Math.PI * 2);
     ctx.fillStyle = '#5AC8FA';
     ctx.fill();
 }
 
-// Toque/arrasto no minimapa: salta a janela do gráfico principal para o ponto tocado
+// Converte timestamp em índice fracionário dentro do array de candles do minimapa
+function cvMinimapTimeToIndex(arr, t) {
+    const n = arr.length;
+    if (n === 0) return 0;
+    if (n === 1) return 0;
+    if (t <= arr[0].t) return 0;
+    if (t >= arr[n - 1].t) return n - 1;
+    let lo = 0, hi = n - 1;
+    while (lo < hi - 1) {
+        const mid = (lo + hi) >> 1;
+        if (arr[mid].t <= t) lo = mid; else hi = mid;
+    }
+    const span = arr[hi].t - arr[lo].t;
+    return span > 0 ? lo + (t - arr[lo].t) / span : lo;
+}
+
+// Toque/arrasto no minimapa: salta a janela do gráfico principal pro ponto tocado
 (function cvInitMinimapaTouch() {
     const setup = () => {
         const canvas = document.getElementById('cv-minimap-canvas');
@@ -5916,14 +6017,18 @@ function cvDesenharMinimapa() {
         canvas._cvMinimapInit = true;
 
         function mover(clientX) {
-            const total = _grAllCandles.length;
-            if (total < 2) return;
+            const dados = _cvMinimapCandles;
+            if (!_cvMinimapAtivo || !dados || dados.length < 2 || !_grAllCandles.length) return;
             const rect = canvas.getBoundingClientRect();
             const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+            const idx = Math.round(ratio * (dados.length - 1));
+            const t = dados[idx].t;
+            // Converte o timestamp pro índice equivalente no array do tf principal
+            const idxPrincipal = Math.round(grTimeToIndex(t));
+            const total = _grAllCandles.length;
             const visible = Math.min(_grZoom, total);
-            const centerIdx = Math.round(ratio * (total - 1));
             const maxOff = total + Math.floor(_grZoom * 0.5);
-            _grOffset = Math.max(0, Math.min(maxOff, centerIdx - Math.floor(visible / 2)));
+            _grOffset = Math.max(0, Math.min(maxOff, idxPrincipal - Math.floor(visible / 2)));
             grDrawChart();
         }
 
