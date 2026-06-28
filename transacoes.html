@@ -993,6 +993,10 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
   <!-- Chart container (preservado) -->
   <div id="gr-chart-container" style="position:relative;flex:1;background:#131722;">
     <canvas id="gr-chart-canvas" style="width:100%;height:100%;display:block;" onclick="if(_tickerDropdownAberto){cvToggleTickerDropdown();}"></canvas>
+    <!-- Minimapa panorâmico: visão de linha do histórico completo de topos e fundos -->
+    <div id="cv-minimap-wrap" style="position:absolute;left:0;right:0;bottom:0;height:54px;z-index:6;background:rgba(10,14,22,0.78);border-top:1px solid rgba(255,255,255,0.08);backdrop-filter:blur(2px);">
+      <canvas id="cv-minimap-canvas" style="width:100%;height:100%;display:block;"></canvas>
+    </div>
 <!-- stop input removido — usar modal Stop & Alvo
 -->
 
@@ -2930,6 +2934,11 @@ async function grRenderChart() {
     const canvas = document.getElementById('gr-chart-canvas');
     canvas.width = container.clientWidth;
     canvas.height = container.clientHeight - 10;
+    const miniCanvas = document.getElementById('cv-minimap-canvas');
+    if (miniCanvas) {
+        miniCanvas.width = container.clientWidth;
+        miniCanvas.height = miniCanvas.parentElement.clientHeight;
+    }
     const step = _grTf === '15m' ? 900 : _grTf === '1h' ? 3600 : _grTf === '4h' ? 14400 : _grTf === '1day' ? 86400 : 604800;
     const limit = 800;
 
@@ -5026,6 +5035,7 @@ ctx.globalAlpha = 1;
             }
         }
     }
+    try { cvDesenharMinimapa(); } catch(e) { console.log('Minimapa error:', e.message); }
 }
 
 // Touch scroll, zoom e drag de linhas
@@ -5818,6 +5828,113 @@ function grLineY(price) {
     if (_grMaxP === _grMinP) return -999;
     return _grPAD.top + _grChartH - ((price - _grMinP) / (_grMaxP - _grMinP)) * _grChartH;
 }
+
+// ─────────────────────────────────────────────────────────────
+// MINIMAPA PANORÂMICO — visão de linha de TODO o histórico carregado,
+// para enxergar topos e fundos sem precisar "montar" o desenho na memória.
+// ─────────────────────────────────────────────────────────────
+function cvDesenharMinimapa() {
+    const canvas = document.getElementById('cv-minimap-canvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    if (!_grAllCandles || _grAllCandles.length < 2) return;
+
+    const total = _grAllCandles.length;
+    const padX = 4, padY = 6;
+    const innerW = W - padX * 2;
+    const innerH = H - padY * 2;
+
+    // Range de preço considerando máximas e mínimas (topos/fundos reais, não só fechamento)
+    let minP = Infinity, maxP = -Infinity;
+    for (let i = 0; i < total; i++) {
+        const c = _grAllCandles[i];
+        const lo = (c.l !== undefined ? c.l : c.c);
+        const hi = (c.h !== undefined ? c.h : c.c);
+        if (lo < minP) minP = lo;
+        if (hi > maxP) maxP = hi;
+    }
+    if (minP === maxP) { minP -= 1; maxP += 1; }
+
+    const toX = (i) => padX + (i / (total - 1)) * innerW;
+    const toY = (p) => padY + innerH - ((p - minP) / (maxP - minP)) * innerH;
+
+    // Janela atualmente visível no gráfico principal (mesma lógica de grDrawChart)
+    const visible = Math.min(_grZoom, total);
+    const maxOff = total + Math.floor(_grZoom * 0.5);
+    const startIdx = Math.max(0, Math.min(maxOff, _grOffset === 999999 ? total - visible : _grOffset));
+    const endIdx = Math.min(total - 1, startIdx + visible - 1);
+
+    // Destaca a janela visível com um retângulo claro
+    const xStart = toX(Math.min(startIdx, total - 1));
+    const xEnd = toX(Math.max(0, Math.min(endIdx, total - 1)));
+    ctx.fillStyle = 'rgba(255,255,255,0.10)';
+    ctx.fillRect(xStart, 0, Math.max(2, xEnd - xStart), H);
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(xStart + 0.5, 0.5, Math.max(1, xEnd - xStart), H - 1);
+
+    // Área sombreada entre máxima e mínima (textura dos topos/fundos)
+    ctx.beginPath();
+    ctx.moveTo(toX(0), toY(_grAllCandles[0].h !== undefined ? _grAllCandles[0].h : _grAllCandles[0].c));
+    for (let i = 1; i < total; i++) {
+        const c = _grAllCandles[i];
+        ctx.lineTo(toX(i), toY(c.h !== undefined ? c.h : c.c));
+    }
+    for (let i = total - 1; i >= 0; i--) {
+        const c = _grAllCandles[i];
+        ctx.lineTo(toX(i), toY(c.l !== undefined ? c.l : c.c));
+    }
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(0,122,255,0.12)';
+    ctx.fill();
+
+    // Linha de fechamento — o traçado panorâmico principal
+    ctx.beginPath();
+    ctx.strokeStyle = '#5AC8FA';
+    ctx.lineWidth = 1.3;
+    for (let i = 0; i < total; i++) {
+        const x = toX(i), y = toY(_grAllCandles[i].c);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    // Ponto do preço atual
+    const lastC = _grAllCandles[total - 1].c;
+    ctx.beginPath();
+    ctx.arc(toX(total - 1), toY(lastC), 2.4, 0, Math.PI * 2);
+    ctx.fillStyle = '#5AC8FA';
+    ctx.fill();
+}
+
+// Toque/arrasto no minimapa: salta a janela do gráfico principal para o ponto tocado
+(function cvInitMinimapaTouch() {
+    const setup = () => {
+        const canvas = document.getElementById('cv-minimap-canvas');
+        if (!canvas || canvas._cvMinimapInit) return;
+        canvas._cvMinimapInit = true;
+
+        function mover(clientX) {
+            const total = _grAllCandles.length;
+            if (total < 2) return;
+            const rect = canvas.getBoundingClientRect();
+            const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+            const visible = Math.min(_grZoom, total);
+            const centerIdx = Math.round(ratio * (total - 1));
+            const maxOff = total + Math.floor(_grZoom * 0.5);
+            _grOffset = Math.max(0, Math.min(maxOff, centerIdx - Math.floor(visible / 2)));
+            grDrawChart();
+        }
+
+        canvas.addEventListener('touchstart', e => { mover(e.touches[0].clientX); }, { passive: true });
+        canvas.addEventListener('touchmove', e => { mover(e.touches[0].clientX); e.preventDefault(); }, { passive: false });
+        canvas.addEventListener('mousedown', e => { mover(e.clientX); });
+    };
+    setup();
+    document.addEventListener('DOMContentLoaded', setup);
+    setTimeout(setup, 800);
+})();
 
 function grSetDir(dir) {
     _grDir = dir;
