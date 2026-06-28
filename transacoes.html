@@ -5910,6 +5910,12 @@ function cvToggleMinimapa() {
     const wrap = document.getElementById('cv-minimap-wrap');
     if (wrap) wrap.style.display = _cvMinimapAtivo ? 'flex' : 'none';
 
+    if (_cvMinimapAtivo) {
+        // Sempre abre sincronizado nos candles mais recentes do gráfico principal
+        _grOffset = 999999;
+        grDrawChart();
+    }
+
     // Recalcula tamanho do canvas principal (a área disponível mudou)
     grRenderChart();
 
@@ -6126,7 +6132,13 @@ function cvMinimapTimeToIndex(arr, t) {
             const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
             const idx = Math.round(ratio * (dados.length - 1));
             _cvMinimapCrosshairIdx = idx;
-            const t = dados[idx].t;
+            let t = dados[idx].t;
+            // O minimapa pode cobrir um histórico bem mais longo que o array do tf principal
+            // (ex: 2 anos de Diário vs. ~11 meses de 4H). Sem isso, arrastar pra antes do início
+            // do array principal fazia o índice extrapolar pra um valor bem negativo, que depois
+            // de clampado em 0 travava o gráfico principal mostrando sempre os candles mais antigos.
+            const tMin = _grAllCandles[0].t, tMax = _grAllCandles[_grAllCandles.length - 1].t;
+            t = Math.max(tMin, Math.min(tMax, t));
             // Converte o timestamp pro índice equivalente no array do tf principal
             const idxPrincipal = Math.round(grTimeToIndex(t));
             const total = _grAllCandles.length;
@@ -6148,6 +6160,10 @@ function cvMinimapTimeToIndex(arr, t) {
         canvas.addEventListener('mousedown', e => { mover(e.clientX); });
         canvas.addEventListener('mouseup', soltar);
         canvas.addEventListener('mouseleave', soltar);
+        // Rede de segurança: se o touchend/mouseup do canvas não disparar por algum motivo
+        // (gesto cancelado pelo sistema, etc.), garante que o crosshair não fique preso na tela.
+        document.addEventListener('touchend', () => { if (_cvMinimapCrosshairIdx !== null) soltar(); }, { passive: true });
+        document.addEventListener('mouseup', () => { if (_cvMinimapCrosshairIdx !== null) soltar(); });
     };
     setup();
     document.addEventListener('DOMContentLoaded', setup);
