@@ -1096,6 +1096,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <button class="cv-ind-btn reg" id="cv-ind-reg"><span class="btn-sigla">Reg</span><span class="btn-nome">Régua %</span></button>
       <button class="cv-ind-btn tl" id="cv-ind-tl" onclick="cvToggleTrend()" ontouchstart="cvTrendColorPressStart()" ontouchend="cvTrendColorPressEnd()"><span class="btn-sigla"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="20" x2="20" y2="4"/><circle cx="4" cy="20" r="2" fill="currentColor" stroke="none"/><circle cx="20" cy="4" r="2" fill="currentColor" stroke="none"/></svg></span><span class="btn-nome">Tendência</span></button>
       <button class="cv-ind-btn bandeira" id="cv-ind-bandeira" onclick="cvToggleBandeira()"><span class="btn-sigla"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="19" x2="15" y2="7"/><line x1="9" y1="21" x2="21" y2="9"/></svg></span><span class="btn-nome">Bandeira</span></button>
+      <button class="cv-ind-btn figura" id="cv-ind-figura" onclick="cvToggleFigura()"><span class="btn-sigla"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12,2.5 21,9.5 17.7,20 6.3,20 3,9.5"/></svg></span><span class="btn-nome">Figura</span></button>
       <button class="cv-ind-btn medida" id="cv-ind-medida" onclick="cvToggleMedida()"><span class="btn-sigla"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="6" y1="4" x2="18" y2="4"/><line x1="12" y1="4" x2="12" y2="20"/><line x1="6" y1="20" x2="18" y2="20"/></svg></span><span class="btn-nome">Medida</span></button>
       <button class="cv-ind-btn pat" id="cv-ind-pat" onclick="cvTogglePat()"><span class="btn-sigla">Pat</span><span class="btn-nome">Padrões</span></button>
       <button class="cv-ind-btn atr" id="cv-ind-atr" onclick="cvToggleSubInd('atr')">
@@ -1615,6 +1616,7 @@ async function carregarTransacoes() {
     await cvCarregarTradeOperacional();
     await cvCarregarAlertasGrafico();
     await cvCarregarTrendlines();
+    cvCarregarFiguras();
     grDrawChart();
 }
 
@@ -2980,6 +2982,17 @@ let _medidaDrawing = false;
 let _medidaFlashTimer = null;
 let _bandeiraDeleteTimer = null;
 let _bandeiraDeleteStartX = 0, _bandeiraDeleteStartY = 0;
+
+// ── Figura: polígono de N vértices — toque adiciona vértice, toque duplo no
+// mesmo ponto fecha a figura. Persistida localmente (sem tabela própria no banco).
+let _figuraVertices = [];        // vértices em progresso: [{i,p}, ...]
+let _figuraDesenhando = false;
+let _figuraPreviewAtual = null;  // {i,p} — ponto fantasma seguindo o dedo, antes de soltar
+let _figuras = [];               // figuras finalizadas: [{id, pontos:[{t,p},...], cor}]
+let _figuraLastTapTime = 0, _figuraLastTapX = 0, _figuraLastTapY = 0;
+let _figuraDeletePending = null;
+let _figuraDeleteTimer = null;
+let _figuraDeleteStartX = 0, _figuraDeleteStartY = 0;
 let _trendDragging = null; // {li, end:'1'|'2'} — arrastando ponta de linha existente
 let _trendDeleteTimer = null;
 let _trendDeletePending = null; // {li}
@@ -4517,6 +4530,41 @@ ctx.globalAlpha = 1;
             desenharBandeira(_bandeiraMastroFinal, _bandeiraOffsetAtual, corPreview);
         }
 
+        // ── Figuras: polígonos de N vértices ──────────────────────────
+        const desenharFigura = (pontosXY, cor, fechada) => {
+            if (pontosXY.length < 2) return;
+            ctx.save();
+            ctx.beginPath();
+            pontosXY.forEach((pt, i) => { if (i === 0) ctx.moveTo(pt.x, pt.y); else ctx.lineTo(pt.x, pt.y); });
+            if (fechada) ctx.closePath();
+            ctx.strokeStyle = cor;
+            ctx.lineWidth = 1.6;
+            ctx.stroke();
+            if (fechada) {
+                ctx.globalAlpha = 0.12;
+                ctx.fillStyle = cor;
+                ctx.fill();
+                ctx.globalAlpha = 1;
+            }
+            pontosXY.forEach(pt => {
+                ctx.beginPath();
+                ctx.arc(pt.x, pt.y, 3.5, 0, Math.PI * 2);
+                ctx.fillStyle = cor;
+                ctx.fill();
+            });
+            ctx.restore();
+        };
+        _figuras.forEach(f => {
+            const pontosXY = f.pontos.map(pt => ({ x: toXIdx2(grTimeToIndex(pt.t)), y: toY(pt.p) }));
+            desenharFigura(pontosXY, f.cor || '#FFD700', true);
+        });
+        // Figura em progresso (vértices já tocados + "fantasma" seguindo o dedo)
+        if (_figuraDesenhando && _figuraVertices.length > 0) {
+            const pontosXY = _figuraVertices.map(v => ({ x: toXIdx2(v.i), y: toY(v.p) }));
+            if (_figuraPreviewAtual) pontosXY.push({ x: toXIdx2(_figuraPreviewAtual.i), y: toY(_figuraPreviewAtual.p) });
+            desenharFigura(pontosXY, '#FFD700', false);
+        }
+
         // ── Régua de Medição: descartável, linha + caixa com % e USD ──
         if (_medidaAtual) {
             const corMedida = '#8B5CF6';
@@ -5260,6 +5308,70 @@ function grInitTouch() {
                 e.preventDefault();
                 return;
             }
+            // Modo Figura ativo — polígono de N vértices: toque adiciona vértice,
+            // toque duplo no mesmo ponto fecha a figura. Toque longo numa figura
+            // já pronta apaga ela.
+            if (_indState.figura) {
+                const idxF = grXToIndex(ex2);
+                const priceF = grToPrice(ey2);
+
+                if (!_figuraDesenhando) {
+                    let foundFigura = null;
+                    for (let fi = 0; fi < _figuras.length; fi++) {
+                        const pts = _figuras[fi].pontos.map(pt => ({ x: grIndexToX(grTimeToIndex(pt.t)), y: grLineY(pt.p) }));
+                        for (let k = 0; k < pts.length; k++) {
+                            const a = pts[k], b = pts[(k + 1) % pts.length];
+                            const dx = b.x - a.x, dy = b.y - a.y;
+                            const lenSq = dx * dx + dy * dy;
+                            let t = lenSq > 0 ? ((ex2 - a.x) * dx + (ey2 - a.y) * dy) / lenSq : 0;
+                            t = Math.max(0, Math.min(1, t));
+                            const px = a.x + t * dx, py = a.y + t * dy;
+                            if (Math.hypot(ex2 - px, ey2 - py) <= 18) { foundFigura = fi; break; }
+                        }
+                        if (foundFigura !== null) break;
+                    }
+                    if (foundFigura !== null) {
+                        _figuraDeletePending = { fi: foundFigura };
+                        _figuraDeleteStartX = ex2; _figuraDeleteStartY = ey2;
+                        _figuraDeleteTimer = setTimeout(() => {
+                            if (_figuraDeletePending) {
+                                cvApagarFigura(_figuraDeletePending.fi);
+                                _figuraDeletePending = null;
+                            }
+                        }, 500);
+                        e.preventDefault();
+                        return;
+                    }
+                }
+
+                const agoraF = Date.now();
+                // Toque duplo (rápido + perto do toque anterior) fecha a figura
+                if (_figuraDesenhando && _figuraVertices.length >= 3 &&
+                    agoraF - _figuraLastTapTime < 350 &&
+                    Math.hypot(ex2 - _figuraLastTapX, ey2 - _figuraLastTapY) < 24) {
+                    const pontosFinais = _figuraVertices.map(v => ({ t: grIndexToTime(v.i), p: v.p }));
+                    const novaFigura = { id: null, pontos: pontosFinais, cor: '#FFD700' };
+                    _figuras.push(novaFigura);
+                    cvSalvarFigura(novaFigura);
+                    _figuraVertices = [];
+                    _figuraDesenhando = false;
+                    _figuraPreviewAtual = null;
+                    _figuraLastTapTime = 0;
+                    grDrawChart();
+                    e.preventDefault();
+                    return;
+                }
+
+                // Toque simples: adiciona um vértice
+                _figuraVertices.push({ i: idxF, p: priceF });
+                _figuraDesenhando = true;
+                _figuraPreviewAtual = null;
+                _figuraLastTapTime = agoraF;
+                _figuraLastTapX = ex2; _figuraLastTapY = ey2;
+                grDrawChart();
+                e.preventDefault();
+                return;
+            }
             // Modo Trendline ativo — suspende outros gestos
             if (_indState.trend) {
                 const HITT = 40;
@@ -5421,6 +5533,24 @@ function grInitTouch() {
                 e.preventDefault();
                 return;
             }
+            if (_figuraDeletePending) {
+                const xc = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (canvas.width / canvas.getBoundingClientRect().width);
+                const yc = toCanvasY(e.touches[0].clientY);
+                if (Math.hypot(xc - _figuraDeleteStartX, yc - _figuraDeleteStartY) > 12) {
+                    clearTimeout(_figuraDeleteTimer);
+                    _figuraDeletePending = null;
+                }
+                e.preventDefault();
+                return;
+            }
+            if (_figuraDesenhando && _figuraVertices.length > 0) {
+                const xc = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (canvas.width / canvas.getBoundingClientRect().width);
+                const yc = toCanvasY(e.touches[0].clientY);
+                _figuraPreviewAtual = { i: grXToIndex(xc), p: grToPrice(yc) };
+                grDrawChart();
+                e.preventDefault();
+                return;
+            }
             if (_bandeiraDesenhandoCanal) {
                 const xc = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (canvas.width / canvas.getBoundingClientRect().width);
                 const yc = toCanvasY(e.touches[0].clientY);
@@ -5562,6 +5692,16 @@ function grInitTouch() {
     if (_bandeiraDeletePending) {
         clearTimeout(_bandeiraDeleteTimer);
         _bandeiraDeletePending = null;
+        return;
+    }
+    if (_figuraDeletePending) {
+        clearTimeout(_figuraDeleteTimer);
+        _figuraDeletePending = null;
+        return;
+    }
+    if (_figuraDesenhando) {
+        _figuraPreviewAtual = null;
+        grDrawChart();
         return;
     }
     if (_bandeiraDesenhandoCanal) {
@@ -5861,6 +6001,7 @@ const _indState = {
     fib:       false,
     trend:     false,
     bandeira:  false,
+    figura:    false,
     medida:    false,
     reg:       false,
     patterns:  false,
@@ -7949,6 +8090,44 @@ function cvToggleBandeira() {
         _bandeiraOffsetAtual = 0; _bandeiraDesenhandoCanal = false;
     }
     document.getElementById('cv-ind-bandeira').classList.toggle('active', _indState.bandeira);
+    grDrawChart();
+}
+
+function cvToggleFigura() {
+    _indState.figura = !_indState.figura;
+    if (!_indState.figura) {
+        _figuraVertices = []; _figuraDesenhando = false; _figuraPreviewAtual = null;
+        _figuraDeletePending = null; clearTimeout(_figuraDeleteTimer);
+    }
+    document.getElementById('cv-ind-figura').classList.toggle('active', _indState.figura);
+    grDrawChart();
+}
+
+// Figuras (polígonos) ainda não têm tabela própria no banco — persistidas
+// localmente por ativo, no mesmo espírito do que já fazemos pro minimapa.
+function cvFigurasChaveStorage() {
+    return `cvFiguras_${_ativoId || 'geral'}`;
+}
+
+function cvCarregarFiguras() {
+    try {
+        const raw = localStorage.getItem(cvFigurasChaveStorage());
+        _figuras = raw ? JSON.parse(raw) : [];
+    } catch (e) { _figuras = []; }
+}
+
+function cvSalvarFigurasStorage() {
+    try { localStorage.setItem(cvFigurasChaveStorage(), JSON.stringify(_figuras)); } catch (e) {}
+}
+
+function cvSalvarFigura(f) {
+    if (!f.id) f.id = 'fig_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+    cvSalvarFigurasStorage();
+}
+
+function cvApagarFigura(idx) {
+    _figuras.splice(idx, 1);
+    cvSalvarFigurasStorage();
     grDrawChart();
 }
 
