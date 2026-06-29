@@ -2987,7 +2987,6 @@ let _bandeiraDeleteStartX = 0, _bandeiraDeleteStartY = 0;
 // mesmo ponto fecha a figura. Persistida localmente (sem tabela própria no banco).
 let _figuraVertices = [];        // vértices em progresso: [{i,p}, ...]
 let _figuraDesenhando = false;
-let _figuraArrastandoVertice = false; // true só durante o arrasto do vértice atual (antes de soltar)
 let _figuraPreviewAtual = null;  // {i,p} — ponto fantasma seguindo o dedo, antes de soltar
 let _figuras = [];               // figuras finalizadas: [{id, pontos:[{t,p},...], cor}]
 let _figuraLastTapTime = 0, _figuraLastTapX = 0, _figuraLastTapY = 0;
@@ -5309,11 +5308,13 @@ function grInitTouch() {
                 e.preventDefault();
                 return;
             }
-            // Modo Figura ativo — polígono de N vértices: toque + arrasta + solta
-            // fixa CADA vértice (igual TradingView/Bandeira — nada vai pra memória
-            // antes de soltar o dedo). Toque duplo perto do último ponto fecha a
-            // figura. Toque longo numa figura já pronta apaga ela.
+            // Modo Figura ativo — polígono de N vértices: toque adiciona vértice,
+            // toque duplo no mesmo ponto fecha a figura. Toque longo numa figura
+            // já pronta apaga ela.
             if (_indState.figura) {
+                const idxF = grXToIndex(ex2);
+                const priceF = grToPrice(ey2);
+
                 if (!_figuraDesenhando) {
                     let foundFigura = null;
                     for (let fi = 0; fi < _figuras.length; fi++) {
@@ -5344,8 +5345,7 @@ function grInitTouch() {
                 }
 
                 const agoraF = Date.now();
-                // Toque duplo (rápido + perto do ÚLTIMO PONTO SOLTO) fecha a figura —
-                // não inicia um novo arrasto nesse caso.
+                // Toque duplo (rápido + perto do toque anterior) fecha a figura
                 if (_figuraDesenhando && _figuraVertices.length >= 3 &&
                     agoraF - _figuraLastTapTime < 350 &&
                     Math.hypot(ex2 - _figuraLastTapX, ey2 - _figuraLastTapY) < 24) {
@@ -5355,7 +5355,6 @@ function grInitTouch() {
                     cvSalvarFigura(novaFigura);
                     _figuraVertices = [];
                     _figuraDesenhando = false;
-                    _figuraArrastandoVertice = false;
                     _figuraPreviewAtual = null;
                     _figuraLastTapTime = 0;
                     grDrawChart();
@@ -5363,11 +5362,12 @@ function grInitTouch() {
                     return;
                 }
 
-                // Começa o arrasto do novo vértice — ainda NÃO entra em _figuraVertices
-                // (só fica em _figuraPreviewAtual, memória temporária da tela, até soltar)
-                _figuraArrastandoVertice = true;
+                // Toque simples: adiciona um vértice
+                _figuraVertices.push({ i: idxF, p: priceF });
                 _figuraDesenhando = true;
-                _figuraPreviewAtual = { i: grXToIndex(ex2), p: grToPrice(ey2) };
+                _figuraPreviewAtual = null;
+                _figuraLastTapTime = agoraF;
+                _figuraLastTapX = ex2; _figuraLastTapY = ey2;
                 grDrawChart();
                 e.preventDefault();
                 return;
@@ -5543,7 +5543,7 @@ function grInitTouch() {
                 e.preventDefault();
                 return;
             }
-            if (_figuraArrastandoVertice) {
+            if (_figuraDesenhando && _figuraVertices.length > 0) {
                 const xc = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (canvas.width / canvas.getBoundingClientRect().width);
                 const yc = toCanvasY(e.touches[0].clientY);
                 _figuraPreviewAtual = { i: grXToIndex(xc), p: grToPrice(yc) };
@@ -5699,18 +5699,7 @@ function grInitTouch() {
         _figuraDeletePending = null;
         return;
     }
-    if (_figuraArrastandoVertice) {
-        _figuraArrastandoVertice = false;
-        if (_figuraPreviewAtual) {
-            _figuraVertices.push({ i: _figuraPreviewAtual.i, p: _figuraPreviewAtual.p });
-            const rect = canvas.getBoundingClientRect();
-            const ct = e.changedTouches && e.changedTouches[0];
-            if (ct) {
-                _figuraLastTapX = (ct.clientX - rect.left) * (canvas.width / rect.width);
-                _figuraLastTapY = toCanvasY(ct.clientY);
-            }
-            _figuraLastTapTime = Date.now();
-        }
+    if (_figuraDesenhando) {
         _figuraPreviewAtual = null;
         grDrawChart();
         return;
@@ -8107,7 +8096,7 @@ function cvToggleBandeira() {
 function cvToggleFigura() {
     _indState.figura = !_indState.figura;
     if (!_indState.figura) {
-        _figuraVertices = []; _figuraDesenhando = false; _figuraArrastandoVertice = false; _figuraPreviewAtual = null;
+        _figuraVertices = []; _figuraDesenhando = false; _figuraPreviewAtual = null;
         _figuraDeletePending = null; clearTimeout(_figuraDeleteTimer);
     }
     document.getElementById('cv-ind-figura').classList.toggle('active', _indState.figura);
