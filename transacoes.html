@@ -5194,6 +5194,26 @@ function grInitTouch() {
     let lastTouchDist = 0;
     let isDragging = false;
 
+    // O canvas principal nunca tinha um listener de 'touchcancel'. Quando o sistema
+    // interrompe o toque (gesto de borda do iOS, central de notificações, troca de
+    // app, etc.) ele dispara 'touchcancel' em vez de 'touchend' — e como nenhuma das
+    // flags de "estou arrastando/desenhando algo" era resetada nesse caso, o próximo
+    // touchmove ficava preso pra sempre checando uma dessas condições e nunca chegava
+    // no código de pan/scroll normal. Isso parecia "scroll lateral travado".
+    canvas.addEventListener('touchcancel', () => {
+        isDragging = false;
+        _medidaDrawing = false;
+        _bandeiraDeletePending = null; clearTimeout(_bandeiraDeleteTimer);
+        _bandeiraDesenhandoCanal = false;
+        _bandeiraStep = null; _bandeiraMastroAtual = null; _bandeiraMastroFinal = null; _bandeiraOffsetAtual = 0;
+        _figuraDeletePending = null; clearTimeout(_figuraDeleteTimer);
+        _figuraArrastandoVertice = false; _figuraPreviewAtual = null;
+        _trendDragging = null;
+        _trendDeletePending = null; clearTimeout(_trendDeleteTimer);
+        window._longPressActive = false; clearTimeout(_longPressTimer);
+        grDrawChart();
+    }, { passive: true });
+
     function toCanvasY(clientY) {
         const rect = canvas.getBoundingClientRect();
         return (clientY - rect.top) * (canvas.height / rect.height);
@@ -5349,7 +5369,16 @@ function grInitTouch() {
                 if (_figuraDesenhando && _figuraVertices.length >= 3 &&
                     agoraF - _figuraLastTapTime < 350 &&
                     Math.hypot(ex2 - _figuraLastTapX, ey2 - _figuraLastTapY) < 24) {
-                    cvFinalizarFigura();
+                    const pontosFinais = _figuraVertices.map(v => ({ t: grIndexToTime(v.i), p: v.p }));
+                    const novaFigura = { id: null, pontos: pontosFinais, cor: '#FFD700' };
+                    _figuras.push(novaFigura);
+                    cvSalvarFigura(novaFigura);
+                    _figuraVertices = [];
+                    _figuraDesenhando = false;
+                    _figuraArrastandoVertice = false;
+                    _figuraPreviewAtual = null;
+                    _figuraLastTapTime = 0;
+                    grDrawChart();
                     e.preventDefault();
                     return;
                 }
@@ -8095,40 +8124,7 @@ function cvToggleBandeira() {
     grDrawChart();
 }
 
-// Finaliza a figura em progresso (precisa de pelo menos 3 vértices já soltos).
-// Chamada tanto pelo toque duplo quanto por tocar o botão Figura de novo —
-// dois jeitos de terminar, pro fechamento não depender só do timing do toque duplo.
-function cvFinalizarFigura() {
-    if (_figuraVertices.length < 3) return false;
-    const pontosFinais = _figuraVertices.map(v => ({ t: grIndexToTime(v.i), p: v.p }));
-    const novaFigura = { id: null, pontos: pontosFinais, cor: '#FFD700' };
-    _figuras.push(novaFigura);
-    cvSalvarFigura(novaFigura);
-    _figuraVertices = [];
-    _figuraDesenhando = false;
-    _figuraArrastandoVertice = false;
-    _figuraPreviewAtual = null;
-    _figuraLastTapTime = 0;
-    _indState.figura = false;
-    document.getElementById('cv-ind-figura').classList.remove('active');
-    grDrawChart();
-    return true;
-}
-
 function cvToggleFigura() {
-    // Se já tinha uma figura em progresso, esse toque no botão serve pra
-    // FINALIZAR ela (ou descartar, se tiver menos de 3 vértices) — não fica
-    // só dependendo do toque duplo pra fechar.
-    if (_indState.figura && _figuraDesenhando) {
-        if (!cvFinalizarFigura()) {
-            // Menos de 3 vértices: descarta o rascunho
-            _figuraVertices = []; _figuraDesenhando = false; _figuraArrastandoVertice = false; _figuraPreviewAtual = null;
-            _indState.figura = false;
-            document.getElementById('cv-ind-figura').classList.remove('active');
-            grDrawChart();
-        }
-        return;
-    }
     _indState.figura = !_indState.figura;
     if (!_indState.figura) {
         _figuraVertices = []; _figuraDesenhando = false; _figuraArrastandoVertice = false; _figuraPreviewAtual = null;
