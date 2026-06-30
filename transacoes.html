@@ -705,9 +705,13 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
     <!-- ABA 9: Sazonalidade -->
     <div class="od-pane" id="od-pane-9">
       <div style="padding:10px 16px 16px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:6px;">
           <span style="font-size:13px;font-weight:700;color:#1C1C1E;">Retornos mensais (%)</span>
-          <span id="od-saz-fonte" style="font-size:10px;color:#8E8E93;">Binance · desde 2017</span>
+          <div style="display:flex;gap:4px;">
+            <button id="od-saz-filtro-todos" onclick="odSazFiltrar('todos')" style="font-size:11px;font-weight:700;padding:4px 10px;border-radius:20px;border:1.5px solid #1C1C1E;background:#1C1C1E;color:#FFF;cursor:pointer;">Todos</button>
+            <button id="od-saz-filtro-bull" onclick="odSazFiltrar('bull')" style="font-size:11px;font-weight:700;padding:4px 10px;border-radius:20px;border:1.5px solid #1a7a72;background:transparent;color:#1a7a72;cursor:pointer;">● Bull</button>
+            <button id="od-saz-filtro-bear" onclick="odSazFiltrar('bear')" style="font-size:11px;font-weight:700;padding:4px 10px;border-radius:20px;border:1.5px solid #c0392b;background:transparent;color:#c0392b;cursor:pointer;">● Bear</button>
+          </div>
         </div>
         <div id="od-saz-loading" style="padding:24px 0;text-align:center;color:#8E8E93;font-size:13px;">Carregando…</div>
         <div id="od-saz-wrap" style="display:none;overflow-x:auto;-webkit-overflow-scrolling:touch;">
@@ -10656,31 +10660,63 @@ async function odCarregarSazonalidade() {
     }
 }
 
+// Ciclos Bull/Bear definidos manualmente pelo usuário (datas de início de cada ciclo).
+// Cada entrada: [timestamp_inicio, 'bull'|'bear']
+// O ciclo vige do início até o início do próximo (ou hoje).
+const _odSazCiclos = [
+    [new Date('2016-12-01').getTime(), 'bull'],
+    [new Date('2018-01-01').getTime(), 'bear'],
+    [new Date('2019-02-01').getTime(), 'bull'],
+    [new Date('2021-11-01').getTime(), 'bear'],
+    [new Date('2023-01-01').getTime(), 'bull'],
+    [new Date('2025-08-01').getTime(), 'bear'],
+];
+
+function odSazCicloDoMes(ano, mes) {
+    // Timestamp do primeiro dia desse mês (UTC)
+    const t = Date.UTC(ano, mes, 1);
+    let cicloAtual = null;
+    for (let i = 0; i < _odSazCiclos.length; i++) {
+        if (t >= _odSazCiclos[i][0]) cicloAtual = _odSazCiclos[i][1];
+        else break;
+    }
+    return cicloAtual; // 'bull', 'bear', ou null (antes do primeiro ciclo mapeado)
+}
+
+let _odSazFiltroAtivo = 'todos'; // 'todos' | 'bull' | 'bear'
+let _odSazMesesCache = null;     // referência pros dados, pra re-renderizar ao filtrar
+
+function odSazFiltrar(filtro) {
+    _odSazFiltroAtivo = filtro;
+    ['todos','bull','bear'].forEach(f => {
+        const btn = document.getElementById('od-saz-filtro-' + f);
+        if (!btn) return;
+        const ativo = f === filtro;
+        btn.style.background = ativo ? '#1C1C1E' : 'transparent';
+        btn.style.color = ativo ? '#FFF' : (f === 'bull' ? '#1a7a72' : f === 'bear' ? '#c0392b' : '#1C1C1E');
+        btn.style.borderColor = f === 'bull' ? '#1a7a72' : f === 'bear' ? '#c0392b' : '#1C1C1E';
+    });
+    if (_odSazMesesCache) odRenderizarSazonalidade(_odSazMesesCache);
+}
+
 function odRenderizarSazonalidade(meses) {
+    _odSazMesesCache = meses;
     const loading = document.getElementById('od-saz-loading');
     const wrap = document.getElementById('od-saz-wrap');
     const tabela = document.getElementById('od-saz-tabela');
     loading.style.display = 'none';
     wrap.style.display = 'block';
 
-    // IMPORTANTE: usar UTC em todo o cálculo de datas. A Binance retorna o
-    // timestamp de abertura do kline em UTC (ex: 1 Jun 00:00 UTC). Se usarmos
-    // getMonth() local, no Brasil (UTC-3) isso vira "31 Mai", classificando o
-    // kline do mês corrente na coluna errada e deixando June em branco.
     const agoraUTCMes = new Date().getUTCMonth();
     const agoraUTCAno = new Date().getUTCFullYear();
 
-    const porAno = {};
-    const fechDez = {};
-    const eAtual = {}; // guarda quais células são mês corrente (parcial)
-
+    const porAno = {}, eAtual = {};
     meses.forEach(m => {
         const ano = new Date(m.t).getUTCFullYear();
         const mes = new Date(m.t).getUTCMonth();
         const pct = ((m.c - m.o) / m.o) * 100;
         if (!porAno[ano]) porAno[ano] = {};
         porAno[ano][mes] = pct;
-        if (mes === 11) fechDez[ano] = m.c;
         if (ano === agoraUTCAno && mes === agoraUTCMes) {
             if (!eAtual[ano]) eAtual[ano] = {};
             eAtual[ano][mes] = true;
@@ -10690,60 +10726,55 @@ function odRenderizarSazonalidade(meses) {
     const anos = Object.keys(porAno).map(Number).sort((a, b) => b - a);
     const nomesMeses = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
 
-    // 4 níveis discretos de intensidade — igual ao heatmap do CoinGlass,
-    // bem mais legível que uma escala contínua de dezenas de tonalidades.
-    const corCelula = (pct, parcial) => {
-        if (pct === undefined) return '';
-        const alta = pct >= 0;
-        const abs = Math.abs(pct);
-        let bg;
-        if (alta) {
-            if (abs >= 20) bg = '#1a7a72';       // verde forte
-            else if (abs >= 10) bg = '#26A69A';  // verde médio
-            else if (abs >= 3)  bg = '#4db6ac';  // verde suave
-            else                bg = '#b2dfdb';  // verde claro
-        } else {
-            if (abs >= 20) bg = '#c0392b';       // vermelho forte
-            else if (abs >= 10) bg = '#EF5350';  // vermelho médio
-            else if (abs >= 3)  bg = '#ef9a9a';  // vermelho suave
-            else                bg = '#ffcdd2';  // vermelho claro
-        }
-        const textoCor = (abs >= 10) ? '#FFFFFF' : '#1C1C1E';
-        const borda = parcial ? 'outline:2px solid rgba(255,255,255,0.6);outline-offset:-2px;' : '';
-        return `background:${bg};color:${textoCor};${borda}`;
+    // 2 cores simples: fundo verde claro / vermelho claro, texto preto
+    const bgCelula = pct => pct === undefined ? '' :
+        pct >= 0 ? 'background:#d4edea;' : 'background:#fde0df;';
+
+    // Círculo no canto superior direito indicando o ciclo macro do período
+    const circuloCiclo = ciclo => {
+        if (!ciclo) return '';
+        const cor = ciclo === 'bull' ? '#1a7a72' : '#c0392b';
+        return `<span style="position:absolute;top:3px;right:3px;width:7px;height:7px;border-radius:50%;background:${cor};display:inline-block;flex-shrink:0;"></span>`;
     };
 
     let html = '<thead><tr>';
-    html += '<th style="position:sticky;left:0;background:#F2F4F8;padding:6px 10px;text-align:left;font-weight:700;z-index:1;">Ano</th>';
+    html += '<th style="position:sticky;left:0;background:#F2F4F8;padding:6px 10px;text-align:left;font-weight:700;z-index:1;min-width:52px;">Ano</th>';
     nomesMeses.forEach(m => html += `<th style="padding:6px 10px;font-weight:700;color:#3A3A3C;">${m}</th>`);
     html += '</tr></thead><tbody>';
 
     anos.forEach(ano => {
-        let badge = '';
-        if (fechDez[ano] !== undefined && fechDez[ano - 1] !== undefined) {
-            const bull = fechDez[ano] >= fechDez[ano - 1];
-            badge = bull
-                ? ' <span title="Bull — fechou o ano em alta">🐂</span>'
-                : ' <span title="Bear — fechou o ano em baixa">🐻</span>';
-        }
-        html += `<tr><td style="position:sticky;left:0;background:#F2F4F8;padding:6px 10px;font-weight:700;">${ano}${badge}</td>`;
+        html += `<tr><td style="position:sticky;left:0;background:#F2F4F8;padding:6px 10px;font-weight:700;">${ano}</td>`;
         for (let mes = 0; mes < 12; mes++) {
             const pct = porAno[ano][mes];
+            const ciclo = odSazCicloDoMes(ano, mes);
             const parcial = !!(eAtual[ano] && eAtual[ano][mes]);
-            const txt = pct === undefined ? '' : (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
-            const tituloParcial = parcial ? ' title="Mês em andamento"' : '';
-            html += `<td style="padding:6px 10px;text-align:center;${corCelula(pct, parcial)}"${tituloParcial}>${txt}</td>`;
+
+            // Filtro: esconde a célula se não bater com o filtro ativo
+            const visivel = _odSazFiltroAtivo === 'todos' || ciclo === _odSazFiltroAtivo;
+
+            if (!visivel || pct === undefined) {
+                html += '<td style="padding:6px 10px;"></td>';
+                continue;
+            }
+
+            const txt = (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
+            const borda = parcial ? 'outline:2px solid #555;outline-offset:-2px;' : '';
+            html += `<td style="position:relative;padding:6px 10px;text-align:center;${bgCelula(pct)}color:#1C1C1E;${borda}">
+                ${circuloCiclo(ciclo)}${txt}
+            </td>`;
         }
         html += '</tr>';
     });
 
-    // Linha de média por mês (exclui o mês corrente parcial da média)
+    // Linha de Média — só com células visíveis e não-parciais
     html += '<tr style="border-top:2px solid #D1D1D6;"><td style="position:sticky;left:0;background:#E5E5EA;padding:6px 10px;font-weight:700;">Média</td>';
     for (let mes = 0; mes < 12; mes++) {
-        const valores = anos
-            .filter(a => !(eAtual[a] && eAtual[a][mes])) // exclui o mês corrente (parcial)
-            .map(a => porAno[a][mes])
-            .filter(v => v !== undefined);
+        const valores = anos.filter(a => {
+            if (eAtual[a] && eAtual[a][mes]) return false; // exclui parcial
+            const ciclo = odSazCicloDoMes(a, mes);
+            if (_odSazFiltroAtivo !== 'todos' && ciclo !== _odSazFiltroAtivo) return false;
+            return true;
+        }).map(a => porAno[a][mes]).filter(v => v !== undefined);
         if (valores.length === 0) { html += '<td style="padding:6px 10px;background:#E5E5EA;"></td>'; continue; }
         const media = valores.reduce((s, v) => s + v, 0) / valores.length;
         const txt = (media >= 0 ? '+' : '') + media.toFixed(2) + '%';
