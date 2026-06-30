@@ -596,6 +596,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
     <button class="od-tab" id="od-tab-1" onclick="odSetTab(1)">Trades</button>
     <button class="od-tab" id="od-tab-8" onclick="odSetTab(8)">Confluência</button>
     <button class="od-tab" id="od-tab-2" onclick="odSetTab(2)">Mercado</button>
+    <button class="od-tab" id="od-tab-9" onclick="odSetTab(9)">Sazonalidade</button>
     <button class="od-tab" id="od-tab-3" onclick="odSetTab(3)">Posição Atual</button>
     <button class="od-tab" id="od-tab-4" onclick="odSetTab(4)">Nova Posição</button>
     <button class="od-tab" id="od-tab-5" onclick="odSetTab(5)">Lucro</button>
@@ -698,6 +699,20 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
         <input id="nova-slider" type="range" min="0" max="100" step="1" value="0" oninput="onSlider(this.value)">
         <span id="slider-pct-val">0%</span>
         <span id="slider-ref-max"></span>
+      </div>
+    </div>
+
+    <!-- ABA 9: Sazonalidade -->
+    <div class="od-pane" id="od-pane-9">
+      <div style="padding:10px 16px 16px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+          <span style="font-size:13px;font-weight:700;color:#1C1C1E;">Retornos mensais (%)</span>
+          <span id="od-saz-fonte" style="font-size:10px;color:#8E8E93;">Binance · desde 2017</span>
+        </div>
+        <div id="od-saz-loading" style="padding:24px 0;text-align:center;color:#8E8E93;font-size:13px;">Carregando…</div>
+        <div id="od-saz-wrap" style="display:none;overflow-x:auto;-webkit-overflow-scrolling:touch;">
+          <table id="od-saz-tabela" style="border-collapse:collapse;font-size:11px;white-space:nowrap;"></table>
+        </div>
       </div>
     </div>
 
@@ -10566,13 +10581,160 @@ async function odCalcularScoreConfluencia() {
     }
 }
 
+// ── Sazonalidade: retornos mensais (%) por ano, igual ao heatmap do CoinGlass.
+// Fonte: klines mensais da Binance (1M) — só cobre o histórico que a Binance
+// realmente tem pro ativo (ex: BTCUSDT desde ago/2017).
+let _odSazonalidadeCache = {}; // chave: binSymbol → { meses: [...] }
+
+async function odCarregarSazonalidade() {
+    const wrap = document.getElementById('od-saz-wrap');
+    const loading = document.getElementById('od-saz-loading');
+    const binSymbol = ((_ticker || 'BTC/USD').replace('/', '').replace('-', '').toUpperCase()
+        .replace('USD', 'USDT').replace('USDTT', 'USDT'));
+
+    if (_odSazonalidadeCache[binSymbol]) {
+        odRenderizarSazonalidade(_odSazonalidadeCache[binSymbol]);
+        return;
+    }
+
+    const agora = new Date();
+    const mesEhAtual = t => {
+        const d = new Date(t);
+        return d.getFullYear() === agora.getFullYear() && d.getMonth() === agora.getMonth();
+    };
+    const chaveStorage = `odSazonalidade_${binSymbol}`;
+
+    // Tenta usar o que já está salvo no celular (meses fechados — esses nunca mudam,
+    // não precisam ser buscados de novo). Só o mês corrente é buscado sempre.
+    let mesesSalvos = [];
+    try {
+        const raw = localStorage.getItem(chaveStorage);
+        if (raw) mesesSalvos = JSON.parse(raw);
+    } catch (e) { mesesSalvos = []; }
+
+    if (mesesSalvos.length > 0) {
+        // Mostra na hora o que já está salvo, enquanto busca só o mês corrente em segundo plano
+        odRenderizarSazonalidade(mesesSalvos);
+        wrap.style.display = 'block';
+        loading.style.display = 'none';
+    } else {
+        loading.style.display = 'block';
+        wrap.style.display = 'none';
+    }
+
+    try {
+        // limit=2 cobre o mês corrente + o anterior (proteção contra virada de mês
+        // entre uma sessão e outra, caso o último salvo já não seja mais o atual)
+        const limit = mesesSalvos.length > 0 ? 2 : 1000;
+        const url = `https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=1M&limit=${limit}`;
+        const r = await fetch(url);
+        const d = await r.json();
+        if (!Array.isArray(d) || d.length === 0) throw new Error('sem dados');
+        const recebidos = d.map(k => ({ t: k[0], o: parseFloat(k[1]), c: parseFloat(k[4]) }));
+
+        // Mescla: mantém os meses salvos que não vieram de novo, soma/atualiza os recebidos
+        const porChave = {};
+        mesesSalvos.forEach(m => { porChave[m.t] = m; });
+        recebidos.forEach(m => { porChave[m.t] = m; });
+        const meses = Object.values(porChave).sort((a, b) => a.t - b.t);
+
+        _odSazonalidadeCache[binSymbol] = meses;
+        odRenderizarSazonalidade(meses);
+        wrap.style.display = 'block';
+        loading.style.display = 'none';
+
+        // Salva permanentemente só os meses já FECHADOS — o mês corrente é
+        // recalculado a cada visita, nunca fica "preso" desatualizado no celular.
+        const mesesFechados = meses.filter(m => !mesEhAtual(m.t));
+        try { localStorage.setItem(chaveStorage, JSON.stringify(mesesFechados)); } catch (e) {}
+    } catch (e) {
+        if (mesesSalvos.length === 0) {
+            loading.textContent = 'Não foi possível carregar (ativo sem histórico suficiente na Binance)';
+        }
+        // Se já tinha algo salvo e só a atualização do mês corrente falhou
+        // (sem internet, etc.), mantém o que já estava na tela — não quebra nada.
+    }
+}
+
+function odRenderizarSazonalidade(meses) {
+    const loading = document.getElementById('od-saz-loading');
+    const wrap = document.getElementById('od-saz-wrap');
+    const tabela = document.getElementById('od-saz-tabela');
+    loading.style.display = 'none';
+    wrap.style.display = 'block';
+
+    // Organiza por ano → mês (0-11), e guarda o fechamento de dezembro de
+    // cada ano pra calcular o retorno anual real (fechamento × fechamento).
+    const porAno = {}; // {2023: {0: pct, 1: pct, ...}}
+    const fechDez = {}; // {2023: closePrice}
+    meses.forEach(m => {
+        const dt = new Date(m.t);
+        const ano = dt.getFullYear(), mes = dt.getMonth();
+        const pct = ((m.c - m.o) / m.o) * 100;
+        if (!porAno[ano]) porAno[ano] = {};
+        porAno[ano][mes] = pct;
+        if (mes === 11) fechDez[ano] = m.c;
+    });
+
+    const anos = Object.keys(porAno).map(Number).sort((a, b) => b - a); // mais recente primeiro
+    const nomesMeses = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+
+    const corCelula = pct => {
+        if (pct === undefined) return '';
+        const alta = pct >= 0;
+        const intensidade = Math.min(1, Math.abs(pct) / 30); // satura em ±30%
+        const base = alta ? [38,166,154] : [239,83,80];
+        const alpha = 0.18 + intensidade * 0.5;
+        return `background:rgba(${base[0]},${base[1]},${base[2]},${alpha.toFixed(2)});color:${alpha > 0.45 ? '#FFFFFF' : '#1C1C1E'};`;
+    };
+
+    let html = '<thead><tr>';
+    html += '<th style="position:sticky;left:0;background:#F2F4F8;padding:6px 10px;text-align:left;font-weight:700;z-index:1;">Ano</th>';
+    nomesMeses.forEach(m => html += `<th style="padding:6px 10px;font-weight:700;color:#3A3A3C;">${m}</th>`);
+    html += '</tr></thead><tbody>';
+
+    anos.forEach(ano => {
+        // Bull/Bear: fechamento de dezembro vs fechamento de dezembro do ano anterior.
+        // Se não tiver dezembro dos dois anos (ex: ano corrente ainda em curso, ou
+        // primeiro ano do histórico), não dá pra calcular — fica sem badge.
+        let badge = '';
+        if (fechDez[ano] !== undefined && fechDez[ano - 1] !== undefined) {
+            const retAnual = fechDez[ano] >= fechDez[ano - 1];
+            badge = retAnual
+                ? ' <span title="Bull — fechou o ano em alta">🐂</span>'
+                : ' <span title="Bear — fechou o ano em baixa">🐻</span>';
+        }
+        html += `<tr><td style="position:sticky;left:0;background:#F2F4F8;padding:6px 10px;font-weight:700;">${ano}${badge}</td>`;
+        for (let mes = 0; mes < 12; mes++) {
+            const pct = porAno[ano][mes];
+            const txt = pct === undefined ? '' : (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
+            html += `<td style="padding:6px 10px;text-align:center;${corCelula(pct)}">${txt}</td>`;
+        }
+        html += '</tr>';
+    });
+
+    // Linha de média por mês
+    html += '<tr style="border-top:2px solid #D1D1D6;"><td style="position:sticky;left:0;background:#E5E5EA;padding:6px 10px;font-weight:700;">Média</td>';
+    for (let mes = 0; mes < 12; mes++) {
+        const valores = anos.map(a => porAno[a][mes]).filter(v => v !== undefined);
+        if (valores.length === 0) { html += '<td style="padding:6px 10px;background:#E5E5EA;"></td>'; continue; }
+        const media = valores.reduce((s, v) => s + v, 0) / valores.length;
+        const txt = (media >= 0 ? '+' : '') + media.toFixed(2) + '%';
+        html += `<td style="padding:6px 10px;text-align:center;background:#E5E5EA;font-weight:600;">${txt}</td>`;
+    }
+    html += '</tr></tbody>';
+
+    tabela.innerHTML = html;
+}
+
 function odSetTab(idx) {
     if (idx === 1) { odCarregarTrades(); odIniciarRefreshTrades(); }
     else { odPararRefreshTrades(); }
     if (idx === 2) { odCarregarSentimento(); odIniciarRefreshMercado(); }
     else { odPararRefreshMercado(); }
     if (idx === 7) { var bt = document.getElementById('boleta-ticker'); if (bt) bt.textContent = _ticker || '—'; }
-    for (let i of [0, 1, 2, 3, 4, 5, 6, 7, 8]) {
+    if (idx === 9) { odCarregarSazonalidade(); }
+    for (let i of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]) {
         document.getElementById('od-tab-' + i).classList.toggle('active', i === idx);
         document.getElementById('od-pane-' + i).classList.toggle('active', i === idx);
     }
