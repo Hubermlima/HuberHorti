@@ -10600,7 +10600,7 @@ async function odCarregarSazonalidade() {
     const agora = new Date();
     const mesEhAtual = t => {
         const d = new Date(t);
-        return d.getFullYear() === agora.getFullYear() && d.getMonth() === agora.getMonth();
+        return d.getUTCFullYear() === agora.getUTCFullYear() && d.getUTCMonth() === agora.getUTCMonth();
     };
     const chaveStorage = `odSazonalidade_${binSymbol}`;
 
@@ -10663,29 +10663,54 @@ function odRenderizarSazonalidade(meses) {
     loading.style.display = 'none';
     wrap.style.display = 'block';
 
-    // Organiza por ano → mês (0-11), e guarda o fechamento de dezembro de
-    // cada ano pra calcular o retorno anual real (fechamento × fechamento).
-    const porAno = {}; // {2023: {0: pct, 1: pct, ...}}
-    const fechDez = {}; // {2023: closePrice}
+    // IMPORTANTE: usar UTC em todo o cálculo de datas. A Binance retorna o
+    // timestamp de abertura do kline em UTC (ex: 1 Jun 00:00 UTC). Se usarmos
+    // getMonth() local, no Brasil (UTC-3) isso vira "31 Mai", classificando o
+    // kline do mês corrente na coluna errada e deixando June em branco.
+    const agoraUTCMes = new Date().getUTCMonth();
+    const agoraUTCAno = new Date().getUTCFullYear();
+
+    const porAno = {};
+    const fechDez = {};
+    const eAtual = {}; // guarda quais células são mês corrente (parcial)
+
     meses.forEach(m => {
-        const dt = new Date(m.t);
-        const ano = dt.getFullYear(), mes = dt.getMonth();
+        const ano = new Date(m.t).getUTCFullYear();
+        const mes = new Date(m.t).getUTCMonth();
         const pct = ((m.c - m.o) / m.o) * 100;
         if (!porAno[ano]) porAno[ano] = {};
         porAno[ano][mes] = pct;
         if (mes === 11) fechDez[ano] = m.c;
+        if (ano === agoraUTCAno && mes === agoraUTCMes) {
+            if (!eAtual[ano]) eAtual[ano] = {};
+            eAtual[ano][mes] = true;
+        }
     });
 
-    const anos = Object.keys(porAno).map(Number).sort((a, b) => b - a); // mais recente primeiro
+    const anos = Object.keys(porAno).map(Number).sort((a, b) => b - a);
     const nomesMeses = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
 
-    const corCelula = pct => {
+    // 4 níveis discretos de intensidade — igual ao heatmap do CoinGlass,
+    // bem mais legível que uma escala contínua de dezenas de tonalidades.
+    const corCelula = (pct, parcial) => {
         if (pct === undefined) return '';
         const alta = pct >= 0;
-        const intensidade = Math.min(1, Math.abs(pct) / 30); // satura em ±30%
-        const base = alta ? [38,166,154] : [239,83,80];
-        const alpha = 0.18 + intensidade * 0.5;
-        return `background:rgba(${base[0]},${base[1]},${base[2]},${alpha.toFixed(2)});color:${alpha > 0.45 ? '#FFFFFF' : '#1C1C1E'};`;
+        const abs = Math.abs(pct);
+        let bg;
+        if (alta) {
+            if (abs >= 20) bg = '#1a7a72';       // verde forte
+            else if (abs >= 10) bg = '#26A69A';  // verde médio
+            else if (abs >= 3)  bg = '#4db6ac';  // verde suave
+            else                bg = '#b2dfdb';  // verde claro
+        } else {
+            if (abs >= 20) bg = '#c0392b';       // vermelho forte
+            else if (abs >= 10) bg = '#EF5350';  // vermelho médio
+            else if (abs >= 3)  bg = '#ef9a9a';  // vermelho suave
+            else                bg = '#ffcdd2';  // vermelho claro
+        }
+        const textoCor = (abs >= 10) ? '#FFFFFF' : '#1C1C1E';
+        const borda = parcial ? 'outline:2px solid rgba(255,255,255,0.6);outline-offset:-2px;' : '';
+        return `background:${bg};color:${textoCor};${borda}`;
     };
 
     let html = '<thead><tr>';
@@ -10694,29 +10719,31 @@ function odRenderizarSazonalidade(meses) {
     html += '</tr></thead><tbody>';
 
     anos.forEach(ano => {
-        // Bull/Bear: fechamento de dezembro vs fechamento de dezembro do ano anterior.
-        // Se não tiver dezembro dos dois anos (ex: ano corrente ainda em curso, ou
-        // primeiro ano do histórico), não dá pra calcular — fica sem badge.
         let badge = '';
         if (fechDez[ano] !== undefined && fechDez[ano - 1] !== undefined) {
-            const retAnual = fechDez[ano] >= fechDez[ano - 1];
-            badge = retAnual
+            const bull = fechDez[ano] >= fechDez[ano - 1];
+            badge = bull
                 ? ' <span title="Bull — fechou o ano em alta">🐂</span>'
                 : ' <span title="Bear — fechou o ano em baixa">🐻</span>';
         }
         html += `<tr><td style="position:sticky;left:0;background:#F2F4F8;padding:6px 10px;font-weight:700;">${ano}${badge}</td>`;
         for (let mes = 0; mes < 12; mes++) {
             const pct = porAno[ano][mes];
+            const parcial = !!(eAtual[ano] && eAtual[ano][mes]);
             const txt = pct === undefined ? '' : (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
-            html += `<td style="padding:6px 10px;text-align:center;${corCelula(pct)}">${txt}</td>`;
+            const tituloParcial = parcial ? ' title="Mês em andamento"' : '';
+            html += `<td style="padding:6px 10px;text-align:center;${corCelula(pct, parcial)}"${tituloParcial}>${txt}</td>`;
         }
         html += '</tr>';
     });
 
-    // Linha de média por mês
+    // Linha de média por mês (exclui o mês corrente parcial da média)
     html += '<tr style="border-top:2px solid #D1D1D6;"><td style="position:sticky;left:0;background:#E5E5EA;padding:6px 10px;font-weight:700;">Média</td>';
     for (let mes = 0; mes < 12; mes++) {
-        const valores = anos.map(a => porAno[a][mes]).filter(v => v !== undefined);
+        const valores = anos
+            .filter(a => !(eAtual[a] && eAtual[a][mes])) // exclui o mês corrente (parcial)
+            .map(a => porAno[a][mes])
+            .filter(v => v !== undefined);
         if (valores.length === 0) { html += '<td style="padding:6px 10px;background:#E5E5EA;"></td>'; continue; }
         const media = valores.reduce((s, v) => s + v, 0) / valores.length;
         const txt = (media >= 0 ? '+' : '') + media.toFixed(2) + '%';
