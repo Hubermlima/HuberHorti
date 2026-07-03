@@ -4422,59 +4422,80 @@ const aBX = 3, aBY = yR2 - aBH / 2;
 const fibsParaDesenhar = _indOculto.fib ? [] : [..._fibs, ...(_fibAtual ? [_fibAtual] : [])];
 if (fibsParaDesenhar.length > 0) {
     const fibCores = ['#26C6DA', '#AB47BC'];
-    // Largura do badge de % (para alinhar todos no mesmo eixo direito)
-    const badgeW = 42, badgeH = 16, badgePad = 4;
-    // Fib 1 badge colado ao eixo direito, Fib 2 deslocado para a esquerda do Fib 1
-    const badgeXs = [W - PAD.right - badgeW - 2, W - PAD.right - badgeW * 2 - 6];
+    const badgeW = 42, badgeH = 16, badgeGap = 4;
+    // Coluna 0 = colada no eixo direito; colunas seguintes deslocam à esquerda
+    const colX = (col) => W - PAD.right - badgeW - 2 - col * (badgeW + badgeGap);
 
+    const niveis = [
+        { r: 0,     label: '0%'    },
+        { r: 0.236, label: '23.6%' },
+        { r: 0.382, label: '38.2%' },
+        { r: 0.5,   label: '50%'   },
+        { r: 0.618, label: '61.8%' },
+        { r: 0.786, label: '78.6%' },
+        { r: 1,     label: '100%'  },
+    ];
+
+    // 1) calcula os níveis (linha + badge) de todos os fibs visíveis
+    let itens = [];
     fibsParaDesenhar.forEach((fib, fibIdx) => {
         const cor = fibCores[fibIdx % fibCores.length];
         const fibHigh = Math.max(fib.p1, fib.p2);
         const fibLow  = Math.min(fib.p1, fib.p2);
         const diff = fibHigh - fibLow;
         const isUp = fib.p2 > fib.p1;
-        const bx = badgeXs[fibIdx] || badgeXs[badgeXs.length - 1];
-
-        const niveis = [
-            { r: 0,     label: '0%'    },
-            { r: 0.236, label: '23.6%' },
-            { r: 0.382, label: '38.2%' },
-            { r: 0.5,   label: '50%'   },
-            { r: 0.618, label: '61.8%' },
-            { r: 0.786, label: '78.6%' },
-            { r: 1,     label: '100%'  },
-        ];
 
         niveis.forEach(({ r, label }) => {
             const price = isUp ? fibLow + diff * (1 - r) : fibHigh - diff * (1 - r);
             const y = toY(price);
             if (y < PAD.top || y > PAD.top + chartH) return;
-
-            // Linha fina
-            ctx.strokeStyle = cor;
-            ctx.lineWidth = 0.6;
-            ctx.globalAlpha = 0.5;
-            ctx.setLineDash([4, 4]);
-            ctx.beginPath();
-            ctx.moveTo(PAD.left, y);
-            ctx.lineTo(W - PAD.right, y);
-            ctx.stroke();
-            ctx.setLineDash([]);
-            ctx.globalAlpha = 1;
-
-            // Badge com só a porcentagem, fundo na cor do Fib
-            ctx.font = 'bold 10px -apple-system';
-            const tw = ctx.measureText(label).width;
-            const bxC = bx + (badgeW - tw) / 2; // centraliza texto no badge
-            ctx.fillStyle = cor;
-            ctx.beginPath();
-            ctx.roundRect(bx, y - badgeH / 2, badgeW, badgeH, 4);
-            ctx.fill();
-            ctx.fillStyle = '#000000';
-            ctx.textAlign = 'left';
-            ctx.fillText(label, bxC, y + 4);
-            ctx.globalAlpha = 1;
+            itens.push({ cor, label, y });
         });
+    });
+
+    // 2) linhas finas — sempre desenhadas na largura toda, não sofrem deslocamento
+    itens.forEach(({ cor, y }) => {
+        ctx.strokeStyle = cor;
+        ctx.lineWidth = 0.6;
+        ctx.globalAlpha = 0.5;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(PAD.left, y);
+        ctx.lineTo(W - PAD.right, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 1;
+    });
+
+    // 3) posicionamento dinâmico das badges: por padrão todas ficam na mesma
+    //    coluna (alinhadas no eixo direito). Uma badge só é deslocada para a
+    //    coluna seguinte à esquerda se colidir verticalmente com outra badge
+    //    já posicionada naquela coluna.
+    itens.sort((a, b) => a.y - b.y);
+    const colunas = []; // colunas[c] = lista de y já ocupados na coluna c
+    itens.forEach(item => {
+        let col = 0;
+        while (true) {
+            const ocupados = colunas[col] || (colunas[col] = []);
+            const colide = ocupados.some(y => Math.abs(y - item.y) < badgeH);
+            if (!colide) { ocupados.push(item.y); item.col = col; break; }
+            col++;
+        }
+    });
+
+    // 4) desenha as badges já nas colunas calculadas
+    ctx.font = 'bold 10px -apple-system';
+    itens.forEach(({ cor, label, y, col }) => {
+        const bx = colX(col);
+        const tw = ctx.measureText(label).width;
+        const bxC = bx + (badgeW - tw) / 2; // centraliza texto no badge
+        ctx.fillStyle = cor;
+        ctx.beginPath();
+        ctx.roundRect(bx, y - badgeH / 2, badgeW, badgeH, 4);
+        ctx.fill();
+        ctx.fillStyle = '#000000';
+        ctx.textAlign = 'left';
+        ctx.fillText(label, bxC, y + 4);
     });
 }
 
