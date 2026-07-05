@@ -5625,6 +5625,7 @@ function grInitTouch() {
 
                     _grOffset = Math.max(0, Math.min(_maxOff, _grOffset - delta));
                     touchStartX = e.touches[0].clientX;
+                    window._grManualPanTs = Date.now(); // marca que o usuário arrastou o gráfico principal de verdade
                     grDrawChart();
                 }
             }
@@ -5636,6 +5637,7 @@ function grInitTouch() {
             const ratio = lastTouchDist / dist;
             _grZoom = Math.max(10, Math.min(200, Math.round(_grZoom * ratio)));
             lastTouchDist = dist;
+            window._grManualPanTs = Date.now();
             grDrawChart();
         }
         e.preventDefault();
@@ -6181,17 +6183,22 @@ function cvDesenharMinimapa() {
     const visivelN = _cvMinimapVisivelN === 'all' ? totalCompleto : Math.min(_cvMinimapVisivelN, totalCompleto);
     const maxStartIdx = totalCompleto - visivelN;
 
-    // Auto-acompanhamento: se o gráfico PRINCIPAL se moveu desde o último desenho,
-    // recentraliza o minimapa nessa janela. Só roda quando a janela do principal de
-    // fato mudou — assim não sobrescreve um scroll manual feito direto no minimapa.
+    // Auto-acompanhamento: só recentraliza o minimapa quando o usuário arrasta/dá zoom
+    // de verdade no gráfico PRINCIPAL (flag _grManualPanTs) — não em toda atualização de
+    // preço via WebSocket, que mudava o intervalo de tempo sozinho e "puxava" o minimapa
+    // de volta pro lado direito mesmo sem o usuário tocar em nada.
+    // Também fica pausado por alguns segundos após um scroll manual DENTRO do minimapa,
+    // pra não brigar com o dedo do usuário.
+    const AUTO_ACOMPANHAR_COOLDOWN_MS = 4000;
+    const dentroDoCooldown = (Date.now() - (window._cvMinimapManualTs || 0)) < AUTO_ACOMPANHAR_COOLDOWN_MS;
+    const panTs = window._grManualPanTs || 0;
     const range = window._grVisibleTRange;
-    const rangeKey = range && range.from !== undefined ? `${range.from}|${range.to}` : null;
-    if (rangeKey !== null && rangeKey !== _cvMinimapUltimoRangeKey) {
+    if (!dentroDoCooldown && panTs > 0 && panTs !== _cvMinimapUltimoRangeKey && range && range.from !== undefined) {
         const idxFrom = cvMinimapTimeToIndex(dadosCompletos, range.from);
         const idxTo = cvMinimapTimeToIndex(dadosCompletos, range.to);
         const centerIdx = (idxFrom + idxTo) / 2;
         _cvMinimapScrollIdx = Math.round(centerIdx - visivelN / 2);
-        _cvMinimapUltimoRangeKey = rangeKey;
+        _cvMinimapUltimoRangeKey = panTs;
     }
 
     if (_cvMinimapScrollIdx === null) _cvMinimapScrollIdx = maxStartIdx; // padrão: candles mais recentes
@@ -6426,6 +6433,7 @@ function cvMinimapTimeToIndex(arr, t) {
             const visivelN = visivelTotal();
             const maxStartIdx = totalCompleto - visivelN;
             _cvMinimapScrollIdx = Math.max(0, Math.min(maxStartIdx, scrollStartIdx - deltaCandles));
+            window._cvMinimapManualTs = Date.now();
             cvDesenharMinimapa();
         }
 
