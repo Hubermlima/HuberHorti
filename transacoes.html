@@ -6459,6 +6459,23 @@ function cvMinimapTimeToIndex(arr, t) {
         let longPressTimer = null;
         let scrollStartIdx = 0;
         let liveClientX = 0; // posição do dedo sempre atualizada, pra evitar salto ao ativar o crosshair
+        let lastPinchDist = 0; // distância entre os dois dedos no gesto de pinça (zoom)
+
+        function aplicarZoom(dist) {
+            if (!lastPinchDist) { lastPinchDist = dist; return; }
+            const totalCompleto = _cvMinimapCandles.length;
+            const ratio = lastPinchDist / dist; // dedos afastando (dist maior) → ratio<1 → menos candles visíveis (mais zoom)
+            const visivelAtual = visivelTotal();
+            let novoVisivel = Math.round(visivelAtual * ratio);
+            novoVisivel = Math.max(15, Math.min(totalCompleto, novoVisivel));
+            _cvMinimapVisivelN = novoVisivel;
+            lastPinchDist = dist;
+            window._cvMinimapManualTs = Date.now();
+            try { localStorage.setItem('cvMinimapVisivelN', String(novoVisivel)); } catch (e) {}
+            const visivelSel = document.getElementById('cv-minimap-visivel-select');
+            if (visivelSel) visivelSel.value = ['100','200','300'].includes(String(novoVisivel)) ? String(novoVisivel) : '';
+            cvDesenharMinimapa();
+        }
 
         function visivelTotal() {
             const totalC = _cvMinimapCandles.length;
@@ -6538,10 +6555,33 @@ function cvMinimapTimeToIndex(arr, t) {
             // Crosshair persiste se já estava ativo — não fecha ao soltar.
         }
 
-        canvas.addEventListener('touchstart', e => { onStart(e.touches[0].clientX); e.preventDefault(); }, { passive: false });
-        canvas.addEventListener('touchmove', e => { onMove(e.touches[0].clientX); e.preventDefault(); }, { passive: false });
-        canvas.addEventListener('touchend', onEnd, { passive: true });
-        canvas.addEventListener('touchcancel', onEnd, { passive: true });
+        canvas.addEventListener('touchstart', e => {
+            if (e.touches.length === 2) {
+                lastPinchDist = Math.hypot(
+                    e.touches[0].clientX - e.touches[1].clientX,
+                    e.touches[0].clientY - e.touches[1].clientY
+                );
+                isDragging = false;
+                clearTimeout(longPressTimer);
+            } else {
+                onStart(e.touches[0].clientX);
+            }
+            e.preventDefault();
+        }, { passive: false });
+        canvas.addEventListener('touchmove', e => {
+            if (e.touches.length === 2) {
+                const dist = Math.hypot(
+                    e.touches[0].clientX - e.touches[1].clientX,
+                    e.touches[0].clientY - e.touches[1].clientY
+                );
+                aplicarZoom(dist);
+            } else {
+                onMove(e.touches[0].clientX);
+            }
+            e.preventDefault();
+        }, { passive: false });
+        canvas.addEventListener('touchend', e => { if (e.touches.length < 2) lastPinchDist = 0; onEnd(); }, { passive: true });
+        canvas.addEventListener('touchcancel', e => { lastPinchDist = 0; onEnd(); }, { passive: true });
 
         let mouseDown = false;
         canvas.addEventListener('mousedown', e => { mouseDown = true; onStart(e.clientX); e.preventDefault(); });
