@@ -3009,6 +3009,7 @@ try {
     if (alturaSalva) _cvMinimapAlturaPct = Math.max(_cvMinimapAlturaMin, Math.min(_cvMinimapAlturaMax, parseFloat(alturaSalva)));
 } catch (e) {}
 let _cvMinimapCrosshairIdx = null; // índice tocado/arrastado, pra mostrar data+preço
+let _cvMinimapCrosshairY = null;   // posição Y real do dedo (canvas px) — régua horizontal livre, igual ao gráfico principal
 let _cvMinimapVisivelN = 100; // 100|200|300|'all' — quantos candles ficam visíveis de cada vez ('all' = histórico todo comprimido, sem scroll)
 try {
     const visivelSalvo = localStorage.getItem('cvMinimapVisivelN');
@@ -6349,7 +6350,10 @@ function cvDesenharMinimapa() {
         const x = toX(idx);
         const cfg = cvMinimapConfig();
         const candle = dados[idx];
-        const y = toY(candle.c);
+        // Y real do dedo (livre, qualquer preço) — igual ao comportamento do gráfico principal.
+        // Cai de volta pro fechamento do candle só se ainda não houver Y registrado (segurança).
+        const y = (_cvMinimapCrosshairY !== null) ? _cvMinimapCrosshairY : toY(candle.c);
+        const precoNaAltura = minP + ((padY + innerH - y) / innerH) * (maxP - minP);
 
         ctx.strokeStyle = 'rgba(255,255,255,0.5)';
         ctx.lineWidth = 1;
@@ -6360,8 +6364,8 @@ function cvDesenharMinimapa() {
         ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
         ctx.setLineDash([]);
 
-        // Pílula de preço — eixo esquerdo
-        const precoTxt = fmtN(candle.c);
+        // Pílula de preço — eixo esquerdo — agora mostra o preço na altura real do dedo
+        const precoTxt = fmtN(precoNaAltura);
         ctx.font = 'bold 9px -apple-system';
         const ptw = ctx.measureText(precoTxt).width;
         const pH = 14, pW = ptw + 8, pX = 0, pY = y - pH / 2;
@@ -6459,6 +6463,7 @@ function cvMinimapTimeToIndex(arr, t) {
         let longPressTimer = null;
         let scrollStartIdx = 0;
         let liveClientX = 0; // posição do dedo sempre atualizada, pra evitar salto ao ativar o crosshair
+        let liveClientY = 0;
         let lastPinchDist = 0; // distância entre os dois dedos no gesto de pinça (zoom)
 
         function aplicarZoom(dist) {
@@ -6488,6 +6493,12 @@ function cvMinimapTimeToIndex(arr, t) {
             return Math.round(ratio * (visivelTotal() - 1));
         }
 
+        function posicaoParaY(clientY) {
+            const rect = canvas.getBoundingClientRect();
+            const ratio = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
+            return ratio * canvas.height;
+        }
+
         function travado() {
             return !!(_prefComponentes['minimapa']?.locked);
         }
@@ -6506,7 +6517,7 @@ function cvMinimapTimeToIndex(arr, t) {
             cvDesenharMinimapa();
         }
 
-        function onStart(clientX) {
+        function onStart(clientX, clientY) {
             if (!_cvMinimapAtivo || travado()) return;
             const dados = _cvMinimapCandles;
             if (!dados || dados.length < 2) return;
@@ -6516,12 +6527,14 @@ function cvMinimapTimeToIndex(arr, t) {
                 longPressActive = false;
                 clearTimeout(longPressTimer);
                 _cvMinimapCrosshairIdx = null;
+                _cvMinimapCrosshairY = null;
                 cvDesenharMinimapa();
                 return;
             }
 
             touchStartX = clientX;
             liveClientX = clientX;
+            liveClientY = clientY;
             isDragging = true;
             scrollStartIdx = _cvMinimapScrollIdx;
             longPressTimer = setTimeout(() => {
@@ -6529,16 +6542,19 @@ function cvMinimapTimeToIndex(arr, t) {
                     longPressActive = true;
                     isDragging = false;
                     _cvMinimapCrosshairIdx = posicaoParaIdx(liveClientX);
+                    _cvMinimapCrosshairY = posicaoParaY(liveClientY);
                     cvDesenharMinimapa();
                 }
             }, 500);
         }
 
-        function onMove(clientX) {
+        function onMove(clientX, clientY) {
             if (!_cvMinimapAtivo || travado()) return;
             liveClientX = clientX;
+            liveClientY = clientY;
             if (longPressActive) {
                 _cvMinimapCrosshairIdx = posicaoParaIdx(clientX);
+                _cvMinimapCrosshairY = posicaoParaY(clientY);
                 cvDesenharMinimapa();
                 return;
             }
@@ -6564,7 +6580,7 @@ function cvMinimapTimeToIndex(arr, t) {
                 isDragging = false;
                 clearTimeout(longPressTimer);
             } else {
-                onStart(e.touches[0].clientX);
+                onStart(e.touches[0].clientX, e.touches[0].clientY);
             }
             e.preventDefault();
         }, { passive: false });
@@ -6576,7 +6592,7 @@ function cvMinimapTimeToIndex(arr, t) {
                 );
                 aplicarZoom(dist);
             } else {
-                onMove(e.touches[0].clientX);
+                onMove(e.touches[0].clientX, e.touches[0].clientY);
             }
             e.preventDefault();
         }, { passive: false });
@@ -6584,8 +6600,8 @@ function cvMinimapTimeToIndex(arr, t) {
         canvas.addEventListener('touchcancel', e => { lastPinchDist = 0; onEnd(); }, { passive: true });
 
         let mouseDown = false;
-        canvas.addEventListener('mousedown', e => { mouseDown = true; onStart(e.clientX); e.preventDefault(); });
-        document.addEventListener('mousemove', e => { if (mouseDown) onMove(e.clientX); });
+        canvas.addEventListener('mousedown', e => { mouseDown = true; onStart(e.clientX, e.clientY); e.preventDefault(); });
+        document.addEventListener('mousemove', e => { if (mouseDown) onMove(e.clientX, e.clientY); });
         document.addEventListener('mouseup', () => { if (mouseDown) { mouseDown = false; onEnd(); } });
         canvas.addEventListener('contextmenu', e => e.preventDefault());
     };
