@@ -9723,14 +9723,24 @@ async function odCarregarSentimento() {
         const ratioAnterior = ratioVals[ratioVals.length - 2] || ratio;
         const ratioDelta = ratioAnterior > 0 ? ((ratio - ratioAnterior) / ratioAnterior * 100) : 0;
         window._cvTTR = ratio;
-        // Helper: Bullish/Bearish baseado na média móvel de 5 períodos
-        const diagMedia = (vals, inverso = false) => {
-            const period = 5;
+        // Helper: Bullish/Bearish baseado em z-score vs média móvel (janela maior, detecta extremos)
+        // z-score = (valor atual - média) / desvio-padrão da janela
+        // |z| > LIMIAR_EXTREMO indica que o indicador está em zona extrema (não só "acima da média")
+        const DIAGMEDIA_PERIOD = 30;
+        const LIMIAR_EXTREMO = 1.5;
+        const diagMedia = (vals, inverso = false, period = DIAGMEDIA_PERIOD) => {
             const slice = vals.slice(-period);
-            const mm = slice.reduce((s, v) => s + v, 0) / slice.length;
+            const n = slice.length;
             const atual = vals[vals.length - 1];
-            const bullish = inverso ? atual < mm : atual > mm;
-            return { diag: bullish ? 'Bullish' : 'Bearish', cor: bullish ? '#10B981' : '#EF4444' };
+            if (n < 2 || atual === undefined) return { diag: 'Bearish', cor: '#EF4444', z: 0, extremo: false };
+            const mm = slice.reduce((s, v) => s + v, 0) / n;
+            const variancia = slice.reduce((s, v) => s + Math.pow(v - mm, 2), 0) / n;
+            const desvio = Math.sqrt(variancia);
+            const zBruto = desvio > 0 ? (atual - mm) / desvio : 0;
+            const z = inverso ? -zBruto : zBruto;
+            const bullish = z > 0;
+            const extremo = Math.abs(zBruto) > LIMIAR_EXTREMO;
+            return { diag: bullish ? 'Bullish' : 'Bearish', cor: bullish ? '#10B981' : '#EF4444', z, extremo };
         };
 
         // Funding (inverso: negativo = bullish)
@@ -9813,27 +9823,6 @@ async function odCarregarSentimento() {
             lsr: { v: lsr, fmt: lsr.toFixed(2) }
         };
 
-        // Correlação de Pearson de cada indicador vs preço (mesma janela)
-        const pearson = (x, y) => {
-            const n = Math.min(x.length, y.length);
-            if (n < 2) return 0;
-            const xs = x.slice(-n), ys = y.slice(-n);
-            const mx = xs.reduce((s, v) => s + v, 0) / n;
-            const my = ys.reduce((s, v) => s + v, 0) / n;
-            let num = 0, dx2 = 0, dy2 = 0;
-            for (let i = 0; i < n; i++) {
-                const dx = xs[i] - mx, dy = ys[i] - my;
-                num += dx * dy; dx2 += dx * dx; dy2 += dy * dy;
-            }
-            const den = Math.sqrt(dx2 * dy2);
-            return den > 0 ? num / den : 0;
-        };
-        window._odCorrelacoes = {};
-        Object.keys(window._odCombo).forEach(k => {
-            if (k === 'preco') return;
-            window._odCorrelacoes[k] = pearson(window._odCombo.preco, window._odCombo[k]);
-        });
-
         // Diagnóstico Bullish/Bearish de cada indicador de Mercado, pra reaproveitar no score de Confluência
         window._odComboDiag = {
             oi: { nome: 'Open Interest', bullish: oiRes.diag === 'Bullish' },
@@ -9876,39 +9865,70 @@ async function odCarregarSentimento() {
         // OI
         const fraseOI = oiDelta >= 0 ? 'subindo, novas posições entrando' : 'caindo, posições sendo fechadas';
 
-        // ── Placar direto: cada indicador vota BEAR ou BULL, veredito pelo placar ──
-        const votos = [
+        // ── Matriz Direção x Alavancagem ──────────────────────────────
+        // Grupo 1 (Direção): pra onde o mercado está inclinado
+        const direcaoVotos = [
             { nome: 'Top Trader (contas)', bull: ttrRes.diag === 'Bullish' },
             { nome: 'Top Trader ($)',       bull: ttrPosRes.diag === 'Bullish' },
             { nome: 'L/S Ratio',            bull: lsrRes.diag === 'Bullish' },
-            { nome: 'Funding Rate',         bull: fRes.diag === 'Bullish' },
-            { nome: 'Open Interest',        bull: oiRes.diag === 'Bullish' },
-            { nome: 'Vol. Delta',           bull: vdRes.diag === 'Bullish' },
         ];
-        const totalBull = votos.filter(v => v.bull).length;
-        const totalBear = votos.length - totalBull;
-        let veredito, corVeredito;
-        if (totalBull >= 5)      { veredito = '🟢 BULL FORTE';    corVeredito = '#16A34A'; }
-        else if (totalBull === 4){ veredito = '🟢 BULL';          corVeredito = '#26A69A'; }
-        else if (totalBull === 3){ veredito = '⚪ NEUTRO';        corVeredito = '#8E8E93'; }
-        else if (totalBull === 2){ veredito = '🔴 BEAR';          corVeredito = '#EF5350'; }
-        else                     { veredito = '🔴 BEAR FORTE';    corVeredito = '#c0392b'; }
+        // Grupo 2 (Leverage/Extremo): se a direção está "esticada" vs a própria média histórica
+        const leverageVotos = [
+            { nome: 'Funding Rate',  bull: fRes.diag === 'Bullish',  extremo: fRes.extremo },
+            { nome: 'Open Interest', bull: oiRes.diag === 'Bullish', extremo: oiRes.extremo },
+            { nome: 'Vol. Delta',    bull: vdRes.diag === 'Bullish', extremo: vdRes.extremo },
+        ];
 
-        const placarHtml =
-            `<div style="display:flex;gap:12px;margin-bottom:10px;">`
-            + `<div style="flex:1;background:#e8f5e9;border-radius:10px;padding:10px;text-align:center;">`
-            + `<div style="font-size:22px;font-weight:800;color:#16A34A;">${totalBull}</div>`
-            + `<div style="font-size:11px;font-weight:700;color:#16A34A;">BULL</div></div>`
-            + `<div style="flex:1;background:#fce4ec;border-radius:10px;padding:10px;text-align:center;">`
-            + `<div style="font-size:22px;font-weight:800;color:#c0392b;">${totalBear}</div>`
-            + `<div style="font-size:11px;font-weight:700;color:#c0392b;">BEAR</div></div>`
+        const direcaoBull = direcaoVotos.filter(v => v.bull).length;
+        const direcaoBear = direcaoVotos.length - direcaoBull;
+        let direcao, direcaoLabel;
+        if (direcaoBull > direcaoBear)      { direcao = 'comprado'; direcaoLabel = 'COMPRADO'; }
+        else if (direcaoBear > direcaoBull) { direcao = 'vendido';  direcaoLabel = 'VENDIDO'; }
+        else                                 { direcao = 'misto';   direcaoLabel = 'MISTO'; }
+
+        // Indicadores de leverage "alinhados": extremos E na mesma direção do viés geral
+        const leverageAlinhados = leverageVotos.filter(v => v.extremo && (direcao === 'misto' ? true : v.bull === (direcao === 'comprado')));
+        const leverageExtremos = leverageVotos.filter(v => v.extremo);
+
+        let nivelAlavancagem, corConclusao, riscoTxt = '';
+        if (direcao === 'misto') {
+            nivelAlavancagem = null;
+            corConclusao = '#8E8E93';
+        } else if (leverageAlinhados.length >= 2) {
+            nivelAlavancagem = 'fortemente alavancado';
+            corConclusao = direcao === 'comprado' ? '#16A34A' : '#c0392b';
+            riscoTxt = direcao === 'comprado' ? ' Risco de long squeeze.' : ' Risco de short squeeze.';
+        } else if (leverageAlinhados.length === 1) {
+            nivelAlavancagem = 'levemente alavancado';
+            corConclusao = direcao === 'comprado' ? '#26A69A' : '#EF5350';
+        } else {
+            nivelAlavancagem = 'sem alavancagem excessiva (movimento mais orgânico)';
+            corConclusao = direcao === 'comprado' ? '#26A69A' : '#EF5350';
+        }
+
+        const conclusaoPrincipal = direcao === 'misto'
+            ? 'Sinal misto: os indicadores de direção (grandes traders e mercado geral) divergem entre si — sem viés claro no momento.'
+            : `Mercado <b>${direcaoLabel}</b> — ${nivelAlavancagem}.${riscoTxt}`;
+
+        const extremosTxt = leverageExtremos.length > 0
+            ? `Em zona extrema (vs média histórica): ${leverageExtremos.map(v => v.nome).join(', ')}.`
+            : 'Nenhum indicador de leverage em zona extrema no momento.';
+
+        const conclusaoHtml =
+            `<div style="font-size:16px;font-weight:800;color:${corConclusao};margin-bottom:6px;">${conclusaoPrincipal}</div>`
+            + `<div style="font-size:12px;color:#555;margin-bottom:12px;">${extremosTxt}</div>`
+            + `<div style="display:flex;gap:12px;margin-bottom:10px;">`
+            + `<div style="flex:1;background:#f2f2f7;border-radius:10px;padding:10px;">`
+            + `<div style="font-size:10px;font-weight:700;color:#6C6C70;letter-spacing:0.5px;margin-bottom:6px;">DIREÇÃO</div>`
+            + direcaoVotos.map(v => `${v.bull ? '🟢' : '🔴'} ${v.nome}`).join('<br>')
             + `</div>`
-            + `<div style="font-size:18px;font-weight:800;color:${corVeredito};margin-bottom:10px;">${veredito}</div>`
-            + `<div style="font-size:12px;color:#555;line-height:1.7;">`
-            + votos.map(v => `${v.bull ? '🟢' : '🔴'} ${v.nome}`).join('<br>')
+            + `<div style="flex:1;background:#f2f2f7;border-radius:10px;padding:10px;">`
+            + `<div style="font-size:10px;font-weight:700;color:#6C6C70;letter-spacing:0.5px;margin-bottom:6px;">LEVERAGE / EXTREMO</div>`
+            + leverageVotos.map(v => `${v.bull ? '🟢' : '🔴'} ${v.nome}${v.extremo ? ' ⚡' : ''}`).join('<br>')
+            + `</div>`
             + `</div>`;
 
-        // Mantém as frases descritivas de cada indicador (informativas, sem "conclusão em cima do muro")
+        // Mantém as frases descritivas de cada indicador (informativas)
         const narrativaHtml =
             `<div style="font-size:13px;font-weight:500;line-height:1.5;margin-bottom:12px;">`
             + `<b>Top Trader Ratio e Top Trader Ratio ($):</b> ${fraseGrandes}.<br>`
@@ -9916,7 +9936,7 @@ async function odCarregarSentimento() {
             + `<b>Funding Rate:</b> ${fraseFunding}.<br>`
             + `<b>Open Interest:</b> ${fraseOI}.`
             + `</div>`
-            + placarHtml;
+            + conclusaoHtml;
 
         if (elNarrativa) elNarrativa.innerHTML = narrativaHtml;
 
@@ -9949,17 +9969,14 @@ function odToggleCombo(key) {
 function odMontarChipsCombo() {
     const wrap = document.getElementById('od-combo-chips');
     if (!wrap || !window._odComboValores) return;
-    const corr = window._odCorrelacoes || {};
     wrap.innerHTML = _odComboDefs.map(d => {
         const ativo = window._odComboSelecionados[d.key];
         const val = window._odComboValores[d.key];
         const fmt = val ? val.fmt : '—';
-        const r = corr[d.key];
-        const rFmt = (r !== undefined) ? ' · r ' + (r >= 0 ? '+' : '') + r.toFixed(2) : '';
         const bg = ativo ? d.cor : '#E5E5EA';
         const txt = '#000000';
 
-        return `<button onclick="odToggleCombo('${d.key}')" style="border:none;border-radius:14px;padding:5px 10px;font-size:11px;font-weight:600;background:${bg};color:${txt};display:flex;align-items:center;gap:4px;">${d.label} <span style="font-weight:500;opacity:0.9;">${fmt}${rFmt}</span></button>`;
+        return `<button onclick="odToggleCombo('${d.key}')" style="border:none;border-radius:14px;padding:5px 10px;font-size:11px;font-weight:600;background:${bg};color:${txt};display:flex;align-items:center;gap:4px;">${d.label} <span style="font-weight:500;opacity:0.9;">${fmt}</span></button>`;
     }).join('');
 }
 
