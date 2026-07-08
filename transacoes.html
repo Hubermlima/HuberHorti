@@ -9688,13 +9688,14 @@ async function odCarregarSentimento() {
     }
 
     try {
-        const [rFunding, rOI, rRatio, rLSR, rTTRPos, rPrice] = await Promise.all([
+        const [rFunding, rOI, rRatio, rLSR, rTTRPos, rPrice, rCoinbase] = await Promise.all([
             fetch("https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&limit=20").then(r => r.json()),
             fetch("https://fapi.binance.com/futures/data/openInterestHist?symbol=BTCUSDT&period=4h&limit=24").then(r => r.json()),
             fetch("https://fapi.binance.com/futures/data/topLongShortAccountRatio?symbol=BTCUSDT&period=4h&limit=24").then(r => r.json()),
             fetch("https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=BTCUSDT&period=4h&limit=24").then(r => r.json()),
             fetch("https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol=BTCUSDT&period=4h&limit=24").then(r => r.json()),
-            fetch("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=4h&limit=24").then(r => r.json())
+            fetch("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=4h&limit=24").then(r => r.json()),
+            fetch("https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=3600").then(r => r.json()).catch(() => [])
         ]);
         const SVG_UP   = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="vertical-align:-2px"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18"/></svg>`;
         const SVG_DOWN = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="vertical-align:-2px"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 13.5 12 21m0 0-7.5-7.5M12 21V3"/></svg>`;
@@ -9804,6 +9805,31 @@ async function odCarregarSentimento() {
             if (elVD) elVD.innerHTML = `<span style="font-weight:700;color:${vdRes.cor}">${(vdAtual >= 0 ? '+' : '') + vdAtual.toFixed(2)}</span> <span style="font-size:12px;font-weight:600;color:${vdRes.cor};">${vdRes.diag}</span>`;
         }
 
+        // ── Coinbase Premium Index ── (Coinbase - Binance) / Binance × 100
+        // A Coinbase só aceita granularidade de 1h (não tem opção de 4h) — por isso buscamos
+        // candles de 1h e, pra cada candle de 4h da Binance, pegamos o de 1h da Coinbase com
+        // o horário de fechamento mais próximo.
+        let premiumVals = [], premiumAtual = 0, premiumDelta = 0;
+        let premRes = { diag: 'Bearish', cor: '#EF4444' };
+        if (Array.isArray(rCoinbase) && rCoinbase.length > 0 && Array.isArray(rPrice) && rPrice.length > 0) {
+            const cbCandles = rCoinbase.map(c => ({ t: c[0] * 1000, close: c[4] })); // API retorna tempo em segundos
+            premiumVals = rPrice.map(k => {
+                const closeTime = k[6]; // fechamento do candle de 4h da Binance, em ms
+                const binClose = parseFloat(k[4]);
+                let melhor = null, menorDiff = Infinity;
+                for (const cb of cbCandles) {
+                    const diff = Math.abs(cb.t - closeTime);
+                    if (diff < menorDiff) { menorDiff = diff; melhor = cb; }
+                }
+                if (!melhor || binClose <= 0) return 0;
+                return ((melhor.close - binClose) / binClose) * 100;
+            });
+            premiumAtual = premiumVals[premiumVals.length - 1] || 0;
+            const premiumAnterior = premiumVals[premiumVals.length - 2] || premiumAtual;
+            premiumDelta = premiumAtual - premiumAnterior;
+            premRes = diagMedia(premiumVals); // direto: premium subindo (mais institucional comprando) = bullish
+        }
+
         // ── Gráfico combinado: Preço (eixo esquerdo) x Indicadores normalizados (eixo direito) ──
         window._odCombo = {
             preco: precoVals,
@@ -9812,7 +9838,8 @@ async function odCarregarSentimento() {
             ttrpos: (Array.isArray(rTTRPos) ? rTTRPos.map(r => parseFloat(r.longShortRatio || 1)) : []),
             funding: fundingVals,
             oi: oiVals,
-            lsr: (Array.isArray(rLSR) ? rLSR.map(r => parseFloat(r.longShortRatio || 1)) : [])
+            lsr: (Array.isArray(rLSR) ? rLSR.map(r => parseFloat(r.longShortRatio || 1)) : []),
+            premium: premiumVals
         };
         window._odComboValores = {
             vd: { v: vdAtual, fmt: (vdAtual >= 0 ? '+' : '') + vdAtual.toFixed(2) },
@@ -9820,7 +9847,8 @@ async function odCarregarSentimento() {
             ttrpos: { v: ttrPos, fmt: ttrPos.toFixed(2) },
             funding: { v: funding, fmt: funding.toFixed(4) + '%' },
             oi: { v: oiAtual, fmt: '$' + oiAtual.toFixed(2) + 'B' },
-            lsr: { v: lsr, fmt: lsr.toFixed(2) }
+            lsr: { v: lsr, fmt: lsr.toFixed(2) },
+            premium: { v: premiumAtual, fmt: (premiumAtual >= 0 ? '+' : '') + premiumAtual.toFixed(3) + '%' }
         };
 
         // Diagnóstico Bullish/Bearish de cada indicador de Mercado, pra reaproveitar no score de Confluência
@@ -9830,7 +9858,8 @@ async function odCarregarSentimento() {
             ttr: { nome: 'Top Trader (contas)', bullish: ttrRes.diag === 'Bullish' },
             lsr: { nome: 'L/S Ratio', bullish: lsrRes.diag === 'Bullish' },
             funding: { nome: 'Funding Rate', bullish: fRes.diag === 'Bullish' },
-            vd: { nome: 'Volume Delta (Spot)', bullish: vdRes.diag === 'Bullish' }
+            vd: { nome: 'Volume Delta (Spot)', bullish: vdRes.diag === 'Bullish' },
+            premium: { nome: 'Coinbase Premium', bullish: premRes.diag === 'Bullish' }
         };
 
         odMontarChipsCombo();
@@ -9865,12 +9894,18 @@ async function odCarregarSentimento() {
         // OI
         const fraseOI = oiDelta >= 0 ? 'subindo, novas posições entrando' : 'caindo, posições sendo fechadas';
 
+        // Coinbase Premium
+        const frasePremium = premiumAtual > 0
+            ? (premiumDelta >= 0 ? 'positivo e subindo, fluxo institucional (Coinbase) comprando mais forte' : 'positivo mas caindo, fluxo institucional perdendo força')
+            : (premiumDelta >= 0 ? 'negativo mas subindo, fluxo institucional se recuperando' : 'negativo e caindo, fluxo institucional fraco/vendendo');
+
         // ── Matriz Direção x Alavancagem ──────────────────────────────
         // Grupo 1 (Direção): pra onde o mercado está inclinado
         const direcaoVotos = [
             { nome: 'Top Trader (contas)', bull: ttrRes.diag === 'Bullish' },
             { nome: 'Top Trader ($)',       bull: ttrPosRes.diag === 'Bullish' },
             { nome: 'L/S Ratio',            bull: lsrRes.diag === 'Bullish' },
+            { nome: 'Coinbase Premium',     bull: premRes.diag === 'Bullish' },
         ];
         // Grupo 2 (Leverage/Extremo): se a direção está "esticada" vs a própria média histórica
         const leverageVotos = [
@@ -9933,6 +9968,7 @@ async function odCarregarSentimento() {
             `<div style="font-size:13px;font-weight:500;line-height:1.5;margin-bottom:12px;">`
             + `<b>Top Trader Ratio e Top Trader Ratio ($):</b> ${fraseGrandes}.<br>`
             + `<b>Long/Short Ratio:</b> ${fraseLSR}.<br>`
+            + `<b>Coinbase Premium:</b> ${frasePremium}.<br>`
             + `<b>Funding Rate:</b> ${fraseFunding}.<br>`
             + `<b>Open Interest:</b> ${fraseOI}.`
             + `</div>`
@@ -9954,10 +9990,11 @@ const _odComboDefs = [
     { key: 'ttr',     label: 'Top Trader',  cor: '#5856D6' },
     { key: 'lsr',     label: 'L/S Ratio',   cor: '#AF52DE' },
     { key: 'funding', label: 'Funding',     cor: '#34C759' },
-    { key: 'vd',      label: 'Vol. Delta',  cor: '#FF9F0A' }
+    { key: 'vd',      label: 'Vol. Delta',  cor: '#FF9F0A' },
+    { key: 'premium', label: 'CB Premium',  cor: '#007AFF' }
 ];
 if (!window._odComboSelecionados) {
-    window._odComboSelecionados = { vd: true, ttr: true, ttrpos: false, funding: true, oi: true, lsr: false };
+    window._odComboSelecionados = { vd: true, ttr: true, ttrpos: false, funding: true, oi: true, lsr: false, premium: false };
 }
 
 function odToggleCombo(key) {
@@ -10694,7 +10731,8 @@ async function odCalcularScoreConfluencia() {
                 ttr: v => v.toFixed(2),
                 lsr: v => v.toFixed(2),
                 funding: v => v.toFixed(4) + '%',
-                vd: v => (v >= 0 ? '+' : '') + v.toFixed(2)
+                vd: v => (v >= 0 ? '+' : '') + v.toFixed(2),
+                premium: v => (v >= 0 ? '+' : '') + v.toFixed(3) + '%'
             };
             Object.keys(window._odComboDiag).forEach(k => {
                 const d = window._odComboDiag[k];
