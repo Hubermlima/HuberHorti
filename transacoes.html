@@ -3027,6 +3027,7 @@ try {
 
 let _grOffset = 999999;
 let _grZoom = 40;
+let _grEspacoTopoExtra = 0; // 0 a 0.6 — espaço vazio manual acima dos candles, aberto arrastando o dedo pra baixo
 let _grDrone = false;
 let _grDroneRange = null;
 
@@ -3272,6 +3273,11 @@ function grDrawCandles(candles, emptyRight) {
 
         // Salva escala para drag de linhas
         _grMinP = minP; _grMaxP = maxP; _grChartH = chartH;
+
+        // Espaço extra manual no topo (arrasto vertical do usuário) — abre espaço vazio acima dos candles
+        if (_grEspacoTopoExtra > 0) {
+            maxP += (maxP - minP) * _grEspacoTopoExtra;
+        }
 
         const priceRange = maxP - minP;
         const toY = p => PAD.top + chartH - ((p - minP) / priceRange) * chartH;
@@ -5240,6 +5246,8 @@ function grInitTouch() {
     const canvas = document.getElementById('gr-chart-canvas');
 
     let touchStartX = 0;
+    let touchStartY = 0;
+    let modoArrastoVertical = null; // null = ainda não decidido nesse toque; true = escala vertical; false = pan horizontal
     let lastTouchDist = 0;
     let isDragging = false;
 
@@ -5467,6 +5475,8 @@ function grInitTouch() {
  else {
     _grDragLine = null;
     touchStartX = e.touches[0].clientX;
+    touchStartY = e.touches[0].clientY;
+    modoArrastoVertical = null;
     isDragging = true;
     window._longPressY = yInterno;
                 _longPressTimer = setTimeout(() => {
@@ -5618,7 +5628,23 @@ function grInitTouch() {
 
                 // Cancela long press só se rolou bastante e ainda não ativou
                                 const dxAbs = Math.abs(e.touches[0].clientX - touchStartX);
-                if (dxAbs > 8 && !window._longPressActive) { clearTimeout(_longPressTimer); }
+                const dyAbsGesto = Math.abs(e.touches[0].clientY - touchStartY);
+                if ((dxAbs > 8 || dyAbsGesto > 8) && !window._longPressActive) { clearTimeout(_longPressTimer); }
+
+                // Decide o modo do gesto uma única vez, assim que o dedo se mover o suficiente
+                if (modoArrastoVertical === null && (dxAbs > 6 || dyAbsGesto > 6)) {
+                    modoArrastoVertical = dyAbsGesto > dxAbs * 1.2;
+                }
+
+                if (modoArrastoVertical) {
+                    // Arrasto vertical: abre/fecha espaço vazio acima dos candles (dedo pra baixo = mais espaço)
+                    const dy = e.touches[0].clientY - touchStartY;
+                    const deltaFrac = dy / canvas.height;
+                    _grEspacoTopoExtra = Math.max(0, Math.min(0.6, _grEspacoTopoExtra + deltaFrac));
+                    touchStartY = e.touches[0].clientY;
+                    window._grManualPanTs = Date.now();
+                    grDrawChart();
+                } else {
 
                 const dx = e.touches[0].clientX - touchStartX;
                 const candlesPerPx = _grZoom / canvas.width;
@@ -5631,6 +5657,7 @@ function grInitTouch() {
                     touchStartX = e.touches[0].clientX;
                     window._grManualPanTs = Date.now(); // marca que o usuário arrastou o gráfico principal de verdade
                     grDrawChart();
+                }
                 }
             }
         } else if (e.touches.length === 2) {
