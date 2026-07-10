@@ -6234,7 +6234,7 @@ function cvDesenharMinimapa() {
 
     const total = dados.length;
     if (total === 0) return;
-    const padLeft = 4, padRight = 16, padY = 6;
+    const padLeft = 38, padRight = 46, padY = 6;
     const innerW = W - padLeft - padRight;
     const innerH = H - padY * 2;
     window._cvMinimapPxPorCandle = innerW / visivelN; // usado pelo handler de arrasto/scroll — slot fixo, não o total real
@@ -6251,6 +6251,32 @@ function cvDesenharMinimapa() {
     // no mesmo tamanho de sempre, sobrando espaço vazio à direita, em vez de esticar.
     const toX = (i) => padLeft + (i / (visivelN - 1)) * innerW;
     const toY = (p) => padY + innerH - ((p - minP) / (maxP - minP)) * innerH;
+
+    // ── Escala numérica do eixo Y — mesma lógica de step "redondo" do gráfico principal ──
+    const rangeMini = maxP - minP;
+    const targetDivisoesMini = 4;
+    const rawStepMini = rangeMini / targetDivisoesMini;
+    const magnitudeMini = Math.pow(10, Math.floor(Math.log10(rawStepMini || 1)));
+    const niceStepsMini = [1, 2, 2.5, 5, 10];
+    let gridStepMini = magnitudeMini;
+    for (const s of niceStepsMini) {
+        const candidate = s * magnitudeMini;
+        if (rangeMini / candidate <= targetDivisoesMini + 2) { gridStepMini = candidate; break; }
+    }
+    const firstGridMini = Math.ceil(minP / gridStepMini) * gridStepMini;
+    for (let p = firstGridMini; p <= maxP; p += gridStepMini) {
+        const y = toY(p);
+        if (y < padY || y > padY + innerH) continue;
+        ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([]);
+        ctx.beginPath(); ctx.moveTo(padLeft, y); ctx.lineTo(W - padRight, y); ctx.stroke();
+        ctx.fillStyle = 'rgba(255,255,255,0.75)';
+        ctx.font = '9px -apple-system';
+        ctx.textAlign = 'right';
+        ctx.fillText(fmtN(p), padLeft - 5, y + 3);
+        ctx.textAlign = 'left';
+    }
 
     // Destaca, por TEMPO, a janela atualmente visível no gráfico principal —
     // só o preenchimento suave, sem borda, pra não criar uma "parede" vertical
@@ -6370,6 +6396,7 @@ function cvDesenharMinimapa() {
     // dentro da janela visível é desenhada.
     const closesCompletos = dadosCompletos.map(d => d.c);
     const emaCores = { 21: '#D499FF', 50: '#FF8FC4', 200: '#FFD166' };
+    const emaPontasMini = []; // { periodo, x, y, valor, cor } — pra desenhar a legenda depois, já sem sobreposição
     [21, 50, 200].forEach(periodo => {
         if (!_cvMinimapEmas[periodo]) return;
         const emaCompleto = cvMinimapEMA(closesCompletos, periodo);
@@ -6379,14 +6406,43 @@ function cvDesenharMinimapa() {
         ctx.strokeStyle = emaCores[periodo];
         ctx.lineWidth = 1.3;
         let started = false;
+        let ultimaPonta = null;
         for (let i = 0; i < total; i++) {
             const v = emaVals[i];
             if (v === null || v === undefined) { started = false; continue; }
             const x = toX(i), y = toY(v);
             if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+            ultimaPonta = { x, y, valor: v };
         }
         ctx.stroke();
+        if (ultimaPonta) emaPontasMini.push({ periodo, cor: emaCores[periodo], ...ultimaPonta });
     });
+
+    // ── Legenda com o valor de cada EMA na ponta final da linha ──
+    // Anti-sobreposição simples: se duas pontas ficam muito próximas em Y, afasta uma da outra.
+    if (emaPontasMini.length > 0) {
+        emaPontasMini.sort((a, b) => a.y - b.y);
+        const espacoMinimo = 13;
+        for (let i = 1; i < emaPontasMini.length; i++) {
+            if (emaPontasMini[i].y - emaPontasMini[i - 1].y < espacoMinimo) {
+                emaPontasMini[i].y = emaPontasMini[i - 1].y + espacoMinimo;
+            }
+        }
+        ctx.font = 'bold 9px -apple-system';
+        emaPontasMini.forEach(p => {
+            const txt = fmtN(p.valor);
+            const txtW = ctx.measureText(txt).width;
+            const bH = 13, bW = txtW + 6;
+            const bX = Math.min(W - bW - 1, p.x + 3);
+            const bY = p.y - bH / 2;
+            ctx.fillStyle = p.cor;
+            ctx.beginPath(); ctx.roundRect(bX, bY, bW, bH, 3); ctx.fill();
+            ctx.fillStyle = '#131722';
+            ctx.textAlign = 'left';
+            ctx.fillText(txt, bX + 3, bY + bH - 3.5);
+        });
+    }
+
 
     // ── Crosshair — mesmo visual do crosshair do gráfico principal, mas independente
     // (não move mais o gráfico principal, só mostra data/preço aqui no minimapa) ──
