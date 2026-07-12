@@ -597,6 +597,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
     <button class="od-tab" id="od-tab-1" onclick="odSetTab(1)">Trades</button>
     <button class="od-tab" id="od-tab-8" onclick="odSetTab(8)">Confluência</button>
     <button class="od-tab" id="od-tab-2" onclick="odSetTab(2)">Mercado</button>
+    <button class="od-tab" id="od-tab-10" onclick="odSetTab(10)">Macro</button>
     <button class="od-tab" id="od-tab-9" onclick="odSetTab(9)">Sazonalidade</button>
     <button class="od-tab" id="od-tab-3" onclick="odSetTab(3)">Posição Atual</button>
     <button class="od-tab" id="od-tab-4" onclick="odSetTab(4)">Nova Posição</button>
@@ -646,6 +647,46 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
           <div id="od-confluencia-status" style="text-align:center;font-size:12px;color:#8E8E93;margin-top:8px;"></div>
         </div>
         <div id="od-confluencia-resultados" style="margin-top:12px;"></div>
+      </div>
+    </div>
+
+    <!-- ABA 10: Macro (SPY/TLT, DXY, VIX) -->
+    <div class="od-pane" id="od-pane-10">
+      <div style="padding:16px;">
+        <div style="font-size:11px;font-weight:600;color:#8E8E93;letter-spacing:0.4px;text-transform:uppercase;margin-bottom:2px;">Risk-on / Risk-off (EUA)</div>
+        <div style="font-size:11px;color:#8E8E93;margin-bottom:14px;">Dados via Yahoo Finance (delay ~15min) · atualiza a cada 1min</div>
+
+        <!-- SPY/TLT — gráfico principal -->
+        <div style="margin-bottom:4px;display:flex;align-items:baseline;justify-content:space-between;">
+          <span style="font-size:12px;font-weight:700;color:#1C1C1E;">SPY / TLT</span>
+          <span id="od-macro-spytlt-valor" style="font-size:13px;font-weight:700;">—</span>
+        </div>
+        <canvas id="od-macro-canvas" width="600" height="150" style="width:100%;height:150px;display:block;"></canvas>
+        <div style="font-size:10.5px;color:#8E8E93;margin-top:4px;margin-bottom:16px;">Subindo = capital migrando pra ações · Caindo = migrando pra renda fixa</div>
+
+        <div class="od-divider"></div>
+
+        <!-- DXY -->
+        <div style="padding:12px 0 4px;">
+          <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px;">
+            <span style="font-size:12px;font-weight:700;color:#1C1C1E;">DXY (Índice do Dólar)</span>
+            <span id="od-macro-dxy-valor" style="font-size:13px;font-weight:700;">—</span>
+          </div>
+          <div id="od-macro-dxy-spark"></div>
+        </div>
+
+        <div class="od-divider"></div>
+
+        <!-- VIX -->
+        <div style="padding:12px 0 4px;">
+          <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px;">
+            <span style="font-size:12px;font-weight:700;color:#1C1C1E;">VIX (Índice do Medo)</span>
+            <span id="od-macro-vix-valor" style="font-size:13px;font-weight:700;">—</span>
+          </div>
+          <div id="od-macro-vix-spark"></div>
+        </div>
+
+        <div id="od-macro-status" style="text-align:center;font-size:11px;color:#8E8E93;margin-top:14px;"></div>
       </div>
     </div>
 
@@ -9693,6 +9734,154 @@ function odPararRefreshMercado() {
     }
 }
 
+// ── Aba Macro: SPY/TLT, DXY, VIX ──────────────────────────────────────
+// Fonte: Yahoo Finance (endpoint não-oficial), via proxy público allorigins.win
+// (Yahoo não libera CORS pra fetch direto do navegador — sem isso, a chamada
+// falha silenciosamente no client-side). Zero chave/cadastro necessário.
+let _odMacroRefreshInterval = null;
+const OD_MACRO_REFRESH_MS = 60000;
+const OD_MACRO_PROXY = 'https://api.allorigins.win/raw?url=';
+
+function odIniciarRefreshMacro() {
+    if (_odMacroRefreshInterval) return;
+    _odMacroRefreshInterval = setInterval(() => { odCarregarMacro(); }, OD_MACRO_REFRESH_MS);
+}
+
+function odPararRefreshMacro() {
+    if (_odMacroRefreshInterval) {
+        clearInterval(_odMacroRefreshInterval);
+        _odMacroRefreshInterval = null;
+    }
+}
+
+async function odCarregarMacro() {
+    const statusEl = document.getElementById('od-macro-status');
+    const elSpyTlt = document.getElementById('od-macro-spytlt-valor');
+    const elDxy = document.getElementById('od-macro-dxy-valor');
+    const elVix = document.getElementById('od-macro-vix-valor');
+    if (!statusEl) return;
+    statusEl.textContent = 'Atualizando...';
+
+    const yUrl = ticker => `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=1mo&interval=1d`;
+    const buscar = ticker => fetch(OD_MACRO_PROXY + encodeURIComponent(yUrl(ticker))).then(r => r.json());
+
+    // Extrai { closes[], atual, anterior } de uma resposta do chart do Yahoo
+    const extrair = r => {
+        const res = r && r.chart && r.chart.result && r.chart.result[0];
+        if (!res) return null;
+        const closesBrutos = (res.indicators.quote[0].close || []).filter(v => v != null);
+        if (closesBrutos.length < 2) return null;
+        const meta = res.meta || {};
+        return {
+            closes: closesBrutos,
+            atual: meta.regularMarketPrice != null ? meta.regularMarketPrice : closesBrutos[closesBrutos.length - 1],
+            anterior: meta.chartPreviousClose != null ? meta.chartPreviousClose : closesBrutos[closesBrutos.length - 2]
+        };
+    };
+
+    try {
+        const [rSpy, rTlt, rVix, rDxy] = await Promise.all([
+            buscar('SPY'), buscar('TLT'), buscar('^VIX'), buscar('DX-Y.NYB')
+        ]);
+        const spy = extrair(rSpy), tlt = extrair(rTlt), vix = extrair(rVix), dxy = extrair(rDxy);
+        if (!spy || !tlt || !vix || !dxy) throw new Error('Dados incompletos na resposta do Yahoo');
+
+        // Razão SPY/TLT candle a candle (corta pelo tamanho do menor histórico)
+        const n = Math.min(spy.closes.length, tlt.closes.length);
+        const ratio = [];
+        for (let i = 0; i < n; i++) {
+            ratio.push(spy.closes[spy.closes.length - n + i] / tlt.closes[tlt.closes.length - n + i]);
+        }
+        window._odMacroRatio = ratio;
+
+        const ratioAtual = spy.atual / tlt.atual;
+        const ratioAnterior = spy.anterior / tlt.anterior;
+        const ratioDeltaPct = ratioAnterior ? ((ratioAtual - ratioAnterior) / ratioAnterior) * 100 : 0;
+        elSpyTlt.textContent = ratioAtual.toFixed(3) + '  ' + (ratioDeltaPct >= 0 ? '+' : '') + ratioDeltaPct.toFixed(2) + '%';
+        elSpyTlt.style.color = ratioDeltaPct >= 0 ? '#26A69A' : '#EF5350';
+
+        const dxyDeltaPct = dxy.anterior ? ((dxy.atual - dxy.anterior) / dxy.anterior) * 100 : 0;
+        elDxy.textContent = dxy.atual.toFixed(2) + '  ' + (dxyDeltaPct >= 0 ? '+' : '') + dxyDeltaPct.toFixed(2) + '%';
+        elDxy.style.color = dxyDeltaPct >= 0 ? '#26A69A' : '#EF5350';
+
+        const vixDeltaPct = vix.anterior ? ((vix.atual - vix.anterior) / vix.anterior) * 100 : 0;
+        elVix.textContent = vix.atual.toFixed(2) + '  ' + (vixDeltaPct >= 0 ? '+' : '') + vixDeltaPct.toFixed(2) + '%';
+        // VIX é medo — subir é o cenário ruim, então a cor é invertida em relação aos outros dois
+        elVix.style.color = vixDeltaPct >= 0 ? '#EF5350' : '#26A69A';
+
+        const elDxySpark = document.getElementById('od-macro-dxy-spark');
+        const elVixSpark = document.getElementById('od-macro-vix-spark');
+        if (elDxySpark) elDxySpark.innerHTML = odSparkline(dxy.closes, '#FFD166', 'dxyspk', 2, '', null);
+        if (elVixSpark) elVixSpark.innerHTML = odSparkline(vix.closes, '#EF5350', 'vixspk', 2, '', null);
+
+        odDesenharMacro();
+        statusEl.textContent = '';
+    } catch (e) {
+        statusEl.textContent = 'Erro ao buscar dados macro — tente novamente em instantes';
+        console.error('odCarregarMacro erro:', e);
+    }
+}
+
+function odDesenharMacro() {
+    const canvas = document.getElementById('od-macro-canvas');
+    const ratio = window._odMacroRatio;
+    if (!canvas || !ratio || ratio.length < 2) return;
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const W = Math.max(rect.width, 300), H = 150;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    canvas.style.height = H + 'px';
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+
+    const PAD = { top: 10, bottom: 16, left: 46, right: 10 };
+    const chartW = W - PAD.left - PAD.right;
+    const chartH = H - PAD.top - PAD.bottom;
+    const n = ratio.length;
+    const toX = i => PAD.left + (i / (n - 1)) * chartW;
+    const rMin = Math.min(...ratio), rMax = Math.max(...ratio);
+    const range = (rMax - rMin) || 1;
+    const toY = v => PAD.top + chartH - ((v - rMin) / range) * chartH;
+
+    // Grade leve (fundo branco do painel — mesmo padrão do gráfico Mercado)
+    ctx.strokeStyle = 'rgba(0,0,0,0.06)';
+    ctx.lineWidth = 1;
+    for (let g = 0; g <= 2; g++) {
+        const y = PAD.top + (chartH / 2) * g;
+        ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(W - PAD.right, y); ctx.stroke();
+    }
+    ctx.fillStyle = '#8E8E93';
+    ctx.font = '10px -apple-system, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText(rMax.toFixed(3), PAD.left - 6, PAD.top + 4);
+    ctx.fillText(rMin.toFixed(3), PAD.left - 6, PAD.top + chartH);
+
+    const corLinha = ratio[ratio.length - 1] >= ratio[0] ? '#26A69A' : '#EF5350';
+
+    // Preenchimento leve abaixo da linha
+    ctx.beginPath();
+    ratio.forEach((v, i) => {
+        const x = toX(i), y = toY(v);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.lineTo(toX(n - 1), PAD.top + chartH);
+    ctx.lineTo(toX(0), PAD.top + chartH);
+    ctx.closePath();
+    ctx.fillStyle = corLinha + '18';
+    ctx.fill();
+
+    // Linha
+    ctx.beginPath();
+    ratio.forEach((v, i) => {
+        const x = toX(i), y = toY(v);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = corLinha;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+}
+
 // Sparkline (barras clicáveis) — precisa estar no escopo global porque o onclick
 // injetado via innerHTML chama essa função fora do contexto de odCarregarSentimento.
 function odSparkline(values, color, id, decimais, sufixo, baseline) {
@@ -11184,6 +11373,8 @@ function odSetTab(idx) {
     else { odPararRefreshMercado(); }
     if (idx === 7) { var bt = document.getElementById('boleta-ticker'); if (bt) bt.textContent = _ticker || '—'; }
     if (idx === 9) { odCarregarSazonalidade(); }
+    if (idx === 10) { odCarregarMacro(); odIniciarRefreshMacro(); }
+    else { odPararRefreshMacro(); }
     // Posição Atual / Lucro / Eficiência dependem dos mesmos cálculos — refaz
     // sempre que qualquer uma delas é aberta, pra nunca mostrar dado velho de
     // antes da última transação (essas 3 abas ficavam presas no estado de
@@ -11192,7 +11383,7 @@ function odSetTab(idx) {
         if (typeof odAtualizarPosicaoAtual === 'function') odAtualizarPosicaoAtual();
         if (typeof odCalcularBreakEven === 'function') odCalcularBreakEven();
     }
-    for (let i of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]) {
+    for (let i of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
         document.getElementById('od-tab-' + i).classList.toggle('active', i === idx);
         document.getElementById('od-pane-' + i).classList.toggle('active', i === idx);
     }
