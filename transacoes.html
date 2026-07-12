@@ -4029,18 +4029,21 @@ const bbAlta = !!window._bbFlagAlta;
             if (_grAllCandles.length < 10) return;
 
             // Calcula uma vez e cacheia
-            const agrupar = (niveis) => {
-                const sorted = [...niveis].sort((a, b) => a - b);
+            // Agora recebe {valor, idx} em vez de só o preço — o idx é o índice do
+            // candle onde aconteceu o toque, usado depois pra medir recência.
+            const agrupar = (pontos) => {
+                const sorted = [...pontos].sort((a, b) => a.valor - b.valor);
                 const zonas = [];
-                for (const nivel of sorted) {
-                    const zona = zonas.find(z => Math.abs(nivel - z.centro) / z.centro < 0.012);
+                for (const p of sorted) {
+                    const zona = zonas.find(z => Math.abs(p.valor - z.centro) / z.centro < 0.012);
                     if (zona) {
-                        zona.min = Math.min(zona.min, nivel);
-                        zona.max = Math.max(zona.max, nivel);
+                        zona.min = Math.min(zona.min, p.valor);
+                        zona.max = Math.max(zona.max, p.valor);
                         zona.centro = (zona.min + zona.max) / 2;
                         zona.forca++;
+                        zona.ultimoIdx = Math.max(zona.ultimoIdx, p.idx);
                     } else {
-                        zonas.push({ min: nivel * 0.9995, max: nivel * 1.0005, centro: nivel, forca: 1 });
+                        zonas.push({ min: p.valor * 0.9995, max: p.valor * 1.0005, centro: p.valor, forca: 1, ultimoIdx: p.idx });
                     }
                 }
                 return zonas.filter(z => z.forca >= 1);
@@ -4056,8 +4059,8 @@ const bbAlta = !!window._bbFlagAlta;
                         if (_grAllCandles[j].h >= c.h) isHigh = false;
                         if (_grAllCandles[j].l <= c.l) isLow = false;
                     }
-                    if (isHigh) swingHighs.push(c.h);
-                    if (isLow)  swingLows.push(c.l);
+                    if (isHigh) swingHighs.push({ valor: c.h, idx: i });
+                    if (isLow)  swingLows.push({ valor: c.l, idx: i });
                 }
                 const todas = agrupar([...swingHighs, ...swingLows]);
                 // Antes: ordenava só por força (nº de toques) e pegava as 12 mais fortes —
@@ -4070,6 +4073,23 @@ const bbAlta = !!window._bbFlagAlta;
                 const abaixo = todas.filter(z => z.centro <= precoRef).sort((a, b) => b.centro - a.centro);
                 _grZonasCache = [...acima.slice(0, 6), ...abaixo.slice(0, 6)];
 
+                // ── Score de IMPORTÂNCIA de cada zona (separado do filtro de proximidade acima) ──
+                // Combina 3 critérios de análise técnica clássica pra medir "quão confiável"
+                // é o nível — usado só pra gradação de cor (opacidade), não pra decidir quais
+                // zonas aparecem (isso já é resolvido pela proximidade, logo acima):
+                //   1) TOQUES (peso 55%) — quantas vezes o preço reagiu ali; critério mais citado
+                //   2) RECÊNCIA (peso 30%) — toque recente pesa mais que um de meses atrás
+                //   3) NÚMERO REDONDO (peso 15%) — 60.000/65.000 etc atraem ordens só pelo número
+                const totalCandles = _grAllCandles.length;
+                const arredondamento = precoRef >= 10000 ? 1000 : precoRef >= 1000 ? 100 : precoRef >= 100 ? 10 : 1;
+                _grZonasCache.forEach(z => {
+                    const toquesScore = Math.min(z.forca, 6) / 6;
+                    const recenciaScore = totalCandles > 1 ? z.ultimoIdx / (totalCandles - 1) : 0;
+                    const nivelRedondo = Math.round(z.centro / arredondamento) * arredondamento;
+                    const distRedondoPct = Math.abs(z.centro - nivelRedondo) / z.centro;
+                    const redondoScore = Math.max(0, 1 - distRedondoPct / 0.0015); // some visual credit até ~0.15% de distância
+                    z.scoreImportancia = 0.55 * toquesScore + 0.30 * recenciaScore + 0.15 * Math.min(1, redondoScore);
+                });
 
             }
 
@@ -4078,7 +4098,11 @@ const bbAlta = !!window._bbFlagAlta;
                 const y2 = toY(zona.min);
                 if (y2 < PAD.top || y1 > PAD.top + _grChartH) return;
                 const h = Math.max(3, y2 - y1);
-                const alpha = Math.min(0.35, 0.12 + zona.forca * 0.06);
+                // Gradação de importância: score combinado (toques+recência+nº redondo) em vez
+                // de só "forca" pura — faixa de opacidade ampliada (0.14–0.55) pra diferença
+                // ficar visível entre zona fraca e zona muito confirmada.
+                const score = zona.scoreImportancia != null ? zona.scoreImportancia : Math.min(1, zona.forca / 6);
+                const alpha = 0.14 + score * 0.41;
                 ctx.fillStyle = cor + Math.round(alpha * 255).toString(16).padStart(2,'0');
                 ctx.fillRect(PAD.left, y1, chartW, h);
                 ctx.strokeStyle = cor + '66';
