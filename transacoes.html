@@ -598,6 +598,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
     <button class="od-tab" id="od-tab-8" onclick="odSetTab(8)">Confluência</button>
     <button class="od-tab" id="od-tab-2" onclick="odSetTab(2)">Mercado</button>
     <button class="od-tab" id="od-tab-10" onclick="odSetTab(10)">Macro</button>
+    <button class="od-tab" id="od-tab-11" onclick="odSetTab(11)">Agenda EUA</button>
     <button class="od-tab" id="od-tab-9" onclick="odSetTab(9)">Sazonalidade</button>
     <button class="od-tab" id="od-tab-3" onclick="odSetTab(3)">Posição Atual</button>
     <button class="od-tab" id="od-tab-4" onclick="odSetTab(4)">Nova Posição</button>
@@ -692,6 +693,19 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
         </div>
 
         <div id="od-macro-status" style="text-align:center;font-size:11px;color:#3A3A3C;margin-top:14px;"></div>
+      </div>
+    </div>
+
+    <!-- ABA 11: Agenda Econômica EUA -->
+    <div class="od-pane" id="od-pane-11">
+      <div style="padding:16px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;">
+          <span style="font-size:11px;font-weight:600;color:#3A3A3C;letter-spacing:0.4px;text-transform:uppercase;">Agenda Econômica (EUA)</span>
+          <button onclick="odCarregarAgendaEUA()" style="background:#E5E5EA;color:#1C1C1E;border:none;border-radius:14px;padding:6px 14px;font-size:12px;font-weight:600;">Atualizar</button>
+        </div>
+        <div style="font-size:11px;color:#3A3A3C;margin-bottom:14px;">Dados via Financial Modeling Prep · horários em UTC</div>
+        <div id="od-agenda-lista"></div>
+        <div id="od-agenda-status" style="text-align:center;font-size:11px;color:#3A3A3C;margin-top:14px;"></div>
       </div>
     </div>
 
@@ -9912,6 +9926,81 @@ function odDesenharMacro() {
     ctx.stroke();
 }
 
+// ── Aba Agenda Econômica (EUA) ────────────────────────────────────────
+// Fonte: Financial Modeling Prep — endpoint dedicado de calendário
+// econômico (CPI, payroll, decisão de juros, PIB, etc), diferente do
+// calendário de earnings de empresas. Libera CORS direto do navegador.
+const FMP_API_KEY = 'vDUkOBTA2c8HCxQrJnd25sapJLs7EXWx';
+
+function odFmtDataAgenda(dataStr) {
+    // dataStr vem tipo "2026-07-15 12:30:00" (UTC, conforme doc da FMP)
+    const [datePart, timePart] = dataStr.split(' ');
+    const [ano, mes, dia] = datePart.split('-');
+    const hora = (timePart || '00:00:00').slice(0, 5);
+    const diasSemana = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
+    const d = new Date(Date.UTC(+ano, +mes - 1, +dia));
+    return `${String(dia).padStart(2,'0')}/${String(mes).padStart(2,'0')} (${diasSemana[d.getUTCDay()]}) ${hora} UTC`;
+}
+
+async function odCarregarAgendaEUA() {
+    const listaEl = document.getElementById('od-agenda-lista');
+    const statusEl = document.getElementById('od-agenda-status');
+    if (!listaEl) return;
+    statusEl.textContent = 'Carregando...';
+    statusEl.style.color = '#3A3A3C';
+    listaEl.innerHTML = '';
+
+    const hoje = new Date();
+    const de = new Date(hoje); de.setDate(de.getDate() - 1);
+    const ate = new Date(hoje); ate.setDate(ate.getDate() + 14);
+    const fmtISO = d => d.toISOString().slice(0, 10);
+    const url = `https://financialmodelingprep.com/stable/economic-calendar?from=${fmtISO(de)}&to=${fmtISO(ate)}&apikey=${FMP_API_KEY}`;
+
+    try {
+        const resp = await fetch(url);
+        if (!resp.ok) {
+            let corpo = '';
+            try { corpo = JSON.stringify(await resp.json()); } catch (e) {}
+            throw new Error(`HTTP ${resp.status} — ${corpo || 'sem detalhes na resposta'}`);
+        }
+        const dados = await resp.json();
+        if (!Array.isArray(dados)) throw new Error('Resposta inesperada (não é uma lista): ' + JSON.stringify(dados).slice(0, 200));
+
+        // País pode vir como "US", "USA" ou "United States" dependendo do dataset — cobre os 3
+        const eventosUS = dados
+            .filter(e => ['US', 'USA', 'United States'].includes(e.country))
+            .sort((a, b) => new Date(a.date) - new Date(b.date));
+
+        if (eventosUS.length === 0) {
+            statusEl.textContent = 'Nenhum evento dos EUA encontrado no período.';
+            return;
+        }
+
+        listaEl.innerHTML = eventosUS.map(e => {
+            const impacto = (e.impact || '').toLowerCase();
+            const corImpacto = impacto === 'high' ? '#EF5350' : impacto === 'medium' ? '#FFA500' : impacto === 'low' ? '#8E8E93' : '#8E8E93';
+            const valores = [];
+            if (e.previous != null && e.previous !== '') valores.push(`Ant: ${e.previous}${e.unit || ''}`);
+            if (e.estimate != null && e.estimate !== '') valores.push(`Est: ${e.estimate}${e.unit || ''}`);
+            if (e.actual != null && e.actual !== '') valores.push(`Real: ${e.actual}${e.unit || ''}`);
+            return `
+                <div style="padding:10px 0;border-bottom:1px solid #E5E5EA;">
+                    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;">
+                        <span style="font-size:13px;font-weight:700;color:#1C1C1E;">${e.event || '(sem nome)'}</span>
+                        ${impacto ? `<span style="font-size:10px;font-weight:700;color:${corImpacto};white-space:nowrap;">${impacto.toUpperCase()}</span>` : ''}
+                    </div>
+                    <div style="font-size:11px;color:#3A3A3C;margin-top:2px;">${odFmtDataAgenda(e.date)}</div>
+                    ${valores.length ? `<div style="font-size:11px;color:#3A3A3C;margin-top:3px;">${valores.join(' · ')}</div>` : ''}
+                </div>`;
+        }).join('');
+        statusEl.textContent = '';
+    } catch (e) {
+        statusEl.textContent = 'Erro: ' + (e && e.message ? e.message : 'falha desconhecida');
+        statusEl.style.color = '#EF5350';
+        console.error('odCarregarAgendaEUA erro:', e);
+    }
+}
+
 // Sparkline (barras clicáveis) — precisa estar no escopo global porque o onclick
 // injetado via innerHTML chama essa função fora do contexto de odCarregarSentimento.
 function odSparkline(values, color, id, decimais, sufixo, baseline) {
@@ -11404,6 +11493,7 @@ function odSetTab(idx) {
     if (idx === 7) { var bt = document.getElementById('boleta-ticker'); if (bt) bt.textContent = _ticker || '—'; }
     if (idx === 9) { odCarregarSazonalidade(); }
     if (idx === 10) { odCarregarMacro(); }
+    if (idx === 11) { odCarregarAgendaEUA(); }
     // Posição Atual / Lucro / Eficiência dependem dos mesmos cálculos — refaz
     // sempre que qualquer uma delas é aberta, pra nunca mostrar dado velho de
     // antes da última transação (essas 3 abas ficavam presas no estado de
@@ -11412,7 +11502,7 @@ function odSetTab(idx) {
         if (typeof odAtualizarPosicaoAtual === 'function') odAtualizarPosicaoAtual();
         if (typeof odCalcularBreakEven === 'function') odCalcularBreakEven();
     }
-    for (let i of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
+    for (let i of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]) {
         document.getElementById('od-tab-' + i).classList.toggle('active', i === idx);
         document.getElementById('od-pane-' + i).classList.toggle('active', i === idx);
     }
