@@ -4074,22 +4074,37 @@ const bbAlta = !!window._bbFlagAlta;
                 _grZonasCache = [...acima.slice(0, 6), ...abaixo.slice(0, 6)];
 
                 // ── Score de IMPORTÂNCIA de cada zona (separado do filtro de proximidade acima) ──
-                // Combina 3 critérios de análise técnica clássica pra medir "quão confiável"
-                // é o nível — usado só pra gradação de cor (opacidade), não pra decidir quais
-                // zonas aparecem (isso já é resolvido pela proximidade, logo acima):
-                //   1) TOQUES (peso 55%) — quantas vezes o preço reagiu ali; critério mais citado
-                //   2) RECÊNCIA (peso 30%) — toque recente pesa mais que um de meses atrás
-                //   3) NÚMERO REDONDO (peso 15%) — 60.000/65.000 etc atraem ordens só pelo número
-                const totalCandles = _grAllCandles.length;
+                // Ordem de peso pedida: PROXIMIDADE > NÚMERO REDONDO > TOQUES.
+                // Ou seja, prioriza "o que vai importar primeiro" (nível mais perto do preço)
+                // em vez de "o que foi mais validado historicamente" (versão anterior, com
+                // recência). O nível mais próximo tende a ser o mais forte visualmente,
+                // mesmo que tenha só 1 toque — desde que os pesos permitam.
+                const distanciasAbs = _grZonasCache.map(z => Math.abs(z.centro - precoRef));
+                const maxDist = Math.max(...distanciasAbs, 1);
                 const arredondamento = precoRef >= 10000 ? 1000 : precoRef >= 1000 ? 100 : precoRef >= 100 ? 10 : 1;
                 _grZonasCache.forEach(z => {
-                    const toquesScore = Math.min(z.forca, 6) / 6;
-                    const recenciaScore = totalCandles > 1 ? z.ultimoIdx / (totalCandles - 1) : 0;
+                    const proximidadeScore = 1 - (Math.abs(z.centro - precoRef) / maxDist); // mais perto = mais próximo de 1
                     const nivelRedondo = Math.round(z.centro / arredondamento) * arredondamento;
                     const distRedondoPct = Math.abs(z.centro - nivelRedondo) / z.centro;
                     const redondoScore = Math.max(0, 1 - distRedondoPct / 0.0015); // some visual credit até ~0.15% de distância
-                    z.scoreImportancia = 0.55 * toquesScore + 0.30 * recenciaScore + 0.15 * Math.min(1, redondoScore);
+                    const toquesScore = Math.min(z.forca, 6) / 6;
+                    z.scoreImportancia = 0.55 * proximidadeScore + 0.25 * Math.min(1, redondoScore) + 0.20 * toquesScore;
                 });
+
+                // Normalização RELATIVA (min-max) entre as zonas atualmente exibidas.
+                // Sem isso, se todas as zonas tiverem score parecido (ex: BTC com poucos
+                // toques repetidos), a gradação fica quase invisível mesmo estando "certa"
+                // matematicamente — a escala absoluta comprime tudo numa faixa estreita.
+                // Normalizando pelo min/max do que está na tela, a zona mais fraca e a mais
+                // forte SEMPRE ficam visualmente distintas, não importa a distribuição real.
+                if (_grZonasCache.length > 0) {
+                    const scores = _grZonasCache.map(z => z.scoreImportancia);
+                    const minScore = Math.min(...scores), maxScore = Math.max(...scores);
+                    const rangeScore = maxScore - minScore;
+                    _grZonasCache.forEach(z => {
+                        z.scoreRelativo = rangeScore > 0.001 ? (z.scoreImportancia - minScore) / rangeScore : 0.5;
+                    });
+                }
 
             }
 
@@ -4098,11 +4113,11 @@ const bbAlta = !!window._bbFlagAlta;
                 const y2 = toY(zona.min);
                 if (y2 < PAD.top || y1 > PAD.top + _grChartH) return;
                 const h = Math.max(3, y2 - y1);
-                // Gradação de importância: score combinado (toques+recência+nº redondo) em vez
-                // de só "forca" pura — faixa de opacidade ampliada (0.14–0.55) pra diferença
-                // ficar visível entre zona fraca e zona muito confirmada.
-                const score = zona.scoreImportancia != null ? zona.scoreImportancia : Math.min(1, zona.forca / 6);
-                const alpha = 0.14 + score * 0.41;
+                // Gradação de importância: usa o score RELATIVO (normalizado entre as zonas
+                // visíveis agora) em vez do score absoluto — garante que sempre dá pra
+                // distinguir visualmente a zona mais fraca da mais forte na tela atual.
+                const score = zona.scoreRelativo != null ? zona.scoreRelativo : 0.5;
+                const alpha = 0.13 + score * 0.42;
                 ctx.fillStyle = cor + Math.round(alpha * 255).toString(16).padStart(2,'0');
                 ctx.fillRect(PAD.left, y1, chartW, h);
                 ctx.strokeStyle = cor + '66';
