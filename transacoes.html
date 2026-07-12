@@ -9740,7 +9740,31 @@ function odPararRefreshMercado() {
 // falha silenciosamente no client-side). Zero chave/cadastro necessário.
 let _odMacroRefreshInterval = null;
 const OD_MACRO_REFRESH_MS = 60000;
-const OD_MACRO_PROXY = 'https://api.allorigins.win/raw?url=';
+// Cascata de proxies públicos — se o primeiro estiver instável/fora do ar,
+// tenta o próximo automaticamente antes de desistir e mostrar erro.
+const OD_MACRO_PROXIES = [
+    url => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url),
+    url => 'https://corsproxy.io/?url=' + encodeURIComponent(url),
+    url => 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(url)
+];
+
+async function odMacroFetchJSON(yahooUrl, nomeTicker) {
+    let ultimoErro = null;
+    for (let i = 0; i < OD_MACRO_PROXIES.length; i++) {
+        try {
+            const resp = await fetch(OD_MACRO_PROXIES[i](yahooUrl));
+            if (!resp.ok) throw new Error('proxy #' + (i + 1) + ' HTTP ' + resp.status);
+            const data = await resp.json();
+            if (!data || !data.chart) throw new Error('proxy #' + (i + 1) + ' resposta sem "chart"');
+            if (data.chart.error) throw new Error('proxy #' + (i + 1) + ' Yahoo: ' + JSON.stringify(data.chart.error));
+            return data; // sucesso
+        } catch (e) {
+            ultimoErro = e;
+            // tenta o próximo proxy da lista
+        }
+    }
+    throw new Error((nomeTicker || '') + ': ' + (ultimoErro ? ultimoErro.message : 'todos os proxies falharam'));
+}
 
 function odIniciarRefreshMacro() {
     if (_odMacroRefreshInterval) return;
@@ -9761,9 +9785,10 @@ async function odCarregarMacro() {
     const elVix = document.getElementById('od-macro-vix-valor');
     if (!statusEl) return;
     statusEl.textContent = 'Atualizando...';
+    statusEl.style.color = '#8E8E93';
 
     const yUrl = ticker => `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=1mo&interval=1d`;
-    const buscar = ticker => fetch(OD_MACRO_PROXY + encodeURIComponent(yUrl(ticker))).then(r => r.json());
+    const buscar = ticker => odMacroFetchJSON(yUrl(ticker), ticker);
 
     // Extrai { closes[], atual, anterior } de uma resposta do chart do Yahoo
     const extrair = r => {
@@ -9780,11 +9805,16 @@ async function odCarregarMacro() {
     };
 
     try {
-        const [rSpy, rTlt, rVix, rDxy] = await Promise.all([
-            buscar('SPY'), buscar('TLT'), buscar('^VIX'), buscar('DX-Y.NYB')
-        ]);
+        const tickers = ['SPY', 'TLT', '^VIX', 'DX-Y.NYB'];
+        const resultados = await Promise.allSettled(tickers.map(t => buscar(t)));
+        const falhas = resultados
+            .map((r, i) => r.status === 'rejected' ? `${tickers[i]}: ${r.reason && r.reason.message ? r.reason.message : r.reason}` : null)
+            .filter(Boolean);
+        if (falhas.length > 0) throw new Error(falhas.join(' | '));
+
+        const [rSpy, rTlt, rVix, rDxy] = resultados.map(r => r.value);
         const spy = extrair(rSpy), tlt = extrair(rTlt), vix = extrair(rVix), dxy = extrair(rDxy);
-        if (!spy || !tlt || !vix || !dxy) throw new Error('Dados incompletos na resposta do Yahoo');
+        if (!spy || !tlt || !vix || !dxy) throw new Error('Dados incompletos na resposta do Yahoo (ticker retornou "chart" vazio)');
 
         // Razão SPY/TLT candle a candle (corta pelo tamanho do menor histórico)
         const n = Math.min(spy.closes.length, tlt.closes.length);
@@ -9817,7 +9847,8 @@ async function odCarregarMacro() {
         odDesenharMacro();
         statusEl.textContent = '';
     } catch (e) {
-        statusEl.textContent = 'Erro ao buscar dados macro — tente novamente em instantes';
+        statusEl.textContent = 'Erro: ' + (e && e.message ? e.message : 'falha desconhecida');
+        statusEl.style.color = '#EF5350';
         console.error('odCarregarMacro erro:', e);
     }
 }
