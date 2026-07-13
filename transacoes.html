@@ -3689,30 +3689,66 @@ function grDrawCandles(candles, emptyRight) {
             const desenharNivelSR = (zona, cor) => {
                 const y = toY(zona.centro);
                 if (y < PAD.top || y > PAD.top + _grChartH) return;
+
+                // Faixa esfumaçada (gradiente) — mostra a largura REAL da zona detectada
+                // (zona.min a zona.max), transparente nas bordas e mais opaca perto da
+                // linha central. Comunica "isso é uma zona, não um ponto exato" sem virar
+                // um bloco sólido cobrindo o gráfico.
+                const yMax = toY(zona.max), yMin = toY(zona.min); // yMax < yMin (eixo Y invertido)
+                const alturaFaixa = Math.max(24, yMin - yMax); // largura mínima visível mesmo se a zona for muito fina
+                const yTopo = Math.min(y - alturaFaixa / 2, yMax);
+                const yBase = Math.max(y + alturaFaixa / 2, yMin);
+                const grad = ctx.createLinearGradient(0, yTopo, 0, yBase);
+                grad.addColorStop(0, cor + '00');
+                grad.addColorStop(0.5, cor + '33');
+                grad.addColorStop(1, cor + '00');
+                ctx.fillStyle = grad;
+                ctx.fillRect(PAD.left, yTopo, chartW, yBase - yTopo);
+
+                // Linha central — o preço "oficial" do nível
                 ctx.strokeStyle = cor;
                 ctx.lineWidth = 1;
                 ctx.setLineDash([4, 3]);
                 ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(W - PAD.right, y); ctx.stroke();
                 ctx.setLineDash([]);
-                // Badge esquerdo com o preço — mesmo estilo da linha de Stop
-                const bH = 16, bW = PAD.left - 4, bX = 3, bY = y - bH / 2;
-                ctx.fillStyle = cor;
-                ctx.beginPath(); ctx.roundRect(bX, bY, bW, bH, 3); ctx.fill();
-                ctx.fillStyle = '#FFFFFF';
-                ctx.font = 'bold 10px -apple-system';
-                ctx.textAlign = 'right';
-                ctx.fillText(fmtN(zona.centro), bX + bW - 4, bY + bH - 3);
+                return y; // usado pra anti-colisão dos badges, calculados depois
             };
 
-            _grZonasCache.forEach(z => {
+            // Desenha primeiro as linhas + faixas de todas as zonas
+            const zonasComY = _grZonasCache.map(z => {
                 const dirZona = (_grDir || 'LONG').toUpperCase();
                 const cor = dirZona === 'SHORT'
                     ? (z.centro > _precoAtual ? '#26A69A' : '#EF5350')
                     : (z.centro > _precoAtual ? '#EF5350' : '#26A69A');
-                desenharNivelSR(z, cor);
+                const y = desenharNivelSR(z, cor);
+                return y != null ? { z, cor, y } : null;
+            }).filter(Boolean);
+
+            // Badges no lado DIREITO (menos congestionado que o esquerdo, onde já
+            // ficam C/S/A/PM). Anti-colisão simples: se dois badges ficam muito
+            // próximos em Y, afasta um do outro.
+            zonasComY.sort((a, b) => a.y - b.y);
+            const espacoMinimoBadge = 15;
+            for (let i = 1; i < zonasComY.length; i++) {
+                if (zonasComY[i].y - zonasComY[i - 1].y < espacoMinimoBadge) {
+                    zonasComY[i].y = zonasComY[i - 1].y + espacoMinimoBadge;
+                }
+            }
+            ctx.font = 'bold 10px -apple-system';
+            zonasComY.forEach(({ z, cor, y }) => {
+                const texto = fmtN(z.centro);
+                const bH = 16, bW = ctx.measureText(texto).width + 10;
+                const bX = W - PAD.right - bW - 3, bY = y - bH / 2;
+                ctx.fillStyle = cor;
+                ctx.beginPath(); ctx.roundRect(bX, bY, bW, bH, 3); ctx.fill();
+                ctx.fillStyle = '#FFFFFF';
+                ctx.textAlign = 'left';
+                ctx.fillText(texto, bX + 5, bY + bH - 3);
             });
 
+
         })();
+
 
        // Candles ou Linha
 if (_grTipoGrafico === 'linha') {
