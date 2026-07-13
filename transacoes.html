@@ -3627,25 +3627,23 @@ function grDrawCandles(candles, emptyRight) {
             ctx.restore();
         });
 
-                        // ── Zonas de Suporte e Resistência automáticas ───────────────
-        // Movido pra ANTES do desenho dos candles: assim os candles renderizam por
-        // cima das zonas coloridas, em vez de ficarem "desbotados" por baixo delas.
+                        // ── Suportes e Resistências automáticos (linha fina, não zona) ──
+        // Redesenhado a pedido: em vez de banda preenchida (que lotava a tela sem
+        // espaço livre), agora é uma linha fina no preço exato do topo/fundo, com
+        // badge de preço — mesmo estilo visual da linha de Stop. Critério de
+        // seleção também ficou mais rigoroso: exige no mínimo 2 toques (corta
+        // ruído de nível único, "que o preço nem tomou conhecimento") e mostra só
+        // os 3 mais próximos de cada lado, não 6.
         (function() {
             if (_grAllCandles.length < 10) return;
 
-            // Calcula uma vez e cacheia
-            // Agora recebe {valor, idx} em vez de só o preço — o idx é o índice do
-            // candle onde aconteceu o toque, usado depois pra medir recência.
             const agrupar = (pontos) => {
                 const sorted = [...pontos].sort((a, b) => a.valor - b.valor);
                 const zonas = [];
                 for (const p of sorted) {
-                    // Só aceita o nível na zona existente SE a largura total resultante
-                    // (considerando o novo nível) continuar dentro de 1.2% do centro.
-                    // Isso trava um limite rígido de tamanho pra zona inteira — diferente de
-                    // comparar contra centro/borda (que desloca a cada merge e permite uma
+                    // Largura total da zona travada em 1.2% do centro, pra não deixar uma
                     // corrente de níveis próximos entre si arrastar a zona por milhares de
-                    // dólares, o bug antigo que criava blocos gigantes sem gaps entre eles).
+                    // dólares (bug antigo).
                     const zona = zonas.find(z => {
                         const novoMin = Math.min(z.min, p.valor);
                         const novoMax = Math.max(z.max, p.valor);
@@ -3661,7 +3659,9 @@ function grDrawCandles(candles, emptyRight) {
                         zonas.push({ min: p.valor * 0.9995, max: p.valor * 1.0005, centro: p.valor, forca: 1, ultimoIdx: p.idx });
                     }
                 }
-                return zonas.filter(z => z.forca >= 1);
+                // Exige no mínimo 2 toques — nível de toque único é ruído, "o preço nem
+                // tomou conhecimento" (pedido explícito), não merece ser marcado.
+                return zonas.filter(z => z.forca >= 2);
             };
             if (!_grZonasCache) {
                 const N = 3;
@@ -3678,74 +3678,38 @@ function grDrawCandles(candles, emptyRight) {
                     if (isLow)  swingLows.push({ valor: c.l, idx: i });
                 }
                 const todas = agrupar([...swingHighs, ...swingLows]);
-                // Antes: ordenava só por força (nº de toques) e pegava as 12 mais fortes —
-                // isso deixava de fora níveis próximos do preço que tivessem poucos toques,
-                // priorizando níveis antigos/distantes só por serem mais "batidos" historicamente.
-                // Agora: separa por lado (acima/abaixo do preço atual) e prioriza PROXIMIDADE,
-                // garantindo que os níveis mais próximos do preço sempre apareçam.
+                // Separa por lado (acima/abaixo do preço) e prioriza proximidade — só os
+                // 3 mais próximos de cada lado, já filtrados pelo mínimo de 2 toques acima.
                 const precoRef = _precoAtual || (_grAllCandles[_grAllCandles.length - 1] || {}).c || 0;
                 const acima = todas.filter(z => z.centro > precoRef).sort((a, b) => a.centro - b.centro);
                 const abaixo = todas.filter(z => z.centro <= precoRef).sort((a, b) => b.centro - a.centro);
-                _grZonasCache = [...acima.slice(0, 6), ...abaixo.slice(0, 6)];
-
-                // ── Score de IMPORTÂNCIA de cada zona (separado do filtro de proximidade acima) ──
-                // Ordem de peso pedida: PROXIMIDADE > NÚMERO REDONDO > TOQUES.
-                // Ou seja, prioriza "o que vai importar primeiro" (nível mais perto do preço)
-                // em vez de "o que foi mais validado historicamente" (versão anterior, com
-                // recência). O nível mais próximo tende a ser o mais forte visualmente,
-                // mesmo que tenha só 1 toque — desde que os pesos permitam.
-                const distanciasAbs = _grZonasCache.map(z => Math.abs(z.centro - precoRef));
-                const maxDist = Math.max(...distanciasAbs, 1);
-                const arredondamento = precoRef >= 10000 ? 1000 : precoRef >= 1000 ? 100 : precoRef >= 100 ? 10 : 1;
-                _grZonasCache.forEach(z => {
-                    const proximidadeScore = 1 - (Math.abs(z.centro - precoRef) / maxDist); // mais perto = mais próximo de 1
-                    const nivelRedondo = Math.round(z.centro / arredondamento) * arredondamento;
-                    const distRedondoPct = Math.abs(z.centro - nivelRedondo) / z.centro;
-                    const redondoScore = Math.max(0, 1 - distRedondoPct / 0.0015); // some visual credit até ~0.15% de distância
-                    const toquesScore = Math.min(z.forca, 6) / 6;
-                    z.scoreImportancia = 0.55 * proximidadeScore + 0.25 * Math.min(1, redondoScore) + 0.20 * toquesScore;
-                });
-
-                // Ranking DISCRETO em vez de escala contínua — em telas pequenas, uma diferença
-                // contínua de opacidade (ex: 28% vs 34%) é quase imperceptível. Ordenando por
-                // score e dividindo em 4 degraus fixos e bem espaçados, a diferença entre a
-                // zona mais fraca e a mais forte fica óbvia sempre, não importa a distribuição.
-                if (_grZonasCache.length > 0) {
-                    const ordenadas = [..._grZonasCache].sort((a, b) => a.scoreImportancia - b.scoreImportancia);
-                    const n = ordenadas.length;
-                    const alphasPorTier = [0.14, 0.26, 0.40, 0.58]; // fraco → médio → forte → muito forte
-                    ordenadas.forEach((z, i) => {
-                        const tier = Math.min(3, Math.floor((i / n) * 4));
-                        z.alphaZona = alphasPorTier[tier];
-                    });
-                }
-
+                _grZonasCache = [...acima.slice(0, 3), ...abaixo.slice(0, 3)];
             }
 
-            const desenharZona = (zona, cor) => {
-                const y1 = toY(zona.max);
-                const y2 = toY(zona.min);
-                if (y2 < PAD.top || y1 > PAD.top + _grChartH) return;
-                const h = Math.max(3, y2 - y1);
-                // Gradação por DEGRAUS (4 tiers fixos: fraco/médio/forte/muito forte),
-                // calculados por ranking das zonas visíveis — ver bloco acima.
-                const alpha = zona.alphaZona != null ? zona.alphaZona : 0.30;
-                ctx.fillStyle = cor + Math.round(alpha * 255).toString(16).padStart(2,'0');
-                ctx.fillRect(PAD.left, y1, chartW, h);
-                ctx.strokeStyle = cor + '66';
-                ctx.lineWidth = 0.5;
+            const desenharNivelSR = (zona, cor) => {
+                const y = toY(zona.centro);
+                if (y < PAD.top || y > PAD.top + _grChartH) return;
+                ctx.strokeStyle = cor;
+                ctx.lineWidth = 1;
+                ctx.setLineDash([4, 3]);
+                ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(W - PAD.right, y); ctx.stroke();
                 ctx.setLineDash([]);
-                ctx.beginPath(); ctx.moveTo(PAD.left, y1); ctx.lineTo(W - PAD.right, y1); ctx.stroke();
-                ctx.beginPath(); ctx.moveTo(PAD.left, y2); ctx.lineTo(W - PAD.right, y2); ctx.stroke();
+                // Badge esquerdo com o preço — mesmo estilo da linha de Stop
+                const bH = 16, bW = PAD.left - 4, bX = 3, bY = y - bH / 2;
+                ctx.fillStyle = cor;
+                ctx.beginPath(); ctx.roundRect(bX, bY, bW, bH, 3); ctx.fill();
+                ctx.fillStyle = '#FFFFFF';
+                ctx.font = 'bold 10px -apple-system';
+                ctx.textAlign = 'right';
+                ctx.fillText(fmtN(zona.centro), bX + bW - 4, bY + bH - 3);
             };
 
-                        _grZonasCache.forEach(z => {
+            _grZonasCache.forEach(z => {
                 const dirZona = (_grDir || 'LONG').toUpperCase();
                 const cor = dirZona === 'SHORT'
-                    ? (z.min > _precoAtual ? '#26A69A' : z.max < _precoAtual ? '#EF5350' : '#F59E0B')
-                    : (z.min > _precoAtual ? '#EF5350' : z.max < _precoAtual ? '#26A69A' : '#F59E0B');
-
-                desenharZona(z, cor);
+                    ? (z.centro > _precoAtual ? '#26A69A' : '#EF5350')
+                    : (z.centro > _precoAtual ? '#EF5350' : '#26A69A');
+                desenharNivelSR(z, cor);
             });
 
         })();
