@@ -716,7 +716,10 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <div style="padding:16px 16px 8px;">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
           <span style="font-size:11px;font-weight:600;color:#3A3A3C;letter-spacing:0.4px;text-transform:uppercase;">On-chain (checkonchain.com)</span>
-          <a id="od-onchain-abrir" href="https://charts.checkonchain.com" target="_blank" rel="noopener" style="font-size:11px;color:#007AFF;text-decoration:none;">Abrir no navegador ↗</a>
+          <div style="display:flex;align-items:center;gap:12px;">
+            <button onclick="odOnchainToggleFullscreen()" style="background:none;border:none;padding:0;font-size:11px;color:#007AFF;font-weight:600;">⤢ Tela cheia</button>
+            <a id="od-onchain-abrir" href="https://charts.checkonchain.com" target="_blank" rel="noopener" style="font-size:11px;color:#007AFF;text-decoration:none;">Abrir no navegador ↗</a>
+          </div>
         </div>
         <!-- Atalhos pros gráficos mais úteis pro sistema — evita ter que navegar o
              menu gigante do site (200+ gráficos) dentro do iframe pequeno do celular -->
@@ -732,8 +735,16 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
         <div id="od-onchain-erro" style="display:none;font-size:12px;color:#EF5350;text-align:center;padding:24px 8px;">
           O gráfico não carregou aqui dentro (o site pode estar bloqueando exibição em iframe).<br>Toca em "Abrir no navegador ↗" acima pra ver direto.
         </div>
+        <div style="font-size:10px;color:#8E8E93;margin-bottom:4px;">Pinça pra dar zoom · duplo toque pra resetar · arrasta com 1 dedo quando ampliado</div>
       </div>
-      <iframe id="od-onchain-iframe" src="https://charts.checkonchain.com" style="width:100%;height:65vh;border:none;display:block;" loading="lazy"></iframe>
+      <!-- Container com overflow:hidden — o zoom/pan é feito via CSS transform no iframe
+           de dentro, controlado por JS (touch), sem mexer no viewport global do app
+           (que precisa ficar com user-scalable=no pros gráficos de candle funcionarem). -->
+      <div id="od-onchain-zoom-wrap" style="width:100%;height:65vh;overflow:hidden;position:relative;touch-action:none;background:#fff;">
+        <iframe id="od-onchain-iframe" src="https://charts.checkonchain.com" style="width:100%;height:100%;border:none;display:block;transform-origin:0 0;" loading="lazy"></iframe>
+        <div id="od-onchain-touch-overlay" style="position:absolute;inset:0;z-index:5;"></div>
+        <button id="od-onchain-fechar-cheia" onclick="odOnchainToggleFullscreen()" style="display:none;position:absolute;top:10px;right:10px;z-index:6;background:rgba(28,28,30,0.75);color:#fff;border:none;border-radius:16px;width:32px;height:32px;font-size:16px;">✕</button>
+      </div>
     </div>
 
     <!-- ABA 2: Mercado -->
@@ -10107,6 +10118,7 @@ function odAbrirOnchain(url, btnEl) {
     if (erroEl) erroEl.style.display = 'none';
     iframe.style.display = 'block';
     iframe.src = url;
+    odOnchainResetZoom(); // troca de gráfico sempre volta pro zoom padrão
 
     if (_odOnchainTimeout) clearTimeout(_odOnchainTimeout);
     // Sinal indireto de bloqueio: se o iframe não disparar "load" em 6s
@@ -10116,6 +10128,112 @@ function odAbrirOnchain(url, btnEl) {
     _odOnchainTimeout = setTimeout(() => {
         if (!carregou && erroEl) erroEl.style.display = 'block';
     }, 6000);
+}
+
+// ── Zoom/Pan por gesto (pinça + arrasto + duplo-toque) ──────────────────
+// O toque que cai em cima do iframe não chega até aqui (conteúdo de outra
+// origem, isolado pelo navegador) — por isso existe a camada transparente
+// #od-onchain-touch-overlay por cima de tudo, capturando os gestos e
+// aplicando um CSS transform (scale + translate) no iframe por baixo.
+let _odOnchainScale = 1, _odOnchainPanX = 0, _odOnchainPanY = 0;
+let _odOnchainGesto = null; // {tipo:'pinca'|'arrasto', ...}
+let _odOnchainUltimoToque = 0; // pra detectar duplo-toque
+
+function odOnchainAplicarTransform() {
+    const iframe = document.getElementById('od-onchain-iframe');
+    if (!iframe) return;
+    iframe.style.transform = `translate(${_odOnchainPanX}px, ${_odOnchainPanY}px) scale(${_odOnchainScale})`;
+}
+
+function odOnchainResetZoom() {
+    _odOnchainScale = 1; _odOnchainPanX = 0; _odOnchainPanY = 0;
+    odOnchainAplicarTransform();
+}
+
+function odOnchainClampPan(wrap) {
+    // Não deixa arrastar o conteúdo pra fora da área visível quando ampliado
+    const w = wrap.clientWidth, h = wrap.clientHeight;
+    const maxX = Math.max(0, (w * _odOnchainScale - w));
+    const maxY = Math.max(0, (h * _odOnchainScale - h));
+    _odOnchainPanX = Math.min(0, Math.max(-maxX, _odOnchainPanX));
+    _odOnchainPanY = Math.min(0, Math.max(-maxY, _odOnchainPanY));
+}
+
+function odOnchainDistancia(t1, t2) {
+    return Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+}
+
+(function odOnchainInitTouch() {
+    const iniciar = () => {
+        const overlay = document.getElementById('od-onchain-touch-overlay');
+        const wrap = document.getElementById('od-onchain-zoom-wrap');
+        if (!overlay || !wrap) return;
+
+        overlay.addEventListener('touchstart', (e) => {
+            if (e.touches.length === 2) {
+                _odOnchainGesto = {
+                    tipo: 'pinca',
+                    distInicial: odOnchainDistancia(e.touches[0], e.touches[1]),
+                    scaleInicial: _odOnchainScale
+                };
+            } else if (e.touches.length === 1) {
+                const agora = Date.now();
+                if (agora - _odOnchainUltimoToque < 300) {
+                    odOnchainResetZoom(); // duplo-toque = reset
+                    _odOnchainGesto = null;
+                } else if (_odOnchainScale > 1) {
+                    _odOnchainGesto = {
+                        tipo: 'arrasto',
+                        x0: e.touches[0].clientX, y0: e.touches[0].clientY,
+                        panX0: _odOnchainPanX, panY0: _odOnchainPanY
+                    };
+                }
+                _odOnchainUltimoToque = agora;
+            }
+        }, { passive: true });
+
+        overlay.addEventListener('touchmove', (e) => {
+            if (!_odOnchainGesto) return;
+            if (_odOnchainGesto.tipo === 'pinca' && e.touches.length === 2) {
+                const distAtual = odOnchainDistancia(e.touches[0], e.touches[1]);
+                const fator = distAtual / _odOnchainGesto.distInicial;
+                _odOnchainScale = Math.min(4, Math.max(1, _odOnchainGesto.scaleInicial * fator));
+                odOnchainClampPan(wrap);
+                odOnchainAplicarTransform();
+            } else if (_odOnchainGesto.tipo === 'arrasto' && e.touches.length === 1) {
+                _odOnchainPanX = _odOnchainGesto.panX0 + (e.touches[0].clientX - _odOnchainGesto.x0);
+                _odOnchainPanY = _odOnchainGesto.panY0 + (e.touches[0].clientY - _odOnchainGesto.y0);
+                odOnchainClampPan(wrap);
+                odOnchainAplicarTransform();
+            }
+            e.preventDefault();
+        }, { passive: false });
+
+        overlay.addEventListener('touchend', () => { _odOnchainGesto = null; });
+    };
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', iniciar);
+    } else {
+        iniciar(); // DOM já estava pronto quando esse script rodou
+    }
+})();
+
+function odOnchainToggleFullscreen() {
+    const wrap = document.getElementById('od-onchain-zoom-wrap');
+    const fecharBtn = document.getElementById('od-onchain-fechar-cheia');
+    if (!wrap) return;
+    const jaCheia = wrap.classList.contains('od-onchain-fullscreen');
+    if (jaCheia) {
+        wrap.classList.remove('od-onchain-fullscreen');
+        wrap.style.cssText = 'width:100%;height:65vh;overflow:hidden;position:relative;touch-action:none;background:#fff;';
+        if (fecharBtn) fecharBtn.style.display = 'none';
+    } else {
+        wrap.classList.add('od-onchain-fullscreen');
+        wrap.style.cssText = 'position:fixed;inset:0;width:100vw;height:100vh;overflow:hidden;touch-action:none;background:#fff;z-index:9999;';
+        if (fecharBtn) fecharBtn.style.display = 'block';
+    }
+    odOnchainResetZoom();
 }
 
 
