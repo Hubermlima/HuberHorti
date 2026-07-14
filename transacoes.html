@@ -105,6 +105,8 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:#F2F4F8;color:#1C1C1E
 .od-tabs::-webkit-scrollbar{display:none;}
 .od-tab{flex-shrink:0;padding:7px 14px 9px;border:1px solid transparent;border-bottom:none;background:transparent;border-radius:8px 8px 0 0;font-size:13px;font-weight:600;color:#1C1C1E;font-family:'Plus Jakarta Sans',sans-serif;cursor:pointer;white-space:nowrap;transition:all 0.15s;position:relative;bottom:-1px;}
 .od-tab.active{background:#FFFFFF;color:#1C1C1E;font-weight:700;border-color:#E5E5EA;border-bottom-color:#FFFFFF;}
+.od-onchain-chip{flex-shrink:0;padding:6px 12px;border:none;border-radius:14px;background:#E5E5EA;color:#1C1C1E;font-size:12px;font-weight:600;font-family:'Plus Jakarta Sans',sans-serif;cursor:pointer;white-space:nowrap;}
+.od-onchain-chip[data-ativo="true"]{background:#1C1C1E;color:#FFFFFF;}
 .od-trade-row{display:flex;flex-direction:column;gap:4px;padding:12px 4px;border-bottom:0.5px solid #E5E5EA;}
 .od-trade-row:last-child{border-bottom:none;}
 .od-trade-row-top{display:flex;align-items:center;justify-content:space-between;}
@@ -599,6 +601,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
     <button class="od-tab" id="od-tab-2" onclick="odSetTab(2)">Mercado</button>
     <button class="od-tab" id="od-tab-10" onclick="odSetTab(10)">Macro</button>
     <button class="od-tab" id="od-tab-11" onclick="odSetTab(11)">Agenda EUA</button>
+    <button class="od-tab" id="od-tab-12" onclick="odSetTab(12)">On-chain</button>
     <button class="od-tab" id="od-tab-9" onclick="odSetTab(9)">Sazonalidade</button>
     <button class="od-tab" id="od-tab-3" onclick="odSetTab(3)">Posição Atual</button>
     <button class="od-tab" id="od-tab-4" onclick="odSetTab(4)">Nova Posição</button>
@@ -706,6 +709,31 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
         <div id="od-agenda-lista"></div>
         <div id="od-agenda-status" style="text-align:center;font-size:11px;color:#3A3A3C;margin-top:14px;"></div>
       </div>
+    </div>
+
+    <!-- ABA 12: On-chain (checkonchain.com via iframe) -->
+    <div class="od-pane" id="od-pane-12">
+      <div style="padding:16px 16px 8px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+          <span style="font-size:11px;font-weight:600;color:#3A3A3C;letter-spacing:0.4px;text-transform:uppercase;">On-chain (checkonchain.com)</span>
+          <a id="od-onchain-abrir" href="https://charts.checkonchain.com" target="_blank" rel="noopener" style="font-size:11px;color:#007AFF;text-decoration:none;">Abrir no navegador ↗</a>
+        </div>
+        <!-- Atalhos pros gráficos mais úteis pro sistema — evita ter que navegar o
+             menu gigante do site (200+ gráficos) dentro do iframe pequeno do celular -->
+        <div style="display:flex;gap:6px;overflow-x:auto;padding-bottom:8px;margin-bottom:4px;-webkit-overflow-scrolling:touch;">
+          <button onclick="odAbrirOnchain('https://charts.checkonchain.com', this)" class="od-onchain-chip" data-ativo="true">Início</button>
+          <button onclick="odAbrirOnchain('https://charts.checkonchain.com/btconchain/unrealised/mvrv_all_zscore/mvrv_all_zscore_light.html', this)" class="od-onchain-chip">MVRV Z-Score</button>
+          <button onclick="odAbrirOnchain('https://charts.checkonchain.com/btconchain/realised/sopr/sopr_light.html', this)" class="od-onchain-chip">SOPR</button>
+          <button onclick="odAbrirOnchain('https://charts.checkonchain.com/btconchain/derivatives/derivatives_futures_fundingrate/derivatives_futures_fundingrate_light.html', this)" class="od-onchain-chip">Funding Rate</button>
+          <button onclick="odAbrirOnchain('https://charts.checkonchain.com/btconchain/etfs/etf_flows_1/etf_flows_1_light.html', this)" class="od-onchain-chip">ETF Flows</button>
+          <button onclick="odAbrirOnchain('https://charts.checkonchain.com/btconchain/mining/puellmultiple/puellmultiple_light.html', this)" class="od-onchain-chip">Puell Multiple</button>
+          <button onclick="odAbrirOnchain('https://charts.checkonchain.com/btconchain/unrealised/nupl/nupl_light.html', this)" class="od-onchain-chip">NUPL</button>
+        </div>
+        <div id="od-onchain-erro" style="display:none;font-size:12px;color:#EF5350;text-align:center;padding:24px 8px;">
+          O gráfico não carregou aqui dentro (o site pode estar bloqueando exibição em iframe).<br>Toca em "Abrir no navegador ↗" acima pra ver direto.
+        </div>
+      </div>
+      <iframe id="od-onchain-iframe" src="https://charts.checkonchain.com" style="width:100%;height:65vh;border:none;display:block;" loading="lazy"></iframe>
     </div>
 
     <!-- ABA 2: Mercado -->
@@ -10055,7 +10083,42 @@ function odCarregarAgendaEUA() {
     statusEl.textContent = '';
 }
 
-// Sparkline (barras clicáveis) — precisa estar no escopo global porque o onclick
+// ── Aba On-chain: iframe do checkonchain.com ────────────────────────────
+// Não é dado extraído via API — é a própria página renderizando dentro do
+// app, como pedido. Se o site bloquear exibição em iframe (X-Frame-Options),
+// não tem como o JS aqui dentro detectar isso com 100% de certeza (o
+// navegador simplesmente não dispara nenhum evento de erro nesse caso) —
+// por isso o botão "Abrir no navegador" fica sempre visível como alternativa
+// garantida, e um timeout mostra um aviso se o iframe ficar vazio por tempo
+// demais (sinal indireto de bloqueio).
+let _odOnchainTimeout = null;
+
+function odAbrirOnchain(url, btnEl) {
+    const iframe = document.getElementById('od-onchain-iframe');
+    const linkAbrir = document.getElementById('od-onchain-abrir');
+    const erroEl = document.getElementById('od-onchain-erro');
+    if (!iframe) return;
+
+    // Marca visualmente qual chip está ativo
+    document.querySelectorAll('.od-onchain-chip').forEach(el => el.removeAttribute('data-ativo'));
+    if (btnEl) btnEl.setAttribute('data-ativo', 'true');
+
+    if (linkAbrir) linkAbrir.href = url;
+    if (erroEl) erroEl.style.display = 'none';
+    iframe.style.display = 'block';
+    iframe.src = url;
+
+    if (_odOnchainTimeout) clearTimeout(_odOnchainTimeout);
+    // Sinal indireto de bloqueio: se o iframe não disparar "load" em 6s
+    // (conexão lenta à parte), mostra o aviso pra usar o link externo.
+    let carregou = false;
+    iframe.onload = () => { carregou = true; };
+    _odOnchainTimeout = setTimeout(() => {
+        if (!carregou && erroEl) erroEl.style.display = 'block';
+    }, 6000);
+}
+
+
 // injetado via innerHTML chama essa função fora do contexto de odCarregarSentimento.
 function odSparkline(values, color, id, decimais, sufixo, baseline) {
     if (!values || values.length < 2) return '';
@@ -11556,7 +11619,7 @@ function odSetTab(idx) {
         if (typeof odAtualizarPosicaoAtual === 'function') odAtualizarPosicaoAtual();
         if (typeof odCalcularBreakEven === 'function') odCalcularBreakEven();
     }
-    for (let i of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]) {
+    for (let i of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]) {
         document.getElementById('od-tab-' + i).classList.toggle('active', i === idx);
         document.getElementById('od-pane-' + i).classList.toggle('active', i === idx);
     }
