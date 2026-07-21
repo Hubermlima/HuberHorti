@@ -3827,82 +3827,6 @@ if (_grTipoGrafico === 'linha') {
 }
 
 
-        // ── VPVR — Perfil de Volume (Visible Range) ──────────────────
-        if (_indState.vpvr && !_indOculto.vpvr && candles.length > 0) {
-            const numBins = 28;
-            const binH = (maxP - minP) / numBins;
-            const bins = new Array(numBins).fill(0);
-            candles.forEach(c => {
-                const vol = c.v || 0;
-                if (!vol) return;
-                const lo = Math.max(c.l, minP), hi = Math.min(c.h, maxP);
-                if (hi <= lo) {
-                    const bi = Math.min(numBins - 1, Math.max(0, Math.floor((c.c - minP) / binH)));
-                    bins[bi] += vol;
-                    return;
-                }
-                const iStart = Math.max(0, Math.floor((lo - minP) / binH));
-                const iEnd = Math.min(numBins - 1, Math.floor((hi - minP) / binH));
-                const range = hi - lo;
-                for (let bi = iStart; bi <= iEnd; bi++) {
-                    const binLo = minP + bi * binH, binHi = binLo + binH;
-                    const overlap = Math.min(hi, binHi) - Math.max(lo, binLo);
-                    if (overlap > 0) bins[bi] += vol * (overlap / range);
-                }
-            });
-
-            const maxBin = Math.max(...bins, 0);
-            if (maxBin > 0) {
-                // POC — bin de maior volume
-                let pocIdx = 0;
-                bins.forEach((v, i) => { if (v > bins[pocIdx]) pocIdx = i; });
-
-                // Value Area — expande a partir do POC até acumular 70% do volume total
-                const totalVolPerfil = bins.reduce((a, b) => a + b, 0);
-                const valueAreaSet = new Set([pocIdx]);
-                let accVol = bins[pocIdx];
-                let vaLo = pocIdx, vaHi = pocIdx;
-                while (accVol < totalVolPerfil * 0.7 && (vaLo > 0 || vaHi < numBins - 1)) {
-                    const volAbaixo = vaLo > 0 ? bins[vaLo - 1] : -1;
-                    const volAcima  = vaHi < numBins - 1 ? bins[vaHi + 1] : -1;
-                    if (volAcima >= volAbaixo) { vaHi++; accVol += bins[vaHi]; valueAreaSet.add(vaHi); }
-                    else { vaLo--; accVol += bins[vaLo]; valueAreaSet.add(vaLo); }
-                }
-
-                const vpvrMaxW = chartW * 0.22; // largura máxima da coluna de perfil
-                const rightEdge = W - PAD.right;
-                for (let bi = 0; bi < numBins; bi++) {
-                    if (bins[bi] <= 0) continue;
-                    const barW = (bins[bi] / maxBin) * vpvrMaxW;
-                    const yTop = toY(minP + (bi + 1) * binH);
-                    const yBot = toY(minP + bi * binH);
-                    const barH = Math.max(1, yBot - yTop - 1);
-                    const isPoc = bi === pocIdx;
-                    const inValueArea = valueAreaSet.has(bi);
-                    ctx.fillStyle = isPoc
-                        ? 'rgba(255,167,38,0.85)'
-                        : inValueArea
-                            ? 'rgba(41,182,246,0.38)'
-                            : 'rgba(120,144,156,0.22)';
-                    ctx.fillRect(rightEdge - barW, yTop, barW, barH);
-                }
-
-                // Linha do POC atravessando o gráfico
-                const pocPrice = minP + (pocIdx + 0.5) * binH;
-                const pocY = toY(pocPrice);
-                ctx.strokeStyle = 'rgba(255,167,38,0.7)';
-                ctx.lineWidth = 1;
-                ctx.setLineDash([4, 3]);
-                ctx.beginPath(); ctx.moveTo(PAD.left, pocY); ctx.lineTo(rightEdge, pocY); ctx.stroke();
-                ctx.setLineDash([]);
-                ctx.fillStyle = '#FFA726';
-                ctx.font = 'bold 9px -apple-system';
-                ctx.textAlign = 'right';
-                ctx.fillText('POC ' + fmtN(pocPrice), rightEdge - vpvrMaxW - 4, pocY - 3);
-            }
-        }
-
-
         // ── Setas Score RSI+VD+BB ────────────────────────────────────
         (function() {
             if (candles.length < 5) return;
@@ -5521,6 +5445,88 @@ if (fibsParaDesenhar.length > 0) {
             }
         }
     }
+    // ── VPVR — Perfil de Volume (Visible Range) ───────────────────────
+    // Desenhado por último de propósito: fica sempre em primeiro plano,
+    // por cima de candles, médias, trendlines, fibonacci, réguas etc.
+    if (_indState.vpvr && !_indOculto.vpvr && candles.length > 0) {
+        const numBins = 28;
+        const binH = (maxP - minP) / numBins;
+        const bins = new Array(numBins).fill(0);
+        candles.forEach(c => {
+            const vol = c.v || 0;
+            if (!vol) return;
+            const lo = Math.max(c.l, minP), hi = Math.min(c.h, maxP);
+            if (hi <= lo) {
+                const bi = Math.min(numBins - 1, Math.max(0, Math.floor((c.c - minP) / binH)));
+                bins[bi] += vol;
+                return;
+            }
+            const iStart = Math.max(0, Math.floor((lo - minP) / binH));
+            const iEnd = Math.min(numBins - 1, Math.floor((hi - minP) / binH));
+            const range = hi - lo;
+            for (let bi = iStart; bi <= iEnd; bi++) {
+                const binLo = minP + bi * binH, binHi = binLo + binH;
+                const overlap = Math.min(hi, binHi) - Math.max(lo, binLo);
+                if (overlap > 0) bins[bi] += vol * (overlap / range);
+            }
+        });
+
+        const maxBin = Math.max(...bins, 0);
+        if (maxBin > 0) {
+            // POC — bin de maior volume
+            let pocIdx = 0;
+            bins.forEach((v, i) => { if (v > bins[pocIdx]) pocIdx = i; });
+
+            // Value Area — expande a partir do POC até acumular 70% do volume total
+            const totalVolPerfil = bins.reduce((a, b) => a + b, 0);
+            const valueAreaSet = new Set([pocIdx]);
+            let accVol = bins[pocIdx];
+            let vaLo = pocIdx, vaHi = pocIdx;
+            while (accVol < totalVolPerfil * 0.7 && (vaLo > 0 || vaHi < numBins - 1)) {
+                const volAbaixo = vaLo > 0 ? bins[vaLo - 1] : -1;
+                const volAcima  = vaHi < numBins - 1 ? bins[vaHi + 1] : -1;
+                if (volAcima >= volAbaixo) { vaHi++; accVol += bins[vaHi]; valueAreaSet.add(vaHi); }
+                else { vaLo--; accVol += bins[vaLo]; valueAreaSet.add(vaLo); }
+            }
+
+            const vpvrMaxW = chartW * 0.22; // largura máxima da coluna de perfil
+            const rightEdge = W - PAD.right;
+            for (let bi = 0; bi < numBins; bi++) {
+                if (bins[bi] <= 0) continue;
+                const barW = (bins[bi] / maxBin) * vpvrMaxW;
+                const yTop = toY(minP + (bi + 1) * binH);
+                const yBot = toY(minP + bi * binH);
+                const barH = Math.max(1, yBot - yTop - 1);
+                const isPoc = bi === pocIdx;
+                const inValueArea = valueAreaSet.has(bi);
+                // Contorno sutil pra destacar do fundo, já que agora fica
+                // sobreposto a linhas e candles.
+                ctx.fillStyle = isPoc
+                    ? 'rgba(255,167,38,0.95)'
+                    : inValueArea
+                        ? 'rgba(41,182,246,0.55)'
+                        : 'rgba(144,164,174,0.4)';
+                ctx.fillRect(rightEdge - barW, yTop, barW, barH);
+                ctx.strokeStyle = 'rgba(19,23,34,0.6)';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(rightEdge - barW, yTop, barW, barH);
+            }
+
+            // Linha do POC atravessando o gráfico
+            const pocPrice = minP + (pocIdx + 0.5) * binH;
+            const pocY = toY(pocPrice);
+            ctx.strokeStyle = 'rgba(255,167,38,0.85)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 3]);
+            ctx.beginPath(); ctx.moveTo(PAD.left, pocY); ctx.lineTo(rightEdge, pocY); ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.fillStyle = '#FFA726';
+            ctx.font = 'bold 9px -apple-system';
+            ctx.textAlign = 'right';
+            ctx.fillText('POC ' + fmtN(pocPrice), rightEdge - vpvrMaxW - 4, pocY - 3);
+        }
+    }
+
     if (_cvMinimapAtivo) {
         try { cvDesenharMinimapa(); } catch(e) { console.log('Minimapa error:', e.message); }
     }
