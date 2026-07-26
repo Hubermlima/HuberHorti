@@ -8320,6 +8320,9 @@ async function cvCarregarAlertasGrafico() {
         _grAlertas = data.filter(a => !a.tipo || a.tipo === 'manual')
             .map(a => ({ preco: a.preco, id: a.id, habilitado: a.habilitado, created_at: a.created_at }));
         // Fibs — carrega fibo_1, fibo_2... e também o tipo antigo 'fibo'
+        // Reseta e reconstrói a partir do banco (fonte da verdade), guardando o
+        // "tipo" real de cada um — nunca mais recalculado pela posição no array.
+        _fibs.length = 0;
         const fiboTipos = [...new Set(
             data.filter(a => a.tipo && (a.tipo.startsWith('fibo_') || a.tipo === 'fibo'))
                 .map(a => a.tipo)
@@ -8331,8 +8334,7 @@ async function cvCarregarAlertasGrafico() {
             if (n0 && n100) {
                 const p1 = parseFloat(n0.preco);  // nivel=0 → valor inicial (0%)
                 const p2 = parseFloat(n100.preco); // nivel=1 → valor final (100%)
-                if (!_fibs.some(f => Math.abs(f.p1-p1)<1 && Math.abs(f.p2-p2)<1))
-                    _fibs.push({ p1, p2 });
+                _fibs.push({ p1, p2, tipo });
             }
         });
         if (_fibs.length > 0) {
@@ -8535,8 +8537,10 @@ async function cvFibGravar() {
     if (!_ativoId) return;
     const isNovo = _fibIdx === null;
     const idx = isNovo ? _fibs.length : _fibIdx;
-    const tipo = 'fibo_' + (idx+1);
-    if (isNovo) _fibs.push({ p1: p0, p2: p100 });
+    // Tipo é único e estável por fibonacci (nunca recalculado pela posição no
+    // array), senão excluir/editar um deles bagunça a identidade dos demais.
+    const tipo = isNovo ? ('fibo_' + Date.now()) : _fibs[idx].tipo;
+    if (isNovo) _fibs.push({ p1: p0, p2: p100, tipo });
     else { _fibs[idx].p1 = p0; _fibs[idx].p2 = p100; }
     const high = Math.max(p0,p100), low = Math.min(p0,p100), diff = high-low, isUp = p100>p0;
     await db.from('alertas').delete().eq('ativo_id',_ativoId).eq('tipo',tipo);
@@ -8559,8 +8563,10 @@ async function cvFibGravar() {
 
 async function cvFibExcluir() {
     if (_fibIdx === null || !_ativoId) return;
+    const tipoExcluir = _fibs[_fibIdx]?.tipo;
+    if (!tipoExcluir) return;
     if (!confirm('Excluir Fibonacci ' + (_fibIdx+1) + '?')) return;
-    await db.from('alertas').delete().eq('ativo_id',_ativoId).eq('tipo','fibo_'+(_fibIdx+1));
+    await db.from('alertas').delete().eq('ativo_id',_ativoId).eq('tipo',tipoExcluir);
     _fibs.splice(_fibIdx, 1);
     if (_fibs.length === 0) {
         _indState.fib = false;
