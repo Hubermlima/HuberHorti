@@ -10287,20 +10287,35 @@ function odDesenharMacro() {
 // (muitas entradas muito próximas em preço, sem melhorar o PM de fato).
 let _odDistEntradas = [];
 
-function odCarregarDistribuicaoCompras() {
+async function odCarregarDistribuicaoCompras() {
     const vazio = document.getElementById('od-dist-vazio');
     const conteudo = document.getElementById('od-dist-conteudo');
-    if (!vazio || !conteudo) return;
+    if (!vazio || !conteudo || !_ativoId) return;
 
-    // Direção do trade operacional ativo: short → entradas são SA, long → LA.
-    // Fallback pelo consolidado, caso _cvTradeTipo ainda não tenha carregado.
-    let direcao = (typeof _cvTradeTipo === 'string' && _cvTradeTipo) ? _cvTradeTipo.toLowerCase() : null;
-    if (!direcao) {
-        const c = calcularConsolidado();
-        direcao = c.qtdShort > 0 ? 'short' : 'long';
+    // 1) Tabela trades — busca o trade com operacional = true (e simulacao = false)
+    //    pra esse ativo. É essa linha que define QUAL trade é "o ativo" e a
+    //    partir de quando (data_abertura) as compras contam pra ele.
+    const { data: tradeOperacional, error: erroTrade } = await db.from('trades')
+        .select('*')
+        .eq('ativo_id', _ativoId)
+        .eq('operacional', true)
+        .eq('simulacao', false)
+        .maybeSingle();
+
+    if (erroTrade || !tradeOperacional || !tradeOperacional.data_abertura) {
+        vazio.style.display = 'block';
+        vazio.textContent = 'Nenhum trade operacional ativo encontrado para esse ativo.';
+        conteudo.style.display = 'none';
+        return;
     }
-    const tipoAbertura = direcao === 'short' ? 'SA' : 'LA';
 
+    const direcao = (tradeOperacional.tipo || 'long').toLowerCase();
+    const tipoAbertura = direcao === 'short' ? 'SA' : 'LA';
+    const dataAbertura = new Date(tradeOperacional.data_abertura);
+
+    // 2) Tabela transacoes — só as entradas (tipo_operacao compatível com a
+    //    direção do trade) a partir da data_abertura desse trade operacional.
+    //    Isso exclui compras de trades anteriores/já fechados no mesmo ativo.
     _odDistEntradas = (_transacoes || [])
         .filter(t => t.tipo_operacao === tipoAbertura)
         .map(t => {
@@ -10313,17 +10328,21 @@ function odCarregarDistribuicaoCompras() {
                 qtd, valor
             };
         })
-        .filter(e => e.preco > 0 && !isNaN(e.data.getTime()))
+        .filter(e => e.preco > 0 && !isNaN(e.data.getTime()) && e.data >= dataAbertura)
         .sort((a, b) => a.data - b.data);
 
     if (_odDistEntradas.length === 0) {
         vazio.style.display = 'block';
+        vazio.textContent = 'Nenhuma entrada encontrada para o trade operacional a partir de ' +
+            dataAbertura.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' }) + '.';
         conteudo.style.display = 'none';
         return;
     }
     vazio.style.display = 'none';
     conteudo.style.display = 'block';
 
+    // PM: usa o consolidado geral do ativo (mesmo cálculo do resto do app),
+    // não recalcula um PM "só do recorte" pra não divergir da Posição Atual.
     const c = calcularConsolidado();
     const pm = direcao === 'short' ? c.pmShort : c.pm;
     const corPrincipal = direcao === 'short' ? '#DC2626' : '#16A34A';
