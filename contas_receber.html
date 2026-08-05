@@ -560,9 +560,10 @@ async function abrirPlanilha() {
   body.innerHTML = '<div class="empty-state" style="padding:20px 0;">Carregando...</div>';
   document.getElementById('modal-planilha').classList.add('active');
 
-  // Consulta isolada apenas para a planilha: considera pago somente status = 1
-  // (pagamento efetivado). Não usa _dadosClientes, que hoje soma status = 0
-  // (previsão de pagamento) como se já tivesse sido recebido.
+  // Consulta isolada apenas para a planilha, nota por nota:
+  // 1) notas pendentes = pedidos_vendas com status = 0
+  // 2) pagamentos efetivados = movimentos_clientes com status = 1
+  // 3) abate o pagamento nota a nota (FIFO, mais antiga primeiro) e soma o que sobrar
   const clientesFiltrados = _cidadeSelecionada === 'todas'
     ? _todosClientes
     : _todosClientes.filter(c => c.cidade === _cidadeSelecionada);
@@ -571,22 +572,31 @@ async function abrirPlanilha() {
   let dados = [];
   if (ids.length > 0) {
     const [{ data: pedidos }, { data: movimentos }] = await Promise.all([
-      window.db.from('pedidos_vendas').select('cliente_id, em_aberto').in('cliente_id', ids),
+      window.db.from('pedidos_vendas').select('cliente_id, data, em_aberto').in('cliente_id', ids).eq('status', 0),
       window.db.from('movimentos_clientes').select('cliente_id, valor').in('cliente_id', ids).eq('status', 1)
     ]);
 
     dados = clientesFiltrados.map(cliente => {
-      const totalAberto = (pedidos || [])
+      const notasCliente = (pedidos || [])
         .filter(p => p.cliente_id === cliente.id)
-        .reduce((a, p) => a + (parseFloat(p.em_aberto) || 0), 0);
-      const totalPagoEfetivado = (movimentos || [])
+        .sort((a, b) => new Date(a.data) - new Date(b.data));
+      let pagoDisp = (movimentos || [])
         .filter(m => m.cliente_id === cliente.id)
         .reduce((a, m) => a + (parseFloat(m.valor) || 0), 0);
+
+      let saldo = 0;
+      notasCliente.forEach(nota => {
+        const nominal = parseFloat(nota.em_aberto) || 0;
+        const pago = Math.min(pagoDisp, nominal);
+        pagoDisp = Math.max(0, pagoDisp - nominal);
+        saldo += nominal - pago;
+      });
+
       return {
         id: cliente.id,
         nome: cliente.nome,
         cidade: cliente.cidade,
-        saldo: totalAberto - totalPagoEfetivado
+        saldo
       };
     }).filter(c => c.saldo > 0).sort((a, b) => b.saldo - a.saldo);
   }
