@@ -560,10 +560,8 @@ async function abrirPlanilha() {
   body.innerHTML = '<div class="empty-state" style="padding:20px 0;">Carregando...</div>';
   document.getElementById('modal-planilha').classList.add('active');
 
-  // Consulta isolada apenas para a planilha, nota por nota:
-  // 1) notas pendentes = pedidos_vendas com status = 0
-  // 2) pagamentos efetivados = movimentos_clientes com status = 1
-  // 3) abate o pagamento nota a nota (FIFO, mais antiga primeiro) e soma o que sobrar
+  // Consulta isolada apenas para a planilha: em_aberto já é o valor pendente
+  // real de cada nota, então basta somar por cliente.
   const clientesFiltrados = _cidadeSelecionada === 'todas'
     ? _todosClientes
     : _todosClientes.filter(c => c.cidade === _cidadeSelecionada);
@@ -571,26 +569,15 @@ async function abrirPlanilha() {
 
   let dados = [];
   if (ids.length > 0) {
-    const [{ data: pedidos }, { data: movimentos }] = await Promise.all([
-      window.db.from('pedidos_vendas').select('cliente_id, data, em_aberto').in('cliente_id', ids).eq('status', 0),
-      window.db.from('movimentos_clientes').select('cliente_id, valor').in('cliente_id', ids).eq('status', 1)
-    ]);
+    const { data: pedidos } = await window.db
+      .from('pedidos_vendas')
+      .select('cliente_id, em_aberto')
+      .in('cliente_id', ids);
 
     dados = clientesFiltrados.map(cliente => {
-      const notasCliente = (pedidos || [])
+      const saldo = (pedidos || [])
         .filter(p => p.cliente_id === cliente.id)
-        .sort((a, b) => new Date(a.data) - new Date(b.data));
-      let pagoDisp = (movimentos || [])
-        .filter(m => m.cliente_id === cliente.id)
-        .reduce((a, m) => a + (parseFloat(m.valor) || 0), 0);
-
-      let saldo = 0;
-      notasCliente.forEach(nota => {
-        const nominal = parseFloat(nota.em_aberto) || 0;
-        const pago = Math.min(pagoDisp, nominal);
-        pagoDisp = Math.max(0, pagoDisp - nominal);
-        saldo += nominal - pago;
-      });
+        .reduce((a, p) => a + (parseFloat(p.em_aberto) || 0), 0);
 
       return {
         id: cliente.id,
