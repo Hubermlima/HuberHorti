@@ -552,12 +552,45 @@ function fecharModal() {
   document.getElementById('modal-notas').classList.remove('active');
 }
 
-function abrirPlanilha() {
-  const dados = [..._dadosClientes].filter(c => c.saldo > 0).sort((a, b) => b.saldo - a.saldo);
+async function abrirPlanilha() {
   const cidadeLabel = _cidadeSelecionada === 'todas' ? 'Todas as cidades' : _cidadeSelecionada;
   document.getElementById('planilha-cidade-label').textContent = cidadeLabel;
 
   const body = document.getElementById('planilha-body');
+  body.innerHTML = '<div class="empty-state" style="padding:20px 0;">Carregando...</div>';
+  document.getElementById('modal-planilha').classList.add('active');
+
+  // Consulta isolada apenas para a planilha: considera pago somente status = 1
+  // (pagamento efetivado). Não usa _dadosClientes, que hoje soma status = 0
+  // (previsão de pagamento) como se já tivesse sido recebido.
+  const clientesFiltrados = _cidadeSelecionada === 'todas'
+    ? _todosClientes
+    : _todosClientes.filter(c => c.cidade === _cidadeSelecionada);
+  const ids = clientesFiltrados.map(c => c.id);
+
+  let dados = [];
+  if (ids.length > 0) {
+    const [{ data: pedidos }, { data: movimentos }] = await Promise.all([
+      window.db.from('pedidos_vendas').select('cliente_id, em_aberto').in('cliente_id', ids),
+      window.db.from('movimentos_clientes').select('cliente_id, valor').in('cliente_id', ids).eq('status', 1)
+    ]);
+
+    dados = clientesFiltrados.map(cliente => {
+      const totalAberto = (pedidos || [])
+        .filter(p => p.cliente_id === cliente.id)
+        .reduce((a, p) => a + (parseFloat(p.em_aberto) || 0), 0);
+      const totalPagoEfetivado = (movimentos || [])
+        .filter(m => m.cliente_id === cliente.id)
+        .reduce((a, m) => a + (parseFloat(m.valor) || 0), 0);
+      return {
+        id: cliente.id,
+        nome: cliente.nome,
+        cidade: cliente.cidade,
+        saldo: totalAberto - totalPagoEfetivado
+      };
+    }).filter(c => c.saldo > 0).sort((a, b) => b.saldo - a.saldo);
+  }
+
   if (dados.length === 0) {
     body.innerHTML = '<div class="empty-state" style="padding:20px 0;">Nenhum cliente com débito pendente</div>';
   } else {
@@ -574,7 +607,6 @@ function abrirPlanilha() {
       </div>`).join('')}
     `;
   }
-  document.getElementById('modal-planilha').classList.add('active');
 }
 
 function fecharModalPlanilha() {
