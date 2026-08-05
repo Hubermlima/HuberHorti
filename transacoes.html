@@ -611,6 +611,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
     <button class="od-tab" id="od-tab-5" onclick="odSetTab(5)">Lucro</button>
     <button class="od-tab" id="od-tab-6" onclick="odSetTab(6)">Eficiência</button>
     <button class="od-tab" id="od-tab-7" onclick="odSetTab(7)">Boleta</button>
+    <button class="od-tab" id="od-tab-13" onclick="odSetTab(13)">Distribuição</button>
 </div>
 
 <!-- Modal nova transação — Order Desk com abas -->
@@ -993,6 +994,44 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <div style="padding:16px 20px 8px;">
         <button id="btn-salvar-nova" onclick="salvarNova()" style="width:100%;padding:14px;background:#E5E5EA;color:#1C1C1E;border:none;border-radius:100px;font-size:17px;font-weight:600;font-family:'Plus Jakarta Sans',sans-serif;cursor:pointer;">Executar</button>
 
+      </div>
+    </div>
+
+    <!-- ABA 13: Distribuição de Compras (trade operacional ativo) -->
+    <div class="od-pane" id="od-pane-13">
+      <div style="padding:16px;">
+        <div style="font-size:11px;font-weight:600;color:#3A3A3C;letter-spacing:0.4px;text-transform:uppercase;margin-bottom:2px;">Distribuição de Compras</div>
+        <div style="font-size:11px;color:#3A3A3C;margin-bottom:14px;">Cada entrada do trade operacional ativo — quando e a que preço</div>
+
+        <div id="od-dist-vazio" style="display:none;text-align:center;padding:24px 0;color:#8E8E93;font-size:13px;">Nenhuma entrada encontrada para o trade operacional.</div>
+
+        <div id="od-dist-conteudo" style="display:none;">
+          <div id="od-dist-resumo" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px;"></div>
+
+          <div style="margin-bottom:4px;font-size:12px;font-weight:700;color:#1C1C1E;">Preço × Tempo</div>
+          <canvas id="od-dist-scatter" width="600" height="200" style="width:100%;height:200px;display:block;"></canvas>
+          <div style="font-size:10.5px;color:#3A3A3C;margin-top:4px;margin-bottom:18px;">Cada bolha é uma entrada · tamanho = valor em USD · linha tracejada = preço médio (PM) atual</div>
+
+          <div class="od-divider"></div>
+
+          <div style="margin:14px 0 4px;font-size:12px;font-weight:700;color:#1C1C1E;">Concentração por Faixa de Preço</div>
+          <canvas id="od-dist-hist" width="600" height="150" style="width:100%;height:150px;display:block;"></canvas>
+          <div style="font-size:10.5px;color:#3A3A3C;margin-top:4px;margin-bottom:18px;">Quanto (USD) foi comprado em cada faixa — picos indicam concentração de entradas</div>
+
+          <div class="od-divider"></div>
+
+          <div style="margin-top:14px;">
+            <div style="font-size:11px;font-weight:600;color:#8E8E93;letter-spacing:0.4px;text-transform:uppercase;margin-bottom:8px;">Entradas Próximas em Preço</div>
+            <div id="od-dist-proximas" style="font-size:12.5px;color:#3A3A3C;line-height:1.5;"></div>
+          </div>
+
+          <div class="od-divider" style="margin-top:14px;"></div>
+
+          <div style="margin-top:14px;">
+            <div style="font-size:11px;font-weight:600;color:#8E8E93;letter-spacing:0.4px;text-transform:uppercase;margin-bottom:8px;">Todas as Entradas</div>
+            <div id="od-dist-lista"></div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -10241,6 +10280,270 @@ function odDesenharMacro() {
     ctx.stroke();
 }
 
+// ── Aba Distribuição de Compras (trade operacional ativo) ─────────────
+// Mostra, pro trade aberto no momento, cada entrada (abertura de posição)
+// em preço × tempo, mais uma concentração por faixa de preço — pra ajudar
+// a enxergar se as compras foram bem espaçadas ou se ficaram redundantes
+// (muitas entradas muito próximas em preço, sem melhorar o PM de fato).
+let _odDistEntradas = [];
+
+function odCarregarDistribuicaoCompras() {
+    const vazio = document.getElementById('od-dist-vazio');
+    const conteudo = document.getElementById('od-dist-conteudo');
+    if (!vazio || !conteudo) return;
+
+    // Direção do trade operacional ativo: short → entradas são SA, long → LA.
+    // Fallback pelo consolidado, caso _cvTradeTipo ainda não tenha carregado.
+    let direcao = (typeof _cvTradeTipo === 'string' && _cvTradeTipo) ? _cvTradeTipo.toLowerCase() : null;
+    if (!direcao) {
+        const c = calcularConsolidado();
+        direcao = c.qtdShort > 0 ? 'short' : 'long';
+    }
+    const tipoAbertura = direcao === 'short' ? 'SA' : 'LA';
+
+    _odDistEntradas = (_transacoes || [])
+        .filter(t => t.tipo_operacao === tipoAbertura)
+        .map(t => {
+            const qtd = parseFloat(t.quantidade_ativo) || 0;
+            const valor = parseFloat(t.valor_total_usd) || 0;
+            return {
+                id: t.id,
+                data: new Date(t.data),
+                preco: qtd > 0 ? valor / qtd : 0,
+                qtd, valor
+            };
+        })
+        .filter(e => e.preco > 0 && !isNaN(e.data.getTime()))
+        .sort((a, b) => a.data - b.data);
+
+    if (_odDistEntradas.length === 0) {
+        vazio.style.display = 'block';
+        conteudo.style.display = 'none';
+        return;
+    }
+    vazio.style.display = 'none';
+    conteudo.style.display = 'block';
+
+    const c = calcularConsolidado();
+    const pm = direcao === 'short' ? c.pmShort : c.pm;
+    const corPrincipal = direcao === 'short' ? '#DC2626' : '#16A34A';
+
+    odRenderDistResumo(_odDistEntradas, pm, direcao);
+    odDesenharDistScatter(_odDistEntradas, pm, corPrincipal);
+    odDesenharDistHist(_odDistEntradas, pm, corPrincipal);
+    odRenderDistProximas(_odDistEntradas);
+    odRenderDistLista(_odDistEntradas, pm, direcao);
+}
+
+function odRenderDistResumo(entradas, pm, direcao) {
+    const el = document.getElementById('od-dist-resumo');
+    if (!el) return;
+    const precos = entradas.map(e => e.preco);
+    const min = Math.min(...precos), max = Math.max(...precos);
+    const amplitudePct = pm > 0 ? ((max - min) / pm) * 100 : 0;
+    const totalUSD = entradas.reduce((s, e) => s + e.valor, 0);
+
+    const card = (label, val, cor) => `<div style="background:#F2F4F8;border-radius:12px;padding:10px 12px;">
+        <div style="font-size:10px;color:#8E8E93;font-weight:600;letter-spacing:0.3px;text-transform:uppercase;margin-bottom:3px;">${label}</div>
+        <div style="font-size:15px;font-weight:700;color:${cor || '#1C1C1E'};">${val}</div>
+    </div>`;
+
+    el.innerHTML =
+        card('Entradas', entradas.length, '#1C1C1E') +
+        card('PM Atual', pm > 0 ? 'USD ' + fmtUSD(pm) : '—', '#1C1C1E') +
+        card('Faixa de Preço', 'USD ' + fmtUSD(min) + ' – ' + fmtUSD(max), '#1C1C1E') +
+        card('Amplitude vs PM', amplitudePct.toFixed(2) + '%', amplitudePct < 3 ? '#DC2626' : '#1C1C1E') +
+        card('Total Alocado', 'USD ' + fmtUSD(totalUSD), '#1C1C1E') +
+        card('Direção', direcao === 'short' ? 'Short' : 'Long', direcao === 'short' ? '#DC2626' : '#16A34A');
+}
+
+function odDesenharDistScatter(entradas, pm, cor) {
+    const canvas = document.getElementById('od-dist-scatter');
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const W = Math.max(rect.width, 300), H = 200;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    canvas.style.height = H + 'px';
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+
+    const PAD = { top: 10, bottom: 22, left: 60, right: 14 };
+    const chartW = W - PAD.left - PAD.right;
+    const chartH = H - PAD.top - PAD.bottom;
+
+    const tMin = entradas[0].data.getTime();
+    const tMax = entradas[entradas.length - 1].data.getTime();
+    const tRange = (tMax - tMin) || 1;
+
+    const precos = entradas.map(e => e.preco);
+    let pMin = Math.min(...precos), pMax = Math.max(...precos);
+    if (pm > 0) { pMin = Math.min(pMin, pm); pMax = Math.max(pMax, pm); }
+    const pad = (pMax - pMin) * 0.15 || pMax * 0.01 || 1;
+    pMin -= pad; pMax += pad;
+    const pRange = (pMax - pMin) || 1;
+
+    const toX = t => PAD.left + ((t - tMin) / tRange) * chartW;
+    const toY = p => PAD.top + chartH - ((p - pMin) / pRange) * chartH;
+
+    // Grade horizontal leve
+    ctx.strokeStyle = 'rgba(0,0,0,0.06)';
+    ctx.lineWidth = 1;
+    for (let g = 0; g <= 2; g++) {
+        const y = PAD.top + (chartH / 2) * g;
+        ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(W - PAD.right, y); ctx.stroke();
+    }
+    ctx.fillStyle = '#8E8E93';
+    ctx.font = '10px -apple-system, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText(fmtUSD(pMax), PAD.left - 6, PAD.top + 4);
+    ctx.fillText(fmtUSD(pMin), PAD.left - 6, PAD.top + chartH);
+
+    // Linha do PM
+    if (pm > 0) {
+        const yPm = toY(pm);
+        ctx.save();
+        ctx.setLineDash([4, 4]);
+        ctx.strokeStyle = '#8E8E93';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(PAD.left, yPm); ctx.lineTo(W - PAD.right, yPm); ctx.stroke();
+        ctx.restore();
+        ctx.fillStyle = '#8E8E93';
+        ctx.font = '9px -apple-system, sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText('PM', W - PAD.right - 20, yPm - 4);
+    }
+
+    // Eixo X — datas inicial e final
+    ctx.fillStyle = '#8E8E93';
+    ctx.font = '10px -apple-system, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(entradas[0].data.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' }), PAD.left, H - 4);
+    ctx.textAlign = 'right';
+    ctx.fillText(entradas[entradas.length - 1].data.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' }), W - PAD.right, H - 4);
+
+    // Bolhas — raio proporcional à raiz do valor em USD (área ~ valor)
+    const valores = entradas.map(e => e.valor);
+    const vMax = Math.max(...valores) || 1;
+    entradas.forEach(e => {
+        const x = toX(e.data.getTime());
+        const y = toY(e.preco);
+        const r = 4 + Math.sqrt(e.valor / vMax) * 12;
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fillStyle = cor + '55';
+        ctx.fill();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = cor;
+        ctx.stroke();
+    });
+}
+
+function odDesenharDistHist(entradas, pm, cor) {
+    const canvas = document.getElementById('od-dist-hist');
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const W = Math.max(rect.width, 300), H = 150;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    canvas.style.height = H + 'px';
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+
+    const PAD = { top: 10, bottom: 20, left: 60, right: 14 };
+    const chartW = W - PAD.left - PAD.right;
+    const chartH = H - PAD.top - PAD.bottom;
+
+    const precos = entradas.map(e => e.preco);
+    const pMin = Math.min(...precos), pMax = Math.max(...precos);
+    const NB = Math.min(10, Math.max(4, entradas.length));
+    const binSize = ((pMax - pMin) || (pMax * 0.01) || 1) / NB;
+    const bins = new Array(NB).fill(0);
+    entradas.forEach(e => {
+        let idx = binSize > 0 ? Math.floor((e.preco - pMin) / binSize) : 0;
+        if (idx >= NB) idx = NB - 1;
+        if (idx < 0) idx = 0;
+        bins[idx] += e.valor;
+    });
+    const maxBin = Math.max(...bins) || 1;
+
+    ctx.fillStyle = '#8E8E93';
+    ctx.font = '10px -apple-system, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText('USD ' + fmtN(maxBin), PAD.left - 6, PAD.top + 8);
+    ctx.fillText('0', PAD.left - 6, PAD.top + chartH);
+
+    const barGap = 4;
+    const barW = (chartW - barGap * (NB - 1)) / NB;
+    bins.forEach((v, i) => {
+        const h = (v / maxBin) * chartH;
+        const x = PAD.left + i * (barW + barGap);
+        const y = PAD.top + chartH - h;
+        ctx.fillStyle = cor + (v === maxBin ? 'CC' : '77');
+        ctx.fillRect(x, y, barW, h);
+    });
+
+    // Rótulos de faixa: primeira e última
+    ctx.fillStyle = '#8E8E93';
+    ctx.font = '9px -apple-system, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(fmtUSD(pMin), PAD.left, H - 4);
+    ctx.textAlign = 'right';
+    ctx.fillText(fmtUSD(pMax), W - PAD.right, H - 4);
+}
+
+function odRenderDistProximas(entradas) {
+    const el = document.getElementById('od-dist-proximas');
+    if (!el) return;
+    // Compara entradas ordenadas por preço — pares com diferença pequena de
+    // preço são candidatos a "compra redundante" (não melhoraram o PM de forma relevante).
+    const porPreco = [...entradas].sort((a, b) => a.preco - b.preco);
+    const achados = [];
+    for (let i = 1; i < porPreco.length; i++) {
+        const a = porPreco[i - 1], b = porPreco[i];
+        const diffPct = a.preco > 0 ? Math.abs(b.preco - a.preco) / a.preco * 100 : 0;
+        if (diffPct < 1.5) {
+            const diasEntre = Math.abs((b.data - a.data) / 86400000);
+            achados.push({ a, b, diffPct, diasEntre });
+        }
+    }
+    if (achados.length === 0) {
+        el.innerHTML = '<span style="color:#16A34A;">Nenhuma entrada muito próxima em preço — compras bem espaçadas.</span>';
+        return;
+    }
+    el.innerHTML = achados.map(f => {
+        const dA = f.a.data.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' });
+        const dB = f.b.data.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' });
+        const cor = f.diffPct < 0.6 ? '#DC2626' : '#B45309';
+        return `<div style="margin-bottom:8px;padding:8px 10px;background:#F2F4F8;border-radius:10px;">
+            <div><strong>${dA}</strong> (USD ${fmtUSD(f.a.preco)}) e <strong>${dB}</strong> (USD ${fmtUSD(f.b.preco)})</div>
+            <div style="color:${cor};font-weight:600;">${f.diffPct.toFixed(2)}% de diferença de preço · ${f.diasEntre.toFixed(1)} dia(s) de intervalo</div>
+        </div>`;
+    }).join('');
+}
+
+function odRenderDistLista(entradas, pm, direcao) {
+    const el = document.getElementById('od-dist-lista');
+    if (!el) return;
+    const cor = direcao === 'short' ? '#DC2626' : '#16A34A';
+    el.innerHTML = [...entradas].reverse().map(e => {
+        const distPm = pm > 0 ? ((e.preco - pm) / pm) * 100 : 0;
+        const dataStr = e.data.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' });
+        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:0.5px solid #E5E5EA;">
+            <div>
+                <div style="font-size:13px;font-weight:600;color:#1C1C1E;">${dataStr}</div>
+                <div style="font-size:11.5px;color:#8E8E93;">${fmtQtd(e.qtd)} BTC · USD ${fmtUSD(e.valor)}</div>
+            </div>
+            <div style="text-align:right;">
+                <div style="font-size:13px;font-weight:700;color:${cor};">USD ${fmtUSD(e.preco)}</div>
+                <div style="font-size:11px;color:#8E8E93;">${distPm >= 0 ? '+' : ''}${distPm.toFixed(2)}% vs PM</div>
+            </div>
+        </div>`;
+    }).join('');
+}
+
 // ── Aba Agenda Econômica (EUA) ────────────────────────────────────────
 // A FMP bloqueia esse endpoint no plano grátis (HTTP 402 — confirmado).
 // Solução: os 3 eventos mais decisivos pro mercado (decisão de juros do Fed,
@@ -11858,6 +12161,7 @@ function odSetTab(idx) {
     if (idx === 9) { odCarregarSazonalidade(); }
     if (idx === 10) { odCarregarMacro(); }
     if (idx === 11) { odCarregarAgendaEUA(); }
+    if (idx === 13) { odCarregarDistribuicaoCompras(); }
     // Posição Atual / Lucro / Eficiência dependem dos mesmos cálculos — refaz
     // sempre que qualquer uma delas é aberta, pra nunca mostrar dado velho de
     // antes da última transação (essas 3 abas ficavam presas no estado de
@@ -11866,7 +12170,7 @@ function odSetTab(idx) {
         if (typeof odAtualizarPosicaoAtual === 'function') odAtualizarPosicaoAtual();
         if (typeof odCalcularBreakEven === 'function') odCalcularBreakEven();
     }
-    for (let i of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]) {
+    for (let i of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]) {
         document.getElementById('od-tab-' + i).classList.toggle('active', i === idx);
         document.getElementById('od-pane-' + i).classList.toggle('active', i === idx);
     }
