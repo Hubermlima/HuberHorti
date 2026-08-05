@@ -108,6 +108,10 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
 .planilha-nome{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;touch-action:manipulation;}
 .planilha-input{width:100%;font-family:'Inter',sans-serif;font-size:12px;padding:6px 8px;border:0.5px solid #D1D1D6;border-radius:8px;background:#FAFAFA;color:#1C1C1E;}
 .planilha-input:focus{outline:none;border-color:#1C1C1E;background:#FFF;}
+.pdf-sheet{position:fixed;inset:0;z-index:9998;background:#FFF;display:none;flex-direction:column;}
+.pdf-sheet.active{display:flex;}
+.pdf-topbar{height:52px;padding:0 18px;display:flex;align-items:center;justify-content:space-between;background:#FFF;border-bottom:0.5px solid #E5E5EA;flex-shrink:0;}
+.pdf-scroll{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:20px 18px;}
 </style>
 </head>
 <body>
@@ -197,12 +201,28 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
   <div class="modal planilha-modal-full">
     <div class="planilha-header-bar">
       <div class="modal-title" style="margin:0;">Planilha de Débitos — <span id="planilha-cidade-label"></span></div>
-      <button class="planilha-close-x" onclick="fecharModalPlanilha()">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#1C1C1E" stroke-width="2.3"><path d="M6 6l12 12M18 6L6 18"/></svg>
-      </button>
+      <div style="display:flex;gap:8px;flex-shrink:0;">
+        <button class="planilha-close-x" onclick="gerarPDFPlanilha()" title="Gerar PDF">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#1C1C1E" stroke-width="2.2"><path d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>
+        </button>
+        <button class="planilha-close-x" onclick="fecharModalPlanilha()">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#1C1C1E" stroke-width="2.3"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
     </div>
     <div id="planilha-body" class="planilha-body-scroll"></div>
   </div>
+</div>
+
+<!-- Folha de PDF da planilha de débitos -->
+<div class="pdf-sheet" id="planilha-pdf-sheet">
+  <div class="pdf-topbar">
+    <span style="font-size:15px;font-weight:700;color:#1C1C1E;">Planilha de Débitos</span>
+    <button class="ios-btn-float" onclick="fecharPDFPlanilha()">
+      <svg viewBox="0 0 24 24" style="width:16px;height:16px;stroke:#1C1C1E;stroke-width:2.2;fill:none"><path d="M6 18L18 6M6 6l12 12"/></svg>
+    </button>
+  </div>
+  <div class="pdf-scroll" id="planilha-pdf-conteudo"></div>
 </div>
 
 <!-- Menu de contexto (long press) da planilha -->
@@ -661,6 +681,62 @@ function excluirLinhaPlanilha() {
   const row = document.querySelector(`.planilha-row[data-row-id="${_planilhaCtxId}"]`);
   if (row) row.remove();
   fecharPlanilhaCtx();
+}
+
+function gerarPDFPlanilha() {
+  const linhas = [];
+  let totalGeral = 0;
+
+  document.querySelectorAll('#planilha-body .planilha-row').forEach(row => {
+    const nome = row.querySelector('.planilha-nome')?.textContent.trim() || '';
+    const debitoTexto = row.querySelector('.r')?.textContent.trim() || '';
+    const debitoNum = parseFloat(debitoTexto.replace(/[R$\s.]/g, '').replace(',', '.')) || 0;
+    totalGeral += debitoNum;
+    const forma = row.querySelector('.planilha-input')?.value.trim() || '';
+    linhas.push({ nome, debito: debitoTexto, forma });
+  });
+
+  if (linhas.length === 0) {
+    alert('Nenhum cliente na planilha para gerar PDF.');
+    return;
+  }
+
+  const cidadeLabel = document.getElementById('planilha-cidade-label').textContent;
+  const dataAtual = new Date().toLocaleDateString('pt-BR', {timeZone:'America/Manaus', day:'2-digit', month:'2-digit', year:'numeric'});
+
+  const linhasHtml = linhas.map(l => `
+    <tr>
+      <td style="font-size:12px;padding:6px 8px;border-bottom:0.5px solid #E5E5EA;">${l.nome}</td>
+      <td style="width:80px;text-align:right;font-size:12px;padding:6px 8px;border-bottom:0.5px solid #E5E5EA;color:#EF4444;font-weight:600;">${l.debito}</td>
+      <td style="width:120px;font-size:12px;padding:6px 8px;border-bottom:0.5px solid #E5E5EA;color:#1C1C1E;">${l.forma || '—'}</td>
+    </tr>`).join('');
+
+  document.getElementById('planilha-pdf-conteudo').innerHTML = `
+    <div style="margin-bottom:20px;">
+      <div style="font-size:11px;font-weight:600;color:#8E8E93;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:4px;">HuberHorti</div>
+      <div style="font-size:18px;font-weight:700;color:#1C1C1E;margin-bottom:4px;">Planilha de Débitos — ${cidadeLabel}</div>
+      <div style="font-size:12px;color:#8E8E93;">${dataAtual}</div>
+    </div>
+    <table style="width:100%;border-collapse:collapse;">
+      <thead>
+        <tr>
+          <th style="text-align:left;font-size:10px;font-weight:600;color:#8E8E93;padding:8px 8px;border-bottom:1px solid #E5E5EA;">Nome</th>
+          <th style="width:80px;text-align:right;font-size:10px;font-weight:600;color:#8E8E93;padding:8px 8px;border-bottom:1px solid #E5E5EA;">Débito</th>
+          <th style="width:120px;text-align:left;font-size:10px;font-weight:600;color:#8E8E93;padding:8px 8px;border-bottom:1px solid #E5E5EA;">Forma Pagamento</th>
+        </tr>
+      </thead>
+      <tbody>${linhasHtml}</tbody>
+    </table>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:20px;padding-top:14px;border-top:1px solid #1C1C1E;">
+      <span style="font-size:12px;color:#8E8E93;">Total Geral</span>
+      <span style="font-size:14px;font-weight:700;color:#1C1C1E;">${fmt(totalGeral)}</span>
+    </div>`;
+
+  document.getElementById('planilha-pdf-sheet').classList.add('active');
+}
+
+function fecharPDFPlanilha() {
+  document.getElementById('planilha-pdf-sheet').classList.remove('active');
 }
 
 function fecharModalPlanilha() {
