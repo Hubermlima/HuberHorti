@@ -93,11 +93,16 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
 .modal-close{width:100%;margin-top:14px;padding:13px;background:#F2F2F7;border:none;border-radius:14px;color:#1C1C1E;font-size:15px;font-weight:500;font-family:'Inter',sans-serif;cursor:pointer;}
 
 /* Planilha de débitos */
-.planilha-grid-header{display:grid;grid-template-columns:1fr 72px 1fr;gap:6px;padding:6px 0;border-bottom:0.5px solid #E0E0E0;margin-bottom:4px;}
-.planilha-grid-header span{font-size:9px;font-weight:600;color:#8E8E93;text-transform:uppercase;letter-spacing:0.3px;}
-.planilha-row{display:grid;grid-template-columns:1fr 72px 1fr;gap:6px;align-items:center;padding:8px 0;border-bottom:0.5px solid #F5F5F5;}
+.planilha-modal-full{width:100%;height:100%;max-width:100%;max-height:100%;border-radius:0;padding:0;display:flex;flex-direction:column;box-shadow:none;}
+.planilha-header-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:18px 16px 14px;padding-top:calc(18px + env(safe-area-inset-top));border-bottom:0.5px solid #E5E5EA;flex-shrink:0;}
+.planilha-close-x{width:34px;height:34px;border-radius:50%;background:#F2F2F7;border:none;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;}
+.planilha-body-scroll{flex:1;overflow-y:auto;padding:6px 16px 24px;}
+.planilha-grid-header{display:grid;grid-template-columns:1fr 90px 1fr;gap:6px;padding:10px 0 8px;border-bottom:0.5px solid #D1D1D6;margin-bottom:2px;position:sticky;top:0;background:#FFF;}
+.planilha-grid-header span{font-size:10px;font-weight:700;color:#3A3A3C;text-transform:uppercase;letter-spacing:0.3px;}
+.planilha-grid-header span:nth-child(2){text-align:right;}
+.planilha-row{display:grid;grid-template-columns:1fr 90px 1fr;gap:6px;align-items:center;padding:12px 0;border-bottom:1px solid #E5E5EA;}
 .planilha-row span{font-size:12px;color:#1C1C1E;}
-.planilha-row span.r{color:#EF4444;font-weight:600;}
+.planilha-row span.r{color:#EF4444;font-weight:600;text-align:right;}
 .planilha-input{width:100%;font-family:'Inter',sans-serif;font-size:12px;padding:6px 8px;border:0.5px solid #D1D1D6;border-radius:8px;background:#FAFAFA;color:#1C1C1E;}
 .planilha-input:focus{outline:none;border-color:#1C1C1E;background:#FFF;}
 </style>
@@ -186,11 +191,23 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
 
 <!-- Modal planilha de débitos -->
 <div class="modal-overlay" id="modal-planilha">
-  <div class="modal" style="max-width:460px;">
-    <div class="modal-title">Planilha de Débitos — <span id="planilha-cidade-label"></span></div>
-    <div id="planilha-body" style="max-height:55vh;overflow-y:auto;"></div>
-    <button class="modal-close" onclick="fecharModalPlanilha()">Fechar</button>
+  <div class="modal planilha-modal-full">
+    <div class="planilha-header-bar">
+      <div class="modal-title" style="margin:0;">Planilha de Débitos — <span id="planilha-cidade-label"></span></div>
+      <button class="planilha-close-x" onclick="fecharModalPlanilha()">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#1C1C1E" stroke-width="2.3"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div id="planilha-body" class="planilha-body-scroll"></div>
   </div>
+</div>
+
+<!-- Menu de contexto (long press) da planilha -->
+<div class="ctx-overlay" id="planilha-ctx-overlay" onclick="fecharPlanilhaCtx()"></div>
+<div class="ctx-menu" id="planilha-ctx-menu">
+  <div class="ctx-title" id="planilha-ctx-title"></div>
+  <div class="ctx-item" onclick="excluirLinhaPlanilha()"><span>Excluir</span></div>
+  <div class="ctx-item" onclick="fecharPlanilhaCtx()"><span>Cancelar</span></div>
 </div>
 
 <!-- Modal detalhar notas -->
@@ -596,13 +613,51 @@ async function abrirPlanilha() {
         <span>Nome</span><span>Débito</span><span>Forma Pagamento</span>
       </div>
       ${dados.map(c => `
-      <div class="planilha-row">
-        <span>${c.nome}</span>
+      <div class="planilha-row" data-row-id="${c.id}">
+        <span onmousedown="planilhaPressStart('${c.id}','${c.nome.replace(/'/g,"\\'")}',event)" ontouchstart="planilhaPressStart('${c.id}','${c.nome.replace(/'/g,"\\'")}',event)" ontouchend="planilhaPressEnd()" ontouchmove="planilhaPressEnd()" onmouseup="planilhaPressEnd()" onmouseleave="planilhaPressEnd()" oncontextmenu="event.preventDefault()">${c.nome}</span>
         <span class="r">${fmt(c.saldo)}</span>
         <input type="text" class="planilha-input" placeholder="Digite..." data-cliente-id="${c.id}">
       </div>`).join('')}
     `;
   }
+}
+
+let _planilhaCtxId = null;
+let _planilhaPressTimer = null;
+
+function planilhaPressStart(id, nome, event) {
+  const point = event.touches ? event.touches[0] : event;
+  const x = point.clientX, y = point.clientY;
+  _planilhaPressTimer = setTimeout(() => abrirPlanilhaCtx(id, nome, x, y), 500);
+}
+
+function planilhaPressEnd() {
+  clearTimeout(_planilhaPressTimer);
+}
+
+function abrirPlanilhaCtx(id, nome, x, y) {
+  _planilhaCtxId = id;
+  document.getElementById('planilha-ctx-title').textContent = nome;
+  const menu = document.getElementById('planilha-ctx-menu');
+  const mW = 170;
+  let left = x - mW / 2;
+  if (left < 10) left = 10;
+  if (left + mW > window.innerWidth - 10) left = window.innerWidth - mW - 10;
+  menu.style.top = y + 'px';
+  menu.style.left = left + 'px';
+  menu.style.display = 'block';
+  document.getElementById('planilha-ctx-overlay').classList.add('active');
+}
+
+function fecharPlanilhaCtx() {
+  document.getElementById('planilha-ctx-menu').style.display = 'none';
+  document.getElementById('planilha-ctx-overlay').classList.remove('active');
+}
+
+function excluirLinhaPlanilha() {
+  const row = document.querySelector(`.planilha-row[data-row-id="${_planilhaCtxId}"]`);
+  if (row) row.remove();
+  fecharPlanilhaCtx();
 }
 
 function fecharModalPlanilha() {
