@@ -1261,6 +1261,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
 
       <button class="cv-ind-btn reg" id="cv-ind-reg"><span class="btn-sigla">Reg</span><span class="btn-nome">Régua %</span></button>
       <button class="cv-ind-btn tl" id="cv-ind-tl" onclick="cvToggleTrend()" ontouchstart="cvTrendColorPressStart()" ontouchend="cvTrendColorPressEnd()"><span class="btn-sigla"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="20" x2="20" y2="4"/><circle cx="4" cy="20" r="2" fill="currentColor" stroke="none"/><circle cx="20" cy="4" r="2" fill="currentColor" stroke="none"/></svg></span><span class="btn-nome">Tendência</span></button>
+      <button class="cv-ind-btn freehand" id="cv-ind-freehand" onclick="cvToggleFreehand()" ontouchstart="cvFreehandColorPressStart()" ontouchend="cvFreehandColorPressEnd()"><span class="btn-sigla"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17c1.5-3.5 2.5-7 4-8s2.5 2.5 4 3.5 3.5-5.5 5-3-1.5 7-3 8-2.5-3.5-4-2.5-2.5 3.5-6 2z"/></svg></span><span class="btn-nome">Desenho Livre</span></button>
       <button class="cv-ind-btn bandeira" id="cv-ind-bandeira" onclick="cvToggleBandeira()"><span class="btn-sigla"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="19" x2="15" y2="7"/><line x1="9" y1="21" x2="21" y2="9"/></svg></span><span class="btn-nome">Bandeira</span></button>
       <button class="cv-ind-btn medida" id="cv-ind-medida" onclick="cvToggleMedida()"><span class="btn-sigla"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="6" y1="4" x2="18" y2="4"/><line x1="12" y1="4" x2="12" y2="20"/><line x1="6" y1="20" x2="18" y2="20"/></svg></span><span class="btn-nome">Medida</span></button>
       <button class="cv-ind-btn pat" id="cv-ind-pat" onclick="cvTogglePat()"><span class="btn-sigla">Pat</span><span class="btn-nome">Padrões</span></button>
@@ -3214,6 +3215,20 @@ let _trendColor = '#FFD700';
 const _trendPaletteColors = ['#FFD700','#42A5F5','#EF5350','#66BB6A','#AB47BC','#FFFFFF'];
 let _trendColorPressTimer = null;
 let _trendLongPressFired = false;
+
+// ── Desenho Livre: múltiplos traços em sequência, dedo não sai da tela ──
+let _freehands = [];          // traços salvos: [{id, pontos:[{t,p}], cor}]
+let _freehandAtual = null;    // traço sendo desenhado agora: {pontos:[{i,p}], cor}
+let _freehandDrawing = false;
+let _freehandLastPxX = 0, _freehandLastPxY = 0; // última posição em pixel — decimação por distância mínima
+const FREEHAND_MIN_DIST_PX = 4;
+let _freehandDeleteTimer = null;
+let _freehandDeletePending = null; // {si}
+let _freehandDeleteStartX = 0, _freehandDeleteStartY = 0;
+let _freehandColor = '#FFD700';
+let _freehandColorPressTimer = null;
+let _freehandLongPressFired = false;
+
 let _grNiveis = [];      // array de níveis: [{preco, tipo}] tipo: 'sup'|'res'
 let _grAlertas = [];     // array de alertas: [{preco, id, habilitado}]
 
@@ -4830,6 +4845,31 @@ if (fibsParaDesenhar.length > 0) {
             });
         }
 
+        // ── Desenho Livre: vários traços em sequência (dedo não sai da tela) ──
+        const freehandsParaMostrar = [
+            ..._freehands.map(fh => ({ pontos: fh.pontos.map(pt => ({ i: grTimeToIndex(pt.t), p: pt.p })), cor: fh.cor })),
+            ...(_freehandAtual ? [{ pontos: _freehandAtual.pontos, cor: _freehandAtual.cor }] : [])
+        ];
+        if (freehandsParaMostrar.length > 0) {
+            const toXIdxFH = absIdx => PAD.left + ((absIdx - startIdx) / totalSlots) * chartW + cW / 2;
+            freehandsParaMostrar.forEach(fh => {
+                if (fh.pontos.length < 2) return;
+                ctx.save();
+                ctx.strokeStyle = fh.cor || '#FFD700';
+                ctx.lineWidth = 2;
+                ctx.lineJoin = 'round';
+                ctx.lineCap = 'round';
+                ctx.setLineDash([]);
+                ctx.beginPath();
+                fh.pontos.forEach((pt, pIdx) => {
+                    const x = toXIdxFH(pt.i), y = toY(pt.p);
+                    if (pIdx === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+                });
+                ctx.stroke();
+                ctx.restore();
+            });
+        }
+
         // ── Bandeiras (Alta/Baixa): mastro + canal paralelo ──────────
         const toXIdx2 = absIdx => PAD.left + ((absIdx - startIdx) / totalSlots) * chartW + cW / 2;
         const desenharBandeira = (m, offset, cor) => {
@@ -5825,6 +5865,45 @@ function grInitTouch() {
                 e.preventDefault();
                 return;
             }
+            // Modo Desenho Livre ativo — vários traços em sequência, dedo não sai da tela
+            if (_indState.freehand) {
+                // Toque perto de um traço existente = candidato a apagar (toque longo, mesmo padrão da Trendline)
+                let foundStroke = null;
+                buscaTraco:
+                for (let si = 0; si < _freehands.length; si++) {
+                    const pts = _freehands[si].pontos;
+                    for (let pi = 0; pi < pts.length - 1; pi++) {
+                        const x1 = grIndexToX(grTimeToIndex(pts[pi].t)), y1 = grLineY(pts[pi].p);
+                        const x2 = grIndexToX(grTimeToIndex(pts[pi + 1].t)), y2 = grLineY(pts[pi + 1].p);
+                        const dx = x2 - x1, dy = y2 - y1;
+                        const lenSq = dx * dx + dy * dy;
+                        let t = lenSq > 0 ? ((ex2 - x1) * dx + (ey2 - y1) * dy) / lenSq : 0;
+                        t = Math.max(0, Math.min(1, t));
+                        const px = x1 + t * dx, py = y1 + t * dy;
+                        if (Math.hypot(ex2 - px, ey2 - py) <= 18) { foundStroke = si; break buscaTraco; }
+                    }
+                }
+                if (foundStroke !== null) {
+                    _freehandDeletePending = { si: foundStroke };
+                    _freehandDeleteStartX = ex2; _freehandDeleteStartY = ey2;
+                    _freehandDeleteTimer = setTimeout(() => {
+                        if (_freehandDeletePending) {
+                            cvApagarFreehand(_freehandDeletePending.si);
+                            _freehandDeletePending = null;
+                        }
+                    }, 500);
+                    e.preventDefault();
+                    return;
+                }
+                // Início de um traço novo
+                const idx0f = grXToIndex(ex2);
+                const price0f = grToPrice(ey2);
+                _freehandDrawing = true;
+                _freehandAtual = { pontos: [{ i: idx0f, p: price0f }], cor: _freehandColor };
+                _freehandLastPxX = ex2; _freehandLastPxY = ey2;
+                e.preventDefault();
+                return;
+            }
             const yInterno = toCanvasY(e.touches[0].clientY);
             const xInterno = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (canvas.width / canvas.getBoundingClientRect().width);
             // Toque no handle C (cotação)
@@ -5985,6 +6064,28 @@ function grInitTouch() {
                 e.preventDefault();
                 return;
             }
+            if (_freehandDeletePending) {
+                const xc = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (canvas.width / canvas.getBoundingClientRect().width);
+                const yc = toCanvasY(e.touches[0].clientY);
+                if (Math.hypot(xc - _freehandDeleteStartX, yc - _freehandDeleteStartY) > 12) {
+                    clearTimeout(_freehandDeleteTimer);
+                    _freehandDeletePending = null;
+                }
+                e.preventDefault();
+                return;
+            }
+            if (_freehandDrawing && _freehandAtual) {
+                const xc = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (canvas.width / canvas.getBoundingClientRect().width);
+                const yc = toCanvasY(e.touches[0].clientY);
+                // Decimação: só acrescenta ponto novo se o dedo andou o mínimo — evita array gigante
+                if (Math.hypot(xc - _freehandLastPxX, yc - _freehandLastPxY) >= FREEHAND_MIN_DIST_PX) {
+                    _freehandAtual.pontos.push({ i: grXToIndex(xc), p: grToPrice(yc) });
+                    _freehandLastPxX = xc; _freehandLastPxY = yc;
+                    grDrawChart();
+                }
+                e.preventDefault();
+                return;
+            }
             if (_grDragLine) {
                 const yInterno = toCanvasY(e.touches[0].clientY);
                 const novoPreco = grToPrice(yInterno);
@@ -6128,6 +6229,26 @@ function grInitTouch() {
             cvSalvarTrendline(novo);
         }
         _trendAtual = null;
+        grDrawChart();
+        return;
+    }
+    if (_freehandDeletePending) {
+        clearTimeout(_freehandDeleteTimer);
+        _freehandDeletePending = null;
+        return;
+    }
+    if (_freehandDrawing) {
+        _freehandDrawing = false;
+        if (_freehandAtual && _freehandAtual.pontos.length >= 2) {
+            const novo = {
+                id: null,
+                pontos: _freehandAtual.pontos.map(pt => ({ t: grIndexToTime(pt.i), p: pt.p })),
+                cor: _freehandAtual.cor
+            };
+            _freehands.push(novo);
+            cvSalvarFreehand(novo);
+        }
+        _freehandAtual = null;
         grDrawChart();
         return;
     }
@@ -6375,6 +6496,7 @@ const _indState = {
     trend:     false,
     bandeira:  false,
     medida:    false,
+    freehand:  false,
     reg:       false,
     patterns:  false,
     vwap:      false,
@@ -8774,6 +8896,50 @@ function cvToggleTrend() {
     _indState.trend = !_indState.trend;
     if (!_indState.trend) { _trendAtual = null; _trendDrawing = false; _trendDragging = null; }
     document.getElementById('cv-ind-tl').classList.toggle('active', _indState.trend);
+    grDrawChart();
+}
+
+function cvToggleFreehand() {
+    if (_freehandLongPressFired) { _freehandLongPressFired = false; return; }
+    _indState.freehand = !_indState.freehand;
+    if (!_indState.freehand) {
+        _freehandAtual = null; _freehandDrawing = false;
+        _freehandDeletePending = null; clearTimeout(_freehandDeleteTimer);
+    }
+    document.getElementById('cv-ind-freehand').classList.toggle('active', _indState.freehand);
+    grDrawChart();
+}
+
+function cvFreehandColorPressStart() {
+    _freehandLongPressFired = false;
+    _freehandColorPressTimer = setTimeout(() => {
+        _freehandLongPressFired = true;
+        const i = _trendPaletteColors.indexOf(_freehandColor);
+        _freehandColor = _trendPaletteColors[(i + 1) % _trendPaletteColors.length];
+        const btn = document.getElementById('cv-ind-freehand');
+        if (btn) btn.style.color = _freehandColor;
+        _freehandColorPressTimer = null;
+        grDrawChart();
+    }, 500);
+}
+
+function cvFreehandColorPressEnd() {
+    if (_freehandColorPressTimer) { clearTimeout(_freehandColorPressTimer); _freehandColorPressTimer = null; }
+}
+
+// Persistência: ainda não existe tabela no banco pra um traço com N pontos
+// (a tabela 'trendlines' só tem colunas fixas t1/p1/t2/p2). Por enquanto os
+// traços vivem só em memória (somem ao recarregar a página). Quando criar a
+// tabela (ex: 'desenhos_livres' com coluna jsonb 'pontos'), é só preencher
+// essas duas funções — o resto do fluxo (touchstart/move/end, render) já
+// está pronto e não precisa mudar.
+async function cvSalvarFreehand(fh) {
+    // TODO: await db.from('desenhos_livres').insert({ ativo_id: _ativoId, pontos: fh.pontos, cor: fh.cor }).select().single();
+}
+
+function cvApagarFreehand(idx) {
+    // TODO: se fh.id existir, apagar também no banco
+    _freehands.splice(idx, 1);
     grDrawChart();
 }
 
