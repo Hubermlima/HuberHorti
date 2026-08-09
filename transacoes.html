@@ -3015,7 +3015,7 @@ function cvAbrirComponentesVisiveis() {
     // Componentes que aparecem na área de preço (exclui os do painel embaixo do gráfico: vd, rsi, vol, macd, atr, obv, stoch)
     const chaveLabel = {
         ema9: 'EMA 9', ema21: 'EMA 21', ema50: 'EMA 50', ema100: 'EMA 100', ema200: 'EMA 200',
-        ema21d: 'EMA 21 Diário', ema21w: 'EMA 21 Semanal',
+        ema21d: 'EMA 21 Diário', ema21w: 'EMA 21 Semanal', mm3s: 'SMA 250/300/350 Semanal',
         chandelier: 'Chandelier Exit', bollinger: 'Bollinger', powerlaw: 'Power Law', vwap: 'VWAP', ichimoku: 'Ichimoku'
     };
     const vals = window._compValores || {};
@@ -3306,7 +3306,7 @@ async function grRenderChart() {
             try {
                 const [resD, resW] = await Promise.all([
                     fetch(`https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=1d&limit=100`).then(r=>r.json()),
-                    fetch(`https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=1w&limit=50`).then(r=>r.json())
+                    fetch(`https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=1w&limit=1000`).then(r=>r.json())
                 ]);
                 _grCandlesD = (Array.isArray(resD) ? resD : []).map(k => ({ t: k[0], c: parseFloat(k[4]) }));
                 _grCandlesW = (Array.isArray(resW) ? resW : []).map(k => ({ t: k[0], c: parseFloat(k[4]) }));
@@ -3597,6 +3597,38 @@ function grDrawCandles(candles, emptyRight) {
                 ctx.fillText(fmtN(ema21wAtual), bX + bW - 4, bY + bH - 3);
                 ctx.textAlign = 'left';
             }
+        }
+
+        // ── SMA 250/300/350 Semanal — sempre as 3 juntas, cores separadas ──
+        // Desenhadas como série histórica (não uma linha reta): cada segmento do
+        // gráfico atual (diário/4h/etc) recebe o valor da média semanal vigente
+        // naquele momento — forma "escada" que acompanha o preço, como no TradingView.
+        if (_indState.mm3s && !_indOculto.mm3s && _grCandlesW.length >= 250) {
+            const closesW3 = _grCandlesW.map(c => c.c);
+            const mm3sDefs = [
+                { period: 250, cor: '#4FC3F7', key: 'mm250s' }, // azul claro
+                { period: 300, cor: '#FFB74D', key: 'mm300s' }, // laranja
+                { period: 350, cor: '#F06292', key: 'mm350s' }  // rosa
+            ];
+            mm3sDefs.forEach(def => {
+                if (closesW3.length < def.period) return; // histórico insuficiente pra essa média ainda
+                const vals = grSMASimples(closesW3, def.period);
+                // Monta a série no espaço de índice do timeframe atual, casando cada
+                // slot visível com o valor semanal vigente naquele instante (two-pointer,
+                // ambos os arrays já vêm em ordem cronológica — O(n), sem laço aninhado).
+                const serieVis = [];
+                let wPtr = 0;
+                for (let i = 0; i < totalSlots; i++) {
+                    const idxGlobal = startIdx + i;
+                    if (idxGlobal < 0 || idxGlobal >= _grAllCandles.length) { serieVis.push(null); continue; }
+                    const tAtual = _grAllCandles[idxGlobal].t;
+                    while (wPtr + 1 < _grCandlesW.length && _grCandlesW[wPtr + 1].t <= tAtual) wPtr++;
+                    serieVis.push(_grCandlesW[wPtr].t <= tAtual ? vals[wPtr] : null);
+                }
+                desenharLinha(serieVis, def.cor, 1.5);
+                const atual = vals[vals.length - 1];
+                if (atual != null) window._compValores[def.key] = { cor: def.cor, valor: fmtN(atual) };
+            });
         }
 
         // ── Chandelier Exit ───────────────────────────────────────────
@@ -6490,6 +6522,7 @@ const _indState = {
     ema200:    true,   // EMA 200 ativa por padrão
     ema21d:    false,  // EMA 21 diário
     ema21w:    false,  // EMA 21 semanal
+    mm3s:      false,  // SMA 250/300/350 semanal
     chandelier: false, // Chandelier Exit
     subInd:    'vd',
 
@@ -7383,6 +7416,7 @@ const _todosComponentes = [
     { key: 'ema200',     label: 'EMA 200',          tipo: 1 },
     { key: 'ema21d',     label: 'EMA 21 Diário',    tipo: 1 },
     { key: 'ema21w',     label: 'EMA 21 Semanal',   tipo: 1 },
+    { key: 'mm3s',       label: 'SMA 250/300/350 Semanal', tipo: 1 },
     { key: 'chandelier', label: 'Chandelier Exit',  tipo: 1 },
     { key: 'bollinger',  label: 'Bollinger',        tipo: 1 },
     { key: 'powerlaw',   label: 'Power Law',        tipo: 1 },
@@ -7410,7 +7444,7 @@ const _todosComponentes = [
 ];
 
 // Locked — apenas os que faz sentido travar
-const _lockavel = ['ema9','ema21','ema50','ema100','ema200','ema21d','ema21w','chandelier','bollinger','powerlaw','fib','alertas','reguaS','reguaA','vwap','vpvr','ichimoku','crosshair','minimapa'];
+const _lockavel = ['ema9','ema21','ema50','ema100','ema200','ema21d','ema21w','mm3s','chandelier','bollinger','powerlaw','fib','alertas','reguaS','reguaA','vwap','vpvr','ichimoku','crosshair','minimapa'];
 
 async function cvCarregarPreferencias() {
     try {
@@ -7603,6 +7637,7 @@ function cvAtivarComponente(key) {
         case 'ema200':    if (!_indState.ema200)    cvToggleMed('ema200');    break;
         case 'ema21d':    if (!_indState.ema21d)    cvToggleMed('ema21d');    break;
         case 'ema21w':    if (!_indState.ema21w)    cvToggleMed('ema21w');    break;
+        case 'mm3s':      if (!_indState.mm3s)      cvToggleMed('mm3s');      break;
         case 'chandelier': if (!_indState.chandelier) cvToggleChandelier();   break;
         case 'bollinger': if (!_indState.bollinger) cvToggleBol();            break;
         case 'powerlaw':  if (!_indState.powerlaw)  cvTogglePowerLaw();       break;
@@ -7635,6 +7670,7 @@ function cvDesativarComponente(key) {
         case 'ema200':    if (_indState.ema200)    cvToggleMed('ema200');    break;
         case 'ema21d':    if (_indState.ema21d)    cvToggleMed('ema21d');    break;
         case 'ema21w':    if (_indState.ema21w)    cvToggleMed('ema21w');    break;
+        case 'mm3s':      if (_indState.mm3s)      cvToggleMed('mm3s');      break;
         case 'chandelier': if (_indState.chandelier) cvToggleChandelier();   break;
         case 'bollinger': if (_indState.bollinger) cvToggleBol();            break;
         case 'powerlaw':  if (_indState.powerlaw)  cvTogglePowerLaw();       break;
@@ -9034,7 +9070,7 @@ function cvToggleMed(key) {
         else chk.classList.remove('on');
     }
     // Atualiza botão Médias — ativo se qualquer EMA ou MTF ligada
-    const anyMed = _indState.ema9 || _indState.ema21 || _indState.ema50 || _indState.ema100 || _indState.ema200 || _indState.ema21d || _indState.ema21w;
+    const anyMed = _indState.ema9 || _indState.ema21 || _indState.ema50 || _indState.ema100 || _indState.ema200 || _indState.ema21d || _indState.ema21w || _indState.mm3s;
     document.getElementById('cv-ind-med').classList.toggle('active', anyMed);
     grDrawChart();
 }
@@ -12787,6 +12823,11 @@ function cvRelPerfRenderLista() {
   <div class="cv-med-item" onclick="cvToggleMed('ema21w')">
     <div class="cv-med-check" style="color:#E91E8C;" id="cv-chk-ema21w"></div>
     <span class="cv-med-lbl" style="color:#E91E8C;">21 Semanal</span>
+  </div>
+  <div style="height:0.5px;background:rgba(255,255,255,0.1);margin:4px 0;"></div>
+  <div class="cv-med-item" onclick="cvToggleMed('mm3s')">
+    <div class="cv-med-check" style="color:#4FC3F7;" id="cv-chk-mm3s"></div>
+    <span class="cv-med-lbl" style="color:#4FC3F7;">SMA 250/300/350 Semanal</span>
   </div>
 </div>
 <!-- Overlay -->
