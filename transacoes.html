@@ -3997,17 +3997,13 @@ if (_grTipoGrafico === 'linha') {
 }
 
 
-        // ── Setas Score RSI+VD+BB ────────────────────────────────────
+        // ── Setas Score RSI+BB (RD = Divergência RSI) ────────────────
         (function() {
             if (candles.length < 5) return;
             // RSI
             const allClosesVis = _grAllCandles.map(c => c.c);
             const rsiAll = grRSI(allClosesVis, 14);
             const rsiOffset = _grAllCandles.length - rsiAll.length;
-            // CVD
-            let cvdAcc = 0;
-            const cvdArr = candles.map(c => { const d = c.bv != null ? 2*c.bv - c.v : 0; cvdAcc += d; return cvdAcc; });
-            const deltaArr = candles.map(c => c.bv != null ? 2*c.bv - c.v : 0);
             // Bollinger 20 — sempre calculado
             const bbPeriod = 20;
             const allBBMidArr = grEMA(allClosesVis, bbPeriod);
@@ -4033,12 +4029,9 @@ for (let i = 3; i < candles.length; i++) {
                 const rsiIdx = (startIdx + i) - rsiOffset;
                 const rsi = rsiIdx >= 0 ? rsiAll[rsiIdx] : null;
                 if (rsi == null) continue;
-
-                const d0 = deltaArr[i], d1 = deltaArr[i-1], d3 = deltaArr[i-3];
-                const cvdVirouCima  = d0 > 0 && d1 > 0 && d3 < 0;
-                const cvdVirouBaixo = d0 < 0 && d1 < 0 && d3 > 0;
-                const divAlta  = c.l < candles[i-2].l && cvdArr[i] > cvdArr[i-2];
-                const divBaixo = c.h > candles[i-2].h && cvdArr[i] < cvdArr[i-2];
+                // RSI de 2 candles atrás — base de comparação pra divergência
+                const rsiIdx2 = (startIdx + i - 2) - rsiOffset;
+                const rsi2 = rsiIdx2 >= 0 ? rsiAll[rsiIdx2] : null;
 
                 // Bollinger — flag: perfurou banda inferior em algum momento recente
                 // reseta quando preço volta acima da média
@@ -4058,62 +4051,62 @@ const bbAlta = !!window._bbFlagAlta;
                 if (bbMidI != null && c.c < bbMidI) window._bbFlagBaixa = false;
                 const bbBaixa = !!window._bbFlagBaixa;
 
-                // ── Score Alta (RSI = portão, VD+BB = score) ─────────
-                const vdAlta = cvdVirouCima || divAlta;
+                // Divergência de RSI de verdade: preço faz mínima mais baixa mas RSI faz
+                // mínima mais alta (alta) — ou preço faz máxima mais alta mas RSI faz
+                // máxima mais baixa (baixa). É o "D" do DIVAP, comparando com 2 candles atrás.
+                const rsiDivAlta  = rsi2 != null && c.l < candles[i-2].l && rsi > rsi2;
+                const rsiDivBaixa = rsi2 != null && c.h > candles[i-2].h && rsi < rsi2;
+
+                // ── Score Alta (RSI extremo = portão, RSI div+BB = score 0-2) ─────
                 const rsiBaixo = rsi < 35;
 
                 if (rsiBaixo) {
-                    let scoreAlta = 0;
-                    if (vdAlta) scoreAlta++;
-                    if (bbAlta) scoreAlta++;
+                    const condsAlta = [];
+                    if (rsiDivAlta) condsAlta.push('RD');
+                    if (bbAlta) condsAlta.push('BB');
+                    const scoreAlta = condsAlta.length;
 
+                    const arrowY = toY(c.l) + 14;
+                    ctx.textAlign = 'center';
                     if (scoreAlta === 2) {
                         // Score 2 — verde forte, sem texto
-                        const arrowY = toY(c.l) + 14;
-                        ctx.textAlign = 'center';
                         ctx.fillStyle = '#00C853';
                         ctx.font = 'bold 15px -apple-system';
                         ctx.fillText('↑', x, arrowY);
                     } else if (scoreAlta === 1) {
-                        // Score 1 — verde claro + etiqueta de qual condição disparou
-                        const arrowY = toY(c.l) + 14;
-                        ctx.textAlign = 'center';
+                        // Score 1 — verde claro + etiqueta da condição
                         ctx.fillStyle = '#A5D6A7';
                         ctx.font = 'bold 13px -apple-system';
                         ctx.fillText('↑', x, arrowY);
-                        const lbla = vdAlta ? 'VD' : 'BB';
                         ctx.font = '8px -apple-system';
-                        ctx.fillText(lbla, x, arrowY + 10);
+                        ctx.fillText(condsAlta[0], x, arrowY + 10);
                     }
                     // Score 0 → nada
                 }
 
-                // ── Score Baixa (RSI = portão, VD+BB = score) ────────
-                const vdBaixa = cvdVirouBaixo || divBaixo;
+                // ── Score Baixa (RSI extremo = portão, RSI div+BB = score 0-2) ────
                 const rsiAlto = rsi > 65;
 
                 if (rsiAlto) {
-                    let scoreBaixa = 0;
-                    if (vdBaixa) scoreBaixa++;
-                    if (bbBaixa) scoreBaixa++;
+                    const condsBaixa = [];
+                    if (rsiDivBaixa) condsBaixa.push('RD');
+                    if (bbBaixa) condsBaixa.push('BB');
+                    const scoreBaixa = condsBaixa.length;
 
+                    const arrowY = toY(c.h) - 6;
+                    ctx.textAlign = 'center';
                     if (scoreBaixa === 2) {
                         // Score 2 — vermelho forte, sem texto
-                        const arrowY = toY(c.h) - 6;
-                        ctx.textAlign = 'center';
                         ctx.fillStyle = '#D50000';
                         ctx.font = 'bold 15px -apple-system';
                         ctx.fillText('↓', x, arrowY);
                     } else if (scoreBaixa === 1) {
-                        // Score 1 — vermelho claro + inicial
-                        const arrowY = toY(c.h) - 6;
-                        ctx.textAlign = 'center';
+                        // Score 1 — vermelho claro + etiqueta da condição
                         ctx.fillStyle = '#EF9A9A';
                         ctx.font = 'bold 13px -apple-system';
                         ctx.fillText('↓', x, arrowY);
-                        const lblb = vdBaixa ? 'VD' : 'BB';
                         ctx.font = '8px -apple-system';
-                        ctx.fillText(lblb, x, arrowY - 10);
+                        ctx.fillText(condsBaixa[0], x, arrowY - 10);
                     }
                     // Score 0 → nada
                 }
