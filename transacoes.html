@@ -1266,7 +1266,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <button class="cv-ind-btn medida" id="cv-ind-medida" onclick="cvToggleMedida()"><span class="btn-sigla"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="6" y1="4" x2="18" y2="4"/><line x1="12" y1="4" x2="12" y2="20"/><line x1="6" y1="20" x2="18" y2="20"/></svg></span><span class="btn-nome">Medida</span></button>
       <button class="cv-ind-btn pat" id="cv-ind-pat" onclick="cvTogglePat()"><span class="btn-sigla">Pat</span><span class="btn-nome">Padrões</span></button>
       <button class="cv-ind-btn atr" id="cv-ind-atr" onclick="cvToggleSubInd('atr')">
-<span class="btn-sigla">ATR</span><span class="btn-nome">Volatilidade</span></button>
+<span class="btn-sigla">Vol%</span><span class="btn-nome">Volatilidade</span></button>
       <button class="cv-ind-btn" id="cv-ind-chandelier" onclick="cvToggleChandelier()"><span class="btn-sigla">CE</span><span class="btn-nome">Chandelier</span></button>
       <button class="cv-ind-btn vwap" id="cv-ind-vwap" onclick="cvToggleInd('vwap')"><span class="btn-sigla">VWAP</span><span class="btn-nome">Preço por Volume</span></button>
       <button class="cv-ind-btn vpvr" id="cv-ind-vpvr" onclick="cvToggleInd('vpvr')"><span class="btn-sigla">VPVR</span><span class="btn-nome">Perfil de Volume</span></button>
@@ -5429,30 +5429,82 @@ if (fibsParaDesenhar.length > 0) {
                 const fmtV = v => v >= 1000 ? (v/1000).toFixed(0)+'K' : v.toFixed(0);
                 ctx.fillText(fmtV(maxVol), PAD.left - 3, panY + panPad.top + 8);
             } else if (_indState.subInd === 'atr') {
-
+                // Volatilidade normalizada: ATR(14) como % do preço, não em dólares brutos —
+                // assim as faixas de referência continuam válidas mesmo com o preço mudando
+                // muito ao longo de janelas longas (senão o valor "sobe" só porque o preço subiu).
                 const atrData = grATR(_grAllCandles, 14);
                 const atrOff = _grAllCandles.length - 1 - atrData.length;
+                const atrPctAll = atrData.map((v, i) => {
+                    const c = _grAllCandles[i + atrOff + 1];
+                    return c && c.c ? (v / c.c) * 100 : null;
+                });
                 const atrVis = [];
                 for (let i = 0; i < visible; i++) {
                     const idx = (startIdx + i) - atrOff - 1;
-                    atrVis.push(idx >= 0 && idx < atrData.length ? atrData[idx] : null);
+                    atrVis.push(idx >= 0 && idx < atrPctAll.length ? atrPctAll[idx] : null);
                 }
-                const maxAtr = Math.max(...atrVis.filter(v=>v!==null)) || 1;
+                // Faixas de referência por percentil, calculadas sobre todo o histórico
+                // disponível (não só a janela visível) — assim elas não "pulam" ao rolar o gráfico.
+                const percentil = (arr, p) => {
+                    const s = arr.filter(v => v != null).slice().sort((a,b)=>a-b);
+                    if (s.length === 0) return null;
+                    const idx = Math.min(s.length - 1, Math.floor(p * s.length));
+                    return s[idx];
+                };
+                const limAlta = percentil(atrPctAll, 0.80);
+                const limMedia = percentil(atrPctAll, 0.50);
+                const limBaixa = percentil(atrPctAll, 0.20);
+
+                const maxVisAtr = Math.max(...atrVis.filter(v=>v!==null), limAlta || 0) || 1;
+                const maxAtr = maxVisAtr * 1.08; // folga pra faixa vermelha não colar no teto
                 const toAtrY = v => panY + panPad.top + panChartH - (v/maxAtr) * panChartH;
-                // Linha ATR
-                ctx.strokeStyle = '#FF8A65'; ctx.lineWidth = 1.5; ctx.setLineDash([]);
+
+                // Faixas horizontais (vermelha/laranja/verde)
+                const desenharFaixa = (valor, cor, dash) => {
+                    if (valor == null) return;
+                    const y = toAtrY(valor);
+                    ctx.save();
+                    ctx.strokeStyle = cor; ctx.lineWidth = 1; ctx.setLineDash(dash);
+                    ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(PAD.left + panChartW, y); ctx.stroke();
+                    ctx.restore();
+                };
+                desenharFaixa(limAlta,  '#EF5350', [5,3]);
+                desenharFaixa(limMedia, '#FFB74D', [2,2]);
+                desenharFaixa(limBaixa, '#66BB6A', [5,3]);
+
+                // Linha da volatilidade
+                ctx.strokeStyle = '#4FC3F7'; ctx.lineWidth = 1.5; ctx.setLineDash([]);
                 ctx.beginPath(); let as = false;
                 atrVis.forEach((v,i) => {
-                    if(!v){as=false;return;}
+                    if(v==null){as=false;return;}
                     const x = PAD.left+(i/totalSlots)*panChartW+cW/2;
                     if(!as){ctx.moveTo(x,toAtrY(v));as=true;}else ctx.lineTo(x,toAtrY(v));
                 }); ctx.stroke();
+
+                // Marcadores de compressão — bolinha laranja nos fundos locais abaixo da
+                // faixa verde (mínima entre vizinhos). Historicamente antecede movimentos fortes.
+                if (limBaixa != null) {
+                    atrVis.forEach((v, i) => {
+                        if (v == null) return;
+                        if (v >= limBaixa) return;
+                        const prev = i > 0 ? atrVis[i-1] : null;
+                        const next = i < atrVis.length-1 ? atrVis[i+1] : null;
+                        const ehFundo = (prev == null || v <= prev) && (next == null || v <= next);
+                        if (!ehFundo) return;
+                        const x = PAD.left+(i/totalSlots)*panChartW+cW/2;
+                        ctx.beginPath();
+                        ctx.arc(x, toAtrY(v), 4, 0, Math.PI*2);
+                        ctx.fillStyle = '#FFA726';
+                        ctx.fill();
+                    });
+                }
+
                 // Valor atual
                 const lastAtr = atrVis.filter(v=>v!==null).pop();
                 ctx.font='bold 9px -apple-system'; ctx.textAlign='left';
-                ctx.fillStyle='#FF8A65';
-                ctx.fillText('ATR(14)', PAD.left+4, panY+panPad.top+10);
-                if (lastAtr) { ctx.fillStyle='#FFFFFF'; ctx.fillText(fmtN(lastAtr), PAD.left+52, panY+panPad.top+10); }
+                ctx.fillStyle='#4FC3F7';
+                ctx.fillText('Volatilidade (ATR%)', PAD.left+4, panY+panPad.top+10);
+                if (lastAtr != null) { ctx.fillStyle='#FFFFFF'; ctx.fillText(lastAtr.toFixed(2)+'%', PAD.left+92, panY+panPad.top+10); }
             } else if (_indState.subInd === 'topos') {
                 const candles = _grAllCandles;
                 const swings = [];
