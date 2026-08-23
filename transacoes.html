@@ -11779,6 +11779,11 @@ function odCotacaoInput(raw) {
     if (qtd > 0 || parseVal(document.getElementById('od-valor-investido') ? document.getElementById('od-valor-investido').value : '') > 0) {
         calcularDCA();
     }
+    // Redesenha a aba Trades na hora (P&L/R-R passam a simular com essa cotação)
+    const tradesContainer = document.getElementById('od-trades-list');
+    if (tradesContainer && _odTradesCache.length > 0) {
+        tradesContainer.innerHTML = _odTradesCache.map(odRenderTradeRow).join('');
+    }
 }
 
 function odValorInvestidoInput(raw) {
@@ -11808,7 +11813,8 @@ function limparBoleta() {
     if (oi) oi.value = '';
     const liqCb = document.getElementById('od-liquidacao-toggle');
     if (liqCb) { liqCb.checked = false; liqCb.style.background = '#3A3A3C'; }
-    // Reset cotação base para cotação atual
+    // Reset cotação base para cotação atual (também limpa a simulação usada pela aba Trades)
+    window._cotacaoProjecao = 0;
     const cotEl = document.getElementById('nova-cotacao');
     if (cotEl) cotEl.value = _precoAtual.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
     // Zera todos os campos de Nova Posição e Eficiência
@@ -11824,6 +11830,11 @@ function limparBoleta() {
     odCalcularLucroAtual();
     odCalcularExposicaoAtual();
     odCalcularBreakEven();
+    // Redesenha a aba Trades já sem a simulação de cotação
+    const tradesContainerReset = document.getElementById('od-trades-list');
+    if (tradesContainerReset && _odTradesCache.length > 0) {
+        tradesContainerReset.innerHTML = _odTradesCache.map(odRenderTradeRow).join('');
+    }
 }
 
 // ── Aba Trades (Fase 1 — leitura) ────────────────────────────────────
@@ -11849,6 +11860,14 @@ async function odCarregarTrades() {
         return;
     }
     container.innerHTML = _odTradesCache.map(odRenderTradeRow).join('');
+}
+
+// Cotação usada pela aba Trades pra calcular P&L/R-R: se o usuário editou a
+// COTAÇÃO BASE na aba Mercado (window._cotacaoProjecao), usa esse valor
+// simulado; senão cai pro preço ao vivo (_precoAtual). Isso permite ao
+// usuário simular lucros/prejuízos em diferentes cenários de preço.
+function odCotacaoBaseTrades() {
+    return (window._cotacaoProjecao > 0) ? window._cotacaoProjecao : _precoAtual;
 }
 
 function odCalcularRR(t) {
@@ -11924,6 +11943,7 @@ if (fonteData) {
     }
 }
 
+    const _precoBase = odCotacaoBaseTrades();
     if (calc !== null) {
         if (t.operacional) {
             const qtd = odQtdPrincipal(t.tipo);
@@ -11934,9 +11954,9 @@ if (fonteData) {
                     const lucroGarantidoPctUSD = (calc.lucroGarantido / calc.pm) * 100;
                     const potencialPctUSD = (calc.retorno / calc.pm) * 100;
                     linhas += linhaMetrica('Lucro garantido', `+${lucroGarantidoUSD.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})} USD (+${lucroGarantidoPctUSD.toFixed(2)}%)`, '#16A34A', false);
-                    if (_precoAtual > 0) {
-                        const pnlUSD = (calc.dir === 'short' ? (calc.pm - _precoAtual) : (_precoAtual - calc.pm)) * qtd;
-                        const pnlPctUSD = ((calc.dir === 'short' ? (calc.pm - _precoAtual) : (_precoAtual - calc.pm)) / calc.pm) * 100;
+                    if (_precoBase > 0) {
+                        const pnlUSD = (calc.dir === 'short' ? (calc.pm - _precoBase) : (_precoBase - calc.pm)) * qtd;
+                        const pnlPctUSD = ((calc.dir === 'short' ? (calc.pm - _precoBase) : (_precoBase - calc.pm)) / calc.pm) * 100;
                         const pnlCor = pnlUSD >= 0 ? '#16A34A' : '#DC2626';
                         linhas += linhaMetrica('P&L atual', `${pnlUSD >= 0 ? '+' : ''}${pnlUSD.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})} USD (${pnlPctUSD >= 0 ? '+' : ''}${pnlPctUSD.toFixed(2)}%)`, pnlCor, true);
                     }
@@ -11948,11 +11968,11 @@ if (fonteData) {
                 const retornoPctUSD = (calc.retorno / calc.pm) * 100;
                 linhas += linhaMetrica('Risco', `-${riscoUSD.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})} USD (-${riscoPctUSD.toFixed(2)}%)`, '#DC2626', false);
                 linhas += linhaMetrica('Retorno', `+${retornoUSD.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})} USD (+${retornoPctUSD.toFixed(2)}%)`, '#16A34A', false);
-                if (_precoAtual > 0) {
-                    const pnlUSD = (calc.dir === 'short' ? (calc.pm - _precoAtual) : (_precoAtual - calc.pm)) * qtd;
+                if (_precoBase > 0) {
+                    const pnlUSD = (calc.dir === 'short' ? (calc.pm - _precoBase) : (_precoBase - calc.pm)) * qtd;
                     const pnlCor = pnlUSD >= 0 ? '#16A34A' : '#DC2626';
                     linhas += linhaMetrica('P&L atual', `${pnlUSD >= 0 ? '+' : ''}${pnlUSD.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})} USD`, pnlCor, true);
-                    const rrAtual = (calc.dir === 'short' ? (calc.pm - _precoAtual) : (_precoAtual - calc.pm)) / calc.risco;
+                    const rrAtual = (calc.dir === 'short' ? (calc.pm - _precoBase) : (_precoBase - calc.pm)) / calc.risco;
                     const rrAtualCor = rrAtual >= 0 ? '#16A34A' : '#DC2626';
                     const pctMov = calc.rr > 0 ? (rrAtual / calc.rr) * 100 : 0;
                     linhas += linhaMetrica('R/R atual', `${rrAtual >= 0 ? '+' : ''}${rrAtual.toFixed(2)}R · ${setaSvg(pctMov >= 0, rrAtualCor)}${pctMov >= 0 ? '+' : ''}${pctMov.toFixed(1)}%`, rrAtualCor, false);
@@ -11964,8 +11984,8 @@ if (fonteData) {
                 const lucroGarantidoPct = (calc.lucroGarantido / calc.pm) * 100;
                 const potencialPct = (calc.retorno / calc.pm) * 100;
                 linhas += linhaMetrica('Lucro garantido', `+${lucroGarantidoPct.toFixed(1)}%`, '#16A34A', false);
-                if (_precoAtual > 0) {
-                    const pnlPct = ((calc.dir === 'short' ? (calc.pm - _precoAtual) : (_precoAtual - calc.pm)) / calc.pm) * 100;
+                if (_precoBase > 0) {
+                    const pnlPct = ((calc.dir === 'short' ? (calc.pm - _precoBase) : (_precoBase - calc.pm)) / calc.pm) * 100;
                     const pnlCor = pnlPct >= 0 ? '#16A34A' : '#DC2626';
                     linhas += linhaMetrica('P&L atual', `${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`, pnlCor, true);
                 }
@@ -11975,11 +11995,11 @@ if (fonteData) {
             const retornoPct = (calc.retorno / calc.pm) * 100;
             linhas += linhaMetrica('Risco', `-${riscoPct.toFixed(1)}%`, '#DC2626', false);
             linhas += linhaMetrica('Retorno', `+${retornoPct.toFixed(1)}%`, '#16A34A', false);
-            if (_precoAtual > 0) {
-                const pnlPct = ((calc.dir === 'short' ? (calc.pm - _precoAtual) : (_precoAtual - calc.pm)) / calc.pm) * 100;
+            if (_precoBase > 0) {
+                const pnlPct = ((calc.dir === 'short' ? (calc.pm - _precoBase) : (_precoBase - calc.pm)) / calc.pm) * 100;
                 const pnlCor = pnlPct >= 0 ? '#16A34A' : '#DC2626';
                 linhas += linhaMetrica('P&L atual', `${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`, pnlCor, true);
-                const rrAtual = (calc.dir === 'short' ? (calc.pm - _precoAtual) : (_precoAtual - calc.pm)) / calc.risco;
+                const rrAtual = (calc.dir === 'short' ? (calc.pm - _precoBase) : (_precoBase - calc.pm)) / calc.risco;
                 const rrAtualCor = rrAtual >= 0 ? '#16A34A' : '#DC2626';
                 const pctMov = calc.rr > 0 ? (rrAtual / calc.rr) * 100 : 0;
                 linhas += linhaMetrica('R/R atual', `${rrAtual >= 0 ? '+' : ''}${rrAtual.toFixed(2)}R · ${setaSvg(pctMov >= 0, rrAtualCor)}${pctMov >= 0 ? '+' : ''}${pctMov.toFixed(1)}%`, rrAtualCor, false);
