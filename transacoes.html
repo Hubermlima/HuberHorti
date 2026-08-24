@@ -1622,13 +1622,17 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <svg class="cv-menu-chevron" id="cv-menu-chev-trade" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8E8E93" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
     </button>
     <div class="cv-menu-submenu" id="cv-menu-group-trade">
-      <button class="cv-menu-item cv-menu-subitem" onclick="cvFecharMenu();cvIniciarNovoTrade();">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        <span class="cv-menu-item-label">Novo</span>
-      </button>
-      <button class="cv-menu-item cv-menu-subitem" onclick="cvFecharMenu();cvAbrirGravarTrade();">
+      <button class="cv-menu-item cv-menu-subitem" onclick="cvFecharMenu();cvSelecionarModo(0);">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12l2 2 4-4"/><path d="M20 6a2 2 0 00-2-2H6a2 2 0 002 2v12a2 2 0 002 2h12a2 2 0 002-2V6z"/></svg>
-        <span class="cv-menu-item-label">Gerenciar</span>
+        <span class="cv-menu-item-label">Hedge A</span>
+      </button>
+      <button class="cv-menu-item cv-menu-subitem" onclick="cvFecharMenu();cvSelecionarModo(1);">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12l2 2 4-4"/><path d="M20 6a2 2 0 00-2-2H6a2 2 0 002 2v12a2 2 0 002 2h12a2 2 0 002-2V6z"/></svg>
+        <span class="cv-menu-item-label">Hedge B</span>
+      </button>
+      <button class="cv-menu-item cv-menu-subitem" onclick="cvFecharMenu();cvSelecionarModo(2);">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        <span class="cv-menu-item-label">Nova Simulação</span>
       </button>
     </div>
     <div class="cv-menu-divider"></div>
@@ -2254,9 +2258,9 @@ _precoAtual = 0;
 
 // ── Toggle Liquidação Total ──────────────────────────────────────
 // "Novo Setup" no menu — sempre inicia um trade do zero, descartando
-// qualquer ambiente carregado anteriormente (Principal ou Simulação).
-// "Novo Trade" no menu — função única: reseta o ambiente e libera as réguas
-// no gráfico (PM, Alvo, Stop) pra serem arrastadas. Não abre nenhum modal.
+// qualquer ambiente carregado anteriormente (Hedge A, Hedge B ou Simulação).
+// Reseta o ambiente e libera as réguas no gráfico (PM, Alvo, Stop) pra serem
+// arrastadas. Não abre nenhum modal sozinha — quem chama decide se abre.
 function cvIniciarNovoTrade() {
     _cvTradeId = null;
     _cvTradeTipo = 'long';
@@ -2274,6 +2278,50 @@ function cvIniciarNovoTrade() {
     const btnReg = document.getElementById('cv-ind-reg');
     if (btnReg) btnReg.classList.add('active');
     grDrawChart();
+}
+
+// Item de menu "Selecionar Modo" (Hedge A / Hedge B / Nova Simulação) —
+// atalho direto pra trocar de contexto de trade sem passar por telas
+// intermediárias:
+// - Se já existe um trade salvo nesse modo pra esse ativo, carrega ele
+//   (travado pra edição seguindo a mesma regra de sempre: PM ao vivo,
+//   Tipo/Modo não editáveis).
+// - Se ainda não existe, abre um trade novo já pré-selecionado nesse modo
+//   (Tipo pré-preenchido com um palpite razoável — Long se já existir
+//   posição comprada aberta, Short caso contrário — mas o usuário ainda
+//   pode ajustar tudo antes de gravar, já que o modal só trava de fato
+//   quando ele confirma o Modo pela segunda vez ou aperta Gravar).
+async function cvSelecionarModo(modo) {
+    if (modo === 2) {
+        // Simulação nova sempre começa do zero, sem tentar reaproveitar
+        // nenhuma simulação anterior (podem existir várias ao mesmo tempo).
+        cvIniciarNovoTrade();
+        await cvAbrirGravarTrade();
+        return;
+    }
+    const { data: existente, error } = await db.from('trades')
+        .select('*')
+        .eq('ativo_id', _ativoId)
+        .eq('modo', modo)
+        .maybeSingle();
+    if (error) {
+        alert('Erro ao buscar trade: ' + error.message);
+        return;
+    }
+    if (existente) {
+        _cvTradeId = existente.id;
+        _cvTradeTipo = existente.tipo || 'long';
+        _cvTradeModo = modo;
+        window._cvTradeCache = existente;
+        _grPm   = parseFloat(existente.pm) || 0;
+        _grStop = parseFloat(existente.stop) || 0;
+        _regAtual = { p1: _grPm, p2: parseFloat(existente.alvo) || 0 };
+        await cvAbrirGravarTrade();
+    } else {
+        cvIniciarNovoTrade();
+        await cvAbrirGravarTrade();
+        cvTradeSetModo(modo);
+    }
 }
 
 function cvStopMascara(el) {
