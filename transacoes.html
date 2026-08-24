@@ -12015,92 +12015,69 @@ function odRenderComparacaoHedges() {
 
     const deltaA = calcA.dir === 'short' ? (calcA.pm - _precoBase) : (_precoBase - calcA.pm);
     const deltaB = calcB.dir === 'short' ? (calcB.pm - _precoBase) : (_precoBase - calcB.pm);
-    const pnlPctA = (deltaA / calcA.pm) * 100;
-    const pnlPctB = (deltaB / calcB.pm) * 100;
     const pnlUsdA = deltaA * qtdA;
     const pnlUsdB = deltaB * qtdB;
 
-    const distA = calcA.stop > 0 ? Math.abs((calcA.stop - _precoBase) / _precoBase) * 100 : null;
-    const distB = calcB.stop > 0 ? Math.abs((calcB.stop - _precoBase) / _precoBase) * 100 : null;
-
-    // R múltiplo ao vivo — quanto do risco original já foi ganho/perdido em
-    // unidades de R. É o critério certo pra comparar trades com risco
-    // planejado diferente (P&L% bruto favorece injustamente quem arriscou
-    // menos). Só é calculável quando o trade não está "Sem risco" (nesse
-    // estado o risco original de referência deixa de existir) — nesse caso
-    // cai para P&L% só como desempate, já que é um estado qualitativamente
-    // melhor (não há mais cenário de perda) que não cabe bem numa escala R.
-    const rAtualA = !calcA.riskFree ? (deltaA / calcA.risco) : null;
-    const rAtualB = !calcB.riskFree ? (deltaB / calcB.risco) : null;
-
-    let vencedor;
-    if (rAtualA !== null && rAtualB !== null) {
-        vencedor = rAtualA >= rAtualB ? 'Hedge A' : 'Hedge B';
-    } else if (calcA.riskFree && !calcB.riskFree) {
-        vencedor = 'Hedge A'; // sem risco bate qualquer coisa que ainda pode perder
-    } else if (calcB.riskFree && !calcA.riskFree) {
-        vencedor = 'Hedge B';
-    } else {
-        vencedor = pnlPctA >= pnlPctB ? 'Hedge A' : 'Hedge B'; // os dois sem risco: desempate por P&L%
-    }
+    // Vencedor = quem tem mais lucro em USD, ponto final — lucro é o que
+    // importa de verdade, não a razão risco/retorno de cada um.
+    const vencedor = pnlUsdA >= pnlUsdB ? 'Hedge A' : 'Hedge B';
     const netUsd = pnlUsdA + pnlUsdB;
     const netCor = netUsd >= 0 ? '#16A34A' : '#DC2626';
+    const fmtUsd = v => `${v>=0?'+':''}${v.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})} USD`;
 
-    const fmtR = r => r === null ? 'Sem risco' : `${r>=0?'+':''}${r.toFixed(2)}R`;
-
-    const linha = (lbl, valA, valB, corA, corB) => `<div style="display:flex;align-items:center;padding:7px 0;border-bottom:0.5px solid rgba(60,60,67,0.1);">
-        <span style="color:#8E8E93;font-size:11px;flex:1.1;">${lbl}</span>
-        <span style="color:${corA};font-weight:700;font-size:13px;flex:1;text-align:center;">${valA}</span>
-        <span style="color:${corB};font-weight:700;font-size:13px;flex:1;text-align:center;">${valB}</span>
+    // ── Gráfico de barras verticais — P&L em USD, Hedge A vs Hedge B ──
+    const maxAbsPnl = Math.max(Math.abs(pnlUsdA), Math.abs(pnlUsdB), 1);
+    const meiaAltura = 56; // px máximos pra cada lado (positivo ou negativo) do eixo zero
+    const odColunaPnl = (lbl, pnl) => {
+        const cor = pnl >= 0 ? '#16A34A' : '#DC2626';
+        const barPx = Math.max(4, (Math.abs(pnl) / maxAbsPnl) * meiaAltura);
+        const barraHtml = pnl >= 0
+            ? `<div style="position:absolute;left:3px;right:3px;bottom:${meiaAltura}px;height:${barPx}px;background:${cor};border-radius:5px 5px 0 0;"></div>`
+            : `<div style="position:absolute;left:3px;right:3px;top:${meiaAltura}px;height:${barPx}px;background:${cor};border-radius:0 0 5px 5px;"></div>`;
+        return `<div style="display:flex;flex-direction:column;align-items:center;flex:1;">
+            <span style="font-size:12px;font-weight:700;color:${cor};margin-bottom:6px;white-space:nowrap;">${fmtUsd(pnl)}</span>
+            <div style="position:relative;width:44px;height:${meiaAltura*2}px;">
+                <div style="position:absolute;left:0;right:0;top:${meiaAltura}px;height:1px;background:#C7C7CC;"></div>
+                ${barraHtml}
+            </div>
+            <span style="font-size:11px;font-weight:700;color:#8E8E93;margin-top:6px;">${lbl}</span>
+        </div>`;
+    };
+    const graficoPnl = `<div style="display:flex;gap:28px;justify-content:center;margin:6px 0 20px 0;">
+        ${odColunaPnl('Hedge A', pnlUsdA)}
+        ${odColunaPnl('Hedge B', pnlUsdB)}
     </div>`;
 
-    // Gráfico de barras divergente (tipo "tornado"): cada Hedge é uma barra
-    // que cresce a partir do centro (zero) pra direita (ganho) ou esquerda
-    // (perda), em unidades de R — dá pra "bater o olho" e ver quem está
-    // melhor sem precisar ler número nenhum.
-    const maxAbsR = Math.max(Math.abs(rAtualA || 0), Math.abs(rAtualB || 0), 0.1);
-    const odBarraR = (lbl, dirLbl, rVal, pnlUsd) => {
-        const semRisco = rVal === null;
-        const pct = semRisco ? 45 : Math.min(45, (Math.abs(rVal) / maxAbsR) * 45);
-        const positivo = semRisco || rVal >= 0;
-        const cor = positivo ? '#16A34A' : '#DC2626';
-        const corClara = positivo ? 'rgba(22,163,74,0.35)' : 'rgba(220,38,38,0.35)';
-        const barraHtml = positivo
-            ? `<div style="position:absolute;left:50%;top:0;bottom:0;width:${pct}%;background:${corClara};border-radius:0 7px 7px 0;"></div>`
-            : `<div style="position:absolute;right:50%;top:0;bottom:0;width:${pct}%;background:${corClara};border-radius:7px 0 0 7px;"></div>`;
-        const usdLabel = `${pnlUsd>=0?'+':''}${pnlUsd.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})} USD`;
-        return `<div style="margin-bottom:9px;">
-            <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">
-                <span style="font-size:11px;font-weight:700;color:#8E8E93;">${lbl} · ${dirLbl}</span>
-                <span style="font-size:12.5px;font-weight:700;color:${cor};">${fmtR(rVal)} <span style="color:#8E8E93;font-weight:600;">(${usdLabel})</span></span>
-            </div>
-            <div style="position:relative;height:16px;background:#E5E5EA;border-radius:8px;overflow:hidden;">
-                <div style="position:absolute;left:50%;top:0;bottom:0;width:1px;background:#B0B0B5;z-index:1;"></div>
-                ${barraHtml}
+    // ── Barra Stop → Alvo em escala 0-100% — seta colorida dinamicamente ──
+    const odBarraStopAlvo = (lbl, calc) => {
+        if (!calc.stop || !calc.alvo || calc.stop === calc.alvo) return '';
+        let posPct = ((_precoBase - calc.stop) / (calc.alvo - calc.stop)) * 100;
+        posPct = Math.max(0, Math.min(100, posPct));
+        const t = posPct / 100;
+        const cor = `rgb(${Math.round(220+(22-220)*t)},${Math.round(38+(163-38)*t)},${Math.round(38+(74-38)*t)})`;
+        return `<div style="margin-bottom:22px;">
+            <div style="font-size:11px;font-weight:700;color:#8E8E93;margin-bottom:26px;">${lbl}</div>
+            <div style="position:relative;height:8px;">
+                <span style="position:absolute;left:${posPct}%;top:-30px;font-size:11.5px;font-weight:700;color:${cor};transform:translateX(-50%);white-space:nowrap;">${posPct.toFixed(1)}%</span>
+                <span style="position:absolute;left:${posPct}%;top:-18px;font-size:17px;font-weight:900;line-height:1;color:${cor};transform:translateX(-50%);">^</span>
+                <div style="position:absolute;top:0;left:0;right:0;height:8px;border-radius:4px;background:linear-gradient(to right,#DC2626,#F5B942,#16A34A);"></div>
+                <span style="position:absolute;left:0;top:14px;font-size:10px;font-weight:700;color:#8E8E93;">Stop</span>
+                <span style="position:absolute;right:0;top:14px;font-size:10px;font-weight:700;color:#8E8E93;">Alvo</span>
             </div>
         </div>`;
     };
-    const dirLabelA = (hedgeA.tipo || 'long').toLowerCase() === 'short' ? 'Short' : 'Long';
-    const dirLabelB = (hedgeB.tipo || 'long').toLowerCase() === 'short' ? 'Short' : 'Long';
-    const graficoBarras = odBarraR('Hedge A', dirLabelA, rAtualA, pnlUsdA) + odBarraR('Hedge B', dirLabelB, rAtualB, pnlUsdB);
 
-    return `<div style="background:#F5F5F7;border-radius:14px;padding:14px 16px;margin-bottom:14px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+    return `<div style="background:#F5F5F7;border-radius:14px;padding:16px;margin-bottom:20px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
             <span style="font-weight:700;font-size:14px;color:#000000;">Comparação Hedge A × B</span>
             <span style="font-weight:700;font-size:12px;color:#16A34A;">Vencendo: ${vencedor}</span>
         </div>
-        ${graficoBarras}
-        <div style="display:flex;align-items:center;padding-bottom:6px;padding-top:4px;">
-            <span style="flex:1.1;"></span>
-            <span style="flex:1;text-align:center;font-size:11px;color:#8E8E93;font-weight:700;">Hedge A</span>
-            <span style="flex:1;text-align:center;font-size:11px;color:#8E8E93;font-weight:700;">Hedge B</span>
-        </div>
-        ${linha('P&L %', `${pnlPctA>=0?'+':''}${pnlPctA.toFixed(2)}%`, `${pnlPctB>=0?'+':''}${pnlPctB.toFixed(2)}%`, pnlPctA>=0?'#16A34A':'#DC2626', pnlPctB>=0?'#16A34A':'#DC2626')}
-        ${linha('Dist. até Stop', distA!==null?distA.toFixed(2)+'%':'—', distB!==null?distB.toFixed(2)+'%':'—', '#1C1C1E', '#1C1C1E')}
-        ${linha('R/R planejado', calcA.riskFree?'Sem risco':calcA.rr.toFixed(2)+'R', calcB.riskFree?'Sem risco':calcB.rr.toFixed(2)+'R', '#1C1C1E', '#1C1C1E')}
+        ${graficoPnl}
+        ${odBarraStopAlvo('Hedge A', calcA)}
+        ${odBarraStopAlvo('Hedge B', calcB)}
         <div style="display:flex;align-items:center;justify-content:space-between;padding-top:9px;margin-top:3px;border-top:0.5px solid rgba(60,60,67,0.15);">
             <span style="color:#8E8E93;font-size:12px;">P&amp;L líquido combinado</span>
-            <span style="color:${netCor};font-weight:700;font-size:15px;">${netUsd>=0?'+':''}${netUsd.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})} USD</span>
+            <span style="color:${netCor};font-weight:700;font-size:15px;">${fmtUsd(netUsd)}</span>
         </div>
     </div>`;
 }
@@ -12295,7 +12272,7 @@ if (fonteData) {
         }
     }
 
-    return `<div class="od-trade-row" data-trade-id="${t.id}" onclick="odClicarTradeRow('${t.id}')" style="cursor:pointer;background:${corFundo};border-radius:12px;">
+    return `<div class="od-trade-row" data-trade-id="${t.id}" onclick="odClicarTradeRow('${t.id}')" style="cursor:pointer;background:${corFundo};border-radius:12px;padding:14px;margin-bottom:14px;border-bottom:none;">
         <div class="od-trade-row-top">
             <span class="od-trade-row-label">${label} <span style="color:${dirColor};font-weight:700;">· ${dirLabel}</span></span>
             <span class="od-trade-row-rr" style="color:${rrColor}">${rrStr}</span>
