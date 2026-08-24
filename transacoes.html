@@ -1622,17 +1622,22 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <svg class="cv-menu-chevron" id="cv-menu-chev-trade" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8E8E93" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
     </button>
     <div class="cv-menu-submenu" id="cv-menu-group-trade">
-      <button class="cv-menu-item cv-menu-subitem" onclick="cvFecharMenu();cvSelecionarModo(0);">
+      <label class="cv-menu-item cv-menu-subitem" style="cursor:pointer;">
+        <input type="radio" name="cv-modo-radio" id="cv-radio-modo-0" onchange="cvRadioSelecionarModo(0)" style="width:18px;height:18px;margin:0 8px 0 0;flex-shrink:0;">
+        <span class="cv-menu-item-label" style="flex:1;">Hedge A</span>
+      </label>
+      <label class="cv-menu-item cv-menu-subitem" style="cursor:pointer;">
+        <input type="radio" name="cv-modo-radio" id="cv-radio-modo-1" onchange="cvRadioSelecionarModo(1)" style="width:18px;height:18px;margin:0 8px 0 0;flex-shrink:0;">
+        <span class="cv-menu-item-label" style="flex:1;">Hedge B</span>
+      </label>
+      <label class="cv-menu-item cv-menu-subitem" style="cursor:pointer;">
+        <input type="radio" name="cv-modo-radio" id="cv-radio-modo-2" onchange="cvRadioSelecionarModo(2)" style="width:18px;height:18px;margin:0 8px 0 0;flex-shrink:0;">
+        <span class="cv-menu-item-label" style="flex:1;">Simulação</span>
+      </label>
+      <div class="cv-menu-divider"></div>
+      <button class="cv-menu-item cv-menu-subitem" onclick="cvFecharMenu();cvAbrirGravarTrade();">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12l2 2 4-4"/><path d="M20 6a2 2 0 00-2-2H6a2 2 0 002 2v12a2 2 0 002 2h12a2 2 0 002-2V6z"/></svg>
-        <span class="cv-menu-item-label">Hedge A</span>
-      </button>
-      <button class="cv-menu-item cv-menu-subitem" onclick="cvFecharMenu();cvSelecionarModo(1);">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12l2 2 4-4"/><path d="M20 6a2 2 0 00-2-2H6a2 2 0 002 2v12a2 2 0 002 2h12a2 2 0 002-2V6z"/></svg>
-        <span class="cv-menu-item-label">Hedge B</span>
-      </button>
-      <button class="cv-menu-item cv-menu-subitem" onclick="cvFecharMenu();cvSelecionarModo(2);">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        <span class="cv-menu-item-label">Nova Simulação</span>
+        <span class="cv-menu-item-label">Detalhes do Trade</span>
       </button>
     </div>
     <div class="cv-menu-divider"></div>
@@ -2292,12 +2297,20 @@ function cvIniciarNovoTrade() {
 //   posição comprada aberta, Short caso contrário — mas o usuário ainda
 //   pode ajustar tudo antes de gravar, já que o modal só trava de fato
 //   quando ele confirma o Modo pela segunda vez ou aperta Gravar).
-async function cvSelecionarModo(modo) {
+// Radio button do menu "Trade" — troca o contexto do gráfico IMEDIATAMENTE
+// (sem abrir modal nenhum): atualiza PM/Stop/Alvo das réguas, a direção
+// (_grDir) e redesenha o candle na hora. Modo=2 (Simulação) apenas "solta"
+// o vínculo com um trade real, sem carregar nada específico (várias
+// simulações podem existir; o radio nesse caso só sinaliza "não estou
+// olhando pra nenhum Hedge agora").
+async function cvRadioSelecionarModo(modo) {
     if (modo === 2) {
-        // Simulação nova sempre começa do zero, sem tentar reaproveitar
-        // nenhuma simulação anterior (podem existir várias ao mesmo tempo).
-        cvIniciarNovoTrade();
-        await cvAbrirGravarTrade();
+        _cvTradeId = null;
+        _cvTradeTipo = 'long';
+        _cvTradeModo = 2;
+        _grDir = 'LONG';
+        window._cvTradeCache = null;
+        grDrawChart();
         return;
     }
     const { data: existente, error } = await db.from('trades')
@@ -2318,13 +2331,26 @@ async function cvSelecionarModo(modo) {
         _grStop = parseFloat(existente.stop) || 0;
         _grDir  = _cvTradeTipo.toUpperCase();
         _regAtual = { p1: _grPm, p2: parseFloat(existente.alvo) || 0 };
-        grDrawChart();
-        await cvAbrirGravarTrade();
     } else {
-        cvIniciarNovoTrade();
-        await cvAbrirGravarTrade();
-        cvTradeSetModo(modo);
+        // Ainda não existe um trade nesse modo — só marca a intenção (o
+        // registro de fato só é criado quando "Detalhes do Trade" é aberto
+        // e o usuário aperta Gravar). Palpite de Tipo baseado na posição já
+        // aberta, igual o app sempre sugeriu em "trade novo".
+        const _c = calcularConsolidado();
+        _cvTradeId = null;
+        _cvTradeTipo = _c.qtdAberta > 0 ? 'long' : 'short';
+        _cvTradeModo = modo;
+        window._cvTradeCache = null;
     }
+    _grDir = _cvTradeTipo.toUpperCase();
+    grDrawChart();
+}
+
+// Marca o radio button correspondente ao _cvTradeModo atual — chamado toda
+// vez que o menu "Trade" é aberto, pra sempre refletir o contexto real.
+function cvSincronizarRadiosModo() {
+    const r = document.getElementById('cv-radio-modo-' + _cvTradeModo);
+    if (r) r.checked = true;
 }
 
 function cvStopMascara(el) {
@@ -2357,15 +2383,23 @@ async function cvAbrirGravarTrade() {
         _cvTradeModalLocked = ehReal; // Hedge A/B: Tipo, Modo e PM não são editáveis aqui (Data agora é editável)
         _cvTradeModoLocked  = ehReal; // só trava o Modo se já ERA Hedge A/B ao abrir
     } else {
-        // Criação de um trade novo (nenhuma linha da lista foi clicada antes)
+        // Criação de um trade novo (nenhuma linha da lista foi clicada antes).
+        // Respeita o Modo já pré-selecionado pelo radio button do menu (0/1/2)
+        // em vez de sempre forçar Simulação — é assim que "Detalhes do Trade"
+        // consegue abrir já pronto no Hedge A/B que o usuário escolheu antes.
         const _c = calcularConsolidado();
         pm   = _grPm > 0 ? _grPm : (_c.pm > 0 ? _c.pm : (_c.pmShort > 0 ? _c.pmShort : (_precoAtual || 0)));
         stop = _grStop > 0 ? _grStop : (_precoAtual * 0.95);
         alvo = _regAtual ? _regAtual.p2 : (_precoAtual * 1.05);
         const sorted = [..._transacoes].sort((a,b)=>new Date(a.data)-new Date(b.data));
         dataAbertura = sorted.length > 0 ? sorted[0].data.substring(0,10) : new Date().toLocaleDateString('en-CA', { timeZone: 'America/Manaus' });
-        _cvTradeTipo = _c.qtdAberta > 0 ? 'long' : 'short';
-        _cvTradeModo = 2; // sempre nasce em Simulação
+        // Só aplica o palpite de Tipo se ainda não veio pré-definido (Tipo já
+        // vem setado quando o radio pré-selecionou Hedge A/B antes de abrir).
+        if (!_cvTradeTipo) _cvTradeTipo = _c.qtdAberta > 0 ? 'long' : 'short';
+        if (typeof _cvTradeModo !== 'number') _cvTradeModo = 2;
+        // Continua destravado mesmo se o Modo pré-selecionado for Hedge A/B —
+        // o usuário ainda pode ajustar Tipo/Stop/Alvo livremente até gravar;
+        // a trava de verdade só entra pra trades JÁ salvos (branch "editando").
         _cvTradeModalLocked = false;
         _cvTradeModoLocked  = false;
     }
@@ -3084,7 +3118,10 @@ function cvAtualizarSaldo() {
 }
 
 
-function cvToggleMenu() { document.getElementById('cv-menu-overlay').classList.toggle('active'); }
+function cvToggleMenu() {
+    document.getElementById('cv-menu-overlay').classList.toggle('active');
+    cvSincronizarRadiosModo();
+}
 
 function cvToggleMenuGroup(nome) {
     const submenu = document.getElementById('cv-menu-group-' + nome);
