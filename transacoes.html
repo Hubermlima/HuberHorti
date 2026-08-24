@@ -2304,15 +2304,15 @@ function cvIniciarNovoTrade() {
 // simulações podem existir; o radio nesse caso só sinaliza "não estou
 // olhando pra nenhum Hedge agora").
 async function cvRadioSelecionarModo(modo) {
-    console.log('[HEDGE-DEBUG] cvRadioSelecionarModo chamada com modo=', modo, '| _ativoId=', _ativoId);
     if (modo === 2) {
         _cvTradeId = null;
         _cvTradeTipo = 'long';
         _cvTradeModo = 2;
         _grDir = 'LONG';
         window._cvTradeCache = null;
-        console.log('[HEDGE-DEBUG] modo=2 (Simulação), redesenhando. _grDir=', _grDir);
         grDrawChart();
+        if (typeof odAtualizarPosicaoAtual === 'function') odAtualizarPosicaoAtual();
+        if (typeof odCalcularBreakEven === 'function') odCalcularBreakEven();
         return;
     }
     const { data: existente, error } = await db.from('trades')
@@ -2320,7 +2320,6 @@ async function cvRadioSelecionarModo(modo) {
         .eq('ativo_id', _ativoId)
         .eq('modo', modo)
         .maybeSingle();
-    console.log('[HEDGE-DEBUG] resultado da busca —  existente=', existente, '| error=', error);
     if (error) {
         alert('Erro ao buscar trade: ' + error.message);
         return;
@@ -2346,9 +2345,11 @@ async function cvRadioSelecionarModo(modo) {
         window._cvTradeCache = null;
     }
     _grDir = _cvTradeTipo.toUpperCase();
-    console.log('[HEDGE-DEBUG] contexto final —  _cvTradeId=', _cvTradeId, '| _cvTradeTipo=', _cvTradeTipo, '| _grDir=', _grDir, '| _cvTradeModo=', _cvTradeModo);
     grDrawChart();
-    console.log('[HEDGE-DEBUG] grDrawChart() executado');
+    // Atualiza também a aba "Posição Atual" (Order Desk) pra refletir a
+    // direção do Hedge recém-selecionado, não mais uma preferência fixa.
+    if (typeof odAtualizarPosicaoAtual === 'function') odAtualizarPosicaoAtual();
+    if (typeof odCalcularBreakEven === 'function') odCalcularBreakEven();
 }
 
 // Marca o radio button correspondente ao _cvTradeModo atual — chamado toda
@@ -2713,11 +2714,9 @@ function odLiquidacaoToggle(checked) {
 // ── Carregar trade Hedge A (e Hedge B) ao selecionar ativo ───────────────
 async function cvCarregarTradeOperacional() {
     if (!_ativoId) return;
-    console.log('[HEDGE-DEBUG] cvCarregarTradeOperacional (page load) rodando, _ativoId=', _ativoId);
     // Hedge A (modo=0) é o único que dirige as réguas/linhas do gráfico —
     // mesmo comportamento que "Operacional" tinha antes, só renomeado.
     const { data: trade, error: erroHedgeA } = await db.from('trades').select('*').eq('ativo_id',_ativoId).eq('modo',0).maybeSingle();
-    console.log('[HEDGE-DEBUG] busca modo=0 (Hedge A) —  trade=', trade, '| error=', erroHedgeA);
     if (trade) {
         _cvTradeId   = trade.id;
         _cvTradeTipo = trade.tipo;
@@ -2741,7 +2740,6 @@ async function cvCarregarTradeOperacional() {
             _regAtual.p2 = _precoAtual * 1.05;
         }
     }
-    console.log('[HEDGE-DEBUG] após carregar Hedge A —  _cvTradeModo=', _cvTradeModo, '| _grDir=', _grDir, '| _cvTradeId=', _cvTradeId);
     // Hedge B (modo=1) fica só em cache — não move nada no gráfico, a aba
     // Trades busca e mostra ele de forma independente via odCarregarTrades().
     const { data: tradeHedgeB } = await db.from('trades').select('*').eq('ativo_id',_ativoId).eq('modo',1).maybeSingle();
@@ -10542,9 +10540,13 @@ function odAtualizarPosicaoAtual() {
         }
     }
     const _c = calcularConsolidado();
-    const qtdBase   = _c.qtdAberta > 0 ? _c.qtdAberta : _c.qtdShort;
-    const custoBase = _c.custoAberto > 0 ? _c.custoAberto : _c.custoShort;
-    const pmBase    = _c.pm > 0 ? _c.pm : _c.pmShort;
+    // Segue o Hedge/direção atualmente selecionado (_cvTradeTipo), não mais
+    // uma preferência fixa por Long — antes essa aba sempre mostrava o lado
+    // Long quando existia, ignorando qual Hedge estava ativo no gráfico.
+    const dirAtual = (_cvTradeTipo || 'long').toLowerCase();
+    const qtdBase   = dirAtual === 'short' ? _c.qtdShort : _c.qtdAberta;
+    const custoBase = dirAtual === 'short' ? _c.custoShort : _c.custoAberto;
+    const pmBase    = dirAtual === 'short' ? _c.pmShort : _c.pm;
     const qtdEl = document.getElementById('nova-dca-qtd-aberta');
     const custoEl = document.getElementById('nova-dca-custo-aberto');
     const pmEl = document.getElementById('nova-dca-pm-atual');
