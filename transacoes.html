@@ -490,6 +490,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
 /* Menu dropdown */
 .cv-seg{position:relative;display:flex;background:#E5E5EA;border-radius:100px;padding:3px;width:100%;box-sizing:border-box;}
 .cv-seg-thumb{position:absolute;top:3px;left:3px;width:calc(50% - 3px);height:calc(100% - 6px);background:#FFFFFF;border-radius:100px;transition:transform 0.25s cubic-bezier(0.4,0,0.2,1);box-shadow:0 1px 3px rgba(0,0,0,0.15);}
+.cv-seg-thumb-3{width:calc(33.333% - 3px);}
 .cv-seg-btn{position:relative;flex:1;z-index:1;padding:8px 0;background:transparent;border:none;font-size:13px;font-weight:700;color:#8E8E93;font-family:'Plus Jakarta Sans',sans-serif;cursor:pointer;text-align:center;transition:color 0.2s;}
 .cv-trade-actions{display:flex;gap:10px;margin-top:6px;}
 .cv-trade-btn-cancel{flex:1;padding:14px;background:#E5E5EA;color:#1C1C1E;border:none;border-radius:100px;font-size:15px;font-weight:600;font-family:'Plus Jakarta Sans',sans-serif;cursor:pointer;}
@@ -1550,9 +1551,10 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <div style="flex:1;">
         <label class="modal-label">Modo</label>
         <div class="cv-seg" id="cv-seg-modo">
-          <div class="cv-seg-thumb" id="cv-seg-modo-thumb"></div>
-                    <button class="cv-seg-btn" id="cv-trade-btn-sim" onclick="cvTradeSetOperacional(false)">Teste</button>
-          <button class="cv-seg-btn" id="cv-trade-btn-op" onclick="cvTradeSetOperacional(true)">Real</button>
+          <div class="cv-seg-thumb cv-seg-thumb-3" id="cv-seg-modo-thumb"></div>
+                    <button class="cv-seg-btn" id="cv-trade-btn-sim" onclick="cvTradeSetModo('teste')" style="font-size:11px;">Teste</button>
+          <button class="cv-seg-btn" id="cv-trade-btn-op" onclick="cvTradeSetModo('operacional')" style="font-size:11px;">Operac.</button>
+          <button class="cv-seg-btn" id="cv-trade-btn-sec" onclick="cvTradeSetModo('secundario')" style="font-size:11px;">Second.</button>
 
         </div>
       </div>
@@ -2295,12 +2297,13 @@ async function cvAbrirGravarTrade() {
         dataAbertura = (t.data_abertura ? t.data_abertura.substring(0,10) : null) || new Date().toLocaleDateString('en-CA', { timeZone: 'America/Manaus' });
         _cvTradeTipo = t.tipo || _cvTradeTipo || 'long';
         _cvTradeOperacional = !!t.operacional;
+        _cvTradeSecundario  = !!t.secundario;
         alvoReal  = t.alvo_realizacao || 0;
         stopReal  = t.stop_realizacao || 0;
         alvoNotif = t.alvo_ativo !== false;
         stopNotif = t.stop_ativo === true;
-        _cvTradeModalLocked = !!t.operacional; // Principal: Tipo, Modo e PM não são editáveis aqui (Data agora é editável)
-        _cvTradeModoLocked  = !!t.operacional; // só trava o Modo se já ERA Principal ao abrir
+        _cvTradeModalLocked = !!t.operacional || !!t.secundario; // Operacional/Secundário: Tipo, Modo e PM não são editáveis aqui (Data agora é editável)
+        _cvTradeModoLocked  = !!t.operacional || !!t.secundario; // só trava o Modo se já ERA Operacional/Secundário ao abrir
     } else {
         // Criação de um trade novo (nenhuma linha da lista foi clicada antes)
         const _c = calcularConsolidado();
@@ -2311,6 +2314,7 @@ async function cvAbrirGravarTrade() {
         dataAbertura = sorted.length > 0 ? sorted[0].data.substring(0,10) : new Date().toLocaleDateString('en-CA', { timeZone: 'America/Manaus' });
         _cvTradeTipo = _c.qtdAberta > 0 ? 'long' : 'short';
         _cvTradeOperacional = false; // sempre nasce em Simulação
+        _cvTradeSecundario  = false;
         _cvTradeModalLocked = false;
         _cvTradeModoLocked  = false;
     }
@@ -2364,31 +2368,41 @@ function cvTradeAplicarLock() {
     }
 }
 
-async function cvTradeSetOperacional(flag) {
-    if (flag) {
-        // Valida se já existe um Principal pra esse ativo antes de permitir
+// Papel do trade: 'teste' (simulação, hipotético), 'operacional' (trade real
+// principal) ou 'secundario' (segundo trade real, tipicamente o lado oposto
+// de um hedge — ex: Operacional Short + Secundário Long no mesmo ativo).
+// Cada ativo só pode ter 1 Operacional e 1 Secundário por vez, mas os dois
+// podem coexistir simultaneamente (isso é o que permite operar hedge).
+async function cvTradeSetModo(modo) {
+    if (modo === 'operacional' || modo === 'secundario') {
+        // Valida se já existe outro trade com esse mesmo papel pra esse ativo
         const { data: existente } = await db.from('trades')
             .select('id')
             .eq('ativo_id', _ativoId)
-            .eq('operacional', true)
-            .eq('simulacao', false)
+            .eq(modo, true)
             .maybeSingle();
         if (existente && existente.id !== _cvTradeId) {
-            alert('Já existe um trade Operacional para este ativo. Para substituí-lo, use a Liquidação Total ou promova uma simulação pelo fluxo próprio.');
+            const nomeAmigavel = modo === 'operacional' ? 'Operacional' : 'Secundário';
+            alert(`Já existe um trade ${nomeAmigavel} para este ativo. Para substituí-lo, use a Liquidação Total (se for o Operacional) ou mude o outro trade de volta pra Teste antes.`);
             return;
         }
     }
-    _cvTradeOperacional = flag;
-    _cvTradeModalLocked = flag;
+    _cvTradeOperacional = modo === 'operacional';
+    _cvTradeSecundario  = modo === 'secundario';
+    _cvTradeModalLocked = modo !== 'teste';
     cvTradeRenderOperacional();
     cvTradeAplicarLock();
-    // Ao virar pra Real, troca o PM exibido pro PM verdadeiro (ignora o valor hipotético)
+    // Ao virar Operacional ou Secundário, troca o PM exibido pro PM
+    // verdadeiro daquela direção (ignora o valor hipotético)
     const fmtV = v => parseFloat(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
     const pmInput = document.getElementById('cv-pm-input');
     const pmLabel = document.getElementById('cv-pm-label');
-    if (flag) {
+    if (modo !== 'teste') {
         const _c = calcularConsolidado();
-        const pmReal = _c.pm > 0 ? _c.pm : (_c.pmShort > 0 ? _c.pmShort : 0);
+        // Escolhe o PM pela direção deste trade específico (Long ou Short),
+        // não por um fallback genérico — essencial pra hedge funcionar certo,
+        // já que long e short têm PM independentes quando os dois coexistem.
+        const pmReal = _cvTradeTipo === 'short' ? _c.pmShort : _c.pm;
         _grPm = pmReal;
         pmInput.value = pmReal > 0 ? fmtV(pmReal) : '';
         pmInput.disabled = true;
@@ -2404,10 +2418,14 @@ async function cvTradeSetOperacional(flag) {
 function cvTradeRenderOperacional() {
     const btnSim = document.getElementById('cv-trade-btn-sim');
     const btnOp  = document.getElementById('cv-trade-btn-op');
+    const btnSec = document.getElementById('cv-trade-btn-sec');
     const thumb  = document.getElementById('cv-seg-modo-thumb');
-    btnSim.style.color = !_cvTradeOperacional ? '#5B6EF5' : '#8E8E93';
-    btnOp.style.color  = _cvTradeOperacional ? '#5B6EF5' : '#8E8E93';
-    thumb.style.transform = _cvTradeOperacional ? 'translateX(100%)' : 'translateX(0)';
+    const modo = _cvTradeOperacional ? 'operacional' : (_cvTradeSecundario ? 'secundario' : 'teste');
+    btnSim.style.color = modo === 'teste' ? '#5B6EF5' : '#8E8E93';
+    btnOp.style.color  = modo === 'operacional' ? '#5B6EF5' : '#8E8E93';
+    btnSec.style.color = modo === 'secundario' ? '#5B6EF5' : '#8E8E93';
+    const idx = modo === 'teste' ? 0 : (modo === 'operacional' ? 1 : 2);
+    thumb.style.transform = `translateX(${idx * 100}%)`;
 }
 
 function cvFecharGravarTrade() {
@@ -2423,6 +2441,10 @@ async function cvExcluirTrade() {
     const t = window._cvTradeCache || {};
     if (t.operacional) {
         alert('O trade Operacional não pode ser excluído por aqui. Use a Liquidação Total.');
+        return;
+    }
+    if (t.secundario) {
+        alert('O trade Secundário não pode ser excluído por aqui. Mude o Modo dele de volta para Teste (na tela de edição) antes de excluir.');
         return;
     }
     if (!confirm('Excluir esta simulação? Essa ação não pode ser desfeita.')) return;
@@ -2492,17 +2514,18 @@ async function cvConfirmarGravarTrade() {
     const dataBase = dataInputVal || (window._cvTradeCache && window._cvTradeCache.data_abertura ? window._cvTradeCache.data_abertura.substring(0,10) : null) || new Date().toLocaleDateString('en-CA', { timeZone: 'America/Manaus' });
     const dataAbertura = dataBase.substring(0,10) + 'T12:00:00-04:00';
 
-    // Revalida duplicidade de Operacional por segurança (race condition)
-    if (_cvTradeOperacional) {
+    // Revalida duplicidade de Operacional/Secundário por segurança (race condition)
+    if (_cvTradeOperacional || _cvTradeSecundario) {
+        const campo = _cvTradeOperacional ? 'operacional' : 'secundario';
         const { data: existente } = await db.from('trades')
             .select('id')
             .eq('ativo_id', _ativoId)
-            .eq('operacional', true)
-            .eq('simulacao', false)
+            .eq(campo, true)
             .maybeSingle();
         if (existente && existente.id !== _cvTradeId) {
             btn.disabled = false;
-            alert('Já existe um trade Operacional para este ativo. Não foi possível gravar.');
+            const nomeAmigavel = _cvTradeOperacional ? 'Operacional' : 'Secundário';
+            alert(`Já existe um trade ${nomeAmigavel} para este ativo. Não foi possível gravar.`);
             return;
         }
     }
@@ -2515,7 +2538,8 @@ async function cvConfirmarGravarTrade() {
         alvo,
         data_abertura: dataAbertura,
         operacional: _cvTradeOperacional,
-        simulacao: !_cvTradeOperacional,
+        secundario: _cvTradeSecundario,
+        simulacao: !_cvTradeOperacional && !_cvTradeSecundario,
         alvo_realizacao: alvoRealizacao,
         stop_realizacao: stopRealizacao,
         alvo_ativo: alvoAtivo,
@@ -2619,6 +2643,12 @@ async function cvCarregarTradeOperacional() {
             _regAtual.p2 = _precoAtual * 1.05;
         }
     }
+    // Trade Secundário (segundo trade real do mesmo ativo, ex: lado oposto
+    // de um hedge). Só armazenado em cache — não move as réguas do gráfico,
+    // que continuam ligadas exclusivamente ao Operacional. A aba Trades já
+    // busca e exibe o Secundário de forma independente via odCarregarTrades().
+    const { data: tradeSec } = await db.from('trades').select('*').eq('ativo_id',_ativoId).eq('secundario',true).maybeSingle();
+    window._cvTradeSecundarioCache = tradeSec || null;
     grDrawChart();
 }
 
@@ -3091,6 +3121,7 @@ let _cvSetupId = null, _cvDir = 'long';
 let _cvTradeId = null;        // ID do trade operacional corrente
 let _cvTradeTipo = 'long';    // 'long' | 'short'
 let _cvTradeOperacional = false; // false = Simulação (default), true = Operacional
+let _cvTradeSecundario = false;  // true = Secundário (segundo trade "real", lado oposto do hedge)
 let _cvTradeAlvoPendente = 0; // alvo do trade a aplicar quando _regAtual for criada
 let _cvTradeModalLocked = false; // trava Tipo/Data/PM (Principal, ou Simulação virando Real)
 let _cvTradeModoLocked = false;  // trava o seletor Modo (só quando já ERA Principal ao abrir)
@@ -11857,7 +11888,7 @@ async function odCarregarTrades() {
     const { data, error } = await db.from('trades')
         .select('*')
         .eq('ativo_id', _ativoId)
-        .or('operacional.eq.true,simulacao.eq.true')
+        .or('operacional.eq.true,simulacao.eq.true,secundario.eq.true')
         .order('operacional', { ascending: false })
         .order('data_abertura', { ascending: true });
     if (error) {
@@ -11885,7 +11916,7 @@ function odCalcularRR(t) {
     // transações, mesmo sem o usuário "Gravar" de novo). Simulação: usa o
     // preço de entrada hipotético gravado, que é definido pelo usuário.
     let pm;
-    if (t.operacional) {
+    if (t.operacional || t.secundario) {
         const _c = calcularConsolidado();
         pm = (t.tipo || '').toLowerCase() === 'short' ? _c.pmShort : _c.pm;
     } else {
@@ -11923,7 +11954,7 @@ function odFormatarDataAbertura(d) {
 }
 
 function odRenderTradeRow(t) {
-    const label = t.operacional ? 'Operacional' : odFormatarDataAbertura(t.data_abertura);
+    const label = t.operacional ? 'Operacional' : (t.secundario ? 'Secundário' : odFormatarDataAbertura(t.data_abertura));
     const dirLabel = (t.tipo || 'long').toLowerCase() === 'short' ? 'Short' : 'Long';
     const dirColor = (t.tipo || 'long').toLowerCase() === 'short' ? '#DC2626' : '#16A34A';
     const calc = odCalcularRR(t);
@@ -11955,7 +11986,7 @@ if (fonteData) {
 
     const _precoBase = odCotacaoBaseTrades();
     if (calc !== null) {
-        if (t.operacional) {
+        if (t.operacional || t.secundario) {
             const qtd = odQtdPrincipal(t.tipo);
             if (qtd > 0) {
                 if (calc.riskFree) {
@@ -12058,6 +12089,7 @@ function odClicarTradeRow(id) {
     _cvTradeId          = t.id;
     _cvTradeTipo         = t.tipo || 'long';
     _cvTradeOperacional  = !!t.operacional;
+    _cvTradeSecundario   = !!t.secundario;
     _grPm   = parseFloat(t.pm) || 0;
     _grStop = parseFloat(t.stop) || 0;
     _grDir  = _cvTradeTipo.toUpperCase();
