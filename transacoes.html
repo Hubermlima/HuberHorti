@@ -12047,7 +12047,6 @@ function odRenderComparacaoHedges() {
     const netCor = netUsd >= 0 ? '#16A34A' : '#DC2626';
 
     const fmtR = r => r === null ? 'Sem risco' : `${r>=0?'+':''}${r.toFixed(2)}R`;
-    const corR = r => r === null ? '#16A34A' : (r>=0?'#16A34A':'#DC2626');
 
     const linha = (lbl, valA, valB, corA, corB) => `<div style="display:flex;align-items:center;padding:7px 0;border-bottom:0.5px solid rgba(60,60,67,0.1);">
         <span style="color:#8E8E93;font-size:11px;flex:1.1;">${lbl}</span>
@@ -12055,17 +12054,47 @@ function odRenderComparacaoHedges() {
         <span style="color:${corB};font-weight:700;font-size:13px;flex:1;text-align:center;">${valB}</span>
     </div>`;
 
+    // Gráfico de barras divergente (tipo "tornado"): cada Hedge é uma barra
+    // que cresce a partir do centro (zero) pra direita (ganho) ou esquerda
+    // (perda), em unidades de R — dá pra "bater o olho" e ver quem está
+    // melhor sem precisar ler número nenhum.
+    const maxAbsR = Math.max(Math.abs(rAtualA || 0), Math.abs(rAtualB || 0), 0.1);
+    const odBarraR = (lbl, dirLbl, rVal, pnlUsd) => {
+        const semRisco = rVal === null;
+        const pct = semRisco ? 45 : Math.min(45, (Math.abs(rVal) / maxAbsR) * 45);
+        const positivo = semRisco || rVal >= 0;
+        const cor = positivo ? '#16A34A' : '#DC2626';
+        const corClara = positivo ? 'rgba(22,163,74,0.35)' : 'rgba(220,38,38,0.35)';
+        const barraHtml = positivo
+            ? `<div style="position:absolute;left:50%;top:0;bottom:0;width:${pct}%;background:${corClara};border-radius:0 7px 7px 0;"></div>`
+            : `<div style="position:absolute;right:50%;top:0;bottom:0;width:${pct}%;background:${corClara};border-radius:7px 0 0 7px;"></div>`;
+        const usdLabel = `${pnlUsd>=0?'+':''}${pnlUsd.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})} USD`;
+        return `<div style="margin-bottom:9px;">
+            <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">
+                <span style="font-size:11px;font-weight:700;color:#8E8E93;">${lbl} · ${dirLbl}</span>
+                <span style="font-size:12.5px;font-weight:700;color:${cor};">${fmtR(rVal)} <span style="color:#8E8E93;font-weight:600;">(${usdLabel})</span></span>
+            </div>
+            <div style="position:relative;height:16px;background:#E5E5EA;border-radius:8px;overflow:hidden;">
+                <div style="position:absolute;left:50%;top:0;bottom:0;width:1px;background:#B0B0B5;z-index:1;"></div>
+                ${barraHtml}
+            </div>
+        </div>`;
+    };
+    const dirLabelA = (hedgeA.tipo || 'long').toLowerCase() === 'short' ? 'Short' : 'Long';
+    const dirLabelB = (hedgeB.tipo || 'long').toLowerCase() === 'short' ? 'Short' : 'Long';
+    const graficoBarras = odBarraR('Hedge A', dirLabelA, rAtualA, pnlUsdA) + odBarraR('Hedge B', dirLabelB, rAtualB, pnlUsdB);
+
     return `<div style="background:#F5F5F7;border-radius:14px;padding:14px 16px;margin-bottom:14px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
             <span style="font-weight:700;font-size:14px;color:#000000;">Comparação Hedge A × B</span>
             <span style="font-weight:700;font-size:12px;color:#16A34A;">Vencendo: ${vencedor}</span>
         </div>
-        <div style="display:flex;align-items:center;padding-bottom:6px;">
+        ${graficoBarras}
+        <div style="display:flex;align-items:center;padding-bottom:6px;padding-top:4px;">
             <span style="flex:1.1;"></span>
             <span style="flex:1;text-align:center;font-size:11px;color:#8E8E93;font-weight:700;">Hedge A</span>
             <span style="flex:1;text-align:center;font-size:11px;color:#8E8E93;font-weight:700;">Hedge B</span>
         </div>
-        ${linha('R atual', fmtR(rAtualA), fmtR(rAtualB), corR(rAtualA), corR(rAtualB))}
         ${linha('P&L %', `${pnlPctA>=0?'+':''}${pnlPctA.toFixed(2)}%`, `${pnlPctB>=0?'+':''}${pnlPctB.toFixed(2)}%`, pnlPctA>=0?'#16A34A':'#DC2626', pnlPctB>=0?'#16A34A':'#DC2626')}
         ${linha('Dist. até Stop', distA!==null?distA.toFixed(2)+'%':'—', distB!==null?distB.toFixed(2)+'%':'—', '#1C1C1E', '#1C1C1E')}
         ${linha('R/R planejado', calcA.riskFree?'Sem risco':calcA.rr.toFixed(2)+'R', calcB.riskFree?'Sem risco':calcB.rr.toFixed(2)+'R', '#1C1C1E', '#1C1C1E')}
@@ -12188,6 +12217,19 @@ if (fonteData) {
 }
 
     const _precoBase = odCotacaoBaseTrades();
+    // Cor de fundo do card — verde/vermelho bem clarinho, baseado no sinal
+    // real do resultado agora (não é comparação com o outro Hedge, é: "esse
+    // trade sozinho está ganhando ou perdendo?"). "Sem risco" sempre pinta
+    // verde, já que não existe mais cenário de perda naquele estado.
+    let corFundo = '#FFFFFF';
+    if (calc !== null) {
+        if (calc.riskFree) {
+            corFundo = 'rgba(22,163,74,0.10)';
+        } else if (_precoBase > 0) {
+            const deltaSinal = calc.dir === 'short' ? (calc.pm - _precoBase) : (_precoBase - calc.pm);
+            corFundo = deltaSinal >= 0 ? 'rgba(22,163,74,0.10)' : 'rgba(220,38,38,0.10)';
+        }
+    }
     if (calc !== null) {
         if (modoT === 0 || modoT === 1) {
             const qtd = odQtdPrincipal(t.tipo);
@@ -12253,7 +12295,7 @@ if (fonteData) {
         }
     }
 
-    return `<div class="od-trade-row" data-trade-id="${t.id}" onclick="odClicarTradeRow('${t.id}')" style="cursor:pointer;">
+    return `<div class="od-trade-row" data-trade-id="${t.id}" onclick="odClicarTradeRow('${t.id}')" style="cursor:pointer;background:${corFundo};border-radius:12px;">
         <div class="od-trade-row-top">
             <span class="od-trade-row-label">${label} <span style="color:${dirColor};font-weight:700;">· ${dirLabel}</span></span>
             <span class="od-trade-row-rr" style="color:${rrColor}">${rrStr}</span>
