@@ -999,13 +999,13 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       </div>
     </div>
 
-    <!-- ABA 13: Distribuição de Compras (trade operacional ativo) -->
+    <!-- ABA 13: Distribuição de Compras (trade Hedge A ativo) -->
     <div class="od-pane" id="od-pane-13">
       <div style="padding:16px;">
         <div style="font-size:11px;font-weight:600;color:#3A3A3C;letter-spacing:0.4px;text-transform:uppercase;margin-bottom:2px;">Distribuição de Compras</div>
-        <div style="font-size:11px;color:#3A3A3C;margin-bottom:14px;">Cada entrada do trade operacional ativo — quando e a que preço</div>
+        <div style="font-size:11px;color:#3A3A3C;margin-bottom:14px;">Cada entrada do trade Hedge A ativo — quando e a que preço</div>
 
-        <div id="od-dist-vazio" style="display:none;text-align:center;padding:24px 0;color:#8E8E93;font-size:13px;">Nenhuma entrada encontrada para o trade operacional.</div>
+        <div id="od-dist-vazio" style="display:none;text-align:center;padding:24px 0;color:#8E8E93;font-size:13px;">Nenhuma entrada encontrada para o trade Hedge A.</div>
 
         <div id="od-dist-conteudo" style="display:none;">
           <div id="od-dist-resumo" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px;"></div>
@@ -1552,9 +1552,9 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
         <label class="modal-label">Modo</label>
         <div class="cv-seg" id="cv-seg-modo">
           <div class="cv-seg-thumb cv-seg-thumb-3" id="cv-seg-modo-thumb"></div>
-                    <button class="cv-seg-btn" id="cv-trade-btn-sim" onclick="cvTradeSetModo('teste')" style="font-size:11px;">Teste</button>
-          <button class="cv-seg-btn" id="cv-trade-btn-op" onclick="cvTradeSetModo('operacional')" style="font-size:11px;">Operac.</button>
-          <button class="cv-seg-btn" id="cv-trade-btn-sec" onclick="cvTradeSetModo('secundario')" style="font-size:11px;">Second.</button>
+                    <button class="cv-seg-btn" id="cv-trade-btn-op" onclick="cvTradeSetModo(0)" style="font-size:11px;padding:8px 2px;">Hedge A</button>
+          <button class="cv-seg-btn" id="cv-trade-btn-hedgeb" onclick="cvTradeSetModo(1)" style="font-size:11px;padding:8px 2px;">Hedge B</button>
+          <button class="cv-seg-btn" id="cv-trade-btn-sim" onclick="cvTradeSetModo(2)" style="font-size:11px;padding:8px 2px;">Simul.</button>
 
         </div>
       </div>
@@ -2146,10 +2146,11 @@ async function salvarNova() {
             if (window._cvTradeCache) window._cvTradeCache.pm = _grPm;
         }
         fecharModal('modal-nova');
-        // Liquidação Total — encerra trade operacional
+        // Liquidação Total — encerra o trade Hedge A, voltando ele pra Simulação
+        // (modo=2). Atualiza também os campos legados por segurança.
         const liqToggle = document.getElementById('od-liquidacao-toggle');
         if (liqToggle && liqToggle.checked && _cvTradeId) {
-            await db.from('trades').update({ operacional: false }).eq('id', _cvTradeId);
+            await db.from('trades').update({ operacional: false, simulacao: true, modo: 2 }).eq('id', _cvTradeId);
             await db.from('alertas').delete().eq('trade_id', _cvTradeId);
             _cvTradeId = null;
             _grStop = 0;
@@ -2259,7 +2260,7 @@ _precoAtual = 0;
 function cvIniciarNovoTrade() {
     _cvTradeId = null;
     _cvTradeTipo = 'long';
-    _cvTradeOperacional = false;
+    _cvTradeModo = 2;
     window._cvTradeCache = null;
     // PM, Stop e Alvo permanecem com os valores atuais — o usuário arrasta
     // as réguas a partir daí. Só garante que _regAtual exista.
@@ -2288,22 +2289,22 @@ async function cvAbrirGravarTrade() {
     const editando = !!_cvTradeId;
     let pm, stop, alvo, dataAbertura, alvoReal = 0, stopReal = 0, alvoNotif = true, stopNotif = false;
     if (editando) {
-        // Edição de um trade já carregado (Principal ou Simulação) — via clique
-        // na lista, ou via _cvTradeId já carregado no início do app (Principal).
+        // Edição de um trade já carregado (Hedge A, Hedge B ou Simulação) —
+        // via clique na lista, ou via _cvTradeId já carregado no início do app.
         const t = window._cvTradeCache || {};
         pm   = _grPm;
         stop = _grStop;
         alvo = _regAtual ? _regAtual.p2 : 0;
         dataAbertura = (t.data_abertura ? t.data_abertura.substring(0,10) : null) || new Date().toLocaleDateString('en-CA', { timeZone: 'America/Manaus' });
         _cvTradeTipo = t.tipo || _cvTradeTipo || 'long';
-        _cvTradeOperacional = !!t.operacional;
-        _cvTradeSecundario  = !!t.secundario;
+        _cvTradeModo = odTradeModo(t);
         alvoReal  = t.alvo_realizacao || 0;
         stopReal  = t.stop_realizacao || 0;
         alvoNotif = t.alvo_ativo !== false;
         stopNotif = t.stop_ativo === true;
-        _cvTradeModalLocked = !!t.operacional || !!t.secundario; // Operacional/Secundário: Tipo, Modo e PM não são editáveis aqui (Data agora é editável)
-        _cvTradeModoLocked  = !!t.operacional || !!t.secundario; // só trava o Modo se já ERA Operacional/Secundário ao abrir
+        const ehReal = _cvTradeModo === 0 || _cvTradeModo === 1;
+        _cvTradeModalLocked = ehReal; // Hedge A/B: Tipo, Modo e PM não são editáveis aqui (Data agora é editável)
+        _cvTradeModoLocked  = ehReal; // só trava o Modo se já ERA Hedge A/B ao abrir
     } else {
         // Criação de um trade novo (nenhuma linha da lista foi clicada antes)
         const _c = calcularConsolidado();
@@ -2313,8 +2314,7 @@ async function cvAbrirGravarTrade() {
         const sorted = [..._transacoes].sort((a,b)=>new Date(a.data)-new Date(b.data));
         dataAbertura = sorted.length > 0 ? sorted[0].data.substring(0,10) : new Date().toLocaleDateString('en-CA', { timeZone: 'America/Manaus' });
         _cvTradeTipo = _c.qtdAberta > 0 ? 'long' : 'short';
-        _cvTradeOperacional = false; // sempre nasce em Simulação
-        _cvTradeSecundario  = false;
+        _cvTradeModo = 2; // sempre nasce em Simulação
         _cvTradeModalLocked = false;
         _cvTradeModoLocked  = false;
     }
@@ -2368,40 +2368,39 @@ function cvTradeAplicarLock() {
     }
 }
 
-// Papel do trade: 'teste' (simulação, hipotético), 'operacional' (trade real
-// principal) ou 'secundario' (segundo trade real, tipicamente o lado oposto
-// de um hedge — ex: Operacional Short + Secundário Long no mesmo ativo).
-// Cada ativo só pode ter 1 Operacional e 1 Secundário por vez, mas os dois
-// podem coexistir simultaneamente (isso é o que permite operar hedge).
+// modo: 0 = Hedge A, 1 = Hedge B, 2 = Simulação.
+// Hedge A e Hedge B são as duas pernas "reais" que podem coexistir no mesmo
+// ativo (ex: short + long simultâneos). Cada ativo só pode ter 1 trade em
+// Hedge A e 1 em Hedge B por vez — a trava de unicidade é por modo.
 async function cvTradeSetModo(modo) {
-    if (modo === 'operacional' || modo === 'secundario') {
-        // Valida se já existe outro trade com esse mesmo papel pra esse ativo
+    if (modo === 0 || modo === 1) {
+        // Valida duplicidade pra essa perna específica (Hedge A ou Hedge B)
+        // antes de permitir — cada uma só pode ter 1 trade ativo por ativo.
         const { data: existente } = await db.from('trades')
             .select('id')
             .eq('ativo_id', _ativoId)
-            .eq(modo, true)
+            .eq('modo', modo)
             .maybeSingle();
         if (existente && existente.id !== _cvTradeId) {
-            const nomeAmigavel = modo === 'operacional' ? 'Operacional' : 'Secundário';
-            alert(`Já existe um trade ${nomeAmigavel} para este ativo. Para substituí-lo, use a Liquidação Total (se for o Operacional) ou mude o outro trade de volta pra Teste antes.`);
+            const nomeAmigavel = modo === 0 ? 'Hedge A' : 'Hedge B';
+            alert(`Já existe um trade ${nomeAmigavel} para este ativo. Para substituí-lo, use a Liquidação Total (se for Hedge A) ou mude o outro trade de volta pra Simulação antes.`);
             return;
         }
     }
-    _cvTradeOperacional = modo === 'operacional';
-    _cvTradeSecundario  = modo === 'secundario';
-    _cvTradeModalLocked = modo !== 'teste';
+    _cvTradeModo = modo;
+    _cvTradeModalLocked = (modo === 0 || modo === 1);
     cvTradeRenderOperacional();
     cvTradeAplicarLock();
-    // Ao virar Operacional ou Secundário, troca o PM exibido pro PM
-    // verdadeiro daquela direção (ignora o valor hipotético)
+    // Ao virar Hedge A ou Hedge B, troca o PM exibido pro PM verdadeiro
+    // daquela direção (ignora o valor hipotético digitado em Simulação)
     const fmtV = v => parseFloat(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
     const pmInput = document.getElementById('cv-pm-input');
     const pmLabel = document.getElementById('cv-pm-label');
-    if (modo !== 'teste') {
+    if (modo === 0 || modo === 1) {
         const _c = calcularConsolidado();
-        // Escolhe o PM pela direção deste trade específico (Long ou Short),
-        // não por um fallback genérico — essencial pra hedge funcionar certo,
-        // já que long e short têm PM independentes quando os dois coexistem.
+        // Pega o PM pela direção deste trade específico (Long ou Short) —
+        // não um fallback genérico. Isso é essencial pro hedge funcionar
+        // certo, já que long e short têm PM independentes quando coexistem.
         const pmReal = _cvTradeTipo === 'short' ? _c.pmShort : _c.pm;
         _grPm = pmReal;
         pmInput.value = pmReal > 0 ? fmtV(pmReal) : '';
@@ -2418,14 +2417,14 @@ async function cvTradeSetModo(modo) {
 function cvTradeRenderOperacional() {
     const btnSim = document.getElementById('cv-trade-btn-sim');
     const btnOp  = document.getElementById('cv-trade-btn-op');
-    const btnSec = document.getElementById('cv-trade-btn-sec');
+    const btnHb  = document.getElementById('cv-trade-btn-hedgeb');
     const thumb  = document.getElementById('cv-seg-modo-thumb');
-    const modo = _cvTradeOperacional ? 'operacional' : (_cvTradeSecundario ? 'secundario' : 'teste');
-    btnSim.style.color = modo === 'teste' ? '#5B6EF5' : '#8E8E93';
-    btnOp.style.color  = modo === 'operacional' ? '#5B6EF5' : '#8E8E93';
-    btnSec.style.color = modo === 'secundario' ? '#5B6EF5' : '#8E8E93';
-    const idx = modo === 'teste' ? 0 : (modo === 'operacional' ? 1 : 2);
-    thumb.style.transform = `translateX(${idx * 100}%)`;
+    btnSim.style.color = _cvTradeModo === 2 ? '#5B6EF5' : '#8E8E93';
+    btnOp.style.color  = _cvTradeModo === 0 ? '#5B6EF5' : '#8E8E93';
+    btnHb.style.color  = _cvTradeModo === 1 ? '#5B6EF5' : '#8E8E93';
+    // Ordem visual dos botões: Hedge A (0) | Hedge B (1) | Simulação (2)
+    const idxVisual = _cvTradeModo === 0 ? 0 : (_cvTradeModo === 1 ? 1 : 2);
+    thumb.style.transform = `translateX(${idxVisual * 100}%)`;
 }
 
 function cvFecharGravarTrade() {
@@ -2439,12 +2438,13 @@ async function cvExcluirTrade() {
         return;
     }
     const t = window._cvTradeCache || {};
-    if (t.operacional) {
-        alert('O trade Operacional não pode ser excluído por aqui. Use a Liquidação Total.');
+    const modoT = odTradeModo(t);
+    if (modoT === 0) {
+        alert('O trade Hedge A não pode ser excluído por aqui. Use a Liquidação Total.');
         return;
     }
-    if (t.secundario) {
-        alert('O trade Secundário não pode ser excluído por aqui. Mude o Modo dele de volta para Teste (na tela de edição) antes de excluir.');
+    if (modoT === 1) {
+        alert('O trade Hedge B não pode ser excluído por aqui. Mude o Modo dele de volta para Simulação (na tela de edição) antes de excluir.');
         return;
     }
     if (!confirm('Excluir esta simulação? Essa ação não pode ser desfeita.')) return;
@@ -2514,17 +2514,16 @@ async function cvConfirmarGravarTrade() {
     const dataBase = dataInputVal || (window._cvTradeCache && window._cvTradeCache.data_abertura ? window._cvTradeCache.data_abertura.substring(0,10) : null) || new Date().toLocaleDateString('en-CA', { timeZone: 'America/Manaus' });
     const dataAbertura = dataBase.substring(0,10) + 'T12:00:00-04:00';
 
-    // Revalida duplicidade de Operacional/Secundário por segurança (race condition)
-    if (_cvTradeOperacional || _cvTradeSecundario) {
-        const campo = _cvTradeOperacional ? 'operacional' : 'secundario';
+    // Revalida duplicidade de Hedge A/Hedge B por segurança (race condition)
+    if (_cvTradeModo === 0 || _cvTradeModo === 1) {
         const { data: existente } = await db.from('trades')
             .select('id')
             .eq('ativo_id', _ativoId)
-            .eq(campo, true)
+            .eq('modo', _cvTradeModo)
             .maybeSingle();
         if (existente && existente.id !== _cvTradeId) {
             btn.disabled = false;
-            const nomeAmigavel = _cvTradeOperacional ? 'Operacional' : 'Secundário';
+            const nomeAmigavel = _cvTradeModo === 0 ? 'Hedge A' : 'Hedge B';
             alert(`Já existe um trade ${nomeAmigavel} para este ativo. Não foi possível gravar.`);
             return;
         }
@@ -2537,9 +2536,12 @@ async function cvConfirmarGravarTrade() {
         stop,
         alvo,
         data_abertura: dataAbertura,
-        operacional: _cvTradeOperacional,
-        secundario: _cvTradeSecundario,
-        simulacao: !_cvTradeOperacional && !_cvTradeSecundario,
+        modo: _cvTradeModo,
+        // Campos legados mantidos em paralelo, calculados a partir de `modo`,
+        // só por segurança enquanto `operacional`/`simulacao` ainda não foram
+        // removidos do banco. `modo` é a fonte da verdade daqui pra frente.
+        operacional: _cvTradeModo === 0,
+        simulacao: _cvTradeModo === 2,
         alvo_realizacao: alvoRealizacao,
         stop_realizacao: stopRealizacao,
         alvo_ativo: alvoAtivo,
@@ -2565,8 +2567,10 @@ async function cvConfirmarGravarTrade() {
         if (alertasRows.length > 0) await db.from('alertas').insert(alertasRows);
         cvFecharGravarTrade();
         odCarregarTrades();
-        // Só atualiza o estado do gráfico se esse trade for o Operacional
-        if (_cvTradeOperacional) {
+        // Só atualiza o estado do gráfico se esse trade for o Hedge A —
+        // Hedge B fica só na aba Trades, sem linhas no candle (por escolha
+        // deliberada, pra não duplicar o overlay do gráfico).
+        if (_cvTradeModo === 0) {
             _cvTradeId = savedId;
             _grDir = _cvTradeTipo.toUpperCase();
         }
@@ -2616,14 +2620,16 @@ function odLiquidacaoToggle(checked) {
     }
 }
 
-// ── Carregar trade operacional ao selecionar ativo ───────────────
+// ── Carregar trade Hedge A (e Hedge B) ao selecionar ativo ───────────────
 async function cvCarregarTradeOperacional() {
     if (!_ativoId) return;
-    const { data: trade } = await db.from('trades').select('*').eq('ativo_id',_ativoId).eq('operacional',true).eq('simulacao',false).maybeSingle();
+    // Hedge A (modo=0) é o único que dirige as réguas/linhas do gráfico —
+    // mesmo comportamento que "Operacional" tinha antes, só renomeado.
+    const { data: trade } = await db.from('trades').select('*').eq('ativo_id',_ativoId).eq('modo',0).maybeSingle();
     if (trade) {
         _cvTradeId   = trade.id;
         _cvTradeTipo = trade.tipo;
-        _cvTradeOperacional = true;
+        _cvTradeModo = 0;
         _grDir       = trade.tipo.toUpperCase();
         _grStop      = trade.stop || 0;
         _cvTradeAlvoPendente = trade.alvo || 0;
@@ -2635,7 +2641,7 @@ async function cvCarregarTradeOperacional() {
     } else {
         _cvTradeId   = null;
         _cvTradeTipo = 'long';
-        _cvTradeOperacional = false;
+        _cvTradeModo = 2;
         _grDir       = 'LONG';
         _grStop      = 0;
         _cvTradeAlvoPendente = 0;
@@ -2643,12 +2649,10 @@ async function cvCarregarTradeOperacional() {
             _regAtual.p2 = _precoAtual * 1.05;
         }
     }
-    // Trade Secundário (segundo trade real do mesmo ativo, ex: lado oposto
-    // de um hedge). Só armazenado em cache — não move as réguas do gráfico,
-    // que continuam ligadas exclusivamente ao Operacional. A aba Trades já
-    // busca e exibe o Secundário de forma independente via odCarregarTrades().
-    const { data: tradeSec } = await db.from('trades').select('*').eq('ativo_id',_ativoId).eq('secundario',true).maybeSingle();
-    window._cvTradeSecundarioCache = tradeSec || null;
+    // Hedge B (modo=1) fica só em cache — não move nada no gráfico, a aba
+    // Trades busca e mostra ele de forma independente via odCarregarTrades().
+    const { data: tradeHedgeB } = await db.from('trades').select('*').eq('ativo_id',_ativoId).eq('modo',1).maybeSingle();
+    window._cvTradeHedgeBCache = tradeHedgeB || null;
     grDrawChart();
 }
 
@@ -3118,13 +3122,24 @@ function cvSetTf(tf) {
 }
 
 let _cvSetupId = null, _cvDir = 'long';
-let _cvTradeId = null;        // ID do trade operacional corrente
+let _cvTradeId = null;        // ID do trade corrente (Hedge A, Hedge B ou Simulação)
 let _cvTradeTipo = 'long';    // 'long' | 'short'
-let _cvTradeOperacional = false; // false = Simulação (default), true = Operacional
-let _cvTradeSecundario = false;  // true = Secundário (segundo trade "real", lado oposto do hedge)
+let _cvTradeModo = 2;         // 0 = Hedge A, 1 = Hedge B, 2 = Simulação (default)
 let _cvTradeAlvoPendente = 0; // alvo do trade a aplicar quando _regAtual for criada
-let _cvTradeModalLocked = false; // trava Tipo/Data/PM (Principal, ou Simulação virando Real)
-let _cvTradeModoLocked = false;  // trava o seletor Modo (só quando já ERA Principal ao abrir)
+let _cvTradeModalLocked = false; // trava Tipo/Data/PM (Hedge A/B, ou Simulação virando um dos dois)
+let _cvTradeModoLocked = false;  // trava o seletor Modo (só quando já ERA Hedge A/B ao abrir)
+
+// Lê o "modo" de um trade vindo do banco de forma defensiva: usa a coluna
+// numérica `modo` (0=Hedge A, 1=Hedge B, 2=Simulação) quando presente: é a
+// fonte da verdade desde a migração. Se por algum motivo vier nula/ausente
+// (linha antiga não migrada, edição manual, etc.), cai pro campo legado
+// `operacional` como aproximação, tratando o resto como Simulação — assim
+// nunca quebra mesmo com dado incompleto.
+function odTradeModo(t) {
+    if (!t) return 2;
+    if (typeof t.modo === 'number' && !isNaN(t.modo)) return t.modo;
+    return t.operacional ? 0 : 2;
+}
 
 function cvSetDir(dir) { /* análise IA removida */ }
 
@@ -5829,7 +5844,7 @@ function grInitTouch() {
         function grGetDragTarget(yInterno) {
         const HIT = 50;
         const locked = key => _prefComponentes[key]?.locked === true;
-        const pmTravado = !!(window._cvTradeCache && window._cvTradeCache.operacional);
+        const pmTravado = !!(window._cvTradeCache && odTradeModo(window._cvTradeCache) === 0);
         if (!pmTravado && _grPm > 0 && Math.abs(yInterno - grLineY(_grPm)) <= HIT) return 'pm';
         if (!locked('reguaA') && _grAlvo    > 0 && Math.abs(yInterno - grLineY(_grAlvo))    <= HIT) return 'alvo';
         if (_grEntrada > 0 && Math.abs(yInterno - grLineY(_grEntrada)) <= HIT) return 'entrada';
@@ -10719,7 +10734,7 @@ function odDesenharMacro() {
     ctx.stroke();
 }
 
-// ── Aba Distribuição de Compras (trade operacional ativo) ─────────────
+// ── Aba Distribuição de Compras (trade Hedge A ativo) ─────────────
 // Mostra, pro trade aberto no momento, cada entrada (abertura de posição)
 // em preço × tempo, mais uma concentração por faixa de preço — pra ajudar
 // a enxergar se as compras foram bem espaçadas ou se ficaram redundantes
@@ -10731,19 +10746,21 @@ async function odCarregarDistribuicaoCompras() {
     const conteudo = document.getElementById('od-dist-conteudo');
     if (!vazio || !conteudo || !_ativoId) return;
 
-    // 1) Tabela trades — busca o trade com operacional = true (e simulacao = false)
-    //    pra esse ativo. É essa linha que define QUAL trade é "o ativo" e a
-    //    partir de quando (data_abertura) as compras contam pra ele.
+    // 1) Tabela trades — busca o trade Hedge A (modo = 0) pra esse ativo. É
+    //    essa linha que define QUAL trade é "o ativo" e a partir de quando
+    //    (data_abertura) as compras contam pra ele. Fica restrito a Hedge A
+    //    de propósito, já que essa aba mede compras de UMA direção só —
+    //    misturar Hedge A e Hedge B (potencialmente direções opostas) não
+    //    faria sentido nessa visualização de "distribuição de compras".
     const { data: tradeOperacional, error: erroTrade } = await db.from('trades')
         .select('*')
         .eq('ativo_id', _ativoId)
-        .eq('operacional', true)
-        .eq('simulacao', false)
+        .eq('modo', 0)
         .maybeSingle();
 
     if (erroTrade || !tradeOperacional || !tradeOperacional.data_abertura) {
         vazio.style.display = 'block';
-        vazio.textContent = 'Nenhum trade operacional ativo encontrado para esse ativo.';
+        vazio.textContent = 'Nenhum trade Hedge A ativo encontrado para esse ativo.';
         conteudo.style.display = 'none';
         return;
     }
@@ -10753,7 +10770,7 @@ async function odCarregarDistribuicaoCompras() {
     const dataAbertura = new Date(tradeOperacional.data_abertura);
 
     // 2) Tabela transacoes — só as entradas (tipo_operacao compatível com a
-    //    direção do trade) a partir da data_abertura desse trade operacional.
+    //    direção do trade) a partir da data_abertura desse trade Hedge A.
     //    Isso exclui compras de trades anteriores/já fechados no mesmo ativo.
     _odDistEntradas = (_transacoes || [])
         .filter(t => t.tipo_operacao === tipoAbertura)
@@ -10772,7 +10789,7 @@ async function odCarregarDistribuicaoCompras() {
 
     if (_odDistEntradas.length === 0) {
         vazio.style.display = 'block';
-        vazio.textContent = 'Nenhuma entrada encontrada para o trade operacional a partir de ' +
+        vazio.textContent = 'Nenhuma entrada encontrada para o trade Hedge A a partir de ' +
             dataAbertura.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' }) + '.';
         conteudo.style.display = 'none';
         return;
@@ -11888,8 +11905,8 @@ async function odCarregarTrades() {
     const { data, error } = await db.from('trades')
         .select('*')
         .eq('ativo_id', _ativoId)
-        .or('operacional.eq.true,simulacao.eq.true,secundario.eq.true')
-        .order('operacional', { ascending: false })
+        .or('modo.eq.0,modo.eq.1,modo.eq.2')
+        .order('modo', { ascending: true })
         .order('data_abertura', { ascending: true });
     if (error) {
         container.innerHTML = '<div style="padding:24px 0;text-align:center;color:#8E8E93;font-size:13px;">Erro ao carregar trades</div>';
@@ -11912,17 +11929,24 @@ function odCotacaoBaseTrades() {
 }
 
 function odCalcularRR(t) {
-    // Principal: PM sempre vem do cálculo real ao vivo (pode mudar com novas
-    // transações, mesmo sem o usuário "Gravar" de novo). Simulação: usa o
-    // preço de entrada hipotético gravado, que é definido pelo usuário.
+    // Hedge A e Hedge B: PM sempre vem do cálculo real ao vivo (pode mudar
+    // com novas transações, mesmo sem o usuário "Gravar" de novo) — cada um
+    // pela sua própria direção (long usa _c.pm, short usa _c.pmShort), o que
+    // já é suportado nativamente já que calcularConsolidado rastreia long e
+    // short em paralelo. Simulação: usa o preço de entrada hipotético
+    // gravado, definido pelo usuário.
+    const modoT = odTradeModo(t);
     let pm;
-    if (t.operacional || t.secundario) {
+    if (modoT === 0 || modoT === 1) {
         const _c = calcularConsolidado();
         pm = (t.tipo || '').toLowerCase() === 'short' ? _c.pmShort : _c.pm;
     } else {
         pm = parseFloat(t.pm) || 0;
     }
-    const stop = (t.operacional === true && window._cvTradeCache && window._cvTradeCache.tipo === t.tipo)
+    // Stop ao vivo (sincronizado com o arrastar da régua no gráfico) só
+    // existe pro Hedge A — é o único trade que o gráfico mantém linkado em
+    // window._cvTradeCache. Hedge B usa sempre o stop salvo (t.stop).
+    const stop = (modoT === 0 && window._cvTradeCache && window._cvTradeCache.tipo === t.tipo)
         ? (parseFloat(window._cvTradeCache.stop) || 0)
         : (parseFloat(t.stop) || 0);
     const alvo = parseFloat(t.alvo) || 0;
@@ -11954,7 +11978,8 @@ function odFormatarDataAbertura(d) {
 }
 
 function odRenderTradeRow(t) {
-    const label = t.operacional ? 'Operacional' : (t.secundario ? 'Secundário' : odFormatarDataAbertura(t.data_abertura));
+    const modoT = odTradeModo(t);
+    const label = modoT === 0 ? 'Hedge A' : (modoT === 1 ? 'Hedge B' : odFormatarDataAbertura(t.data_abertura));
     const dirLabel = (t.tipo || 'long').toLowerCase() === 'short' ? 'Short' : 'Long';
     const dirColor = (t.tipo || 'long').toLowerCase() === 'short' ? '#DC2626' : '#16A34A';
     const calc = odCalcularRR(t);
@@ -11971,7 +11996,7 @@ function odRenderTradeRow(t) {
     </div>`;
 
    let linhas = '';
-const fonteData = (t.operacional === true && window._cvTradeCache && window._cvTradeCache.data_abertura && window._cvTradeCache.tipo === t.tipo)
+const fonteData = (modoT === 0 && window._cvTradeCache && window._cvTradeCache.data_abertura && window._cvTradeCache.tipo === t.tipo)
     ? window._cvTradeCache.data_abertura
     : t.data_abertura;
 
@@ -11986,7 +12011,7 @@ if (fonteData) {
 
     const _precoBase = odCotacaoBaseTrades();
     if (calc !== null) {
-        if (t.operacional || t.secundario) {
+        if (modoT === 0 || modoT === 1) {
             const qtd = odQtdPrincipal(t.tipo);
             if (qtd > 0) {
                 if (calc.riskFree) {
@@ -12079,17 +12104,16 @@ function odPararRefreshTrades() {
 }
 
 // Clique numa linha da lista — só carrega o ambiente do gráfico (régua, PM,
-// stop, alvo, tipo) com os valores salvos daquele trade específico
-// (Principal ou Simulação) em memória, e fecha o Order Desk. NÃO abre
-// nenhum modal. Se for o Principal, o PM fica travado pro drag (régua real,
+// stop, alvo, tipo) com os valores salvos daquele trade específico (Hedge A,
+// Hedge B ou Simulação) em memória, e fecha o Order Desk. NÃO abre nenhum
+// modal. Se for Hedge A ou Hedge B, o PM fica travado pro drag (régua real,
 // não editável); se for Simulação, o PM segue arrastável (hipotético).
 function odClicarTradeRow(id) {
     const t = _odTradesCache.find(x => String(x.id) === String(id));
     if (!t) return;
-    _cvTradeId          = t.id;
-    _cvTradeTipo         = t.tipo || 'long';
-    _cvTradeOperacional  = !!t.operacional;
-    _cvTradeSecundario   = !!t.secundario;
+    _cvTradeId    = t.id;
+    _cvTradeTipo  = t.tipo || 'long';
+    _cvTradeModo  = odTradeModo(t);
     _grPm   = parseFloat(t.pm) || 0;
     _grStop = parseFloat(t.stop) || 0;
     _grDir  = _cvTradeTipo.toUpperCase();
@@ -12323,7 +12347,7 @@ async function odCalcularScoreConfluencia() {
         let acao = null;
         const dirOperacional = (_grDir || '').toUpperCase();
         if (dirOperacional !== 'LONG' && dirOperacional !== 'SHORT') {
-            acao = { texto: 'Nenhum trade operacional ativo — abra um trade pra identificar pullbacks de reforço.', cor: '#8E8E93' };
+            acao = { texto: 'Nenhum trade Hedge A ativo — abra um trade pra identificar pullbacks de reforço.', cor: '#8E8E93' };
         } else {
             const isShort = dirOperacional === 'SHORT';
             const rsiSerieCompleta = rsiSerie(closes, 14);
