@@ -334,6 +334,7 @@ input[type=range]::-webkit-slider-runnable-track{border-radius:100px;}
 .cv-ind-btn.fib.active{color:#FFD700;background:linear-gradient(180deg,#2e2a00 0%,#1e1c00 100%);}
 .cv-ind-btn.sup.active{color:#34C759;background:linear-gradient(180deg,#0d2e14 0%,#081e0c 100%);}
 .cv-ind-btn.res.active{color:#FF3B30;background:linear-gradient(180deg,#2e0d0d 0%,#1e0808 100%);}
+#cv-btn-footprint.active{color:#FFA726;background:linear-gradient(180deg,#3d2a0d 0%,#2e1e08 100%);}
 
 .cv-ind-btn.reg.active{color:#64B5F6;background:linear-gradient(180deg,#0d1a2e 0%,#081020 100%);}
 .cv-ind-btn.pat.active{color:#CE93D8;background:linear-gradient(180deg,#25183d 0%,#1a102e 100%);}
@@ -1228,6 +1229,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <button class="cv-zoom-btn" onclick="cvZoom('-')"><span class="btn-sigla">−</span><span class="btn-nome">Reduzir</span></button>
       <button class="cv-zoom-btn" id="cv-btn-drone" onclick="cvZoom('drone')"><span class="btn-sigla">🛸</span><span class="btn-nome">Drone</span></button>
       <button class="cv-ind-btn map" id="cv-ind-minimap" onclick="cvToggleMinimapa()"><span class="btn-sigla">🗺️</span><span class="btn-nome">Mapa Geral</span></button>
+      <button class="cv-ind-btn" id="cv-btn-footprint" onclick="grToggleFootprint()"><span class="btn-sigla">FP</span><span class="btn-nome">Footprint</span></button>
       <span id="gr-periodo" style="display:none;"></span>
             <div class="cv-barra-sep"></div>
       <button class="cv-ind-btn active" id="cv-ind-tipo-candle" onclick="cvSetTipoGrafico('candle')" title="Candles">
@@ -4276,6 +4278,7 @@ if (_grTipoGrafico === 'linha') {
         const bodyH = Math.max(1, bodyBot - bodyTop);
         ctx.fillRect(x - cW / 2, bodyTop, cW, bodyH);
     });
+    grFootprintDesenhar(ctx, candles, toY, cW, PAD, chartW, totalSlots);
 }
 
 
@@ -6686,6 +6689,125 @@ function grInitTouch() {
             }
     }
     });
+}
+
+// ── Footprint (huberhorti-footprint worker) ───────────────────────────
+const FOOTPRINT_URL = 'https://huberhorti-footprint.huber-produtos.workers.dev/footprint';
+let _grFootprintAtivo = false;
+let _grFootprintCache = {}; // dia (YYYY-MM-DD) -> dados
+let _grFootprintFetching = {}; // dia -> true enquanto busca, evita duplicar
+
+function grFootprintDiaKey(tsMs) {
+    return new Date(tsMs).toISOString().slice(0, 10);
+}
+
+async function grFootprintFetchDia(dia) {
+    if (_grFootprintCache[dia] || _grFootprintFetching[dia]) return;
+    _grFootprintFetching[dia] = true;
+    try {
+        const r = await fetch(`${FOOTPRINT_URL}?dia=${dia}`);
+        const d = await r.json();
+        _grFootprintCache[dia] = d;
+        grDrawChart();
+    } catch (e) {
+        console.error('Footprint fetch error:', e);
+    } finally {
+        _grFootprintFetching[dia] = false;
+    }
+}
+
+function grToggleFootprint() {
+    _grFootprintAtivo = !_grFootprintAtivo;
+    const btn = document.getElementById('cv-btn-footprint');
+    if (btn) btn.classList.toggle('active', _grFootprintAtivo);
+    if (_grFootprintAtivo) {
+        const hoje = grFootprintDiaKey(Date.now());
+        grFootprintFetchDia(hoje);
+    }
+    grDrawChart();
+}
+
+// Agrega os níveis de footprint (granularidade 1 minuto) que caem dentro
+// do intervalo [tIni, tFim) de um candle do gráfico, seja qual for o timeframe.
+function grFootprintAgregarParaCandle(tIni, tFim) {
+    const dias = new Set([grFootprintDiaKey(tIni), grFootprintDiaKey(tFim - 1)]);
+    const niveis = new Map();
+    let algumDado = false;
+    for (const dia of dias) {
+        const dados = _grFootprintCache[dia];
+        if (!dados || !dados.candles) {
+            grFootprintFetchDia(dia);
+            continue;
+        }
+        for (const minuto in dados.candles) {
+            const entry = dados.candles[minuto];
+            if (entry.ts >= tIni && entry.ts < tFim) {
+                algumDado = true;
+                for (const nivel of entry.niveis) {
+                    if (!niveis.has(nivel.p)) niveis.set(nivel.p, { compra: 0, venda: 0 });
+                    const n = niveis.get(nivel.p);
+                    n.compra += nivel.c;
+                    n.venda += nivel.v;
+                }
+            }
+        }
+    }
+    if (!algumDado) return null;
+    let poc = null, pocVol = -1, delta = 0, total = 0;
+    const lista = [];
+    for (const [p, { compra, venda }] of niveis.entries()) {
+        const t = compra + venda;
+        lista.push({ p, compra, venda });
+        delta += compra - venda;
+        total += t;
+        if (t > pocVol) { pocVol = t; poc = p; }
+    }
+    lista.sort((a, b) => b.p - a.p); // maior preço primeiro (topo da tela)
+    return { niveis: lista, poc, delta, total };
+}
+
+// Desenha o footprint sobre os candles visíveis já renderizados
+function grFootprintDesenhar(ctx, candles, toY, cW, PAD, chartW, totalSlots) {
+    if (!_grFootprintAtivo || cW < 26) return;
+    ctx.font = '9px -apple-system';
+    ctx.textAlign = 'center';
+
+    candles.forEach((c, i) => {
+        const nextC = candles[i + 1];
+        const prevC = candles[i - 1];
+        const intervalo = nextC ? nextC.t - c.t : (prevC ? c.t - prevC.t : 60000);
+        const tFim = c.t + intervalo;
+        const agregado = grFootprintAgregarParaCandle(c.t, tFim);
+        if (!agregado) return;
+
+        const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
+
+        if (cW >= 60) {
+            // Ladder completo: venda à esquerda, compra à direita, POC destacado
+            const alturaLinha = 11;
+            agregado.niveis.forEach(n => {
+                const y = toY(n.p);
+                const ehPoc = n.p === agregado.poc;
+                if (ehPoc) {
+                    ctx.fillStyle = '#000000';
+                    ctx.fillRect(x - cW / 2 - 2, y - alturaLinha / 2, cW + 4, alturaLinha);
+                }
+                ctx.fillStyle = ehPoc ? '#FFFFFF' : '#EF5350';
+                ctx.textAlign = 'right';
+                ctx.fillText(n.venda > 0 ? n.venda.toFixed(2) : '', x - 2, y + 3);
+                ctx.fillStyle = ehPoc ? '#FFFFFF' : '#26A69A';
+                ctx.textAlign = 'left';
+                ctx.fillText(n.compra > 0 ? n.compra.toFixed(2) : '', x + 2, y + 3);
+            });
+        } else {
+            // Espaço curto: só um marcador de delta acima do candle
+            const y = toY(Math.max(c.o, c.c, c.h)) - 8;
+            ctx.fillStyle = agregado.delta >= 0 ? '#26A69A' : '#EF5350';
+            ctx.textAlign = 'center';
+            ctx.fillText(agregado.delta >= 0 ? '+' : '', x, y);
+        }
+    });
+    ctx.textAlign = 'left';
 }
 
 function grDrawChart() {
