@@ -4272,11 +4272,17 @@ if (_grTipoGrafico === 'linha') {
         ctx.lineTo(x, toY(c.l));
         ctx.stroke();
 
-        // Body
+        // Body — no modo footprint vira só contorno fino, pois o conteúdo
+        // visual passa a ser a grade de níveis (grFootprintDesenhar), não o
+        // corpo cheio do candle.
         const bodyTop = toY(Math.max(c.o, c.c));
         const bodyBot = toY(Math.min(c.o, c.c));
         const bodyH = Math.max(1, bodyBot - bodyTop);
-        ctx.fillRect(x - cW / 2, bodyTop, cW, bodyH);
+        if (_grFootprintAtivo) {
+            ctx.strokeRect(x - cW / 2, bodyTop, cW, bodyH);
+        } else {
+            ctx.fillRect(x - cW / 2, bodyTop, cW, bodyH);
+        }
     });
     if (_grFootprintAtivo) grFootprintDesenhar(ctx, candles, toY, cW, PAD, chartW, totalSlots);
 }
@@ -6695,6 +6701,7 @@ function grInitTouch() {
 
 // ── Footprint (huberhorti-footprint worker) ───────────────────────────
 const FOOTPRINT_URL = 'https://huberhorti-footprint.huber-produtos.workers.dev/footprint';
+const FOOTPRINT_MIN_CANDLE_W = 70; // px mínimo por candle p/ caber a grade de níveis (etapa 1)
 let _grFootprintAtivo = false;
 let _grFootprintCache = {};
 let _grFootprintFetching = {};
@@ -6808,7 +6815,7 @@ function grDrawChart() {
     }
     const total = _grAllCandles.length;
     if (total === 0) return;
-    const visible = Math.min(_grZoom, total);
+    const visible = grFootprintVisibleCount(Math.min(_grZoom, total));
     const maxOff = total + Math.floor(_grZoom * 0.5);
 
     const startIdx = Math.max(0, Math.min(maxOff, _grOffset));
@@ -6818,12 +6825,23 @@ function grDrawChart() {
     grDrawCandles(candles, emptyRight);
 }
 
+// Quando o footprint está ativo, limita quantos candles cabem na tela
+// respeitando a largura mínima necessária p/ desenhar a grade de níveis.
+function grFootprintVisibleCount(desejado) {
+    if (!_grFootprintAtivo) return desejado;
+    const canvas = document.getElementById('gr-chart-canvas');
+    if (!canvas) return desejado;
+    const chartWAprox = canvas.width - _grPAD.left - _grPAD.right;
+    const maxCandles = Math.max(3, Math.floor(chartWAprox / FOOTPRINT_MIN_CANDLE_W));
+    return Math.min(desejado, maxCandles);
+}
+
 function grDrawChartWithCrosshair(yInterno) {
     // Desenha o gráfico sem recursão
     {
         const t = _grAllCandles.length;
         if (t > 0) {
-            const v = Math.min(_grZoom, t);
+            const v = grFootprintVisibleCount(Math.min(_grZoom, t));
             const mo = t + Math.floor(_grZoom * 0.5);
             const si = Math.max(0, Math.min(mo, _grOffset));
             const cc = _grAllCandles.slice(si, si + v);
@@ -6866,7 +6884,7 @@ function grDrawChartWithCrosshair(yInterno) {
 
         // Pílula temporal no eixo X (rodapé da linha vertical)
     const total = _grAllCandles.length;
-    const visible = Math.min(_grZoom, total);
+    const visible = grFootprintVisibleCount(Math.min(_grZoom, total));
     // startIdx idêntico ao grDrawChart para sincronizar com scroll
     const maxOff2 = total + Math.floor(_grZoom * 0.5);
     const startIdx = Math.max(0, Math.min(maxOff2, _grOffset));
