@@ -4278,6 +4278,7 @@ if (_grTipoGrafico === 'linha') {
         const bodyH = Math.max(1, bodyBot - bodyTop);
         ctx.fillRect(x - cW / 2, bodyTop, cW, bodyH);
     });
+    if (_grFootprintAtivo) grFootprintDesenhar(ctx, candles, toY, cW, PAD, chartW, totalSlots);
 }
 
 
@@ -6690,11 +6691,13 @@ function grInitTouch() {
     });
 }
 
+
+
 // ── Footprint (huberhorti-footprint worker) ───────────────────────────
 const FOOTPRINT_URL = 'https://huberhorti-footprint.huber-produtos.workers.dev/footprint';
 let _grFootprintAtivo = false;
-let _grFootprintCache = {}; // dia (YYYY-MM-DD) -> dados
-let _grFootprintFetching = {}; // dia -> true enquanto busca, evita duplicar
+let _grFootprintCache = {};
+let _grFootprintFetching = {};
 
 function grFootprintDiaKey(tsMs) {
     return new Date(tsMs).toISOString().slice(0, 10);
@@ -6707,7 +6710,7 @@ async function grFootprintFetchDia(dia) {
         const r = await fetch(`${FOOTPRINT_URL}?dia=${dia}`);
         const d = await r.json();
         _grFootprintCache[dia] = d;
-        grDrawChart();
+        if (typeof grDrawChart === 'function') grDrawChart();
     } catch (e) {
         console.error('Footprint fetch error:', e);
     } finally {
@@ -6720,17 +6723,15 @@ function grToggleFootprint() {
     const btn = document.getElementById('cv-btn-footprint');
     if (btn) btn.classList.toggle('active', _grFootprintAtivo);
     if (_grFootprintAtivo) {
-        const hoje = grFootprintDiaKey(Date.now());
-        grFootprintFetchDia(hoje);
-        grFootprintIniciarTimer();
-    } else {
-        grFootprintPararTimer();
+        grFootprintFetchDia(grFootprintDiaKey(Date.now()));
+        if (!_grFootprintTimer) _grFootprintTimer = setInterval(() => {
+            if (_grFootprintAtivo) grFootprintFetchDia(grFootprintDiaKey(Date.now()));
+        }, 15000);
     }
     grDrawChart();
 }
+let _grFootprintTimer = null;
 
-// Agrega os níveis de footprint (granularidade 1 minuto) que caem dentro
-// do intervalo [tIni, tFim) de um candle do gráfico, seja qual for o timeframe.
 function grFootprintAgregarParaCandle(tIni, tFim) {
     const dias = new Set([grFootprintDiaKey(tIni), grFootprintDiaKey(tFim - 1)]);
     const niveis = new Map();
@@ -6764,55 +6765,11 @@ function grFootprintAgregarParaCandle(tIni, tFim) {
         total += t;
         if (t > pocVol) { pocVol = t; poc = p; }
     }
-    lista.sort((a, b) => b.p - a.p); // maior preço primeiro (topo da tela)
+    lista.sort((a, b) => b.p - a.p);
     return { niveis: lista, poc, delta, total };
 }
 
-// Desenha o footprint direto no canvas principal, de forma totalmente
-// independente do resto do código de renderização — recalcula sozinho
-// a posição de cada candle, sem depender de nenhum gancho interno.
-function grFootprintRedesenharOverlay() {
-    if (!_grFootprintAtivo) return;
-    if (typeof grDrawChart === 'function') grDrawChart();
-
-    const canvas = document.getElementById('gr-chart-canvas');
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    const W = canvas.width, H = canvas.height;
-
-    const total = _grAllCandles.length;
-    if (total === 0) return;
-    const visible = Math.min(_grZoom, total);
-    const maxOff = total + Math.floor(_grZoom * 0.5);
-    const startIdx = Math.max(0, Math.min(maxOff, _grOffset));
-    const candles = _grAllCandles.slice(startIdx, startIdx + visible);
-    if (candles.length === 0) return;
-    const emptyRight = Math.max(0, visible - candles.length);
-    const totalSlots = candles.length + emptyRight;
-
-    let minP = window._grVisibleLow;
-    let maxP = window._grVisibleHigh;
-    if (minP == null || maxP == null || !isFinite(minP) || !isFinite(maxP)) return;
-    const pad5 = (maxP - minP) * 0.05;
-    minP -= pad5; maxP += pad5;
-    if (maxP === minP) return;
-
-    const PAD = { top: 22, right: 24, bottom: 30, left: 45 };
-    ctx.font = '10px -apple-system';
-    const fmtFn = (typeof fmtN === 'function') ? fmtN : (n => n.toFixed(0));
-    const maxW = Math.max(ctx.measureText(fmtFn(maxP)).width, ctx.measureText(fmtFn(minP)).width);
-    PAD.left = Math.ceil(maxW) + 14;
-
-    const chartW = W - PAD.left - PAD.right;
-    const chartH = H - PAD.top - PAD.bottom;
-    if (chartW <= 0 || chartH <= 0) return;
-    const cW = Math.max(2, Math.floor(chartW / Math.max(totalSlots, 1)) - 1);
-
-    function toY(p) {
-        return PAD.top + (1 - (p - minP) / (maxP - minP)) * chartH;
-    }
-
-    let algumDesenhado = false;
+function grFootprintDesenhar(ctx, candles, toY, cW, PAD, chartW, totalSlots) {
     candles.forEach((c, i) => {
         const nextC = candles[i + 1];
         const prevC = candles[i - 1];
@@ -6820,7 +6777,6 @@ function grFootprintRedesenharOverlay() {
         const tFim = c.t + intervalo;
         const agregado = grFootprintAgregarParaCandle(c.t, tFim);
         if (!agregado) return;
-        algumDesenhado = true;
 
         const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
         const yPoc = toY(agregado.poc);
@@ -6833,40 +6789,16 @@ function grFootprintRedesenharOverlay() {
         ctx.lineTo(x + cW / 2, yPoc);
         ctx.stroke();
 
-        const yTopo = PAD.top + 16;
+        const yTopo = toY(Math.max(c.o, c.c, c.h)) - 14;
         ctx.font = 'bold 10px -apple-system';
         ctx.textAlign = 'center';
         ctx.fillStyle = '#0D0F18';
         ctx.fillRect(x - 18, yTopo - 10, 36, 13);
         ctx.fillStyle = cor;
-        const deltaTxt = (agregado.delta >= 0 ? '+' : '') + agregado.delta.toFixed(1);
-        ctx.fillText(deltaTxt, x, yTopo);
+        ctx.fillText((agregado.delta >= 0 ? '+' : '') + agregado.delta.toFixed(1), x, yTopo);
     });
     ctx.textAlign = 'left';
-
-    // Diagnóstico visível: mostra no canto se achou dado ou não
-    ctx.font = '10px -apple-system';
-    ctx.fillStyle = algumDesenhado ? '#26A69A' : '#EF5350';
-    ctx.textAlign = 'right';
-    ctx.fillText(algumDesenhado ? 'FP: dado ok' : 'FP: sem dado nesse período', W - 6, H - 6);
-    ctx.textAlign = 'left';
 }
-
-let _grFootprintTimer = null;
-
-function grFootprintIniciarTimer() {
-    if (_grFootprintTimer) return;
-    _grFootprintTimer = setInterval(grFootprintRedesenharOverlay, 1000);
-    grFootprintRedesenharOverlay();
-}
-
-function grFootprintPararTimer() {
-    if (_grFootprintTimer) {
-        clearInterval(_grFootprintTimer);
-        _grFootprintTimer = null;
-    }
-}
-
 
 function grDrawChart() {
     // Se crosshair ativo, redesenha com crosshair
