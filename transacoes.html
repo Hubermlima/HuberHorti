@@ -4278,7 +4278,6 @@ if (_grTipoGrafico === 'linha') {
         const bodyH = Math.max(1, bodyBot - bodyTop);
         ctx.fillRect(x - cW / 2, bodyTop, cW, bodyH);
     });
-    grFootprintDesenhar(ctx, candles, toY, cW, PAD, chartW, totalSlots);
 }
 
 
@@ -6723,6 +6722,9 @@ function grToggleFootprint() {
     if (_grFootprintAtivo) {
         const hoje = grFootprintDiaKey(Date.now());
         grFootprintFetchDia(hoje);
+        grFootprintIniciarTimer();
+    } else {
+        grFootprintPararTimer();
     }
     grDrawChart();
 }
@@ -6766,10 +6768,51 @@ function grFootprintAgregarParaCandle(tIni, tFim) {
     return { niveis: lista, poc, delta, total };
 }
 
-// Desenha o footprint sobre os candles visíveis já renderizados
-function grFootprintDesenhar(ctx, candles, toY, cW, PAD, chartW, totalSlots) {
-    if (!_grFootprintAtivo || cW < 14) return;
+// Desenha o footprint direto no canvas principal, de forma totalmente
+// independente do resto do código de renderização — recalcula sozinho
+// a posição de cada candle, sem depender de nenhum gancho interno.
+function grFootprintRedesenharOverlay() {
+    if (!_grFootprintAtivo) return;
+    if (typeof grDrawChart === 'function') grDrawChart();
 
+    const canvas = document.getElementById('gr-chart-canvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+
+    const total = _grAllCandles.length;
+    if (total === 0) return;
+    const visible = Math.min(_grZoom, total);
+    const maxOff = total + Math.floor(_grZoom * 0.5);
+    const startIdx = Math.max(0, Math.min(maxOff, _grOffset));
+    const candles = _grAllCandles.slice(startIdx, startIdx + visible);
+    if (candles.length === 0) return;
+    const emptyRight = Math.max(0, visible - candles.length);
+    const totalSlots = candles.length + emptyRight;
+
+    let minP = window._grVisibleLow;
+    let maxP = window._grVisibleHigh;
+    if (minP == null || maxP == null || !isFinite(minP) || !isFinite(maxP)) return;
+    const pad5 = (maxP - minP) * 0.05;
+    minP -= pad5; maxP += pad5;
+    if (maxP === minP) return;
+
+    const PAD = { top: 22, right: 24, bottom: 30, left: 45 };
+    ctx.font = '10px -apple-system';
+    const fmtFn = (typeof fmtN === 'function') ? fmtN : (n => n.toFixed(0));
+    const maxW = Math.max(ctx.measureText(fmtFn(maxP)).width, ctx.measureText(fmtFn(minP)).width);
+    PAD.left = Math.ceil(maxW) + 14;
+
+    const chartW = W - PAD.left - PAD.right;
+    const chartH = H - PAD.top - PAD.bottom;
+    if (chartW <= 0 || chartH <= 0) return;
+    const cW = Math.max(2, Math.floor(chartW / Math.max(totalSlots, 1)) - 1);
+
+    function toY(p) {
+        return PAD.top + (1 - (p - minP) / (maxP - minP)) * chartH;
+    }
+
+    let algumDesenhado = false;
     candles.forEach((c, i) => {
         const nextC = candles[i + 1];
         const prevC = candles[i - 1];
@@ -6777,52 +6820,51 @@ function grFootprintDesenhar(ctx, candles, toY, cW, PAD, chartW, totalSlots) {
         const tFim = c.t + intervalo;
         const agregado = grFootprintAgregarParaCandle(c.t, tFim);
         if (!agregado) return;
+        algumDesenhado = true;
 
         const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
+        const yPoc = toY(agregado.poc);
+        const cor = agregado.delta >= 0 ? '#26A69A' : '#EF5350';
 
-        if (cW >= 60) {
-            // Espaço amplo: ladder completo, venda à esquerda, compra à direita, POC destacado
-            ctx.font = '9px -apple-system';
-            const alturaLinha = 11;
-            agregado.niveis.forEach(n => {
-                const y = toY(n.p);
-                const ehPoc = n.p === agregado.poc;
-                if (ehPoc) {
-                    ctx.fillStyle = '#000000';
-                    ctx.fillRect(x - cW / 2 - 2, y - alturaLinha / 2, cW + 4, alturaLinha);
-                }
-                ctx.fillStyle = ehPoc ? '#FFFFFF' : '#EF5350';
-                ctx.textAlign = 'right';
-                ctx.fillText(n.venda > 0 ? n.venda.toFixed(2) : '', x - 2, y + 3);
-                ctx.fillStyle = ehPoc ? '#FFFFFF' : '#26A69A';
-                ctx.textAlign = 'left';
-                ctx.fillText(n.compra > 0 ? n.compra.toFixed(2) : '', x + 2, y + 3);
-            });
-        } else {
-            // Espaço estreito (caso comum no celular): marcador de POC + delta legível
-            const yPoc = toY(agregado.poc);
-            const cor = agregado.delta >= 0 ? '#26A69A' : '#EF5350';
+        ctx.strokeStyle = cor;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(x - cW / 2, yPoc);
+        ctx.lineTo(x + cW / 2, yPoc);
+        ctx.stroke();
 
-            // Linha curta marcando o nível do POC
-            ctx.strokeStyle = cor;
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.moveTo(x - cW / 2, yPoc);
-            ctx.lineTo(x + cW / 2, yPoc);
-            ctx.stroke();
-
-            // Delta como número legível, acima do candle
-            const yTopo = toY(Math.max(c.o, c.c, c.h)) - 12;
-            ctx.font = 'bold 10px -apple-system';
-            ctx.textAlign = 'center';
-            ctx.fillStyle = '#0D0F18';
-            ctx.fillRect(x - 16, yTopo - 9, 32, 12);
-            ctx.fillStyle = cor;
-            const deltaTxt = (agregado.delta >= 0 ? '+' : '') + agregado.delta.toFixed(1);
-            ctx.fillText(deltaTxt, x, yTopo);
-        }
+        const yTopo = PAD.top + 16;
+        ctx.font = 'bold 10px -apple-system';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#0D0F18';
+        ctx.fillRect(x - 18, yTopo - 10, 36, 13);
+        ctx.fillStyle = cor;
+        const deltaTxt = (agregado.delta >= 0 ? '+' : '') + agregado.delta.toFixed(1);
+        ctx.fillText(deltaTxt, x, yTopo);
     });
     ctx.textAlign = 'left';
+
+    // Diagnóstico visível: mostra no canto se achou dado ou não
+    ctx.font = '10px -apple-system';
+    ctx.fillStyle = algumDesenhado ? '#26A69A' : '#EF5350';
+    ctx.textAlign = 'right';
+    ctx.fillText(algumDesenhado ? 'FP: dado ok' : 'FP: sem dado nesse período', W - 6, H - 6);
+    ctx.textAlign = 'left';
+}
+
+let _grFootprintTimer = null;
+
+function grFootprintIniciarTimer() {
+    if (_grFootprintTimer) return;
+    _grFootprintTimer = setInterval(grFootprintRedesenharOverlay, 1000);
+    grFootprintRedesenharOverlay();
+}
+
+function grFootprintPararTimer() {
+    if (_grFootprintTimer) {
+        clearInterval(_grFootprintTimer);
+        _grFootprintTimer = null;
+    }
 }
 
 
