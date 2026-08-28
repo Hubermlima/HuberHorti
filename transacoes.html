@@ -4266,23 +4266,24 @@ if (_grTipoGrafico === 'linha') {
         ctx.lineWidth = 1;
         ctx.setLineDash([]);
 
+        if (_grFootprintAtivo) {
+            // No modo footprint o candle "clássico" não é desenhado — o
+            // conteúdo visual é a grade de níveis (grFootprintDesenhar),
+            // que já desenha sua própria borda ao redor do range high/low.
+            return;
+        }
+
         // Wick
         ctx.beginPath();
         ctx.moveTo(x, toY(c.h));
         ctx.lineTo(x, toY(c.l));
         ctx.stroke();
 
-        // Body — no modo footprint vira só contorno fino, pois o conteúdo
-        // visual passa a ser a grade de níveis (grFootprintDesenhar), não o
-        // corpo cheio do candle.
+        // Body
         const bodyTop = toY(Math.max(c.o, c.c));
         const bodyBot = toY(Math.min(c.o, c.c));
         const bodyH = Math.max(1, bodyBot - bodyTop);
-        if (_grFootprintAtivo) {
-            ctx.strokeRect(x - cW / 2, bodyTop, cW, bodyH);
-        } else {
-            ctx.fillRect(x - cW / 2, bodyTop, cW, bodyH);
-        }
+        ctx.fillRect(x - cW / 2, bodyTop, cW, bodyH);
     });
     if (_grFootprintAtivo) grFootprintDesenhar(ctx, candles, toY, cW, PAD, chartW, totalSlots);
 }
@@ -6701,7 +6702,8 @@ function grInitTouch() {
 
 // ── Footprint (huberhorti-footprint worker) ───────────────────────────
 const FOOTPRINT_URL = 'https://huberhorti-footprint.huber-produtos.workers.dev/footprint';
-const FOOTPRINT_MIN_CANDLE_W = 70; // px mínimo por candle p/ caber a grade de níveis (etapa 1)
+const FOOTPRINT_MIN_CANDLE_W = 46; // px mínimo por candle — fino/alto, não gordo/curto
+const FOOTPRINT_ROW_H = 9; // px alvo por linha de preço
 let _grFootprintAtivo = false;
 let _grFootprintCache = {};
 let _grFootprintFetching = {};
@@ -6739,9 +6741,53 @@ function grToggleFootprint() {
 }
 let _grFootprintTimer = null;
 
-function grFootprintAgregarParaCandle(tIni, tFim) {
+// Formata volume compacto — "314", "4.13K" (padrão do print do TradingView)
+function grFootprintFmtVol(v) {
+    if (!v) return '0';
+    const abs = Math.abs(v);
+    const sinal = v < 0 ? '-' : '';
+    if (abs >= 1000) return sinal + (abs / 1000).toFixed(2) + 'K';
+    if (abs >= 1) return sinal + abs.toFixed(0);
+    return sinal + abs.toFixed(2);
+}
+
+// Escolhe o tamanho de bucket (múltiplo do tick de $10 gravado pelo worker)
+// necessário p/ que o range de preço do candle caiba em no máximo maxRows
+// linhas. Sem isso, candles de timeframe alto (1h/1D) teriam centenas de
+// níveis de $10 — ilegível.
+function grFootprintCalcularBucket(minP, maxP, maxRows) {
+    const range = maxP - minP;
+    if (range <= 0 || maxRows <= 0) return 10;
+    const passos = [10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000];
+    for (const b of passos) {
+        if (range / b <= maxRows) return b;
+    }
+    return passos[passos.length - 1];
+}
+
+// Mescla níveis originais ($10) em buckets maiores, somando compra/venda.
+function grFootprintMesclarNiveis(niveisOriginais, bucket) {
+    if (bucket <= 10) return niveisOriginais;
+    const map = new Map();
+    for (const n of niveisOriginais) {
+        const pB = Math.floor(n.p / bucket) * bucket;
+        if (!map.has(pB)) map.set(pB, { compra: 0, venda: 0 });
+        const e = map.get(pB);
+        e.compra += n.compra;
+        e.venda += n.venda;
+    }
+    const lista = [];
+    for (const [p, v] of map.entries()) lista.push({ p, compra: v.compra, venda: v.venda });
+    lista.sort((a, b) => b.p - a.p);
+    return lista;
+}
+
+// Agrega os dados brutos do worker (níveis de $10, por minuto) para o
+// intervalo [tIni, tFim) de um candle, opcionalmente mesclando em buckets
+// maiores p/ caber em maxRows linhas.
+function grFootprintAgregarParaCandle(tIni, tFim, maxRows) {
     const dias = new Set([grFootprintDiaKey(tIni), grFootprintDiaKey(tFim - 1)]);
-    const niveis = new Map();
+    const niveisRaw = new Map();
     let algumDado = false;
     for (const dia of dias) {
         const dados = _grFootprintCache[dia];
@@ -6754,8 +6800,8 @@ function grFootprintAgregarParaCandle(tIni, tFim) {
             if (entry.ts >= tIni && entry.ts < tFim) {
                 algumDado = true;
                 for (const nivel of entry.niveis) {
-                    if (!niveis.has(nivel.p)) niveis.set(nivel.p, { compra: 0, venda: 0 });
-                    const n = niveis.get(nivel.p);
+                    if (!niveisRaw.has(nivel.p)) niveisRaw.set(nivel.p, { compra: 0, venda: 0 });
+                    const n = niveisRaw.get(nivel.p);
                     n.compra += nivel.c;
                     n.venda += nivel.v;
                 }
@@ -6763,48 +6809,117 @@ function grFootprintAgregarParaCandle(tIni, tFim) {
         }
     }
     if (!algumDado) return null;
+
+    let lista = [];
+    for (const [p, { compra, venda }] of niveisRaw.entries()) lista.push({ p, compra, venda });
+    lista.sort((a, b) => b.p - a.p);
+
+    if (maxRows && lista.length > maxRows) {
+        const minP = lista[lista.length - 1].p;
+        const maxP = lista[0].p;
+        const bucket = grFootprintCalcularBucket(minP, maxP, maxRows);
+        lista = grFootprintMesclarNiveis(lista, bucket);
+    }
+
     let poc = null, pocVol = -1, delta = 0, total = 0;
-    const lista = [];
-    for (const [p, { compra, venda }] of niveis.entries()) {
+    for (const { p, compra, venda } of lista) {
         const t = compra + venda;
-        lista.push({ p, compra, venda });
         delta += compra - venda;
         total += t;
         if (t > pocVol) { pocVol = t; poc = p; }
     }
-    lista.sort((a, b) => b.p - a.p);
     return { niveis: lista, poc, delta, total };
 }
 
+// Desenha a grade de footprint (Etapas 2-5): níveis compra/venda por linha,
+// destaque do POC, heatmap de volume, rodapé Delta/Total.
 function grFootprintDesenhar(ctx, candles, toY, cW, PAD, chartW, totalSlots) {
+    ctx.textBaseline = 'middle';
+
     candles.forEach((c, i) => {
         const nextC = candles[i + 1];
         const prevC = candles[i - 1];
         const intervalo = nextC ? nextC.t - c.t : (prevC ? c.t - prevC.t : 60000);
         const tFim = c.t + intervalo;
-        const agregado = grFootprintAgregarParaCandle(c.t, tFim);
-        if (!agregado) return;
+
+        const yTop = toY(c.h);
+        const yBot = toY(c.l);
+        const alturaPx = Math.max(1, yBot - yTop);
+        const maxRows = Math.max(3, Math.min(40, Math.floor(alturaPx / FOOTPRINT_ROW_H)));
+
+        const agregado = grFootprintAgregarParaCandle(c.t, tFim, maxRows);
+        if (!agregado || !agregado.niveis.length) return;
 
         const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
-        const yPoc = toY(agregado.poc);
-        const cor = agregado.delta >= 0 ? '#26A69A' : '#EF5350';
+        const n = agregado.niveis.length;
+        const rowH = alturaPx / n;
+        const isUp = agregado.delta >= 0;
+        const corDelta = isUp ? '#26A69A' : '#EF5350';
 
-        ctx.strokeStyle = cor;
-        ctx.lineWidth = 3;
+        let maxCel = 0;
+        agregado.niveis.forEach(l => { maxCel = Math.max(maxCel, l.compra + l.venda); });
+
+        // Borda ao redor de todo o range high/low — substitui o candle clássico
+        ctx.strokeStyle = corDelta;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x - cW / 2 + 0.5, yTop + 0.5, cW - 1, alturaPx - 1);
+
+        ctx.font = '7px -apple-system';
+        agregado.niveis.forEach((lvl, idx) => {
+            const yRow = yTop + idx * rowH;
+            const cel = lvl.compra + lvl.venda;
+            const intensidade = maxCel > 0 ? cel / maxCel : 0;
+
+            // Heatmap — nós de alto volume ganham fundo escuro (estilo "caixa preta")
+            if (intensidade >= 0.7) {
+                ctx.fillStyle = 'rgba(0,0,0,0.65)';
+                ctx.fillRect(x - cW / 2 + 1, yRow, cW - 2, rowH);
+            } else if (intensidade >= 0.35) {
+                ctx.fillStyle = 'rgba(0,0,0,0.32)';
+                ctx.fillRect(x - cW / 2 + 1, yRow, cW - 2, rowH);
+            }
+
+            // Destaque do nível POC
+            if (lvl.p === agregado.poc) {
+                ctx.strokeStyle = '#FFD54F';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(x - cW / 2 + 1, yRow + 0.5, cW - 2, rowH - 1);
+            }
+
+            const yTxt = yRow + rowH / 2;
+            // Venda — coluna esquerda, alinhada ao divisor central
+            ctx.textAlign = 'right';
+            ctx.fillStyle = lvl.venda > 0 ? '#EF5350' : '#5A5F6E';
+            ctx.fillText(grFootprintFmtVol(lvl.venda), x - 2, yTxt);
+            // Compra — coluna direita, alinhada ao divisor central
+            ctx.textAlign = 'left';
+            ctx.fillStyle = lvl.compra > 0 ? '#26A69A' : '#5A5F6E';
+            ctx.fillText(grFootprintFmtVol(lvl.compra), x + 2, yTxt);
+        });
+
+        // Divisor central compra/venda
+        ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+        ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.moveTo(x - cW / 2, yPoc);
-        ctx.lineTo(x + cW / 2, yPoc);
+        ctx.moveTo(x, yTop);
+        ctx.lineTo(x, yBot);
         ctx.stroke();
 
-        const yTopo = toY(Math.max(c.o, c.c, c.h)) - 14;
-        ctx.font = 'bold 10px -apple-system';
+        // Rodapé Delta / Total
+        const footerY = yBot + 2;
         ctx.textAlign = 'center';
         ctx.fillStyle = '#0D0F18';
-        ctx.fillRect(x - 18, yTopo - 10, 36, 13);
-        ctx.fillStyle = cor;
-        ctx.fillText((agregado.delta >= 0 ? '+' : '') + agregado.delta.toFixed(1), x, yTopo);
+        ctx.fillRect(x - cW / 2, footerY, cW, 18);
+        ctx.font = 'bold 8px -apple-system';
+        ctx.fillStyle = corDelta;
+        ctx.fillText((agregado.delta >= 0 ? '+' : '') + grFootprintFmtVol(agregado.delta), x, footerY + 7);
+        ctx.font = '7px -apple-system';
+        ctx.fillStyle = '#8E8E93';
+        ctx.fillText(grFootprintFmtVol(agregado.total), x, footerY + 15);
     });
+
     ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
 }
 
 function grDrawChart() {
