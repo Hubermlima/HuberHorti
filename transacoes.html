@@ -13442,6 +13442,22 @@ function cvFecharSetupSheet() {
   </div>
 </div>
 
+<!-- Modal de footprint de um candle específico (ladder de preços, compra/venda por nível) -->
+<div id="footprint-candle-overlay" style="display:none;position:fixed;inset:0;z-index:6500;background:rgba(0,0,0,0.6);" onclick="grFootprintFecharCandleModal()">
+  <div onclick="event.stopPropagation()" style="position:absolute;bottom:0;left:0;right:0;background:#1E222D;border-radius:20px 20px 0 0;display:flex;flex-direction:column;max-height:78vh;padding-bottom:env(safe-area-inset-bottom);">
+    <div style="width:36px;height:4px;border-radius:2px;background:rgba(255,255,255,0.2);margin:12px auto 0;flex-shrink:0;"></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px 4px;flex-shrink:0;">
+      <div style="font-size:15px;font-weight:800;color:#FFFFFF;font-family:-apple-system,sans-serif;" id="footprint-candle-titulo">—</div>
+      <button onclick="grFootprintFecharCandleModal()" style="background:rgba(255,255,255,0.1);border:none;color:#FFFFFF;font-size:16px;width:28px;height:28px;border-radius:50%;cursor:pointer;">✕</button>
+    </div>
+    <div style="padding:0 16px 8px;color:#8E8E93;font-size:11px;font-family:-apple-system,sans-serif;flex-shrink:0;" id="footprint-candle-sub"></div>
+    <div style="flex:1;overflow-y:auto;padding:0 16px;-webkit-overflow-scrolling:touch;">
+      <canvas id="footprint-candle-canvas" style="width:100%;display:block;"></canvas>
+    </div>
+    <div style="padding:10px 16px 4px;text-align:center;font-weight:800;font-size:13px;font-family:-apple-system,sans-serif;border-top:0.5px solid rgba(255,255,255,0.08);flex-shrink:0;" id="footprint-candle-footer"></div>
+  </div>
+</div>
+
 <script>
 const FOOTPRINT_MAX_DIAS = 15;        // trava de segurança — não busca mais que isso de uma vez, ao ativar
 const FOOTPRINT_MIN_PCT = 0.04;       // esconde barras com menos de 4% do volume do POC (reduz ruído)
@@ -13458,6 +13474,26 @@ let _grFootprintUltimaMudancaTs = 0;
 let _grFootprintUltimoRangeCalc = null;   // {from,to} já processado — evita reprocessar o mesmo range à toa
 let _grFootprintOverlayInterval = null;
 let _grFootprintRetangulos = [];       // retângulos desenhados no último frame, p/ detectar toque numa barra
+
+// Duração de 1 candle do timeframe ATUAL do gráfico principal, em ms.
+function grFootprintMsPorCandle() {
+    if (_grTf === 'custom' && _grTfCustomUnit && _grTfCustomAmount) {
+        const qtd = _grTfCustomAmount;
+        if (_grTfCustomUnit === 'min') return qtd * 60000;
+        if (_grTfCustomUnit === 'hor') return qtd * 3600000;
+        if (_grTfCustomUnit === 'dia') return qtd * 86400000;
+        if (_grTfCustomUnit === 'mes') return qtd * 30 * 86400000;
+    }
+    switch (_grTf) {
+        case '15m':    return 15 * 60000;
+        case '1h':     return 3600000;
+        case '4h':     return 4 * 3600000;
+        case '1day':   return 86400000;
+        case '1week':  return 7 * 86400000;
+        case '1month': return 30 * 86400000;
+        default:       return 4 * 3600000;
+    }
+}
 
 function grFootprintDiasEntre(fromMs, toMs) {
     const dias = [];
@@ -13632,9 +13668,59 @@ function grFootprintGarantirOverlayCanvas() {
         overlay.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:5;';
         wrap.appendChild(overlay);
     }
-    if (!wrap.dataset.footprintClickBind) {
-        wrap.addEventListener('click', grFootprintClickHandler);
-        wrap.dataset.footprintClickBind = '1';
+    // Fase de CAPTURA no wrap (ancestral do canvas) — roda ANTES do touchstart/touchend
+    // do próprio gráfico. O toque no gráfico sempre dá e.preventDefault(), o que
+    // suprime o 'click' sintético do mobile — por isso o clique nunca disparava.
+    // Aqui a gente intercepta o toque bruto: se cair numa barra do histograma ou
+    // num candle, para a propagação (stopPropagation) e trata por conta própria;
+    // senão deixa passar pro gráfico normalmente (scroll/zoom intactos).
+    if (!wrap.dataset.footprintTouchBind) {
+        wrap.addEventListener('touchstart', grFootprintTouchStart, { capture: true, passive: true });
+        wrap.addEventListener('touchend', grFootprintTouchEnd, { capture: true, passive: false });
+        wrap.dataset.footprintTouchBind = '1';
+    }
+}
+
+let _grFootprintToqueInicio = null; // {x, y} do touchstart, só pra medir se moveu (arrasto) ou foi toque parado
+
+function grFootprintTouchStart(e) {
+    if (!_grFootprintAtivo || e.touches.length !== 1) { _grFootprintToqueInicio = null; return; }
+    _grFootprintToqueInicio = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+}
+
+function grFootprintTouchEnd(e) {
+    if (!_grFootprintAtivo || !_grFootprintToqueInicio) return;
+    const inicio = _grFootprintToqueInicio;
+    _grFootprintToqueInicio = null;
+    const touch = e.changedTouches && e.changedTouches[0];
+    if (!touch) return;
+    if (Math.hypot(touch.clientX - inicio.x, touch.clientY - inicio.y) > 12) return; // moveu — foi arrasto/pan, ignora
+
+    const overlay = document.getElementById('footprint-overlay-canvas');
+    const canvas = document.getElementById('gr-chart-canvas');
+    if (!overlay || !canvas) return;
+    const rect = overlay.getBoundingClientRect();
+    // Mesma conversão CSS->pixels internos do canvas usada no resto do app (toCanvasY/ex2/ey2)
+    const xInterno = (touch.clientX - rect.left) * (canvas.width / rect.width);
+    const yInterno = (touch.clientY - rect.top) * (canvas.height / rect.height);
+
+    // 1) Bateu numa barra do histograma?
+    for (const r of _grFootprintRetangulos) {
+        if (xInterno >= r.xMin && xInterno <= r.xMax && yInterno >= r.yMin && yInterno <= r.yMax) {
+            e.preventDefault();
+            e.stopPropagation();
+            grFootprintAbrirNivelModal(r.p, r.v, r.total, r.tick);
+            return;
+        }
+    }
+
+    // 2) Bateu num candle específico? (fora da faixa do histograma, ou histograma sem barra ali)
+    const absIdx = grXToIndex(xInterno);
+    const candle = _grAllCandles[Math.round(absIdx)];
+    if (candle) {
+        e.preventDefault();
+        e.stopPropagation();
+        grFootprintAbrirCandleModal(candle);
     }
 }
 
@@ -13707,18 +13793,6 @@ function grFootprintDesenharOverlay() {
             ctx.strokeStyle = '#FFA726';
             ctx.lineWidth = 1.5;
             ctx.strokeRect(rightEdge - barW, y0, barW, rowH - 1);
-            ctx.setLineDash([3, 3]);
-            ctx.strokeStyle = 'rgba(255,167,38,0.6)';
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(window._grPADLeft, yCentro);
-            ctx.lineTo(rightEdge - barW, yCentro);
-            ctx.stroke();
-            ctx.setLineDash([]);
-            ctx.font = 'bold 10px -apple-system';
-            ctx.fillStyle = '#FFA726';
-            ctx.textAlign = 'left';
-            ctx.fillText('POC ' + p.toLocaleString('pt-BR'), window._grPADLeft + 4, yCentro - 3);
         }
 
         if (rowH >= 10 && barW > 26) {
@@ -13735,23 +13809,6 @@ function grFootprintDesenharOverlay() {
             p, v, total, tick
         });
     });
-}
-
-// Clique em qualquer ponto do gráfico enquanto o footprint está ativo — se cair
-// dentro da faixa de uma barra, abre o modal de detalhe daquele nível de preço.
-function grFootprintClickHandler(evt) {
-    if (!_grFootprintAtivo || !_grFootprintRetangulos.length) return;
-    const overlay = document.getElementById('footprint-overlay-canvas');
-    if (!overlay) return;
-    const rect = overlay.getBoundingClientRect();
-    const x = evt.clientX - rect.left;
-    const y = evt.clientY - rect.top;
-    for (const r of _grFootprintRetangulos) {
-        if (x >= r.xMin && x <= r.xMax && y >= r.yMin && y <= r.yMax) {
-            grFootprintAbrirNivelModal(r.p, r.v, r.total, r.tick);
-            return;
-        }
-    }
 }
 
 function grFootprintAbrirNivelModal(p, v, total, tick) {
@@ -13807,6 +13864,97 @@ function grFootprintDesenharNivelChart(compra, venda, total) {
         ctx.font = '11px -apple-system';
         ctx.fillStyle = '#8E8E93';
         ctx.fillText(d.label, x + barW / 2, padTop + chartH + 18);
+    });
+}
+
+// Agrega os candles brutos (1min) de _grFootprintCandlesRaw que caem dentro do
+// período do candle tocado (candle.t até candle.t + duração do timeframe atual)
+// e abre o modal em formato de ladder (níveis de preço empilhados, venda à
+// esquerda / compra à direita), igual ao footprint clássico por candle.
+function grFootprintAbrirCandleModal(candle) {
+    if (!_grFootprintCandlesRaw) return;
+    const msPorCandle = grFootprintMsPorCandle();
+    const de = candle.t, ate = candle.t + msPorCandle;
+
+    const mapa = new Map();
+    let encontrados = 0;
+    for (const c of _grFootprintCandlesRaw) {
+        if (c.ts < de || c.ts >= ate) continue;
+        encontrados++;
+        (c.niveis || []).forEach(n => {
+            if (!mapa.has(n.p)) mapa.set(n.p, { c: 0, v: 0 });
+            const acc = mapa.get(n.p);
+            acc.c += n.c;
+            acc.v += n.v;
+        });
+    }
+
+    if (mapa.size === 0) {
+        alert('Sem dados de footprint carregados pra esse candle (fora dos últimos ' + FOOTPRINT_MAX_DIAS + ' dias baixados).');
+        return;
+    }
+
+    grFootprintDesenharCandleLadder(candle, de, mapa, encontrados);
+}
+
+function grFootprintFecharCandleModal() {
+    document.getElementById('footprint-candle-overlay').style.display = 'none';
+}
+
+function grFootprintDesenharCandleLadder(candle, tCandleStart, mapa, numCandles1min) {
+    const niveis = [...mapa.entries()].sort((a, b) => b[0] - a[0]); // preço decrescente, topo pro fundo
+    let totalCompra = 0, totalVenda = 0;
+    niveis.forEach(([, v]) => { totalCompra += v.c; totalVenda += v.v; });
+    const delta = totalCompra - totalVenda;
+    const totalGeral = totalCompra + totalVenda;
+
+    const dataStr = new Date(tCandleStart).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    document.getElementById('footprint-candle-titulo').textContent = `Candle ${dataStr} · TF ${_grTf}`;
+    document.getElementById('footprint-candle-sub').textContent =
+        `O ${fmtN(candle.o)} · H ${fmtN(candle.h)} · L ${fmtN(candle.l)} · C ${fmtN(candle.c)} · ${numCandles1min} candles (1min) agregados`;
+    document.getElementById('footprint-candle-footer').textContent =
+        `Delta ${delta >= 0 ? '+' : ''}${delta.toFixed(3)} BTC · Total ${totalGeral.toFixed(3)} BTC`;
+    document.getElementById('footprint-candle-footer').style.color = delta >= 0 ? '#4CAF50' : '#EF5350';
+
+    document.getElementById('footprint-candle-overlay').style.display = 'block';
+    requestAnimationFrame(() => {
+        const rowH = 22;
+        const canvas = document.getElementById('footprint-candle-canvas');
+        const W = canvas.parentElement.clientWidth;
+        const H = Math.max(rowH * niveis.length, rowH);
+        canvas.width = W;
+        canvas.height = H;
+        canvas.style.height = H + 'px';
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, W, H);
+
+        const centroX = W / 2;
+        const meiaLargura = W * 0.30;
+        const maxQtd = Math.max(...niveis.map(([, v]) => Math.max(v.c, v.v)), 0.0001);
+
+        niveis.forEach(([p, v], i) => {
+            const y = i * rowH;
+            // venda (vermelho) cresce pra ESQUERDA a partir do centro
+            const wVenda = (v.v / maxQtd) * meiaLargura;
+            ctx.fillStyle = 'rgba(239,83,80,0.7)';
+            ctx.fillRect(centroX - wVenda, y + 1, wVenda, rowH - 2);
+            // compra (verde) cresce pra DIREITA a partir do centro
+            const wCompra = (v.c / maxQtd) * meiaLargura;
+            ctx.fillStyle = 'rgba(76,175,80,0.7)';
+            ctx.fillRect(centroX, y + 1, wCompra, rowH - 2);
+
+            ctx.font = '10px -apple-system';
+            ctx.fillStyle = '#fff';
+            ctx.textAlign = 'right';
+            ctx.fillText(v.v.toFixed(3), centroX - wVenda - 4, y + rowH / 2 + 3);
+            ctx.textAlign = 'left';
+            ctx.fillText(v.c.toFixed(3), centroX + wCompra + 4, y + rowH / 2 + 3);
+
+            ctx.font = 'bold 10px -apple-system';
+            ctx.fillStyle = '#E5E5EA';
+            ctx.textAlign = 'center';
+            ctx.fillText(p.toLocaleString('pt-BR'), centroX, y + rowH / 2 + 3);
+        });
     });
 }
 </script>
