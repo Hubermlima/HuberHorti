@@ -13429,15 +13429,20 @@ function cvFecharSetupSheet() {
 
 <!-- Modal de detalhe de um nível de preço do footprint -->
 <div id="footprint-nivel-overlay" style="display:none;position:fixed;inset:0;z-index:6500;background:rgba(0,0,0,0.6);" onclick="grFootprintFecharNivelModal()">
-  <div onclick="event.stopPropagation()" style="position:absolute;bottom:0;left:0;right:0;background:#1E222D;border-radius:20px 20px 0 0;display:flex;flex-direction:column;max-height:60vh;padding-bottom:env(safe-area-inset-bottom);">
+  <div onclick="event.stopPropagation()" style="position:absolute;bottom:0;left:0;right:0;background:#1E222D;border-radius:20px 20px 0 0;display:flex;flex-direction:column;max-height:88vh;padding-bottom:env(safe-area-inset-bottom);">
     <div style="width:36px;height:4px;border-radius:2px;background:rgba(255,255,255,0.2);margin:12px auto 0;flex-shrink:0;"></div>
     <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px 8px;flex-shrink:0;">
       <div style="font-size:15px;font-weight:800;color:#FFFFFF;font-family:-apple-system,sans-serif;" id="footprint-nivel-titulo">—</div>
       <button onclick="grFootprintFecharNivelModal()" style="background:rgba(255,255,255,0.1);border:none;color:#FFFFFF;font-size:16px;width:28px;height:28px;border-radius:50%;cursor:pointer;">✕</button>
     </div>
     <div style="padding:0 16px 4px;color:#8E8E93;font-size:12px;font-family:-apple-system,sans-serif;line-height:1.5;" id="footprint-nivel-sub"></div>
-    <div style="flex:1;position:relative;padding:8px 16px 20px;">
+    <div style="flex:1;min-height:0;overflow-y:auto;padding:8px 16px 20px;-webkit-overflow-scrolling:touch;">
       <canvas id="footprint-nivel-canvas" style="width:100%;height:180px;display:block;"></canvas>
+      <div id="footprint-nivel-serie-wrap" style="display:none;margin-top:18px;border-top:0.5px solid rgba(255,255,255,0.08);padding-top:14px;">
+        <div style="color:#8E8E93;font-size:11px;margin-bottom:2px;" id="footprint-nivel-serie-titulo"></div>
+        <div style="color:#E5E5EA;font-size:12px;font-weight:700;margin-bottom:8px;" id="footprint-nivel-serie-interpretacao"></div>
+        <canvas id="footprint-nivel-serie-canvas" style="width:100%;height:110px;display:block;"></canvas>
+      </div>
     </div>
   </div>
 </div>
@@ -13822,6 +13827,33 @@ function grFootprintAbrirNivelModal(p, v, total, tick) {
     document.getElementById('footprint-nivel-overlay').style.display = 'block';
     grFootprintAtualizarVisibilidadePainel();
     requestAnimationFrame(() => grFootprintDesenharNivelChart(v.c, v.v, total, delta));
+
+    // Se esse nível foi tocado a partir do ladder de um candle (não do histograma
+    // principal), mostra também a série minuto a minuto — é o que distingue um
+    // sweep único (1 pico isolado) de retestes repetidos (defesa/ZII de verdade).
+    const wrapSerie = document.getElementById('footprint-nivel-serie-wrap');
+    if (_grFootprintCandleContexto) {
+        const serie = grFootprintObterSerieNivel(p, tick);
+        if (serie && serie.length > 0) {
+            wrapSerie.style.display = 'block';
+            const toques = grFootprintContarToques(serie);
+            document.getElementById('footprint-nivel-serie-titulo').textContent =
+                `Minuto a minuto dentro do candle (${serie.length} candles de 1min) — cada barra é 1 minuto`;
+            const interpretEl = document.getElementById('footprint-nivel-serie-interpretacao');
+            if (toques <= 1) {
+                interpretEl.textContent = '1 movimento único (sweep) — compatível com iniciação agressiva, não defesa repetida.';
+                interpretEl.style.color = '#FFA726';
+            } else {
+                interpretEl.textContent = `Nível retestado em ${toques} momentos distintos — compatível com defesa/absorção (ZII).`;
+                interpretEl.style.color = '#4CAF50';
+            }
+            requestAnimationFrame(() => grFootprintDesenharSerieNivel(serie));
+        } else {
+            wrapSerie.style.display = 'none';
+        }
+    } else {
+        wrapSerie.style.display = 'none';
+    }
 }
 
 function grFootprintAtualizarVisibilidadePainel() {
@@ -13834,6 +13866,85 @@ function grFootprintAtualizarVisibilidadePainel() {
 function grFootprintFecharNivelModal() {
     document.getElementById('footprint-nivel-overlay').style.display = 'none';
     grFootprintAtualizarVisibilidadePainel();
+}
+
+// Filtra os candles brutos (1min) do candle-pai aberto (_grFootprintCandleContexto)
+// e soma, minuto a minuto, só o volume que caiu no MESMO bucket de preço tocado
+// (usa a mesma regra de arredondamento da ladder: Math.round(Math.round(p/tick)*tick)).
+function grFootprintObterSerieNivel(precoBucket, tick) {
+    if (!_grFootprintCandleContexto || !_grFootprintCandlesRaw) return null;
+    const { de, ate } = _grFootprintCandleContexto;
+    const candles1m = _grFootprintCandlesRaw
+        .filter(c => c.ts >= de && c.ts < ate)
+        .sort((a, b) => a.ts - b.ts);
+
+    return candles1m.map(c => {
+        let compra = 0, venda = 0;
+        (c.niveis || []).forEach(n => {
+            const pAgr = Math.round(Math.round(n.p / tick) * tick);
+            if (pAgr === precoBucket) { compra += n.c; venda += n.v; }
+        });
+        return { ts: c.ts, compra, venda };
+    });
+}
+
+// Conta quantos "momentos" distintos de atividade existem na série — segmentos
+// de minutos com volume separados por pelo menos 1 minuto zerado. 1 = sweep
+// único; 2+ = o preço voltou ao nível várias vezes (reteste/defesa).
+function grFootprintContarToques(serie) {
+    let toques = 0, dentro = false;
+    serie.forEach(s => {
+        const ativo = (s.compra + s.venda) > 0;
+        if (ativo && !dentro) { toques++; dentro = true; }
+        if (!ativo) dentro = false;
+    });
+    return toques;
+}
+
+// Gráfico compacto tipo "cardiograma": cada barra é 1 minuto do candle-pai,
+// compra cresce pra cima do eixo (verde), venda cresce pra baixo (vermelho).
+// Picos isolados = sweep único; vários picos separados = retestes repetidos.
+function grFootprintDesenharSerieNivel(serie) {
+    const canvas = document.getElementById('footprint-nivel-serie-canvas');
+    if (!canvas) return;
+    const W = canvas.parentElement.clientWidth, H = 110;
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, W, H);
+
+    const meioY = H / 2;
+    const maxV = Math.max(...serie.map(s => Math.max(s.compra, s.venda)), 0.0001);
+    const barW = Math.max(1, W / serie.length);
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, meioY);
+    ctx.lineTo(W, meioY);
+    ctx.stroke();
+
+    serie.forEach((s, i) => {
+        const x = i * barW;
+        const wBar = Math.max(1, barW - 0.5);
+        if (s.compra > 0) {
+            const h = (s.compra / maxV) * (meioY - 8);
+            ctx.fillStyle = 'rgba(76,175,80,0.85)';
+            ctx.fillRect(x, meioY - h, wBar, h);
+        }
+        if (s.venda > 0) {
+            const h = (s.venda / maxV) * (meioY - 8);
+            ctx.fillStyle = 'rgba(239,83,80,0.85)';
+            ctx.fillRect(x, meioY, wBar, h);
+        }
+    });
+
+    ctx.font = '9px -apple-system';
+    ctx.fillStyle = '#8E8E93';
+    ctx.textAlign = 'left';
+    ctx.fillText('compra ▲', 2, 10);
+    ctx.textAlign = 'left';
+    ctx.fillText('venda ▼', 2, H - 3);
 }
 
 // Gráfico de barras verticais simples: Compra x Venda x Delta x Total (em BTC) daquele nível.
@@ -13905,18 +14016,21 @@ function grFootprintAbrirCandleModal(candle) {
         return;
     }
 
+    _grFootprintCandleContexto = { de, ate };
     grFootprintDesenharCandleLadder(candle, de, mapaFino, encontrados);
     grFootprintAtualizarVisibilidadePainel();
 }
 
 function grFootprintFecharCandleModal() {
     document.getElementById('footprint-candle-overlay').style.display = 'none';
+    _grFootprintCandleContexto = null;
     grFootprintAtualizarVisibilidadePainel();
 }
 
 let _grFootprintCandleLinhas = [];   // linhas do frame atual, p/ detectar toque: {p, v, total, tick, yTop, yBottom}
 let _grFootprintCandleTickAtual = 10;
 let _grFootprintCandleTouchBind = false;
+let _grFootprintCandleContexto = null; // {de, ate} do candle aberto — usado pra série temporal de um nível dentro dele
 
 function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCandles1min) {
     const lo = candle.l, hi = candle.h;
