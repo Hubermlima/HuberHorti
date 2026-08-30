@@ -13420,7 +13420,7 @@ function cvFecharSetupSheet() {
 </div>
 
 
-<!-- ═══ INÍCIO Etapa 6 — presets de range por timeframe + divisão compra/venda por barra (temporário, remover depois) ═══ -->
+<!-- ═══ INÍCIO Etapa 7 — range por número de candles do timeframe atual (temporário, remover depois) ═══ -->
 <button id="footprint-teste-btn"
     style="position:fixed;bottom:90px;right:12px;z-index:99999;background:#FFA726;color:#1C1C1E;border:none;border-radius:8px;padding:10px 14px;font-size:13px;font-weight:600;box-shadow:0 2px 8px rgba(0,0,0,0.3);"
     onclick="grFootprintAbrirPainel()">Testar Footprint</button>
@@ -13428,7 +13428,7 @@ function cvFecharSetupSheet() {
 <div id="footprint-teste-painel" style="display:none;position:fixed;left:12px;right:12px;bottom:150px;z-index:99998;background:#1C1C1E;border-radius:10px;padding:10px 12px;box-shadow:0 4px 16px rgba(0,0,0,0.4);">
     <div id="footprint-teste-chips" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;"></div>
     <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;">
-        <input id="footprint-teste-custom" type="number" placeholder="Range personalizado (horas)"
+        <input id="footprint-teste-custom" type="number" placeholder="Nº de candles personalizado"
             style="flex:1;background:#2C2C2E;color:#E5E5EA;border:none;border-radius:6px;padding:6px 8px;font-size:12px;">
         <button onclick="grFootprintAplicarCustom()"
             style="background:#3A3A3C;color:#FFA726;border:none;border-radius:6px;padding:6px 10px;font-size:12px;font-weight:600;white-space:nowrap;">Aplicar</button>
@@ -13443,50 +13443,50 @@ function cvFecharSetupSheet() {
 <script>
 const FOOTPRINT_MAX_DIAS = 15;     // trava de segurança — não busca mais que isso de uma vez
 const FOOTPRINT_MAX_LINHAS = 70;   // acima disso, reagrupa em ticks maiores que $10
-const FOOTPRINT_MIN_PCT = 0.04;    // esconde barras com menos de 4% do volume do POC (temporariamente mais permissivo p/ diagnóstico)
+const FOOTPRINT_MIN_PCT = 0.04;    // esconde barras com menos de 4% do volume do POC (reduz ruído)
+const FOOTPRINT_CHIPS_CANDLES = [1, 2, 3, 4]; // atalhos: N candles do timeframe atual
 
 let _grFootprintBins = null;       // { mapa: Map(preco -> {c,v}), pocPreco, tick }
 let _grFootprintOverlayInterval = null;
-let _grFootprintLabelAtivo = null;
 
-function grFootprintPresets() {
-    const familiaHoras = ['15m', '1h', '4h'].includes(_grTf);
-    if (familiaHoras) {
-        return [
-            { label: '1h', horas: 1 },
-            { label: '2h', horas: 2 },
-            { label: '3h', horas: 3 },
-            { label: '4h', horas: 4 },
-        ];
+// Duração de 1 candle do timeframe ATUAL do gráfico principal, em ms.
+function grFootprintMsPorCandle() {
+    if (_grTf === 'custom' && _grTfCustomUnit && _grTfCustomAmount) {
+        const qtd = _grTfCustomAmount;
+        if (_grTfCustomUnit === 'min') return qtd * 60000;
+        if (_grTfCustomUnit === 'hor') return qtd * 3600000;
+        if (_grTfCustomUnit === 'dia') return qtd * 86400000;
+        if (_grTfCustomUnit === 'mes') return qtd * 30 * 86400000;
     }
-    return [
-        { label: '3 dias', horas: 3 * 24 },
-        { label: '7 dias', horas: 7 * 24 },
-        { label: '15 dias', horas: 15 * 24 },
-        { label: '21 dias', horas: 21 * 24 },
-    ];
+    switch (_grTf) {
+        case '15m':    return 15 * 60000;
+        case '1h':     return 3600000;
+        case '4h':     return 4 * 3600000;
+        case '1day':   return 86400000;
+        case '1week':  return 7 * 86400000;
+        case '1month': return 30 * 86400000;
+        default:       return 4 * 3600000;
+    }
 }
 
 function grFootprintAbrirPainel() {
     const chipsWrap = document.getElementById('footprint-teste-chips');
-    const presets = grFootprintPresets();
-    chipsWrap.innerHTML = presets.map((p, i) =>
-        `<button onclick="grFootprintRodar(${p.horas}, '${p.label}')" id="footprint-chip-${i}"
-            style="background:#2C2C2E;color:#E5E5EA;border:none;border-radius:14px;padding:6px 12px;font-size:12px;font-weight:600;">${p.label}</button>`
-    ).join('');
+    chipsWrap.innerHTML = FOOTPRINT_CHIPS_CANDLES.map((n, i) => {
+        const label = n + (n === 1 ? ' candle' : ' candles');
+        return `<button onclick="grFootprintRodar(${n}, '${label}')" id="footprint-chip-${i}"
+            style="background:#2C2C2E;color:#E5E5EA;border:none;border-radius:14px;padding:6px 12px;font-size:12px;font-weight:600;">${label}</button>`;
+    }).join('');
     document.getElementById('footprint-teste-painel').style.display = 'block';
-    // Roda o primeiro preset da lista como default ao abrir
-    grFootprintRodar(presets[0].horas, presets[0].label);
+    grFootprintRodar(FOOTPRINT_CHIPS_CANDLES[0], FOOTPRINT_CHIPS_CANDLES[0] + ' candle');
 }
 
 function grFootprintAplicarCustom() {
-    const val = parseFloat(document.getElementById('footprint-teste-custom').value);
-    if (!val || val <= 0) { alert('Digita um número de horas válido.'); return; }
-    grFootprintRodar(val, val + 'h personalizado');
+    const val = parseInt(document.getElementById('footprint-teste-custom').value, 10);
+    if (!val || val <= 0) { alert('Digita um número de candles válido.'); return; }
+    grFootprintRodar(val, val + ' candles');
 }
 
 function grFootprintMarcarChipAtivo(label) {
-    _grFootprintLabelAtivo = label;
     const botoes = document.querySelectorAll('#footprint-teste-chips button');
     botoes.forEach(b => {
         const ativo = b.textContent === label;
@@ -13507,13 +13507,14 @@ function grFootprintDiasEntre(fromMs, toMs) {
     return dias;
 }
 
-async function grFootprintRodar(horas, label) {
+async function grFootprintRodar(numCandles, label) {
     const info = document.getElementById('footprint-teste-info');
     info.textContent = 'Buscando (' + label + ')...';
     grFootprintMarcarChipAtivo(label);
     try {
+        const msPorCandle = grFootprintMsPorCandle();
         const to = Date.now();
-        const from = to - horas * 3600 * 1000;
+        const from = to - numCandles * msPorCandle;
 
         let dias = grFootprintDiasEntre(from, to);
         let truncado = false;
@@ -13536,12 +13537,12 @@ async function grFootprintRodar(horas, label) {
         });
 
         if (candlesFiltrados.length === 0) {
-            info.textContent = `Sem dados de footprint nas últimas ${label} (${dias.join(', ')}).`;
+            info.textContent = `Sem dados de footprint em ${label} do timeframe ${_grTf} (${dias.join(', ')}).`;
             return;
         }
 
         grFootprintAgregar(candlesFiltrados, dias, truncado, label);
-        console.log('Footprint — candles agregados:', candlesFiltrados.length, 'range:', label);
+        console.log('Footprint — candles agregados:', candlesFiltrados.length, 'range:', label, 'tf:', _grTf);
     } catch (e) {
         info.textContent = 'Footprint ERRO: ' + e.message;
         console.log('Footprint erro completo:', e);
@@ -13585,7 +13586,7 @@ function grFootprintAgregar(candles, dias, truncado, label) {
 
     const diaTxt = dias.length > 1 ? (dias[0] + ' a ' + dias[dias.length - 1]) : dias[0];
     document.getElementById('footprint-teste-info').textContent =
-        `${label} · ${candles.length} candles (1min) · ${diaTxt}${truncado ? ' · limitado' : ''} · tick $${tick} · POC ${pocPreco.toLocaleString('pt-BR')}`;
+        `${label} (TF ${_grTf}) · ${candles.length} candles (1min) · ${diaTxt}${truncado ? ' · limitado' : ''} · tick $${tick} · POC ${pocPreco.toLocaleString('pt-BR')}`;
 
     grFootprintGarantirOverlayCanvas();
     if (_grFootprintOverlayInterval) clearInterval(_grFootprintOverlayInterval);
@@ -13681,7 +13682,7 @@ function grFootprintDesenharOverlay() {
     });
 }
 </script>
-<!-- ═══ FIM Etapa 6 ═══ -->
+<!-- ═══ FIM Etapa 7 ═══ -->
 
 </body>
 </html>
