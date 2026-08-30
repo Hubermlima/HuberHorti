@@ -13420,21 +13420,24 @@ function cvFecharSetupSheet() {
 </div>
 
 
-<!-- ═══ INÍCIO Etapa 2 — footprint de 1 candle isolado (temporário, remover depois) ═══ -->
+<!-- ═══ INÍCIO Etapa 3 — footprint multi-candle lado a lado (temporário, remover depois) ═══ -->
 <button id="footprint-teste-btn"
     style="position:fixed;bottom:90px;right:12px;z-index:99999;background:#FFA726;color:#1C1C1E;border:none;border-radius:8px;padding:10px 14px;font-size:13px;font-weight:600;box-shadow:0 2px 8px rgba(0,0,0,0.3);"
     onclick="grFootprintTeste()">Testar Footprint</button>
 
-<div id="footprint-teste-painel" style="display:none;position:fixed;left:12px;right:12px;bottom:150px;z-index:99998;background:#1C1C1E;border-radius:12px;padding:10px;box-shadow:0 4px 16px rgba(0,0,0,0.4);max-height:60vh;overflow-y:auto;">
+<div id="footprint-teste-painel" style="display:none;position:fixed;left:12px;right:12px;bottom:150px;z-index:99998;background:#1C1C1E;border-radius:12px;padding:10px;box-shadow:0 4px 16px rgba(0,0,0,0.4);max-height:65vh;overflow-y:auto;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
         <div id="footprint-teste-info" style="color:#8E8E93;font-size:11px;"></div>
         <button onclick="document.getElementById('footprint-teste-painel').style.display='none'"
             style="background:none;border:none;color:#8E8E93;font-size:13px;padding:2px 8px;">Fechar</button>
     </div>
     <canvas id="footprint-teste-canvas" style="width:100%;display:block;"></canvas>
+    <div style="font-size:10px;color:#8E8E93;margin-top:6px;">Contorno laranja = POC do candle · cor mais verde = mais compra · mais vermelha = mais venda · opacidade = volume</div>
 </div>
 
 <script>
+const FOOTPRINT_NUM_CANDLES = 6; // quantos candles (minutos) mostrar lado a lado
+
 async function grFootprintTeste() {
     const btn = document.getElementById('footprint-teste-btn');
     const textoOriginal = btn.textContent;
@@ -13450,9 +13453,9 @@ async function grFootprintTeste() {
             alert('Footprint OK, mas 0 candles pro dia ' + dia + '.\nTenta trocar a data no código se for antes da meia-noite UTC.');
             return;
         }
-        const ultimoMin = minutos[minutos.length - 1];
-        const ultimo = dados.candles[ultimoMin];
-        grFootprintDesenharCandle(ultimoMin, ultimo);
+        const ultimosMin = minutos.slice(-FOOTPRINT_NUM_CANDLES);
+        const candlesArr = ultimosMin.map(m => ({ minuto: m, candle: dados.candles[m] }));
+        grFootprintDesenharMulti(candlesArr);
         console.log('Footprint — dados completos do dia:', dados);
     } catch (e) {
         alert('Footprint ERRO: ' + e.message);
@@ -13462,16 +13465,21 @@ async function grFootprintTeste() {
     }
 }
 
-function grFootprintDesenharCandle(minuto, candle) {
+function grFootprintDesenharMulti(candlesArr) {
     const painel = document.getElementById('footprint-teste-painel');
     const info = document.getElementById('footprint-teste-info');
     const canvas = document.getElementById('footprint-teste-canvas');
     painel.style.display = 'block';
 
-    const niveis = [...candle.niveis].sort((a, b) => b.p - a.p); // maior preço em cima
-    const rowH = 22;
-    const W = Math.max(280, painel.clientWidth - 20);
-    const H = niveis.length * rowH + 8;
+    // Todos os níveis de preço distintos que aparecem em qualquer um dos candles
+    const precosSet = new Set();
+    candlesArr.forEach(({ candle }) => candle.niveis.forEach(n => precosSet.add(n.p)));
+    const precos = [...precosSet].sort((a, b) => b - a); // maior preço em cima
+
+    const rowH = 20, headerH = 22, labelW = 62;
+    const W = Math.max(300, painel.clientWidth - 20);
+    const colW = (W - labelW) / candlesArr.length;
+    const H = headerH + precos.length * rowH + 6;
     const dpr = window.devicePixelRatio || 1;
     canvas.width = W * dpr;
     canvas.height = H * dpr;
@@ -13481,46 +13489,57 @@ function grFootprintDesenharCandle(minuto, candle) {
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, W, H);
 
-    const maxVol = Math.max(...niveis.map(n => Math.max(n.c, n.v)), 0.0001);
-    const midX = W * 0.42;
-    const maxBarW = Math.max(16, Math.min(W * 0.24, midX - 60, W - midX - 76));
+    // Volume máximo de uma única célula, pra escalar a opacidade
+    let maxCelula = 0.0001;
+    candlesArr.forEach(({ candle }) => candle.niveis.forEach(n => { maxCelula = Math.max(maxCelula, n.c + n.v); }));
 
-    niveis.forEach((n, i) => {
-        const y = i * rowH;
-        if (n.p === candle.poc) {
-            ctx.fillStyle = 'rgba(255,167,38,0.12)';
-            ctx.fillRect(0, y, W, rowH);
-        }
-        ctx.font = '11px -apple-system';
-        ctx.fillStyle = '#E5E5EA';
-        ctx.textAlign = 'center';
-        ctx.fillText(n.p.toLocaleString('pt-BR'), midX, y + rowH * 0.68);
-
-        const wV = (n.v / maxVol) * maxBarW;
-        ctx.fillStyle = 'rgba(239,83,80,0.85)';
-        ctx.fillRect(midX - 28 - wV, y + 3, wV, rowH - 8);
-        ctx.fillStyle = '#EF5350';
-        ctx.textAlign = 'right';
-        ctx.fillText(n.v.toFixed(3), midX - 32 - wV, y + rowH * 0.68);
-
-        const wC = (n.c / maxVol) * maxBarW;
-        ctx.fillStyle = 'rgba(76,175,80,0.85)';
-        ctx.fillRect(midX + 28, y + 3, wC, rowH - 8);
-        ctx.fillStyle = '#4CAF50';
-        ctx.textAlign = 'left';
-        ctx.fillText(n.c.toFixed(3), midX + 32 + wC, y + rowH * 0.68);
-
-        if (n.p === candle.poc) {
-            ctx.strokeStyle = '#FFA726';
-            ctx.lineWidth = 1;
-            ctx.strokeRect(1, y + 1, W - 2, rowH - 2);
-        }
+    // Cabeçalho — minuto de cada coluna
+    ctx.font = '9px -apple-system';
+    ctx.fillStyle = '#8E8E93';
+    ctx.textAlign = 'center';
+    candlesArr.forEach(({ minuto }, ci) => {
+        ctx.fillText(minuto, labelW + ci * colW + colW / 2, headerH - 7);
     });
 
-    info.textContent = `Candle ${minuto} · POC ${candle.poc} · Δ ${candle.delta} · Total ${candle.total}`;
+    precos.forEach((p, ri) => {
+        const y = headerH + ri * rowH;
+        ctx.font = '10px -apple-system';
+        ctx.fillStyle = '#E5E5EA';
+        ctx.textAlign = 'right';
+        ctx.fillText(p.toLocaleString('pt-BR'), labelW - 6, y + rowH * 0.68);
+
+        candlesArr.forEach(({ candle }, ci) => {
+            const x = labelW + ci * colW;
+            const nivel = candle.niveis.find(n => n.p === p);
+            if (!nivel || (nivel.c === 0 && nivel.v === 0)) return; // célula vazia, sem negociação nesse preço/minuto
+
+            const total = nivel.c + nivel.v;
+            const domCompra = total > 0 ? nivel.c / total : 0.5; // 0 = só venda, 1 = só compra
+            const alpha = Math.min(0.9, 0.15 + (total / maxCelula) * 0.75);
+            const r = Math.round(239 - domCompra * (239 - 76));
+            const g = Math.round(83 + domCompra * (175 - 83));
+            ctx.fillStyle = `rgba(${r},${g},80,${alpha})`;
+            ctx.fillRect(x + 2, y + 2, colW - 4, rowH - 4);
+
+            if (candle.poc === p) {
+                ctx.strokeStyle = '#FFA726';
+                ctx.lineWidth = 1.5;
+                ctx.strokeRect(x + 1, y + 1, colW - 2, rowH - 2);
+            }
+
+            if (colW >= 34) {
+                ctx.font = '9px -apple-system';
+                ctx.fillStyle = '#fff';
+                ctx.textAlign = 'center';
+                ctx.fillText(total.toFixed(2).replace(/^0\./, '.'), x + colW / 2, y + rowH * 0.68);
+            }
+        });
+    });
+
+    info.textContent = `${candlesArr.length} candles · ${candlesArr[0].minuto} a ${candlesArr[candlesArr.length - 1].minuto}`;
 }
 </script>
-<!-- ═══ FIM Etapa 2 ═══ -->
+<!-- ═══ FIM Etapa 3 ═══ -->
 
 </body>
 </html>
