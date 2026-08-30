@@ -13911,15 +13911,11 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
     const lo = candle.l, hi = candle.h;
     if (!(hi > lo)) { alert('Candle sem range de preço (H = L).'); return; }
 
-    // Reagrupa a $10 (fino) num tick maior só se o candle for grande demais e gerar
-    // muitas linhas (evita centenas de linhas num candle diário/semanal); preenche
-    // TODOS os buckets entre L e H, mesmo sem negociação, pra cobrir o corpo+pavios inteiro.
-    const TICK_BASE = 10, MAX_LINHAS = 150;
-    let tick = TICK_BASE;
-    const numLinhasBase = Math.ceil((hi - lo) / TICK_BASE) + 1;
-    if (numLinhasBase > MAX_LINHAS) {
-        tick = Math.max(TICK_BASE, Math.ceil(((hi - lo) / MAX_LINHAS) / TICK_BASE) * TICK_BASE);
-    }
+    // Sempre mira num número compacto de linhas (~14), não importa o tamanho do
+    // candle — é o que faz tudo (corpo + pavios) caber numa régua enxuta, igual
+    // referência, em vez de uma lista gigante de 100+ linhas de $10 em $10.
+    const TICK_BASE = 10, TARGET_LINHAS = 14;
+    const tick = Math.max(TICK_BASE, Math.round(((hi - lo) / TARGET_LINHAS) / TICK_BASE) * TICK_BASE);
     _grFootprintCandleTickAtual = tick;
 
     const beginP = Math.floor(lo / tick) * tick;
@@ -13961,7 +13957,7 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
 
     document.getElementById('footprint-candle-overlay').style.display = 'block';
     requestAnimationFrame(() => {
-        const rowH = 20;
+        const rowH = 30;
         const canvas = document.getElementById('footprint-candle-canvas');
         const W = canvas.parentElement.clientWidth;
         const H = rowH * niveis.length;
@@ -13971,34 +13967,18 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
         const ctx = canvas.getContext('2d');
         ctx.clearRect(0, 0, W, H);
 
-        // Colunas fixas — o preço fica sempre num vão central reservado (gutter),
-        // e cada texto de quantidade fica confinado ao seu próprio lado. Isso evita
-        // o bug de sobreposição de antes (tudo colapsando pro centro quando um nível
-        // dominava a escala): mesmo com barra de 0px, o texto não invade o outro lado.
+        // Colunas fixas — o candle real fica no vão central, e cada texto de
+        // quantidade fica confinado ao seu próprio lado (nunca cruza o gutter,
+        // mesmo com barra de 0px — foi isso que causava a sobreposição de antes).
         const centroX = W / 2;
-        const gutterHalf = 28;               // vão reservado só pro preço, no centro
-        const margemBorda = 58;              // reserva de espaço pro texto na ponta da barra
+        const candleHalfW = 10;               // metade da largura do corpo do candle desenhado
+        const gutterHalf = candleHalfW + 54;   // vão reservado pro candle + a plaquinha de preço
+        const margemBorda = 58;                // reserva de espaço pro texto na ponta da barra
         const meiaLarguraMax = Math.max(20, centroX - gutterHalf - margemBorda);
         const maxQtd = Math.max(maxCompra, maxVenda, 0.0001);
 
         // Mapeamento preço -> y contínuo (mesma escala usada pelas linhas E pelo candle)
         const yForPrice = p => ((hi - p) / (hi - lo)) * H;
-
-        // Sombra da faixa do CORPO real do candle (entre Abertura e Fechamento) —
-        // é aqui que costuma aparecer a defesa institucional (ZII) quando junto de
-        // volume alto; os pavios (fora dessa faixa) são preço rejeitado.
-        const corpoTopoP = Math.max(candle.o, candle.c);
-        const corpoFundoP = Math.min(candle.o, candle.c);
-        const corpoAlta = candle.c >= candle.o;
-        const yCorpoTop = yForPrice(corpoTopoP);
-        const yCorpoBot = yForPrice(corpoFundoP);
-        ctx.fillStyle = corpoAlta ? 'rgba(38,166,154,0.10)' : 'rgba(239,83,80,0.10)';
-        ctx.fillRect(0, yCorpoTop, W, Math.max(1, yCorpoBot - yCorpoTop));
-        ctx.strokeStyle = corpoAlta ? 'rgba(38,166,154,0.5)' : 'rgba(239,83,80,0.5)';
-        ctx.lineWidth = 1;
-        ctx.setLineDash([3, 3]);
-        ctx.strokeRect(0, yCorpoTop, W, Math.max(1, yCorpoBot - yCorpoTop));
-        ctx.setLineDash([]);
 
         _grFootprintCandleLinhas = [];
 
@@ -14037,26 +14017,45 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
             ctx.textAlign = 'left';
             ctx.fillText(v.v.toFixed(3), xVendaEsquerda + wVenda + 4, y + rowH / 2 + 3);
 
-            // Preço no gutter central (nunca se mistura com as quantidades)
-            ctx.font = 'bold 10px -apple-system';
+            // Preço — plaquinha escura colada na borda do candle (dentro do vão livre
+            // entre o candle e a barra de compra), pra nunca colidir com a barra.
+            ctx.font = 'bold 9px -apple-system';
+            const txt = p.toLocaleString('pt-BR');
+            const tw = ctx.measureText(txt).width;
+            const candleLeftEdge = centroX - candleHalfW;
+            ctx.textAlign = 'left';
+            ctx.fillStyle = 'rgba(0,0,0,0.55)';
+            ctx.fillRect(candleLeftEdge - tw - 10, y + rowH / 2 - 7, tw + 4, 14);
             ctx.fillStyle = '#E5E5EA';
-            ctx.textAlign = 'center';
-            ctx.fillText(p.toLocaleString('pt-BR'), centroX, y + rowH / 2 + 3);
+            ctx.fillText(txt, candleLeftEdge - tw - 8, y + rowH / 2 + 3);
 
             _grFootprintCandleLinhas.push({ p, v, total, tick, yTop: y, yBottom: y + rowH });
         });
 
-        // Marca Abertura/Fechamento com uma seta pequena na lateral esquerda, pra
-        // localizar visualmente onde o corpo do candle começa/termina na régua.
-        const marcar = (preco, label, cor) => {
-            const y = yForPrice(preco);
-            ctx.fillStyle = cor;
-            ctx.font = 'bold 9px -apple-system';
-            ctx.textAlign = 'left';
-            ctx.fillText('◄ ' + label, 2, Math.max(9, Math.min(H - 2, y + 3)));
-        };
-        marcar(candle.o, 'Abertura', '#FFD54F');
-        if (Math.abs(yForPrice(candle.c) - yForPrice(candle.o)) > 10) marcar(candle.c, 'Fechamento', '#FFD54F');
+        // ── O CANDLE DE VERDADE, desenhado no vão central ──────────────────
+        // Pavio: linha fina de H até L. Corpo: retângulo sólido entre Abertura e
+        // Fechamento. É aqui que dá pra ver em que faixa do candle o volume (POC
+        // compra/venda) está — dentro do corpo (defesa institucional/ZII) ou nos
+        // pavios (preço rejeitado).
+        const corpoTopoP = Math.max(candle.o, candle.c);
+        const corpoFundoP = Math.min(candle.o, candle.c);
+        const corpoAlta = candle.c >= candle.o;
+        const corCandle = corpoAlta ? '#26A69A' : '#EF5350';
+        const yH = yForPrice(hi), yL = yForPrice(lo);
+        const yCorpoTop = yForPrice(corpoTopoP), yCorpoBot = yForPrice(corpoFundoP);
+
+        ctx.strokeStyle = corCandle;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(centroX, yH);
+        ctx.lineTo(centroX, yL);
+        ctx.stroke();
+
+        ctx.fillStyle = corCandle;
+        ctx.fillRect(centroX - candleHalfW, yCorpoTop, candleHalfW * 2, Math.max(2, yCorpoBot - yCorpoTop));
+        ctx.strokeStyle = '#0A0A0A';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(centroX - candleHalfW, yCorpoTop, candleHalfW * 2, Math.max(2, yCorpoBot - yCorpoTop));
 
         if (!_grFootprintCandleTouchBind) {
             canvas.addEventListener('click', grFootprintCandleTapHandler);
