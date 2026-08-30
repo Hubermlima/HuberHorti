@@ -3513,6 +3513,7 @@ let _freehandColorPressTimer = null;
 let _freehandLongPressFired = false;
 
 let _grNiveis = [];      // array de níveis: [{preco, tipo}] tipo: 'sup'|'res'
+let _grZiiZonas = [];    // zonas ZII marcadas manualmente: [{lo, hi, tipo:'compra'|'venda', total, delta}]
 let _grAlertas = [];     // array de alertas: [{preco, id, habilitado}]
 
 let _fibDragging = false;
@@ -4095,6 +4096,30 @@ function grDrawCandles(candles, emptyRight) {
             ctx.moveTo(PAD.left, y);
             ctx.lineTo(W - PAD.right, y);
             ctx.stroke();
+            ctx.restore();
+        });
+
+        // ── Zonas ZII marcadas manualmente ──────────────────────────────
+        // Faixa preenchida (não linha fina) pra diferenciar visualmente do
+        // suporte/resistência comum — aparece em QUALQUER candle/timeframe,
+        // então dá pra rolar o histórico inteiro e ver se o preço volta a
+        // respeitar esse nível em outros momentos (rastro do institucional).
+        if (!_indOculto.ziiZonas) _grZiiZonas.forEach(zona => {
+            const yTopo = toY(zona.hi), yFundo = toY(zona.lo);
+            if (yFundo < PAD.top || yTopo > PAD.top + _grChartH) return;
+            ctx.save();
+            const corBase = zona.tipo === 'compra' ? '76,175,80' : '239,83,80';
+            ctx.fillStyle = `rgba(${corBase},0.16)`;
+            ctx.fillRect(PAD.left, yTopo, chartW, Math.max(1, yFundo - yTopo));
+            ctx.strokeStyle = `rgba(${corBase},0.55)`;
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 3]);
+            ctx.strokeRect(PAD.left, yTopo, chartW, Math.max(1, yFundo - yTopo));
+            ctx.setLineDash([]);
+            ctx.font = 'bold 9px -apple-system';
+            ctx.fillStyle = zona.tipo === 'compra' ? '#4CAF50' : '#EF5350';
+            ctx.textAlign = 'left';
+            ctx.fillText('ZII ' + fmtN(zona.lo), PAD.left + 4, yTopo + 11);
             ctx.restore();
         });
 
@@ -13424,7 +13449,10 @@ function cvFecharSetupSheet() {
 
 <!-- ═══ INÍCIO Etapa 9 — Footprint alinhado ao eixo Y principal, ativado pela barra de indicadores (temporário, remover depois) ═══ -->
 <div id="footprint-teste-painel" style="display:none;position:fixed;left:12px;right:12px;bottom:16px;z-index:99998;background:#1C1C1E;border-radius:10px;padding:8px 12px;box-shadow:0 4px 16px rgba(0,0,0,0.4);">
-    <div id="footprint-teste-info" style="color:#8E8E93;font-size:11px;"></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+        <div id="footprint-teste-info" style="color:#8E8E93;font-size:11px;flex:1;"></div>
+        <button onclick="grFootprintGerenciarZonasZii()" style="background:none;border:none;color:#FFA726;font-size:11px;font-weight:700;white-space:nowrap;">Zonas ZII</button>
+    </div>
 </div>
 
 <!-- Modal de detalhe de um nível de preço do footprint -->
@@ -13439,6 +13467,7 @@ function cvFecharSetupSheet() {
     <div style="flex:1;min-height:0;overflow-y:auto;padding:8px 16px 20px;-webkit-overflow-scrolling:touch;">
       <canvas id="footprint-nivel-canvas" style="width:100%;height:180px;display:block;"></canvas>
       <button id="footprint-nivel-serie-btn" onclick="grFootprintAbrirSerieModal()" style="display:none;width:100%;margin-top:16px;padding:12px;background:#2C2C2E;color:#FFA726;border:none;border-radius:10px;font-size:13px;font-weight:700;font-family:-apple-system,sans-serif;">Ver série temporal (minuto a minuto)</button>
+      <button id="footprint-nivel-zii-btn" onclick="grFootprintMarcarZonaZii()" style="width:100%;margin-top:8px;padding:12px;background:#2C2C2E;color:#FFA726;border:none;border-radius:10px;font-size:13px;font-weight:700;font-family:-apple-system,sans-serif;">📍 Marcar zona ZII no gráfico</button>
     </div>
   </div>
 </div>
@@ -13863,7 +13892,7 @@ function grFootprintDesenharOverlay() {
     });
 }
 
-let _grFootprintNivelAtual = null; // {p, tick} do último nível aberto — usado pelo botão "Ver série temporal"
+let _grFootprintNivelAtual = null; // {p, tick, v, total} do último nível aberto — usado pelos botões de série temporal e marcar zona ZII
 
 function grFootprintAbrirNivelModal(p, v, total, tick) {
     const faixaFim = p + tick;
@@ -13880,7 +13909,7 @@ function grFootprintAbrirNivelModal(p, v, total, tick) {
     // O botão de série temporal só aparece se esse nível foi tocado a partir do
     // ladder de um candle (não do histograma principal) — precisa do contexto
     // de/até do candle-pai pra saber quais candles de 1min filtrar.
-    _grFootprintNivelAtual = { p, tick };
+    _grFootprintNivelAtual = { p, tick, v, total };
     document.getElementById('footprint-nivel-serie-btn').style.display = _grFootprintCandleContexto ? 'block' : 'none';
 }
 
@@ -13898,6 +13927,49 @@ function grFootprintFecharNivelModal() {
     document.getElementById('footprint-nivel-overlay').style.display = 'none';
     document.getElementById('footprint-serie-overlay').style.display = 'none';
     grFootprintAtualizarVisibilidadePainel();
+}
+
+// Marca o nível atualmente aberto no modal como uma zona ZII permanente no
+// gráfico principal — fica visível em qualquer candle/timeframe daqui pra
+// frente, até ser removida. É o "alfinete no mapa" da investigação.
+function grFootprintMarcarZonaZii() {
+    if (!_grFootprintNivelAtual) return;
+    const { p, tick, v, total } = _grFootprintNivelAtual;
+    const delta = v.c - v.v;
+    const tipo = delta >= 0 ? 'compra' : 'venda';
+
+    const jaExiste = _grZiiZonas.some(z => Math.abs(z.lo - p) < 1e-6);
+    if (jaExiste) {
+        alert('Essa zona já está marcada.');
+        return;
+    }
+
+    _grZiiZonas.push({ lo: p, hi: p + tick, tipo, total, delta, criadoEm: Date.now() });
+    grDrawChart();
+    alert(`Zona ZII marcada: $${p.toLocaleString('pt-BR')}–$${(p + tick).toLocaleString('pt-BR')} (${tipo}). Total de zonas marcadas: ${_grZiiZonas.length}.`);
+}
+
+// Gerenciador simples das zonas marcadas — lista + opção de apagar uma ou todas.
+function grFootprintGerenciarZonasZii() {
+    if (_grZiiZonas.length === 0) {
+        alert('Nenhuma zona ZII marcada ainda. Abra um nível no footprint e toca em "Marcar zona ZII".');
+        return;
+    }
+    const lista = _grZiiZonas.map((z, i) =>
+        `${i + 1}) $${z.lo.toLocaleString('pt-BR')}–$${z.hi.toLocaleString('pt-BR')} · ${z.tipo} · delta ${z.delta >= 0 ? '+' : ''}${z.delta.toFixed(2)}`
+    ).join('\n');
+    const resp = prompt(`Zonas ZII marcadas:\n\n${lista}\n\nDigite o número pra apagar uma, "todas" pra apagar tudo, ou cancele pra manter.`);
+    if (resp == null) return;
+    if (resp.trim().toLowerCase() === 'todas') {
+        _grZiiZonas = [];
+        grDrawChart();
+        return;
+    }
+    const idx = parseInt(resp, 10) - 1;
+    if (idx >= 0 && idx < _grZiiZonas.length) {
+        _grZiiZonas.splice(idx, 1);
+        grDrawChart();
+    }
 }
 
 // Abre o modal DEDICADO da série temporal (minuto a minuto) do nível atual —
