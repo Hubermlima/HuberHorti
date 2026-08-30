@@ -13438,14 +13438,27 @@ function cvFecharSetupSheet() {
     <div style="padding:0 16px 4px;color:#8E8E93;font-size:12px;font-family:-apple-system,sans-serif;line-height:1.5;" id="footprint-nivel-sub"></div>
     <div style="flex:1;min-height:0;overflow-y:auto;padding:8px 16px 20px;-webkit-overflow-scrolling:touch;">
       <canvas id="footprint-nivel-canvas" style="width:100%;height:180px;display:block;"></canvas>
-      <div id="footprint-nivel-serie-wrap" style="display:none;margin-top:18px;border-top:0.5px solid rgba(255,255,255,0.08);padding-top:14px;">
-        <div style="color:#8E8E93;font-size:11px;margin-bottom:2px;" id="footprint-nivel-serie-titulo"></div>
-        <div style="color:#E5E5EA;font-size:12px;font-weight:700;margin-bottom:8px;" id="footprint-nivel-serie-interpretacao"></div>
-        <canvas id="footprint-nivel-serie-canvas" style="width:100%;height:110px;display:block;"></canvas>
-      </div>
+      <button id="footprint-nivel-serie-btn" onclick="grFootprintAbrirSerieModal()" style="display:none;width:100%;margin-top:16px;padding:12px;background:#2C2C2E;color:#FFA726;border:none;border-radius:10px;font-size:13px;font-weight:700;font-family:-apple-system,sans-serif;">Ver série temporal (minuto a minuto)</button>
     </div>
   </div>
 </div>
+
+<!-- Modal separado da série temporal minuto a minuto de um nível -->
+<div id="footprint-serie-overlay" style="display:none;position:fixed;inset:0;z-index:6600;background:rgba(0,0,0,0.6);" onclick="grFootprintFecharSerieModal()">
+  <div onclick="event.stopPropagation()" style="position:absolute;bottom:0;left:0;right:0;background:#1E222D;border-radius:20px 20px 0 0;display:flex;flex-direction:column;max-height:88vh;padding-bottom:env(safe-area-inset-bottom);">
+    <div style="width:36px;height:4px;border-radius:2px;background:rgba(255,255,255,0.2);margin:12px auto 0;flex-shrink:0;"></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px 4px;flex-shrink:0;">
+      <div style="font-size:15px;font-weight:800;color:#FFFFFF;font-family:-apple-system,sans-serif;" id="footprint-serie-titulo">—</div>
+      <button onclick="grFootprintFecharSerieModal()" style="background:rgba(255,255,255,0.1);border:none;color:#FFFFFF;font-size:16px;width:28px;height:28px;border-radius:50%;cursor:pointer;">✕</button>
+    </div>
+    <div style="padding:0 16px 8px;color:#8E8E93;font-size:11px;font-family:-apple-system,sans-serif;flex-shrink:0;" id="footprint-serie-sub"></div>
+    <div style="padding:0 16px 8px;color:#E5E5EA;font-size:12px;font-weight:700;font-family:-apple-system,sans-serif;flex-shrink:0;" id="footprint-serie-interpretacao"></div>
+    <div style="flex:1;min-height:0;overflow-y:auto;padding:8px 16px 20px;-webkit-overflow-scrolling:touch;">
+      <canvas id="footprint-serie-canvas" style="width:100%;height:110px;display:block;"></canvas>
+    </div>
+  </div>
+</div>
+
 
 <!-- Modal de footprint de um candle específico (ladder de preços, compra/venda por nível) -->
 <div id="footprint-candle-overlay" style="display:none;position:fixed;inset:0;z-index:6500;background:rgba(0,0,0,0.6);" onclick="grFootprintFecharCandleModal()">
@@ -13816,6 +13829,8 @@ function grFootprintDesenharOverlay() {
     });
 }
 
+let _grFootprintNivelAtual = null; // {p, tick} do último nível aberto — usado pelo botão "Ver série temporal"
+
 function grFootprintAbrirNivelModal(p, v, total, tick) {
     const faixaFim = p + tick;
     const delta = v.c - v.v;
@@ -13828,53 +13843,66 @@ function grFootprintAbrirNivelModal(p, v, total, tick) {
     grFootprintAtualizarVisibilidadePainel();
     requestAnimationFrame(() => grFootprintDesenharNivelChart(v.c, v.v, total, delta));
 
-    // Se esse nível foi tocado a partir do ladder de um candle (não do histograma
-    // principal), mostra também a série minuto a minuto — dá pra ver a HORA exata
-    // de cada pico, e assim comparar diretamente a ordem entre dois níveis diferentes
-    // (ex: qual aconteceu primeiro, a defesa de 79.420 ou o print de venda de 79.200).
-    const wrapSerie = document.getElementById('footprint-nivel-serie-wrap');
-    if (_grFootprintCandleContexto) {
-        const serie = grFootprintObterSerieNivel(p, tick);
-        if (serie && serie.length > 0) {
-            wrapSerie.style.display = 'block';
-            const toques = grFootprintContarToques(serie);
-
-            const fmtHora = ts => new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-            const ativos = serie.filter(s => (s.compra + s.venda) > 0);
-            let picoTxt = '';
-            if (ativos.length > 0) {
-                const pico = ativos.reduce((max, s) => (s.compra + s.venda) > (max.compra + max.venda) ? s : max, ativos[0]);
-                picoTxt = ` · Ativo de ${fmtHora(ativos[0].ts)} a ${fmtHora(ativos[ativos.length - 1].ts)} · Pico às ${fmtHora(pico.ts)} (${(pico.compra + pico.venda).toFixed(3)} BTC)`;
-            }
-            document.getElementById('footprint-nivel-serie-titulo').textContent =
-                `Minuto a minuto dentro do candle (${serie.length} candles de 1min)${picoTxt}`;
-
-            const interpretEl = document.getElementById('footprint-nivel-serie-interpretacao');
-            if (toques <= 1) {
-                interpretEl.textContent = '1 movimento contínuo, sem pausas — isso sozinho não descarta absorção: olhe se o preço reverteu (parede segurou) ou continuou passando (parede não segurou).';
-                interpretEl.style.color = '#E5E5EA';
-            } else {
-                interpretEl.textContent = `Retestado em ${toques} momentos distintos — reforça a hipótese de defesa ativa (ZII), mas não é obrigatório pra confirmar absorção.`;
-                interpretEl.style.color = '#4CAF50';
-            }
-            requestAnimationFrame(() => grFootprintDesenharSerieNivel(serie));
-        } else {
-            wrapSerie.style.display = 'none';
-        }
-    } else {
-        wrapSerie.style.display = 'none';
-    }
+    // O botão de série temporal só aparece se esse nível foi tocado a partir do
+    // ladder de um candle (não do histograma principal) — precisa do contexto
+    // de/até do candle-pai pra saber quais candles de 1min filtrar.
+    _grFootprintNivelAtual = { p, tick };
+    document.getElementById('footprint-nivel-serie-btn').style.display = _grFootprintCandleContexto ? 'block' : 'none';
 }
 
 function grFootprintAtualizarVisibilidadePainel() {
     const nivelAberto = document.getElementById('footprint-nivel-overlay').style.display === 'block';
     const candleAberto = document.getElementById('footprint-candle-overlay').style.display === 'block';
+    const serieAberto = document.getElementById('footprint-serie-overlay').style.display === 'block';
     const painel = document.getElementById('footprint-teste-painel');
-    painel.style.display = (_grFootprintAtivo && !nivelAberto && !candleAberto) ? 'block' : 'none';
+    painel.style.display = (_grFootprintAtivo && !nivelAberto && !candleAberto && !serieAberto) ? 'block' : 'none';
 }
 
 function grFootprintFecharNivelModal() {
     document.getElementById('footprint-nivel-overlay').style.display = 'none';
+    document.getElementById('footprint-serie-overlay').style.display = 'none';
+    grFootprintAtualizarVisibilidadePainel();
+}
+
+// Abre o modal DEDICADO da série temporal (minuto a minuto) do nível atual —
+// dá pra ver a HORA exata de cada pico, e assim comparar diretamente a ordem
+// entre dois níveis diferentes (ex: qual aconteceu primeiro, a defesa de
+// 79.420 ou o print de venda de 79.200).
+function grFootprintAbrirSerieModal() {
+    if (!_grFootprintNivelAtual || !_grFootprintCandleContexto) return;
+    const { p, tick } = _grFootprintNivelAtual;
+    const serie = grFootprintObterSerieNivel(p, tick);
+    if (!serie || serie.length === 0) return;
+
+    const toques = grFootprintContarToques(serie);
+    const fmtHora = ts => new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    const ativos = serie.filter(s => (s.compra + s.venda) > 0);
+    let picoTxt = '';
+    if (ativos.length > 0) {
+        const pico = ativos.reduce((max, s) => (s.compra + s.venda) > (max.compra + max.venda) ? s : max, ativos[0]);
+        picoTxt = `Ativo de ${fmtHora(ativos[0].ts)} a ${fmtHora(ativos[ativos.length - 1].ts)} · Pico às ${fmtHora(pico.ts)} (${(pico.compra + pico.venda).toFixed(3)} BTC)`;
+    }
+
+    document.getElementById('footprint-serie-titulo').textContent = 'Nível $' + p.toLocaleString('pt-BR') + ' — minuto a minuto';
+    document.getElementById('footprint-serie-sub').textContent =
+        `${serie.length} candles de 1min${picoTxt ? ' · ' + picoTxt : ''}`;
+
+    const interpretEl = document.getElementById('footprint-serie-interpretacao');
+    if (toques <= 1) {
+        interpretEl.textContent = '1 movimento contínuo, sem pausas — isso sozinho não descarta absorção: olhe se o preço reverteu (parede segurou) ou continuou passando (parede não segurou).';
+        interpretEl.style.color = '#E5E5EA';
+    } else {
+        interpretEl.textContent = `Retestado em ${toques} momentos distintos — reforça a hipótese de defesa ativa (ZII), mas não é obrigatório pra confirmar absorção.`;
+        interpretEl.style.color = '#4CAF50';
+    }
+
+    document.getElementById('footprint-serie-overlay').style.display = 'block';
+    grFootprintAtualizarVisibilidadePainel();
+    requestAnimationFrame(() => grFootprintDesenharSerieNivel(serie, 'footprint-serie-canvas'));
+}
+
+function grFootprintFecharSerieModal() {
+    document.getElementById('footprint-serie-overlay').style.display = 'none';
     grFootprintAtualizarVisibilidadePainel();
 }
 
@@ -13914,8 +13942,8 @@ function grFootprintContarToques(serie) {
 // Gráfico compacto tipo "cardiograma": cada barra é 1 minuto do candle-pai,
 // compra cresce pra cima do eixo (verde), venda cresce pra baixo (vermelho).
 // Picos isolados = sweep único; vários picos separados = retestes repetidos.
-function grFootprintDesenharSerieNivel(serie) {
-    const canvas = document.getElementById('footprint-nivel-serie-canvas');
+function grFootprintDesenharSerieNivel(serie, canvasId) {
+    const canvas = document.getElementById(canvasId || 'footprint-serie-canvas');
     if (!canvas) return;
     const W = canvas.parentElement.clientWidth, H = 110;
     canvas.width = W;
@@ -14033,6 +14061,8 @@ function grFootprintAbrirCandleModal(candle) {
 
 function grFootprintFecharCandleModal() {
     document.getElementById('footprint-candle-overlay').style.display = 'none';
+    document.getElementById('footprint-nivel-overlay').style.display = 'none';
+    document.getElementById('footprint-serie-overlay').style.display = 'none';
     _grFootprintCandleContexto = null;
     grFootprintAtualizarVisibilidadePainel();
 }
