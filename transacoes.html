@@ -13829,22 +13829,32 @@ function grFootprintAbrirNivelModal(p, v, total, tick) {
     requestAnimationFrame(() => grFootprintDesenharNivelChart(v.c, v.v, total, delta));
 
     // Se esse nível foi tocado a partir do ladder de um candle (não do histograma
-    // principal), mostra também a série minuto a minuto — é o que distingue um
-    // sweep único (1 pico isolado) de retestes repetidos (defesa/ZII de verdade).
+    // principal), mostra também a série minuto a minuto — dá pra ver a HORA exata
+    // de cada pico, e assim comparar diretamente a ordem entre dois níveis diferentes
+    // (ex: qual aconteceu primeiro, a defesa de 79.420 ou o print de venda de 79.200).
     const wrapSerie = document.getElementById('footprint-nivel-serie-wrap');
     if (_grFootprintCandleContexto) {
         const serie = grFootprintObterSerieNivel(p, tick);
         if (serie && serie.length > 0) {
             wrapSerie.style.display = 'block';
             const toques = grFootprintContarToques(serie);
+
+            const fmtHora = ts => new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+            const ativos = serie.filter(s => (s.compra + s.venda) > 0);
+            let picoTxt = '';
+            if (ativos.length > 0) {
+                const pico = ativos.reduce((max, s) => (s.compra + s.venda) > (max.compra + max.venda) ? s : max, ativos[0]);
+                picoTxt = ` · Ativo de ${fmtHora(ativos[0].ts)} a ${fmtHora(ativos[ativos.length - 1].ts)} · Pico às ${fmtHora(pico.ts)} (${(pico.compra + pico.venda).toFixed(3)} BTC)`;
+            }
             document.getElementById('footprint-nivel-serie-titulo').textContent =
-                `Minuto a minuto dentro do candle (${serie.length} candles de 1min) — cada barra é 1 minuto`;
+                `Minuto a minuto dentro do candle (${serie.length} candles de 1min)${picoTxt}`;
+
             const interpretEl = document.getElementById('footprint-nivel-serie-interpretacao');
             if (toques <= 1) {
-                interpretEl.textContent = '1 movimento único (sweep) — compatível com iniciação agressiva, não defesa repetida.';
-                interpretEl.style.color = '#FFA726';
+                interpretEl.textContent = '1 movimento contínuo, sem pausas — isso sozinho não descarta absorção: olhe se o preço reverteu (parede segurou) ou continuou passando (parede não segurou).';
+                interpretEl.style.color = '#E5E5EA';
             } else {
-                interpretEl.textContent = `Nível retestado em ${toques} momentos distintos — compatível com defesa/absorção (ZII).`;
+                interpretEl.textContent = `Retestado em ${toques} momentos distintos — reforça a hipótese de defesa ativa (ZII), mas não é obrigatório pra confirmar absorção.`;
                 interpretEl.style.color = '#4CAF50';
             }
             requestAnimationFrame(() => grFootprintDesenharSerieNivel(serie));
@@ -14183,18 +14193,43 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
         ctx.strokeRect(centroX - candleHalfW, yCorpoTop, candleHalfW * 2, Math.max(2, yCorpoBot - yCorpoTop));
 
         if (!_grFootprintCandleTouchBind) {
-            canvas.addEventListener('click', grFootprintCandleTapHandler);
+            canvas.addEventListener('touchstart', grFootprintCandleTouchStart, { passive: true });
+            canvas.addEventListener('touchend', grFootprintCandleTouchEnd, { passive: true });
+            canvas.addEventListener('click', grFootprintCandleTapHandler); // fallback desktop/mouse
             _grFootprintCandleTouchBind = true;
         }
     });
 }
 
+let _grFootprintCandleToqueInicio = null; // {x,y} do touchstart, só pra distinguir toque de scroll
+
+function grFootprintCandleTouchStart(evt) {
+    if (evt.touches.length !== 1) { _grFootprintCandleToqueInicio = null; return; }
+    _grFootprintCandleToqueInicio = { x: evt.touches[0].clientX, y: evt.touches[0].clientY };
+}
+
+// 'touchend' é muito mais confiável que 'click' aqui — dentro de uma área com
+// scroll (overflow-y:auto), o mobile às vezes não sintetiza o click do toque.
+function grFootprintCandleTouchEnd(evt) {
+    if (!_grFootprintCandleToqueInicio) return;
+    const inicio = _grFootprintCandleToqueInicio;
+    _grFootprintCandleToqueInicio = null;
+    const touch = evt.changedTouches && evt.changedTouches[0];
+    if (!touch) return;
+    if (Math.hypot(touch.clientX - inicio.x, touch.clientY - inicio.y) > 12) return; // moveu — foi scroll, não toque
+    grFootprintCandleProcessarToque(touch.clientY);
+}
+
 // Toque numa linha do ladder do candle — mostra o detalhe (com Delta) daquele nível.
 function grFootprintCandleTapHandler(evt) {
+    grFootprintCandleProcessarToque(evt.clientY);
+}
+
+function grFootprintCandleProcessarToque(clientY) {
     const canvas = document.getElementById('footprint-candle-canvas');
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const y = (evt.clientY - rect.top) * (canvas.height / rect.height);
+    const y = (clientY - rect.top) * (canvas.height / rect.height);
     for (const linha of _grFootprintCandleLinhas) {
         if (y >= linha.yTop && y < linha.yBottom) {
             grFootprintAbrirNivelModal(linha.p, linha.v, linha.total, linha.tick);
