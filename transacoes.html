@@ -13473,6 +13473,22 @@ function cvFecharSetupSheet() {
       <canvas id="footprint-candle-canvas" style="width:100%;display:block;"></canvas>
     </div>
     <div style="padding:10px 16px 4px;text-align:center;font-weight:800;font-size:13px;font-family:-apple-system,sans-serif;border-top:0.5px solid rgba(255,255,255,0.08);flex-shrink:0;" id="footprint-candle-footer"></div>
+    <div style="padding:8px 16px 12px;flex-shrink:0;">
+      <button onclick="grFootprintAbrirCronologia()" style="width:100%;padding:12px;background:#2C2C2E;color:#FFA726;border:none;border-radius:10px;font-size:13px;font-weight:700;font-family:-apple-system,sans-serif;">Ver ordem cronológica (compra × venda × preço)</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal de cronologia: ordem no tempo entre pico de compra, pico de venda e o preço -->
+<div id="footprint-cronologia-overlay" style="display:none;position:fixed;inset:0;z-index:6700;background:rgba(0,0,0,0.6);" onclick="grFootprintFecharCronologia()">
+  <div onclick="event.stopPropagation()" style="position:absolute;bottom:0;left:0;right:0;background:#1E222D;border-radius:20px 20px 0 0;display:flex;flex-direction:column;max-height:80vh;padding-bottom:env(safe-area-inset-bottom);">
+    <div style="width:36px;height:4px;border-radius:2px;background:rgba(255,255,255,0.2);margin:12px auto 0;flex-shrink:0;"></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px 4px;flex-shrink:0;">
+      <div style="font-size:15px;font-weight:800;color:#FFFFFF;font-family:-apple-system,sans-serif;">Ordem cronológica</div>
+      <button onclick="grFootprintFecharCronologia()" style="background:rgba(255,255,255,0.1);border:none;color:#FFFFFF;font-size:16px;width:28px;height:28px;border-radius:50%;cursor:pointer;">✕</button>
+    </div>
+    <div style="padding:0 16px 8px;color:#8E8E93;font-size:11px;font-family:-apple-system,sans-serif;line-height:1.4;flex-shrink:0;">Horário da máxima/mínima é aproximado (estimado pelo nível de preço mais alto/baixo negociado em cada minuto).</div>
+    <div style="flex:1;min-height:0;overflow-y:auto;padding:4px 16px 16px;-webkit-overflow-scrolling:touch;" id="footprint-cronologia-lista"></div>
   </div>
 </div>
 
@@ -13854,8 +13870,9 @@ function grFootprintAtualizarVisibilidadePainel() {
     const nivelAberto = document.getElementById('footprint-nivel-overlay').style.display === 'block';
     const candleAberto = document.getElementById('footprint-candle-overlay').style.display === 'block';
     const serieAberto = document.getElementById('footprint-serie-overlay').style.display === 'block';
+    const cronologiaAberto = document.getElementById('footprint-cronologia-overlay').style.display === 'block';
     const painel = document.getElementById('footprint-teste-painel');
-    painel.style.display = (_grFootprintAtivo && !nivelAberto && !candleAberto && !serieAberto) ? 'block' : 'none';
+    painel.style.display = (_grFootprintAtivo && !nivelAberto && !candleAberto && !serieAberto && !cronologiaAberto) ? 'block' : 'none';
 }
 
 function grFootprintFecharNivelModal() {
@@ -14054,7 +14071,7 @@ function grFootprintAbrirCandleModal(candle) {
         return;
     }
 
-    _grFootprintCandleContexto = { de, ate };
+    _grFootprintCandleContexto = { de, ate, candle };
     grFootprintDesenharCandleLadder(candle, de, mapaFino, encontrados);
     grFootprintAtualizarVisibilidadePainel();
 }
@@ -14063,14 +14080,92 @@ function grFootprintFecharCandleModal() {
     document.getElementById('footprint-candle-overlay').style.display = 'none';
     document.getElementById('footprint-nivel-overlay').style.display = 'none';
     document.getElementById('footprint-serie-overlay').style.display = 'none';
+    document.getElementById('footprint-cronologia-overlay').style.display = 'none';
     _grFootprintCandleContexto = null;
+    _grFootprintCandlePocs = null;
+    grFootprintAtualizarVisibilidadePainel();
+}
+
+// Monta a ordem no tempo entre: abertura, pico de compra (POC-compra), pico de
+// venda (POC-venda), aproximação de quando o preço tocou a máxima/mínima, e o
+// fechamento. Responde direto "o que aconteceu primeiro" sem precisar abrir
+// dois modais de nível separados e comparar os horários na mão.
+function grFootprintAbrirCronologia() {
+    if (!_grFootprintCandleContexto || !_grFootprintCandlePocs || !_grFootprintCandlesRaw) return;
+    const { de, ate, candle } = _grFootprintCandleContexto;
+    const { pocCompraPreco, pocVendaPreco, tick } = _grFootprintCandlePocs;
+
+    const candles1m = _grFootprintCandlesRaw
+        .filter(c => c.ts >= de && c.ts < ate)
+        .sort((a, b) => a.ts - b.ts);
+
+    const fmtHora = ts => new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    const eventos = [];
+
+    eventos.push({ ts: de, label: 'Abertura do candle', valor: fmtN(candle.o), cor: '#8E8E93' });
+
+    // Pico de compra/venda: reaproveita a série minuto a minuto de cada POC.
+    const acharPico = (precoBucket) => {
+        let melhorTs = null, melhorTotal = -1;
+        candles1m.forEach(c => {
+            let compra = 0, venda = 0;
+            (c.niveis || []).forEach(n => {
+                if (Math.round(Math.round(n.p / tick) * tick) === precoBucket) { compra += n.c; venda += n.v; }
+            });
+            const total = compra + venda;
+            if (total > melhorTotal) { melhorTotal = total; melhorTs = c.ts; }
+        });
+        return melhorTs;
+    };
+    if (pocCompraPreco != null) {
+        const ts = acharPico(pocCompraPreco);
+        if (ts != null) eventos.push({ ts, label: `Pico de compra ($${pocCompraPreco.toLocaleString('pt-BR')})`, valor: '', cor: '#4CAF50' });
+    }
+    if (pocVendaPreco != null) {
+        const ts = acharPico(pocVendaPreco);
+        if (ts != null) eventos.push({ ts, label: `Pico de venda ($${pocVendaPreco.toLocaleString('pt-BR')})`, valor: '', cor: '#EF5350' });
+    }
+
+    // Aproximação de quando o preço tocou a máxima/mínima do candle: o minuto
+    // cujo nível de preço mais alto/baixo negociado bate com H/L do candle-pai.
+    let tsMax = null, tsMin = null;
+    candles1m.forEach(c => {
+        (c.niveis || []).forEach(n => {
+            if (!(n.c > 0 || n.v > 0)) return;
+            if (Math.abs(n.p - candle.h) <= tick && tsMax == null) tsMax = c.ts;
+            if (Math.abs(n.p - candle.l) <= tick && tsMin == null) tsMin = c.ts;
+        });
+    });
+    if (tsMax != null) eventos.push({ ts: tsMax, label: `Aprox. máxima ($${fmtN(candle.h)})`, valor: '', cor: '#FFD54F' });
+    if (tsMin != null) eventos.push({ ts: tsMin, label: `Aprox. mínima ($${fmtN(candle.l)})`, valor: '', cor: '#FFD54F' });
+
+    eventos.push({ ts: ate - 60000, label: 'Fechamento do candle', valor: fmtN(candle.c), cor: '#8E8E93' });
+
+    eventos.sort((a, b) => a.ts - b.ts);
+
+    const lista = document.getElementById('footprint-cronologia-lista');
+    lista.innerHTML = eventos.map(e => `
+        <div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:0.5px solid rgba(255,255,255,0.06);">
+            <div style="font-weight:800;font-size:13px;color:#FFFFFF;font-family:-apple-system,sans-serif;min-width:44px;">${fmtHora(e.ts)}</div>
+            <div style="width:8px;height:8px;border-radius:50%;background:${e.cor};flex-shrink:0;"></div>
+            <div style="font-size:13px;color:#E5E5EA;font-family:-apple-system,sans-serif;">${e.label}${e.valor ? ' — ' + e.valor : ''}</div>
+        </div>
+    `).join('');
+
+    document.getElementById('footprint-cronologia-overlay').style.display = 'block';
+    grFootprintAtualizarVisibilidadePainel();
+}
+
+function grFootprintFecharCronologia() {
+    document.getElementById('footprint-cronologia-overlay').style.display = 'none';
     grFootprintAtualizarVisibilidadePainel();
 }
 
 let _grFootprintCandleLinhas = [];   // linhas do frame atual, p/ detectar toque: {p, v, total, tick, yTop, yBottom}
 let _grFootprintCandleTickAtual = 10;
 let _grFootprintCandleTouchBind = false;
-let _grFootprintCandleContexto = null; // {de, ate} do candle aberto — usado pra série temporal de um nível dentro dele
+let _grFootprintCandleContexto = null; // {de, ate, candle} do candle aberto — usado pra série temporal e cronologia
+let _grFootprintCandlePocs = null; // {pocCompraPreco, pocVendaPreco, tick} do candle aberto
 
 function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCandles1min) {
     const lo = candle.l, hi = candle.h;
@@ -14110,6 +14205,7 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
     });
     const delta = totalCompra - totalVenda;
     const totalGeral = totalCompra + totalVenda;
+    _grFootprintCandlePocs = { pocCompraPreco, pocVendaPreco, tick };
 
     const dataStr = new Date(tCandleStart).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
     document.getElementById('footprint-candle-titulo').textContent = `Candle ${dataStr} · TF ${_grTf}`;
