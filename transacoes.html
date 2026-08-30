@@ -13813,20 +13813,22 @@ function grFootprintDesenharOverlay() {
 
 function grFootprintAbrirNivelModal(p, v, total, tick) {
     const faixaFim = p + tick;
+    const delta = v.c - v.v;
     document.getElementById('footprint-nivel-titulo').textContent = 'Nível $' + p.toLocaleString('pt-BR');
     document.getElementById('footprint-nivel-sub').textContent =
         `Faixa $${p.toLocaleString('pt-BR')} – $${faixaFim.toLocaleString('pt-BR')} · ` +
-        `Compra ${v.c.toFixed(3)} BTC · Venda ${v.v.toFixed(3)} BTC · Total ${total.toFixed(3)} BTC`;
+        `Compra ${v.c.toFixed(3)} BTC · Venda ${v.v.toFixed(3)} BTC · ` +
+        `Delta ${delta >= 0 ? '+' : ''}${delta.toFixed(3)} BTC · Total ${total.toFixed(3)} BTC`;
     document.getElementById('footprint-nivel-overlay').style.display = 'block';
-    requestAnimationFrame(() => grFootprintDesenharNivelChart(v.c, v.v, total));
+    requestAnimationFrame(() => grFootprintDesenharNivelChart(v.c, v.v, total, delta));
 }
 
 function grFootprintFecharNivelModal() {
     document.getElementById('footprint-nivel-overlay').style.display = 'none';
 }
 
-// Gráfico de barras verticais simples: Compra x Venda x Total (em BTC) daquele nível.
-function grFootprintDesenharNivelChart(compra, venda, total) {
+// Gráfico de barras verticais simples: Compra x Venda x Delta x Total (em BTC) daquele nível.
+function grFootprintDesenharNivelChart(compra, venda, total, delta) {
     const canvas = document.getElementById('footprint-nivel-canvas');
     if (!canvas) return;
     const wrap = canvas.parentElement;
@@ -13839,13 +13841,14 @@ function grFootprintDesenharNivelChart(compra, venda, total) {
     const dados = [
         { label: 'Compra', valor: compra, cor: '#4CAF50' },
         { label: 'Venda',  valor: venda,  cor: '#EF5350' },
+        { label: 'Delta',  valor: Math.abs(delta), sinal: delta, cor: delta >= 0 ? '#4CAF50' : '#EF5350' },
         { label: 'Total',  valor: total,  cor: '#FFA726' },
     ];
-    const maxV = Math.max(compra, venda, total, 0.0001);
+    const maxV = Math.max(compra, venda, Math.abs(delta), total, 0.0001);
     const padTop = 22, padBottom = 26;
     const chartH = H - padTop - padBottom;
-    const barGap = 28;
-    const barW = Math.min(64, (W - barGap * (dados.length + 1)) / dados.length);
+    const barGap = 20;
+    const barW = Math.min(56, (W - barGap * (dados.length + 1)) / dados.length);
     const totalW = barW * dados.length + barGap * (dados.length - 1);
     const startX = (W - totalW) / 2;
 
@@ -13859,7 +13862,8 @@ function grFootprintDesenharNivelChart(compra, venda, total) {
         ctx.font = 'bold 12px -apple-system';
         ctx.fillStyle = '#fff';
         ctx.textAlign = 'center';
-        ctx.fillText(d.valor.toFixed(3), x + barW / 2, y - 6);
+        const rotulo = d.sinal !== undefined ? (d.sinal >= 0 ? '+' : '') + d.sinal.toFixed(3) : d.valor.toFixed(3);
+        ctx.fillText(rotulo, x + barW / 2, y - 6);
 
         ctx.font = '11px -apple-system';
         ctx.fillStyle = '#8E8E93';
@@ -13868,94 +13872,211 @@ function grFootprintDesenharNivelChart(compra, venda, total) {
 }
 
 // Agrega os candles brutos (1min) de _grFootprintCandlesRaw que caem dentro do
-// período do candle tocado (candle.t até candle.t + duração do timeframe atual)
-// e abre o modal em formato de ladder (níveis de preço empilhados, venda à
-// esquerda / compra à direita), igual ao footprint clássico por candle.
+// período do candle tocado (candle.t até candle.t + duração do timeframe atual).
 function grFootprintAbrirCandleModal(candle) {
     if (!_grFootprintCandlesRaw) return;
     const msPorCandle = grFootprintMsPorCandle();
     const de = candle.t, ate = candle.t + msPorCandle;
 
-    const mapa = new Map();
+    const mapaFino = new Map(); // tick $10, só os preços que realmente tiveram negociação
     let encontrados = 0;
     for (const c of _grFootprintCandlesRaw) {
         if (c.ts < de || c.ts >= ate) continue;
         encontrados++;
         (c.niveis || []).forEach(n => {
-            if (!mapa.has(n.p)) mapa.set(n.p, { c: 0, v: 0 });
-            const acc = mapa.get(n.p);
+            if (!mapaFino.has(n.p)) mapaFino.set(n.p, { c: 0, v: 0 });
+            const acc = mapaFino.get(n.p);
             acc.c += n.c;
             acc.v += n.v;
         });
     }
 
-    if (mapa.size === 0) {
+    if (mapaFino.size === 0) {
         alert('Sem dados de footprint carregados pra esse candle (fora dos últimos ' + FOOTPRINT_MAX_DIAS + ' dias baixados).');
         return;
     }
 
-    grFootprintDesenharCandleLadder(candle, de, mapa, encontrados);
+    grFootprintDesenharCandleLadder(candle, de, mapaFino, encontrados);
 }
 
 function grFootprintFecharCandleModal() {
     document.getElementById('footprint-candle-overlay').style.display = 'none';
 }
 
-function grFootprintDesenharCandleLadder(candle, tCandleStart, mapa, numCandles1min) {
+let _grFootprintCandleLinhas = [];   // linhas do frame atual, p/ detectar toque: {p, v, total, tick, yTop, yBottom}
+let _grFootprintCandleTickAtual = 10;
+let _grFootprintCandleTouchBind = false;
+
+function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCandles1min) {
+    const lo = candle.l, hi = candle.h;
+    if (!(hi > lo)) { alert('Candle sem range de preço (H = L).'); return; }
+
+    // Reagrupa a $10 (fino) num tick maior só se o candle for grande demais e gerar
+    // muitas linhas (evita centenas de linhas num candle diário/semanal); preenche
+    // TODOS os buckets entre L e H, mesmo sem negociação, pra cobrir o corpo+pavios inteiro.
+    const TICK_BASE = 10, MAX_LINHAS = 150;
+    let tick = TICK_BASE;
+    const numLinhasBase = Math.ceil((hi - lo) / TICK_BASE) + 1;
+    if (numLinhasBase > MAX_LINHAS) {
+        tick = Math.max(TICK_BASE, Math.ceil(((hi - lo) / MAX_LINHAS) / TICK_BASE) * TICK_BASE);
+    }
+    _grFootprintCandleTickAtual = tick;
+
+    const beginP = Math.floor(lo / tick) * tick;
+    const endP = Math.ceil(hi / tick) * tick;
+    const mapa = new Map();
+    for (let p = beginP; p <= endP + 1e-6; p += tick) {
+        mapa.set(Math.round(p), { c: 0, v: 0 });
+    }
+    mapaFino.forEach((v, p) => {
+        const pAgr = Math.round(Math.round(p / tick) * tick);
+        if (!mapa.has(pAgr)) mapa.set(pAgr, { c: 0, v: 0 });
+        const acc = mapa.get(pAgr);
+        acc.c += v.c;
+        acc.v += v.v;
+    });
+
     const niveis = [...mapa.entries()].sort((a, b) => b[0] - a[0]); // preço decrescente, topo pro fundo
+
     let totalCompra = 0, totalVenda = 0;
-    niveis.forEach(([, v]) => { totalCompra += v.c; totalVenda += v.v; });
+    let pocCompraPreco = null, maxCompra = -1;
+    let pocVendaPreco = null, maxVenda = -1;
+    niveis.forEach(([p, v]) => {
+        totalCompra += v.c;
+        totalVenda += v.v;
+        if (v.c > maxCompra) { maxCompra = v.c; pocCompraPreco = p; }
+        if (v.v > maxVenda) { maxVenda = v.v; pocVendaPreco = p; }
+    });
     const delta = totalCompra - totalVenda;
     const totalGeral = totalCompra + totalVenda;
 
     const dataStr = new Date(tCandleStart).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
     document.getElementById('footprint-candle-titulo').textContent = `Candle ${dataStr} · TF ${_grTf}`;
     document.getElementById('footprint-candle-sub').textContent =
-        `O ${fmtN(candle.o)} · H ${fmtN(candle.h)} · L ${fmtN(candle.l)} · C ${fmtN(candle.c)} · ${numCandles1min} candles (1min) agregados`;
+        `Abertura ${fmtN(candle.o)} · Máxima ${fmtN(candle.h)} · Mínima ${fmtN(candle.l)} · Fechamento ${fmtN(candle.c)} · ` +
+        `${numCandles1min} candles (1min) agregados · tick $${tick}`;
     document.getElementById('footprint-candle-footer').textContent =
         `Delta ${delta >= 0 ? '+' : ''}${delta.toFixed(3)} BTC · Total ${totalGeral.toFixed(3)} BTC`;
     document.getElementById('footprint-candle-footer').style.color = delta >= 0 ? '#4CAF50' : '#EF5350';
 
     document.getElementById('footprint-candle-overlay').style.display = 'block';
     requestAnimationFrame(() => {
-        const rowH = 22;
+        const rowH = 20;
         const canvas = document.getElementById('footprint-candle-canvas');
         const W = canvas.parentElement.clientWidth;
-        const H = Math.max(rowH * niveis.length, rowH);
+        const H = rowH * niveis.length;
         canvas.width = W;
         canvas.height = H;
         canvas.style.height = H + 'px';
         const ctx = canvas.getContext('2d');
         ctx.clearRect(0, 0, W, H);
 
+        // Colunas fixas — o preço fica sempre num vão central reservado (gutter),
+        // e cada texto de quantidade fica confinado ao seu próprio lado. Isso evita
+        // o bug de sobreposição de antes (tudo colapsando pro centro quando um nível
+        // dominava a escala): mesmo com barra de 0px, o texto não invade o outro lado.
         const centroX = W / 2;
-        const meiaLargura = W * 0.30;
-        const maxQtd = Math.max(...niveis.map(([, v]) => Math.max(v.c, v.v)), 0.0001);
+        const gutterHalf = 28;               // vão reservado só pro preço, no centro
+        const margemBorda = 58;              // reserva de espaço pro texto na ponta da barra
+        const meiaLarguraMax = Math.max(20, centroX - gutterHalf - margemBorda);
+        const maxQtd = Math.max(maxCompra, maxVenda, 0.0001);
+
+        // Mapeamento preço -> y contínuo (mesma escala usada pelas linhas E pelo candle)
+        const yForPrice = p => ((hi - p) / (hi - lo)) * H;
+
+        // Sombra da faixa do CORPO real do candle (entre Abertura e Fechamento) —
+        // é aqui que costuma aparecer a defesa institucional (ZII) quando junto de
+        // volume alto; os pavios (fora dessa faixa) são preço rejeitado.
+        const corpoTopoP = Math.max(candle.o, candle.c);
+        const corpoFundoP = Math.min(candle.o, candle.c);
+        const corpoAlta = candle.c >= candle.o;
+        const yCorpoTop = yForPrice(corpoTopoP);
+        const yCorpoBot = yForPrice(corpoFundoP);
+        ctx.fillStyle = corpoAlta ? 'rgba(38,166,154,0.10)' : 'rgba(239,83,80,0.10)';
+        ctx.fillRect(0, yCorpoTop, W, Math.max(1, yCorpoBot - yCorpoTop));
+        ctx.strokeStyle = corpoAlta ? 'rgba(38,166,154,0.5)' : 'rgba(239,83,80,0.5)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        ctx.strokeRect(0, yCorpoTop, W, Math.max(1, yCorpoBot - yCorpoTop));
+        ctx.setLineDash([]);
+
+        _grFootprintCandleLinhas = [];
 
         niveis.forEach(([p, v], i) => {
             const y = i * rowH;
-            // venda (vermelho) cresce pra ESQUERDA a partir do centro
-            const wVenda = (v.v / maxQtd) * meiaLargura;
-            ctx.fillStyle = 'rgba(239,83,80,0.7)';
-            ctx.fillRect(centroX - wVenda, y + 1, wVenda, rowH - 2);
-            // compra (verde) cresce pra DIREITA a partir do centro
-            const wCompra = (v.c / maxQtd) * meiaLargura;
-            ctx.fillStyle = 'rgba(76,175,80,0.7)';
-            ctx.fillRect(centroX, y + 1, wCompra, rowH - 2);
+            const total = v.c + v.v;
+            const isPocCompra = p === pocCompraPreco && maxCompra > 0;
+            const isPocVenda = p === pocVendaPreco && maxVenda > 0;
 
+            // compra (verde) — ESQUERDA, cresce do gutter pra fora
+            const wCompra = (v.c / maxQtd) * meiaLarguraMax;
+            const xCompraDireita = centroX - gutterHalf;
+            ctx.fillStyle = isPocCompra ? 'rgba(76,175,80,0.9)' : 'rgba(76,175,80,0.6)';
+            ctx.fillRect(xCompraDireita - wCompra, y + 1, wCompra, rowH - 2);
+
+            // venda (vermelho) — DIREITA, cresce do gutter pra fora
+            const wVenda = (v.v / maxQtd) * meiaLarguraMax;
+            const xVendaEsquerda = centroX + gutterHalf;
+            ctx.fillStyle = isPocVenda ? 'rgba(239,83,80,0.9)' : 'rgba(239,83,80,0.6)';
+            ctx.fillRect(xVendaEsquerda, y + 1, wVenda, rowH - 2);
+
+            if (isPocCompra) {
+                ctx.strokeStyle = '#4CAF50'; ctx.lineWidth = 1.5;
+                ctx.strokeRect(4, y + 1, xCompraDireita - 4, rowH - 2);
+            }
+            if (isPocVenda) {
+                ctx.strokeStyle = '#EF5350'; ctx.lineWidth = 1.5;
+                ctx.strokeRect(xVendaEsquerda, y + 1, (W - 4) - xVendaEsquerda, rowH - 2);
+            }
+
+            // Texto de quantidade — sempre na ponta da barra, nunca cruza o gutter central
             ctx.font = '10px -apple-system';
             ctx.fillStyle = '#fff';
             ctx.textAlign = 'right';
-            ctx.fillText(v.v.toFixed(3), centroX - wVenda - 4, y + rowH / 2 + 3);
+            ctx.fillText(v.c.toFixed(3), xCompraDireita - wCompra - 4, y + rowH / 2 + 3);
             ctx.textAlign = 'left';
-            ctx.fillText(v.c.toFixed(3), centroX + wCompra + 4, y + rowH / 2 + 3);
+            ctx.fillText(v.v.toFixed(3), xVendaEsquerda + wVenda + 4, y + rowH / 2 + 3);
 
+            // Preço no gutter central (nunca se mistura com as quantidades)
             ctx.font = 'bold 10px -apple-system';
             ctx.fillStyle = '#E5E5EA';
             ctx.textAlign = 'center';
             ctx.fillText(p.toLocaleString('pt-BR'), centroX, y + rowH / 2 + 3);
+
+            _grFootprintCandleLinhas.push({ p, v, total, tick, yTop: y, yBottom: y + rowH });
         });
+
+        // Marca Abertura/Fechamento com uma seta pequena na lateral esquerda, pra
+        // localizar visualmente onde o corpo do candle começa/termina na régua.
+        const marcar = (preco, label, cor) => {
+            const y = yForPrice(preco);
+            ctx.fillStyle = cor;
+            ctx.font = 'bold 9px -apple-system';
+            ctx.textAlign = 'left';
+            ctx.fillText('◄ ' + label, 2, Math.max(9, Math.min(H - 2, y + 3)));
+        };
+        marcar(candle.o, 'Abertura', '#FFD54F');
+        if (Math.abs(yForPrice(candle.c) - yForPrice(candle.o)) > 10) marcar(candle.c, 'Fechamento', '#FFD54F');
+
+        if (!_grFootprintCandleTouchBind) {
+            canvas.addEventListener('click', grFootprintCandleTapHandler);
+            _grFootprintCandleTouchBind = true;
+        }
     });
+}
+
+// Toque numa linha do ladder do candle — mostra o detalhe (com Delta) daquele nível.
+function grFootprintCandleTapHandler(evt) {
+    const canvas = document.getElementById('footprint-candle-canvas');
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const y = (evt.clientY - rect.top) * (canvas.height / rect.height);
+    for (const linha of _grFootprintCandleLinhas) {
+        if (y >= linha.yTop && y < linha.yBottom) {
+            grFootprintAbrirNivelModal(linha.p, linha.v, linha.total, linha.tick);
+            return;
+        }
+    }
 }
 </script>
 <!-- ═══ FIM Etapa 9 ═══ -->
