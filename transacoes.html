@@ -4400,6 +4400,30 @@ if (_grTipoGrafico === 'linha') {
         const bodyBot = toY(Math.min(c.o, c.c));
         const bodyH = Math.max(1, bodyBot - bodyTop);
         ctx.fillRect(x - cW / 2, bodyTop, cW, bodyH);
+
+        // Destaque ZII: se esse candle tem zona(s) marcada(s) (auto ou manual),
+        // pinta uma camada clara por cima do corpo — metade verde/metade
+        // vermelha se tiver as duas, pra saber de relance qual candle já foi
+        // investigado e pra que lado, sem precisar abrir cada um.
+        if (!_indOculto.ziiZonas && Array.isArray(_grZiiZonas)) {
+            const zonasDoCandle = _grZiiZonas.filter(z => z.candleTs === c.t);
+            if (zonasDoCandle.length > 0) {
+                const temCompra = zonasDoCandle.some(z => z.tipo === 'compra');
+                const temVenda = zonasDoCandle.some(z => z.tipo === 'venda');
+                ctx.save();
+                ctx.globalAlpha = 0.4;
+                if (temCompra && temVenda) {
+                    ctx.fillStyle = '#8BC34A';
+                    ctx.fillRect(x - cW / 2, bodyTop, cW / 2, bodyH);
+                    ctx.fillStyle = '#EF9A9A';
+                    ctx.fillRect(x, bodyTop, cW / 2, bodyH);
+                } else {
+                    ctx.fillStyle = temCompra ? '#8BC34A' : '#EF9A9A';
+                    ctx.fillRect(x - cW / 2, bodyTop, cW, bodyH);
+                }
+                ctx.restore();
+            }
+        }
     });
 }
 
@@ -14021,12 +14045,12 @@ function grFootprintFecharNivelModal() {
 // visível em qualquer candle/timeframe daqui pra frente, até desmarcar.
 // Desmarcar também BLOQUEIA aquele nível pra auto-detecção nunca remarcar
 // de novo sozinha — é o mecanismo de "desfazer" a marcação automática.
-function grFootprintToggleZonaZii(marcado, p, tick, tipo, total, delta) {
+function grFootprintToggleZonaZii(marcado, p, tick, tipo, total, delta, candleTs) {
     const chave = p + '_' + tipo;
     if (marcado) {
         _grZiiZonasBloqueadas.delete(chave);
         if (!_grZiiZonas.some(z => z.lo === p && z.tipo === tipo)) {
-            _grZiiZonas.push({ lo: p, hi: p + tick, tipo, total, delta, criadoEm: Date.now(), auto: false });
+            _grZiiZonas.push({ lo: p, hi: p + tick, tipo, total, delta, criadoEm: Date.now(), auto: false, candleTs });
         }
     } else {
         _grZiiZonasBloqueadas.add(chave);
@@ -14124,7 +14148,7 @@ function grFootprintAutoDetectarZonas() {
             if (_grZiiZonasBloqueadas.has(chave)) return; // usuário já desmarcou essa antes
             if (_grZiiZonas.some(z => z.lo === preco && z.tipo === tipo)) return; // já marcada
 
-            _grZiiZonas.push({ lo: preco, hi: preco + tick, tipo, total, delta, criadoEm: Date.now(), auto: true });
+            _grZiiZonas.push({ lo: preco, hi: preco + tick, tipo, total, delta, criadoEm: Date.now(), auto: true, candleTs: candle.t });
             marcadas++;
         };
 
@@ -14396,15 +14420,18 @@ function grFootprintAbrirHistorico() {
         .sort((a, b) => a.ts - b.ts);
 
     const colunas = candles1m.map(c => {
-        let minP = null, maxP = null, compra = 0, venda = 0;
+        let minP = null, maxP = null, compra = 0, venda = 0, somaPV = 0;
         (c.niveis || []).forEach(n => {
             if (n.c <= 0 && n.v <= 0) return;
             if (minP == null || n.p < minP) minP = n.p;
             if (maxP == null || n.p > maxP) maxP = n.p;
             compra += n.c;
             venda += n.v;
+            somaPV += n.p * (n.c + n.v);
         });
-        return { ts: c.ts, minP, maxP, compra, venda, total: compra + venda, delta: compra - venda };
+        const total = compra + venda;
+        const precoMedio = total > 0 ? somaPV / total : null;
+        return { ts: c.ts, minP, maxP, compra, venda, total, delta: compra - venda, precoMedio };
     }).filter(col => col.minP != null);
 
     if (colunas.length === 0) {
@@ -14454,28 +14481,23 @@ function grFootprintDesenharHistorico(colunas, candle) {
         ctx.fillText(p.toLocaleString('pt-BR'), padEsq - 4, y + 3);
     });
 
-    const maxVol = Math.max(...colunas.map(c => c.total), 0.0001);
     const colW = chartW / colunas.length;
 
-    _grFootprintHistoricoColunas = [];
+    _grFootprintHistoricoColunas = colunas.map((col, i) => ({
+        x: padEsq + i * colW + colW / 2,
+        xMin: padEsq + i * colW, xMax: padEsq + (i + 1) * colW,
+        ...col
+    }));
 
-    colunas.forEach((col, i) => {
-        const x = padEsq + i * colW + colW / 2;
-        const y1 = yForPrice(col.maxP), y2 = yForPrice(col.minP);
-        const alpha = Math.max(0.45, Math.min(1, col.total / maxVol));
-        const cor = col.delta >= 0 ? `rgba(46,145,50,${alpha})` : `rgba(211,47,47,${alpha})`;
-        const largura = Math.max(1.5, Math.min(colW * 0.7, 1.5 + (col.total / maxVol) * 3));
-
-        ctx.strokeStyle = cor;
-        ctx.lineWidth = largura;
-        ctx.lineCap = 'round';
-        ctx.beginPath();
-        ctx.moveTo(x, Math.min(y1, y2));
-        ctx.lineTo(x, Math.max(y1, y2) + 1);
-        ctx.stroke();
-
-        _grFootprintHistoricoColunas.push({ x, xMin: padEsq + i * colW, xMax: padEsq + (i + 1) * colW, ...col });
+    ctx.strokeStyle = '#1A1A1A';
+    ctx.lineWidth = 1.8;
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    _grFootprintHistoricoColunas.forEach((col, i) => {
+        const y = yForPrice(col.precoMedio);
+        if (i === 0) ctx.moveTo(col.x, y); else ctx.lineTo(col.x, y);
     });
+    ctx.stroke();
 
     // Referências de horário: primeiro, meio, último minuto
     ctx.font = '9px -apple-system';
@@ -14571,8 +14593,11 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
     document.getElementById('footprint-candle-sub').textContent =
         `Abertura ${fmtN(candle.o)} · Máxima ${fmtN(candle.h)} · Mínima ${fmtN(candle.l)} · Fechamento ${fmtN(candle.c)} · ` +
         `${numCandles1min} candles (1min) agregados · tick $${tick}`;
+    const pctCompraCandle = totalGeral > 0 ? (totalCompra / totalGeral * 100) : 0;
+    const pctVendaCandle = totalGeral > 0 ? (totalVenda / totalGeral * 100) : 0;
     document.getElementById('footprint-candle-footer').textContent =
-        `Delta ${delta >= 0 ? '+' : ''}${delta.toFixed(3)} BTC · Total ${totalGeral.toFixed(3)} BTC`;
+        `Delta ${delta >= 0 ? '+' : ''}${delta.toFixed(3)} BTC · Total ${totalGeral.toFixed(3)} BTC · ` +
+        `Compra ${pctCompraCandle.toFixed(0)}% · Venda ${pctVendaCandle.toFixed(0)}%`;
     document.getElementById('footprint-candle-footer').style.color = delta >= 0 ? '#4CAF50' : '#EF5350';
 
     document.getElementById('footprint-candle-overlay').style.display = 'block';
@@ -14653,13 +14678,10 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
             ctx.fillStyle = '#E5E5EA';
             ctx.fillText(txt, candleLeftEdge - tw - 8, y + rowH / 2 + 3);
 
-            // Delta (compra − venda) + % de concentração do nível (do total do
-            // candle) — espelhando o chip de preço, do lado direito do candle.
-            // Verde = compra venceu ali, vermelho = venda venceu ali. Fonte bem
-            // pequena pra caber os dois números no vão apertado.
-            const pctNivel = totalGeral > 0 ? ((v.c + v.v) / totalGeral * 100) : 0;
-            const deltaTxt = (deltaLinha >= 0 ? '+' : '') + Math.round(deltaLinha) + ' · ' + pctNivel.toFixed(0) + '%';
-            ctx.font = '7px -apple-system';
+            // Delta (compra − venda) — espelhando o chip de preço, do lado direito
+            // do candle. Verde = compra venceu ali, vermelho = venda venceu ali.
+            ctx.font = 'bold 9px -apple-system';
+            const deltaTxt = (deltaLinha >= 0 ? '+' : '') + deltaLinha.toFixed(1);
             const dtw = ctx.measureText(deltaTxt).width;
             const candleRightEdge = centroX + candleHalfW;
             const corDelta = deltaLinha >= 0 ? '#4CAF50' : '#EF5350';
@@ -14677,7 +14699,7 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
             chkCompra.className = 'zii-check';
             chkCompra.style.cssText = `position:absolute;left:2px;top:${yTopoCss}px;width:16px;height:16px;accent-color:#4CAF50;margin:0;`;
             chkCompra.checked = _grZiiZonas.some(z => z.lo === p && z.tipo === 'compra');
-            chkCompra.addEventListener('change', () => grFootprintToggleZonaZii(chkCompra.checked, p, tick, 'compra', v.c, deltaLinha));
+            chkCompra.addEventListener('change', () => grFootprintToggleZonaZii(chkCompra.checked, p, tick, 'compra', v.c, deltaLinha, candle.t));
             holder.appendChild(chkCompra);
 
             const chkVenda = document.createElement('input');
@@ -14685,7 +14707,7 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
             chkVenda.className = 'zii-check';
             chkVenda.style.cssText = `position:absolute;right:2px;top:${yTopoCss}px;width:16px;height:16px;accent-color:#EF5350;margin:0;`;
             chkVenda.checked = _grZiiZonas.some(z => z.lo === p && z.tipo === 'venda');
-            chkVenda.addEventListener('change', () => grFootprintToggleZonaZii(chkVenda.checked, p, tick, 'venda', v.v, deltaLinha));
+            chkVenda.addEventListener('change', () => grFootprintToggleZonaZii(chkVenda.checked, p, tick, 'venda', v.v, deltaLinha, candle.t));
             holder.appendChild(chkVenda);
 
             _grFootprintCandleLinhas.push({ p, v, total, tick, yTop: y, yBottom: y + rowH });
