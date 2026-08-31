@@ -13727,7 +13727,7 @@ async function grFootprintAtivar() {
 
         const marcadas = grFootprintAutoDetectarZonas();
         if (marcadas > 0) {
-            alert(`${marcadas} zona(s) ZII detectada(s) automaticamente (≥${Math.round(FOOTPRINT_ZII_CONCENTRACAO_MIN * 100)}% de concentração de volume) e marcadas no gráfico.\n\nPra desfazer uma, abre o candle correspondente e desmarca o checkbox — ela não volta a ser marcada sozinha depois.`);
+            alert(`${marcadas} zona(s) ZII detectada(s) automaticamente — só em candles "starter" (range ≥${FOOTPRINT_STARTER_RAZAO_MIN}x a média dos ${FOOTPRINT_STARTER_JANELA} anteriores) e com ≥${Math.round(FOOTPRINT_ZII_CONCENTRACAO_MIN * 100)}% de concentração de volume no nível.\n\nPra desfazer uma, abre o candle correspondente e desmarca o checkbox — ela não volta a ser marcada sozinha depois.`);
         }
     } catch (e) {
         info.textContent = 'Footprint ERRO: ' + e.message;
@@ -14034,22 +14034,49 @@ function grFootprintToggleZonaZii(marcado, p, tick, tipo, total, delta) {
     grDrawChart();
 }
 
-// Varre TODOS os candles do timeframe atual que têm dado de footprint carregado
-// (visíveis na tela ou não) e marca automaticamente como zona ZII qualquer POC
-// (compra ou venda) que passe nos dois critérios:
+// Varre os candles do timeframe atual que forem "starter" de movimento (range
+// desproporcional aos últimos 14 candles — critério de Wyckoff pra separar o
+// candle que de fato iniciou algo do candle de reação/ruído) e, só nesses, marca
+// automaticamente como zona ZII qualquer POC (compra ou venda) que passe em:
 //   1) Concentração ≥ 15% do volume total do candle naquele nível sozinho
 //   2) O delta daquele nível favorece o lado sendo marcado (compra venceu ali
 //      pra marcar zona verde, venda venceu pra vermelha)
 // Nunca remarca uma zona que o usuário já desmarcou manualmente (blacklist).
 const FOOTPRINT_ZII_CONCENTRACAO_MIN = 0.15;
+const FOOTPRINT_STARTER_JANELA = 14;   // quantos candles anteriores entram na média de range
+const FOOTPRINT_STARTER_RAZAO_MIN = 2; // range do candle precisa ser ≥ 2x a média da janela
+
+// Marca quais índices de _grAllCandles são "starter" (range ≥ N vezes a média
+// dos FOOTPRINT_STARTER_JANELA candles anteriores). Devolve um Set de índices.
+function grFootprintIdentificarCandlesStarter() {
+    const starters = new Set();
+    for (let i = FOOTPRINT_STARTER_JANELA; i < _grAllCandles.length; i++) {
+        const c = _grAllCandles[i];
+        const rangeAtual = c.h - c.l;
+        if (!(rangeAtual > 0)) continue;
+
+        let somaRange = 0;
+        for (let j = i - FOOTPRINT_STARTER_JANELA; j < i; j++) {
+            somaRange += (_grAllCandles[j].h - _grAllCandles[j].l);
+        }
+        const rangeMedio = somaRange / FOOTPRINT_STARTER_JANELA;
+        if (rangeMedio <= 0) continue;
+
+        if (rangeAtual / rangeMedio >= FOOTPRINT_STARTER_RAZAO_MIN) starters.add(i);
+    }
+    return starters;
+}
 
 function grFootprintAutoDetectarZonas() {
     if (!_grFootprintCandlesRaw || !Array.isArray(_grAllCandles)) return 0;
 
     const msPorCandle = grFootprintMsPorCandle();
+    const starters = grFootprintIdentificarCandlesStarter();
     let marcadas = 0;
 
-    _grAllCandles.forEach(candle => {
+    _grAllCandles.forEach((candle, idx) => {
+        if (!starters.has(idx)) return; // só investiga candle que iniciou movimento de verdade
+
         const de = candle.t, ate = candle.t + msPorCandle;
         const candles1m = _grFootprintCandlesRaw.filter(c => c.ts >= de && c.ts < ate);
         if (candles1m.length === 0) return; // candle fora da janela de dias carregada — pula
