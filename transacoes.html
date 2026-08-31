@@ -3523,7 +3523,8 @@ let _freehandColorPressTimer = null;
 let _freehandLongPressFired = false;
 
 let _grNiveis = [];      // array de níveis: [{preco, tipo}] tipo: 'sup'|'res'
-let _grZiiZonas = [];    // zonas ZII marcadas manualmente: [{lo, hi, tipo:'compra'|'venda', total, delta}]
+let _grZiiZonas = [];    // zonas ZII marcadas: [{lo, hi, tipo:'compra'|'venda', total, delta, auto}]
+let _grZiiZonasBloqueadas = new Set(); // chaves "lo_tipo" que o usuário desmarcou manualmente — a auto-detecção nunca remarca essas
 let _grAlertas = [];     // array de alertas: [{preco, id, habilitado}]
 
 let _fibDragging = false;
@@ -13717,12 +13718,17 @@ async function grFootprintAtivar() {
         _grFootprintUltimoRangeCalc = null;
         _grFootprintDisplayCache = null;
 
-        info.textContent = `${flat.length} candles (1min) carregados · acompanhando o range visível do gráfico...`;
+        info.textContent = `${flat.length} candles (1min) carregados · detectando zonas ZII...`;
 
         grFootprintGarantirOverlayCanvas();
         if (_grFootprintOverlayInterval) clearInterval(_grFootprintOverlayInterval);
         _grFootprintOverlayInterval = setInterval(grFootprintDesenharOverlay, 200);
         grFootprintDesenharOverlay();
+
+        const marcadas = grFootprintAutoDetectarZonas();
+        if (marcadas > 0) {
+            alert(`${marcadas} zona(s) ZII detectada(s) automaticamente (≥${Math.round(FOOTPRINT_ZII_CONCENTRACAO_MIN * 100)}% de concentração de volume) e marcadas no gráfico.\n\nPra desfazer uma, abre o candle correspondente e desmarca o checkbox — ela não volta a ser marcada sozinha depois.`);
+        }
     } catch (e) {
         info.textContent = 'Footprint ERRO: ' + e.message;
         console.log('Footprint erro completo:', e);
@@ -14012,15 +14018,94 @@ function grFootprintFecharNivelModal() {
 // Liga/desliga uma zona ZII no gráfico principal — chamado pelos checkboxes
 // desenhados direto na régua do candle (linha de compra ou de venda). Fica
 // visível em qualquer candle/timeframe daqui pra frente, até desmarcar.
+// Desmarcar também BLOQUEIA aquele nível pra auto-detecção nunca remarcar
+// de novo sozinha — é o mecanismo de "desfazer" a marcação automática.
 function grFootprintToggleZonaZii(marcado, p, tick, tipo, total, delta) {
+    const chave = p + '_' + tipo;
     if (marcado) {
+        _grZiiZonasBloqueadas.delete(chave);
         if (!_grZiiZonas.some(z => z.lo === p && z.tipo === tipo)) {
-            _grZiiZonas.push({ lo: p, hi: p + tick, tipo, total, delta, criadoEm: Date.now() });
+            _grZiiZonas.push({ lo: p, hi: p + tick, tipo, total, delta, criadoEm: Date.now(), auto: false });
         }
     } else {
+        _grZiiZonasBloqueadas.add(chave);
         _grZiiZonas = _grZiiZonas.filter(z => !(z.lo === p && z.tipo === tipo));
     }
     grDrawChart();
+}
+
+// Varre TODOS os candles do timeframe atual que têm dado de footprint carregado
+// (visíveis na tela ou não) e marca automaticamente como zona ZII qualquer POC
+// (compra ou venda) que passe nos dois critérios:
+//   1) Concentração ≥ 15% do volume total do candle naquele nível sozinho
+//   2) O delta daquele nível favorece o lado sendo marcado (compra venceu ali
+//      pra marcar zona verde, venda venceu pra vermelha)
+// Nunca remarca uma zona que o usuário já desmarcou manualmente (blacklist).
+const FOOTPRINT_ZII_CONCENTRACAO_MIN = 0.15;
+
+function grFootprintAutoDetectarZonas() {
+    if (!_grFootprintCandlesRaw || !Array.isArray(_grAllCandles)) return 0;
+
+    const msPorCandle = grFootprintMsPorCandle();
+    let marcadas = 0;
+
+    _grAllCandles.forEach(candle => {
+        const de = candle.t, ate = candle.t + msPorCandle;
+        const candles1m = _grFootprintCandlesRaw.filter(c => c.ts >= de && c.ts < ate);
+        if (candles1m.length === 0) return; // candle fora da janela de dias carregada — pula
+
+        const lo = candle.l, hi = candle.h;
+        if (!(hi > lo)) return;
+
+        // Mesmo tick-alvo (~14 linhas) usado no ladder manual, pra bater
+        // exatamente com o que o usuário vê/desmarca ao abrir o candle.
+        const tick = Math.max(10, Math.round(((hi - lo) / 14) / 10) * 10);
+
+        const mapa = new Map();
+        let totalCandle = 0;
+        candles1m.forEach(c => {
+            (c.niveis || []).forEach(n => {
+                const pAgr = Math.round(Math.round(n.p / tick) * tick);
+                if (!mapa.has(pAgr)) mapa.set(pAgr, { c: 0, v: 0 });
+                const acc = mapa.get(pAgr);
+                acc.c += n.c;
+                acc.v += n.v;
+                totalCandle += n.c + n.v;
+            });
+        });
+        if (totalCandle <= 0) return;
+
+        let pocCompraPreco = null, maxCompra = -1;
+        let pocVendaPreco = null, maxVenda = -1;
+        mapa.forEach((v, p) => {
+            if (v.c > maxCompra) { maxCompra = v.c; pocCompraPreco = p; }
+            if (v.v > maxVenda) { maxVenda = v.v; pocVendaPreco = p; }
+        });
+
+        const tentarMarcar = (preco, tipo) => {
+            if (preco == null) return;
+            const v = mapa.get(preco);
+            const total = v.c + v.v;
+            const delta = v.c - v.v;
+            const concentracao = total / totalCandle;
+            if (concentracao < FOOTPRINT_ZII_CONCENTRACAO_MIN) return;
+            if (tipo === 'compra' && delta < 0) return;
+            if (tipo === 'venda' && delta > 0) return;
+
+            const chave = preco + '_' + tipo;
+            if (_grZiiZonasBloqueadas.has(chave)) return; // usuário já desmarcou essa antes
+            if (_grZiiZonas.some(z => z.lo === preco && z.tipo === tipo)) return; // já marcada
+
+            _grZiiZonas.push({ lo: preco, hi: preco + tick, tipo, total, delta, criadoEm: Date.now(), auto: true });
+            marcadas++;
+        };
+
+        tentarMarcar(pocCompraPreco, 'compra');
+        tentarMarcar(pocVendaPreco, 'venda');
+    });
+
+    if (marcadas > 0) grDrawChart();
+    return marcadas;
 }
 
 // Gerenciador simples das zonas marcadas — lista + opção de apagar uma ou todas.
