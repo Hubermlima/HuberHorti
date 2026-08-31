@@ -3548,6 +3548,42 @@ function grSetTf(tf) {
     grRenderChart();
 }
 
+window._grKrakenParesCache = null; // Map: ativo base (ex: 'ETH', 'SOL', 'XBT') -> par usável na API da Kraken
+
+// Busca a lista pública de pares da Kraken (uma vez por sessão, cacheada) e monta
+// um mapa "ativo -> par" a partir do altname de cada par cotado em USD (não USDT,
+// não dark pool). É assim que a gente descobre automaticamente se um ativo
+// qualquer (ETH, SOL, o que for) existe na Kraken, sem precisar cadastrar cada
+// um na mão.
+async function grObterMapaParesKraken() {
+    if (window._grKrakenParesCache) return window._grKrakenParesCache;
+    try {
+        const r = await fetch('https://api.kraken.com/0/public/AssetPairs');
+        const d = await r.json();
+        const mapa = new Map();
+        Object.values(d.result || {}).forEach(info => {
+            const alt = info.altname || '';
+            if (!alt.endsWith('USD') || alt.endsWith('USDT') || alt.includes('.d')) return;
+            const ativoBase = alt.slice(0, -3).toUpperCase();
+            mapa.set(ativoBase, alt);
+        });
+        window._grKrakenParesCache = mapa;
+    } catch (e) {
+        window._grKrakenParesCache = new Map(); // falhou -> mapa vazio, tudo cai pra Binance
+    }
+    return window._grKrakenParesCache;
+}
+
+// Traduz o símbolo estilo Binance (ex: 'ETHUSDT') pro par correspondente na
+// Kraken (ex: 'ETHUSD'), usando o mapa acima. 'BTC' vira 'XBT' primeiro, porque
+// é assim que a Kraken chama o Bitcoin internamente.
+async function grObterParKraken(binSymbol) {
+    let base = binSymbol.toUpperCase().replace(/USDT$/, '').replace(/USD$/, '');
+    if (base === 'BTC') base = 'XBT';
+    const mapa = await grObterMapaParesKraken();
+    return mapa.get(base) || null;
+}
+
 // Traduz timeframe estilo Binance ('15m','1h','4h','1d','1w') pro código de
 // minuto que a API da Kraken espera. Retorna null pros que a Kraken não tem
 // nativo (ex: '1M' mensal) — nesse caso o helper abaixo cai pra Binance direto.
@@ -3559,8 +3595,9 @@ function grKrakenIntervalMin(binInterval) {
 window._grFonteCandles = 'Binance'; // exposto pra UI poder mostrar de onde veio o dado
 
 // Busca candles com Kraken como fonte PRIMÁRIA e Binance como fallback automático
-// (Kraken indisponível/erro, símbolo não é BTC, timeframe sem equivalente na
+// (Kraken indisponível/erro, ativo sem par USD lá, timeframe sem equivalente na
 // Kraken, ou paginação pra trás via endTime — que a Kraken não suporta).
+// Funciona pra QUALQUER ativo, não só BTC — descobre o par certo sozinho.
 // Devolve SEMPRE no formato de array cru da Binance: [openTime, open, high, low,
 // close, volume, closeTime, ...] — assim todo o código que já consome klines
 // (que espera k[0], k[1], k[4] etc.) continua funcionando sem precisar mudar.
@@ -3569,12 +3606,12 @@ window._grFonteCandles = 'Binance'; // exposto pra UI poder mostrar de onde veio
 // e o indicador de Delta/CVD do candle principal perde precisão nesse caso.
 async function grBuscarKlines(binSymbol, binInterval, limit, endTime) {
     const krakenInterval = grKrakenIntervalMin(binInterval);
-    const podeUsarKraken = krakenInterval != null && binSymbol.toUpperCase().startsWith('BTC') && !endTime;
+    const krakenPair = (krakenInterval != null && !endTime) ? await grObterParKraken(binSymbol) : null;
 
-    if (podeUsarKraken) {
+    if (krakenPair) {
         try {
             const since = Math.floor((Date.now() - limit * krakenInterval * 60000) / 1000);
-            const url = `https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=${krakenInterval}&since=${since}`;
+            const url = `https://api.kraken.com/0/public/OHLC?pair=${krakenPair}&interval=${krakenInterval}&since=${since}`;
             const r = await fetch(url);
             const d = await r.json();
             if (d.error && d.error.length) throw new Error(d.error.join(','));
