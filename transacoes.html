@@ -3006,7 +3006,6 @@ async function cvFecharTargetModal() {
 function cvIniciarRealTime() {
     // Fecha WS anterior se existir
     if (window._cvWs) { try { window._cvWs.close(); } catch(e) {} }
-
     const symbol = (_ticker || 'BTC/USD').replace('/', '').toLowerCase();
     const binSym = symbol.replace('btcusd','btcusdt').replace('ethusd','ethusdt').replace('usd','usdt').replace('usdtt','usdt');
     const ws = new WebSocket('wss://stream.binance.com:9443/ws/' + binSym + '@aggTrade');
@@ -3107,15 +3106,26 @@ function cvIniciarRealTime() {
         } catch(e) {}
     };
 
+    ws.onopen = function() {
+        window._cvWsFalhasSeguidas = 0; // reconectou — zera o contador de backoff
+    };
+
     ws.onerror = function() {
-        // Fallback para polling se WS falhar
+        // Fallback para polling se WS falhar — também com backoff, não fixo em 1s pra sempre
         if (window._cvTickerInterval) clearInterval(window._cvTickerInterval);
-        window._cvTickerInterval = setInterval(cvAtualizarPrecoRealTime, 1000);
+        const falhas = window._cvWsFalhasSeguidas || 0;
+        const delayPolling = Math.min(1000 * Math.pow(2, falhas), 30000); // 1s, 2s, 4s... até 30s
+        window._cvTickerInterval = setInterval(cvAtualizarPrecoRealTime, delayPolling);
     };
 
     ws.onclose = function() {
-        // Reconecta após 3s se fechar inesperadamente
-        setTimeout(cvIniciarRealTime, 3000);
+        // Reconecta com backoff exponencial (3s, 6s, 12s... até 60s) em vez de
+        // martelar a cada 3s pra sempre — evita sobrecarregar o app quando não
+        // tem rede nenhuma disponível (ex: ambiente de preview sem acesso externo).
+        window._cvWsFalhasSeguidas = (window._cvWsFalhasSeguidas || 0) + 1;
+        const delay = Math.min(3000 * Math.pow(2, window._cvWsFalhasSeguidas - 1), 60000);
+        if (window._cvWsReconnectTimer) clearTimeout(window._cvWsReconnectTimer);
+        window._cvWsReconnectTimer = setTimeout(cvIniciarRealTime, delay);
     };
 
     // Variação 24h continua via polling (menos crítico)
