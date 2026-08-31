@@ -14454,7 +14454,17 @@ function grFootprintAbrirHistorico() {
 
     document.getElementById('footprint-historico-overlay').style.display = 'block';
     grFootprintAtualizarVisibilidadePainel();
-    requestAnimationFrame(() => grFootprintDesenharHistorico(colunas, candle));
+    requestAnimationFrame(() => {
+        grFootprintDesenharHistorico(colunas, candle);
+        // Mostra de cara o minuto de maior volume — sem precisar caçar o pico
+        // na tela (colunas são estreitas demais pra acertar no dedo com precisão).
+        const pico = colunas.reduce((max, c) => c.total > max.total ? c : max, colunas[0]);
+        const idx = colunas.indexOf(pico);
+        const fmtHora = ts => new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+        document.getElementById('footprint-historico-detalhe').innerHTML =
+            `Maior pico: ${fmtHora(pico.ts)} · Faixa $${pico.minP.toLocaleString('pt-BR')}–$${pico.maxP.toLocaleString('pt-BR')} · ` +
+            `<span style="color:${pico.delta >= 0 ? '#4CAF50' : '#EF5350'}">Delta ${pico.delta >= 0 ? '+' : ''}${pico.delta.toFixed(3)}</span> · Total ${pico.total.toFixed(3)} BTC`;
+    });
 }
 
 function grFootprintFecharHistorico() {
@@ -14533,6 +14543,34 @@ function grFootprintDesenharHistorico(colunas, candle) {
         ctx.textAlign = 'right';
         ctx.fillText('POC ' + fmtN(zona.lo), W - padDir - 2, y - 3);
     });
+
+    // ── Divisórias de hora ───────────────────────────────────────────
+    // Uma linha vertical a cada hora cheia dentro do candle (ex: TF 4h vira
+    // 4 fatias de 1h cada) — usa proporção de tempo real, não índice de
+    // coluna, então funciona certo mesmo se faltar algum minuto no meio.
+    const msPorCandleDivisor = grFootprintMsPorCandle();
+    const inicioCandle = candle.t;
+    const duracaoTotal = colunas[colunas.length - 1].ts - colunas[0].ts;
+    if (duracaoTotal > 0) {
+        for (let hMs = 3600000; hMs < msPorCandleDivisor; hMs += 3600000) {
+            const tsMarca = inicioCandle + hMs;
+            if (tsMarca <= colunas[0].ts || tsMarca >= colunas[colunas.length - 1].ts) continue;
+            const frac = (tsMarca - colunas[0].ts) / duracaoTotal;
+            const xMarca = padEsq + frac * chartW;
+            ctx.strokeStyle = 'rgba(0,0,0,0.18)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([2, 3]);
+            ctx.beginPath();
+            ctx.moveTo(xMarca, padTop);
+            ctx.lineTo(xMarca, volTop + alturaVolume);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.font = '8px -apple-system';
+            ctx.fillStyle = '#888888';
+            ctx.textAlign = 'center';
+            ctx.fillText(new Date(tsMarca).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }), xMarca, padTop + 9);
+        }
+    }
 
     // ── Painel de volume (barras por minuto + linha de média) ──────────
     ctx.strokeStyle = 'rgba(0,0,0,0.15)';
