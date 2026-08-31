@@ -3538,6 +3538,59 @@ function grSetTf(tf) {
     grRenderChart();
 }
 
+// Traduz timeframe estilo Binance ('15m','1h','4h','1d','1w') pro código de
+// minuto que a API da Kraken espera. Retorna null pros que a Kraken não tem
+// nativo (ex: '1M' mensal) — nesse caso o helper abaixo cai pra Binance direto.
+function grKrakenIntervalMin(binInterval) {
+    const mapa = { '15m': 15, '1h': 60, '4h': 240, '1d': 1440, '1w': 10080 };
+    return mapa[binInterval] || null;
+}
+
+window._grFonteCandles = 'Binance'; // exposto pra UI poder mostrar de onde veio o dado
+
+// Busca candles com Kraken como fonte PRIMÁRIA e Binance como fallback automático
+// (Kraken indisponível/erro, símbolo não é BTC, timeframe sem equivalente na
+// Kraken, ou paginação pra trás via endTime — que a Kraken não suporta).
+// Devolve SEMPRE no formato de array cru da Binance: [openTime, open, high, low,
+// close, volume, closeTime, ...] — assim todo o código que já consome klines
+// (que espera k[0], k[1], k[4] etc.) continua funcionando sem precisar mudar.
+// Ressalva: a Kraken não tem volume de compra/venda separado por candle (só a
+// Binance tem, no índice 9) — quando a fonte é Kraken, esse campo fica null,
+// e o indicador de Delta/CVD do candle principal perde precisão nesse caso.
+async function grBuscarKlines(binSymbol, binInterval, limit, endTime) {
+    const krakenInterval = grKrakenIntervalMin(binInterval);
+    const podeUsarKraken = krakenInterval != null && binSymbol.toUpperCase().startsWith('BTC') && !endTime;
+
+    if (podeUsarKraken) {
+        try {
+            const since = Math.floor((Date.now() - limit * krakenInterval * 60000) / 1000);
+            const url = `https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=${krakenInterval}&since=${since}`;
+            const r = await fetch(url);
+            const d = await r.json();
+            if (d.error && d.error.length) throw new Error(d.error.join(','));
+            const chave = Object.keys(d.result || {}).find(k => k !== 'last');
+            const candles = chave ? d.result[chave] : null;
+            if (!Array.isArray(candles) || candles.length === 0) throw new Error('Kraken sem candles');
+            window._grFonteCandles = 'Kraken';
+            return candles.slice(-limit).map(c => {
+                const openTime = c[0] * 1000;
+                // [openTime, open, high, low, close, volume, closeTime, quoteVol, trades, takerBuyVol, takerBuyQuoteVol, ignore]
+                return [openTime, c[1], c[2], c[3], c[4], c[6], openTime + krakenInterval * 60000 - 1, '0', c[7] || 0, null, '0', '0'];
+            });
+        } catch (e) {
+            console.log('Kraken falhou, caindo pra Binance:', e.message);
+        }
+    }
+
+    const url = endTime
+        ? `https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=${binInterval}&limit=${limit}&endTime=${endTime}`
+        : `https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=${binInterval}&limit=${limit}`;
+    const r = await fetch(url);
+    const d = await r.json();
+    window._grFonteCandles = 'Binance';
+    return Array.isArray(d) ? d : [];
+}
+
 async function grRenderChart() {
     const container = document.getElementById('gr-chart-container');
     const canvasWrap = document.getElementById('gr-chart-canvas-wrap') || container;
@@ -3568,16 +3621,12 @@ async function grRenderChart() {
                 .replace('USD','USDT').replace('USDTT','USDT'));
             const binInterval = _grTf === '15m' ? '15m' : _grTf === '1h' ? '1h' : _grTf === '1day' ? '1d' : _grTf === '1week' ? '1w' : _grTf === '1month' ? '1M' : _grTf === 'custom' ? grBaseIntervalCustom(_grTfCustomUnit) : '4h';
             const fetchBin = async (endTime) => {
-                const url = endTime
-                    ? `https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=${binInterval}&limit=1000&endTime=${endTime}`
-                    : `https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=${binInterval}&limit=1000`;
-                const r = await fetch(url);
-                const d = await r.json();
-                return (Array.isArray(d) ? d : []).map(k => ({
+                const d = await grBuscarKlines(binSymbol, binInterval, 1000, endTime);
+                return d.map(k => ({
                     t: k[0], o: parseFloat(k[1]), h: parseFloat(k[2]),
                     l: parseFloat(k[3]), c: parseFloat(k[4]),
                     v: parseFloat(k[5]),
-                    bv: parseFloat(k[9])
+                    bv: k[9] != null ? parseFloat(k[9]) : null
                 }));
             };
             const page1 = await fetchBin(null);
@@ -3591,8 +3640,8 @@ async function grRenderChart() {
             // Busca candles diários e semanais para EMA MTF (em paralelo)
             try {
                 const [resD, resW] = await Promise.all([
-                    fetch(`https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=1d&limit=100`).then(r=>r.json()),
-                    fetch(`https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=1w&limit=1000`).then(r=>r.json())
+                    grBuscarKlines(binSymbol, '1d', 100),
+                    grBuscarKlines(binSymbol, '1w', 1000)
                 ]);
                 _grCandlesD = (Array.isArray(resD) ? resD : []).map(k => ({ t: k[0], c: parseFloat(k[4]) }));
                 _grCandlesW = (Array.isArray(resW) ? resW : []).map(k => ({ t: k[0], c: parseFloat(k[4]) }));
@@ -5329,7 +5378,7 @@ if (fibsParaDesenhar.length > 0) {
         ctx.fillStyle = '#FFFFFF';
         ctx.font = 'bold 9px -apple-system';
         ctx.textAlign = 'right';
-        ctx.fillText('Binance', W - PAD.right - 2, H - PAD.bottom + 22);
+        ctx.fillText(window._grFonteCandles || 'Binance', W - PAD.right - 2, H - PAD.bottom + 22);
 
         // ── Painel inferior RSI ou Volume ─────────────────────────────
         if (_indState.subInd && !_indOculto.painel) {
@@ -7087,9 +7136,7 @@ async function cvMinimapCarregar() {
         return;
     }
     try {
-        const url = `https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=${cfg.bin}&limit=1000`;
-        const r = await fetch(url);
-        const d = await r.json();
+        const d = await grBuscarKlines(binSymbol, cfg.bin, 1000);
         _cvMinimapCandles = (Array.isArray(d) ? d : []).map(k => ({
             t: k[0], o: parseFloat(k[1]), h: parseFloat(k[2]), l: parseFloat(k[3]), c: parseFloat(k[4])
         }));
@@ -12531,9 +12578,9 @@ async function odCalcularScoreConfluencia() {
         const binSymbol = ((_ticker || 'BTC/USD').replace('/', '').replace('-', '').toUpperCase()
             .replace('USD', 'USDT').replace('USDTT', 'USDT'));
         const [data, dataD, dataW] = await Promise.all([
-            fetch(`https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=${binInterval}&limit=250`).then(r => r.json()),
-            fetch(`https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=1d&limit=100`).then(r => r.json()),
-            fetch(`https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=1w&limit=50`).then(r => r.json())
+            grBuscarKlines(binSymbol, binInterval, 250),
+            grBuscarKlines(binSymbol, '1d', 100),
+            grBuscarKlines(binSymbol, '1w', 50)
         ]);
         if (!Array.isArray(data) || data.length < 30) {
             status.textContent = 'Histórico insuficiente pra esse timeframe.';
