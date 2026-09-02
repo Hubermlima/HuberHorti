@@ -14382,10 +14382,12 @@ function grFootprintAbrirCandleModal(candle) {
         if (c.ts < de || c.ts >= ate) continue;
         encontrados++;
         (c.niveis || []).forEach(n => {
-            if (!mapaFino.has(n.p)) mapaFino.set(n.p, { c: 0, v: 0 });
+            if (!mapaFino.has(n.p)) mapaFino.set(n.p, { c: 0, v: 0, nc: 0, nv: 0 });
             const acc = mapaFino.get(n.p);
             acc.c += n.c;
             acc.v += n.v;
+            acc.nc += (n.nc || 0);
+            acc.nv += (n.nv || 0);
         });
     }
 
@@ -14688,17 +14690,29 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
     const endP = Math.ceil(hi / tick) * tick;
     const mapa = new Map();
     for (let p = beginP; p <= endP + 1e-6; p += tick) {
-        mapa.set(Math.round(p), { c: 0, v: 0 });
+        mapa.set(Math.round(p), { c: 0, v: 0, nc: 0, nv: 0 });
     }
     mapaFino.forEach((v, p) => {
         const pAgr = Math.round(Math.round(p / tick) * tick);
-        if (!mapa.has(pAgr)) mapa.set(pAgr, { c: 0, v: 0 });
+        if (!mapa.has(pAgr)) mapa.set(pAgr, { c: 0, v: 0, nc: 0, nv: 0 });
         const acc = mapa.get(pAgr);
         acc.c += v.c;
         acc.v += v.v;
+        acc.nc += (v.nc || 0);
+        acc.nv += (v.nv || 0);
     });
 
     const niveis = [...mapa.entries()].sort((a, b) => b[0] - a[0]); // preço decrescente, topo pro fundo
+
+    // Tamanho médio de trade por lado (c/nc, v/nv) — maior média = poucos
+    // players concentrando volume grande cada um; média pequena = muitos
+    // players fragmentando o mesmo volume em pedaços menores. Só existe pra
+    // candles a partir de 01/09/26 (quando o worker passou a contar nc/nv).
+    let maxAvgCompra = 0, maxAvgVenda = 0, temIntensidade = false;
+    niveis.forEach(([, v]) => {
+        if (v.nc > 0) { temIntensidade = true; maxAvgCompra = Math.max(maxAvgCompra, v.c / v.nc); }
+        if (v.nv > 0) { temIntensidade = true; maxAvgVenda = Math.max(maxAvgVenda, v.v / v.nv); }
+    });
 
     let totalCompra = 0, totalVenda = 0;
     let pocCompraPreco = null, maxCompra = -1;
@@ -14717,7 +14731,8 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
     document.getElementById('footprint-candle-titulo').textContent = `Candle ${dataStr} · TF ${_grTf}`;
     document.getElementById('footprint-candle-sub').textContent =
         `Abertura ${fmtN(candle.o)} · Máxima ${fmtN(candle.h)} · Mínima ${fmtN(candle.l)} · Fechamento ${fmtN(candle.c)} · ` +
-        `${numCandles1min} candles (1min) agregados · tick $${tick}`;
+        `${numCandles1min} candles (1min) agregados · tick $${tick}` +
+        (temIntensidade ? ' · cor mais sólida = trades maiores em média' : '');
     const pctCompraCandle = totalGeral > 0 ? (totalCompra / totalGeral * 100) : 0;
     const pctVendaCandle = totalGeral > 0 ? (totalVenda / totalGeral * 100) : 0;
     document.getElementById('footprint-candle-footer').textContent =
@@ -14771,16 +14786,23 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
                 ctx.fillRect(0, y, W, rowH);
             }
 
+            const intensCompra = (temIntensidade && v.nc > 0 && maxAvgCompra > 0) ? Math.min(1, (v.c / v.nc) / maxAvgCompra) : null;
+            const intensVenda = (temIntensidade && v.nv > 0 && maxAvgVenda > 0) ? Math.min(1, (v.v / v.nv) / maxAvgVenda) : null;
+
             // compra (verde) — ESQUERDA, cresce do gutter pra fora
             const wCompra = (v.c / maxQtd) * meiaLarguraMax;
             const xCompraDireita = centroX - gutterHalf;
-            ctx.fillStyle = isPocCompra ? 'rgba(76,175,80,0.9)' : 'rgba(76,175,80,0.6)';
+            ctx.fillStyle = intensCompra != null
+                ? `rgba(76,175,80,${(0.3 + intensCompra * 0.65).toFixed(2)})`
+                : (isPocCompra ? 'rgba(76,175,80,0.9)' : 'rgba(76,175,80,0.6)');
             ctx.fillRect(xCompraDireita - wCompra, y + 1, wCompra, rowH - 2);
 
             // venda (vermelho) — DIREITA, cresce do gutter pra fora
             const wVenda = (v.v / maxQtd) * meiaLarguraMax;
             const xVendaEsquerda = centroX + gutterHalf;
-            ctx.fillStyle = isPocVenda ? 'rgba(239,83,80,0.9)' : 'rgba(239,83,80,0.6)';
+            ctx.fillStyle = intensVenda != null
+                ? `rgba(239,83,80,${(0.3 + intensVenda * 0.65).toFixed(2)})`
+                : (isPocVenda ? 'rgba(239,83,80,0.9)' : 'rgba(239,83,80,0.6)');
             ctx.fillRect(xVendaEsquerda, y + 1, wVenda, rowH - 2);
 
             if (isPocCompra) {
