@@ -13590,7 +13590,7 @@ function cvFecharSetupSheet() {
       <div style="font-size:15px;font-weight:800;color:#FFFFFF;font-family:-apple-system,sans-serif;" id="footprint-historico-titulo">Histórico do candle</div>
       <button onclick="grFootprintFecharHistorico()" style="background:rgba(255,255,255,0.1);border:none;color:#FFFFFF;font-size:16px;width:28px;height:28px;border-radius:50%;cursor:pointer;">✕</button>
     </div>
-    <div style="padding:0 16px 4px;color:#8E8E93;font-size:11px;font-family:-apple-system,sans-serif;flex-shrink:0;" id="footprint-historico-sub">Linha = preço médio por minuto. Barras embaixo = volume por minuto (cor sólida forte = volume especificamente no nível marcado — deu pra ver se foi defesa espalhada ou print concentrado). Linha laranja = média do candle. Toca pra ver o detalhe.</div>
+    <div style="padding:0 16px 4px;color:#8E8E93;font-size:11px;font-family:-apple-system,sans-serif;flex-shrink:0;" id="footprint-historico-sub">Linha = preço médio por minuto. Barras embaixo = volume por minuto (cor sólida forte = volume especificamente no nível marcado; opacidade da barra = tamanho médio de trade daquele minuto, mais sólido = poucos players grandes). Linha laranja = média do candle. Toca pra ver o detalhe.</div>
     <div style="padding:0 16px 8px;color:#E5E5EA;font-size:12px;font-weight:700;font-family:-apple-system,sans-serif;min-height:16px;flex-shrink:0;" id="footprint-historico-detalhe"></div>
     <div style="flex:1;min-height:0;overflow-y:auto;padding:0 16px 16px;-webkit-overflow-scrolling:touch;">
       <canvas id="footprint-historico-canvas" style="width:100%;height:460px;display:block;"></canvas>
@@ -14432,7 +14432,7 @@ function grFootprintAbrirHistorico() {
     const zonaVenda = zonasDoCandle.find(z => z.tipo === 'venda');
 
     const colunas = candles1m.map(c => {
-        let minP = null, maxP = null, compra = 0, venda = 0, somaPV = 0;
+        let minP = null, maxP = null, compra = 0, venda = 0, somaPV = 0, nCompra = 0, nVenda = 0;
         let volZonaCompra = 0, volZonaVenda = 0;
         (c.niveis || []).forEach(n => {
             if (n.c <= 0 && n.v <= 0) return;
@@ -14440,13 +14440,17 @@ function grFootprintAbrirHistorico() {
             if (maxP == null || n.p > maxP) maxP = n.p;
             compra += n.c;
             venda += n.v;
+            nCompra += (n.nc || 0);
+            nVenda += (n.nv || 0);
             somaPV += n.p * (n.c + n.v);
             if (zonaCompra && n.p >= zonaCompra.lo && n.p < zonaCompra.hi) volZonaCompra += n.c + n.v;
             if (zonaVenda && n.p >= zonaVenda.lo && n.p < zonaVenda.hi) volZonaVenda += n.c + n.v;
         });
         const total = compra + venda;
         const precoMedio = total > 0 ? somaPV / total : null;
-        return { ts: c.ts, minP, maxP, compra, venda, total, delta: compra - venda, precoMedio, volZonaCompra, volZonaVenda };
+        const nTotal = nCompra + nVenda;
+        const avgTrade = nTotal > 0 ? total / nTotal : null; // tamanho médio de trade nesse minuto
+        return { ts: c.ts, minP, maxP, compra, venda, total, delta: compra - venda, precoMedio, volZonaCompra, volZonaVenda, avgTrade };
     }).filter(col => col.minP != null);
 
     if (colunas.length === 0) {
@@ -14469,7 +14473,8 @@ function grFootprintAbrirHistorico() {
         const fmtHora = ts => new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
         document.getElementById('footprint-historico-detalhe').innerHTML =
             `Maior pico: ${fmtHora(pico.ts)} · Faixa $${pico.minP.toLocaleString('pt-BR')}–$${pico.maxP.toLocaleString('pt-BR')} · ` +
-            `<span style="color:${pico.delta >= 0 ? '#4CAF50' : '#EF5350'}">Delta ${pico.delta >= 0 ? '+' : ''}${pico.delta.toFixed(3)}</span> · Total ${pico.total.toFixed(3)} BTC`;
+            `<span style="color:${pico.delta >= 0 ? '#4CAF50' : '#EF5350'}">Delta ${pico.delta >= 0 ? '+' : ''}${pico.delta.toFixed(3)}</span> · Total ${pico.total.toFixed(3)} BTC` +
+            (pico.avgTrade != null ? ` · trade médio ${pico.avgTrade.toFixed(3)} BTC` : '');
     });
 }
 
@@ -14510,11 +14515,14 @@ function grFootprintDesenharHistorico(colunas, candle) {
         ctx.fillText(p.toLocaleString('pt-BR'), padEsq - 4, y + 3);
     });
 
-    const colW = chartW / colunas.length;
+    const colW = chartW / colunas.length; // ainda usado como largura de barra individual
+    const tsMin = colunas[0].ts, tsMax = colunas[colunas.length - 1].ts;
+    const duracaoColunas = Math.max(1, tsMax - tsMin);
+    const xPorTempo = ts => padEsq + ((ts - tsMin) / duracaoColunas) * chartW;
 
-    _grFootprintHistoricoColunas = colunas.map((col, i) => ({
-        x: padEsq + i * colW + colW / 2,
-        xMin: padEsq + i * colW, xMax: padEsq + (i + 1) * colW,
+    _grFootprintHistoricoColunas = colunas.map((col) => ({
+        x: xPorTempo(col.ts),
+        xMin: xPorTempo(col.ts) - colW / 2, xMax: xPorTempo(col.ts) + colW / 2,
         ...col
     }));
 
@@ -14592,10 +14600,21 @@ function grFootprintDesenharHistorico(colunas, candle) {
     const maxVolSqrt = Math.sqrt(maxVol);
     const yForVol = v => volTop + alturaVolume - (Math.sqrt(Math.max(0, v)) / maxVolSqrt) * alturaVolume;
 
+    // Tamanho médio de trade por minuto (total ÷ nº de trades) — só existe pra
+    // candles a partir de 01/09/26. Usado abaixo pra modular a intensidade de
+    // cada barra: mais sólida = trades grandes em média (poucos players
+    // grandes), mais apagada = trades pequenos fragmentados (muitos players).
+    const avgTradesValidos = colunas.map(c => c.avgTrade).filter(v => v != null);
+    const maxAvgTrade = avgTradesValidos.length > 0 ? Math.max(...avgTradesValidos) : 0;
+    const temIntensidadeHist = avgTradesValidos.length > 0;
+
     _grFootprintHistoricoColunas.forEach(col => {
         const yBarra = yForVol(col.total);
         const larguraBarra = Math.max(1, colW * 0.7);
-        ctx.fillStyle = col.delta >= 0 ? 'rgba(46,145,50,0.35)' : 'rgba(211,47,47,0.35)';
+        const intens = (temIntensidadeHist && col.avgTrade != null && maxAvgTrade > 0)
+            ? Math.min(1, col.avgTrade / maxAvgTrade) : null;
+        const alphaBarra = intens != null ? (0.15 + intens * 0.85) : 0.35;
+        ctx.fillStyle = col.delta >= 0 ? `rgba(46,145,50,${alphaBarra.toFixed(2)})` : `rgba(211,47,47,${alphaBarra.toFixed(2)})`;
         ctx.fillRect(col.x - larguraBarra / 2, yBarra, larguraBarra, (volTop + alturaVolume) - yBarra);
 
         // Destaque: volume especificamente nos níveis marcados (ZII) desse
@@ -14656,7 +14675,8 @@ function grFootprintHistoricoMostrarDetalhe(clientX) {
     const delta = col.delta;
     document.getElementById('footprint-historico-detalhe').innerHTML =
         `${fmtHora(col.ts)} · Faixa $${col.minP.toLocaleString('pt-BR')}–$${col.maxP.toLocaleString('pt-BR')} · ` +
-        `<span style="color:${delta >= 0 ? '#4CAF50' : '#EF5350'}">Delta ${delta >= 0 ? '+' : ''}${delta.toFixed(3)}</span> · Total ${col.total.toFixed(3)} BTC`;
+        `<span style="color:${delta >= 0 ? '#4CAF50' : '#EF5350'}">Delta ${delta >= 0 ? '+' : ''}${delta.toFixed(3)}</span> · Total ${col.total.toFixed(3)} BTC` +
+        (col.avgTrade != null ? ` · trade médio ${col.avgTrade.toFixed(3)} BTC` : '');
 }
 
 function grFootprintHistoricoTouchStart(evt) {
