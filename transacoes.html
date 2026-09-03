@@ -13632,7 +13632,7 @@ function cvFecharSetupSheet() {
 </div>
 
 <script>
-const FOOTPRINT_MAX_DIAS = 15;        // trava de segurança — não busca mais que isso de uma vez, ao ativar
+const FOOTPRINT_DATA_INICIO = '2026-08-01T00:00:00.000Z'; // desde quando carrega ao ativar — bate com o início do backfill do worker
 const FOOTPRINT_MIN_PCT = 0.04;       // esconde barras com menos de 4% do volume do POC (reduz ruído)
 const FOOTPRINT_MIN_ROW_PX = 12;      // altura mínima de linha p/ nunca ficar grudado/sólido, não importa o range
 const FOOTPRINT_DEBOUNCE_MS = 250;    // espera o scroll/zoom "assentar" por esse tempo antes de recalcular
@@ -13689,18 +13689,46 @@ function cvToggleFootprint() {
     }
 }
 
-// Fetch ÚNICO ao ativar: baixa os últimos FOOTPRINT_MAX_DIAS dias inteiros e guarda
+// Fetch ÚNICO ao ativar: baixa desde FOOTPRINT_DATA_INICIO até hoje e guarda
 // tudo em memória (candles brutos, 1min, com níveis de preço c/v). Depois disso,
 // scroll/zoom não faz mais nenhuma requisição de rede — só refiltra o que já tem.
+let _grFootprintRefreshInterval = null;
+
+// Roda a cada 60s enquanto o footprint está ativo — busca só o dia de HOJE
+// (o único arquivo que o worker ainda está atualizando ao vivo) e mescla no
+// que já está carregado. Silenciosa: não mostra alert nem interrompe o que
+// você está fazendo, só atualiza o dado por trás.
+async function grFootprintAtualizarSeAtivo() {
+    if (!_grFootprintAtivo || !_grFootprintCandlesRaw) return;
+    try {
+        const diaHoje = new Date().toISOString().slice(0, 10);
+        const r = await fetch(`https://huberhorti-footprint.huber-produtos.workers.dev/footprint?dia=${diaHoje}`);
+        if (!r.ok) return;
+        const dados = await r.json();
+        const candlesHoje = Object.values(dados.candles || {});
+        if (candlesHoje.length === 0) return;
+
+        const tsHoje = new Set(candlesHoje.map(c => c.ts));
+        _grFootprintCandlesRaw = _grFootprintCandlesRaw.filter(c => !tsHoje.has(c.ts));
+        _grFootprintCandlesRaw.push(...candlesHoje);
+        _grFootprintCandlesRaw.sort((a, b) => a.ts - b.ts);
+
+        _grFootprintDisplayCache = null; // força o histograma principal recalcular com o dado novo
+        grFootprintAutoDetectarZonas(); // continua detectando ZII no candle vivo, sem alert
+    } catch (e) {
+        console.log('Atualização automática do footprint falhou, tenta de novo em 60s:', e.message);
+    }
+}
+
 async function grFootprintAtivar() {
     document.getElementById('cv-ind-footprint').classList.add('active');
     const info = document.getElementById('footprint-teste-info');
     document.getElementById('footprint-teste-painel').style.display = 'block';
-    info.textContent = 'Baixando últimos ' + FOOTPRINT_MAX_DIAS + ' dias de negociações...';
+    info.textContent = 'Baixando negociações desde 01/08/26...';
 
     try {
         const to = Date.now();
-        const from = to - FOOTPRINT_MAX_DIAS * 86400000;
+        const from = Date.parse(FOOTPRINT_DATA_INICIO);
         const dias = grFootprintDiasEntre(from, to);
 
         const respostas = await Promise.all(dias.map(dia =>
@@ -13716,7 +13744,7 @@ async function grFootprintAtivar() {
         flat.sort((a, b) => a.ts - b.ts);
 
         if (flat.length === 0) {
-            info.textContent = `Sem dados de footprint nos últimos ${FOOTPRINT_MAX_DIAS} dias (${dias.join(', ')}).`;
+            info.textContent = `Sem dados de footprint desde 01/08/26 (${dias.length} dias tentados).`;
             document.getElementById('cv-ind-footprint').classList.remove('active');
             return;
         }
@@ -13739,6 +13767,13 @@ async function grFootprintAtivar() {
         if (marcadas > 0) {
             alert(`${marcadas} zona(s) ZII detectada(s) automaticamente — só em candles "starter" (range ≥${FOOTPRINT_STARTER_RAZAO_MIN}x a média dos ${FOOTPRINT_STARTER_JANELA} anteriores) e com ≥${Math.round(FOOTPRINT_ZII_CONCENTRACAO_MIN * 100)}% de concentração de volume no nível.\n\nPra desfazer uma, abre o candle correspondente e desmarca o checkbox — ela não volta a ser marcada sozinha depois.`);
         }
+
+        // Auto-refresh: o worker roda ao vivo, minuto a minuto — sem isso, o
+        // dado ficava parado numa foto do momento da ativação. A cada 60s,
+        // busca só o dia de HOJE (o único que ainda está mudando) e mescla no
+        // que já está carregado, em vez de rebaixar os 15 dias inteiros de novo.
+        if (_grFootprintRefreshInterval) clearInterval(_grFootprintRefreshInterval);
+        _grFootprintRefreshInterval = setInterval(grFootprintAtualizarSeAtivo, 60000);
     } catch (e) {
         info.textContent = 'Footprint ERRO: ' + e.message;
         console.log('Footprint erro completo:', e);
@@ -13921,6 +13956,7 @@ function grFootprintTouchEnd(e) {
 
 function grFootprintPararOverlay() {
     if (_grFootprintOverlayInterval) { clearInterval(_grFootprintOverlayInterval); _grFootprintOverlayInterval = null; }
+    if (_grFootprintRefreshInterval) { clearInterval(_grFootprintRefreshInterval); _grFootprintRefreshInterval = null; }
     _grFootprintAtivo = false;
     _grFootprintCandlesRaw = null;
     _grFootprintBins = null;
@@ -14577,7 +14613,7 @@ function grFootprintAbrirCandleModal(candle) {
     }
 
     if (mapaFino.size === 0) {
-        const BACKFILL_INICIO_MS = Date.parse('2026-08-01T00:00:00.000Z');
+        const BACKFILL_INICIO_MS = Date.parse(FOOTPRINT_DATA_INICIO);
         if (candle.t >= BACKFILL_INICIO_MS) {
             grFootprintTentarWorkerAntesDoLento(candle);
         } else {
