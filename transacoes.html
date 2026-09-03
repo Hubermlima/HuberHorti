@@ -14406,6 +14406,28 @@ function grFootprintTodosOsCandlesBrutos() {
     return todos;
 }
 
+// Tenta o caminho rápido primeiro: pergunta pro worker (R2) se ele já tem
+// esse dia (o backfill que roda sozinho em segundo plano pode já ter chegado
+// lá). Se tiver, usa na hora — sem precisar catar trade por trade na Kraken.
+// Se não tiver (backfill ainda não chegou, ou deu erro qualquer), cai pro
+// fluxo lento de sempre, sem travar nada.
+async function grFootprintTentarWorkerAntesDoLento(candle) {
+    const dia = new Date(candle.t).toISOString().slice(0, 10);
+    try {
+        const r = await fetch(`https://huberhorti-footprint.huber-produtos.workers.dev/footprint?dia=${dia}`);
+        const dados = await r.json();
+        const candlesDoDia = Object.values(dados.candles || {});
+        if (candlesDoDia.length > 0) {
+            _grFootprintDiasAvulsos.set(dia, candlesDoDia.map(c => ({ ts: c.ts, niveis: c.niveis })));
+            grFootprintAbrirCandleModal(candle); // tenta de novo, agora já com o dado em mãos
+            return;
+        }
+    } catch (e) {
+        console.log('Worker sem esse dia ainda, caindo pro caminho lento:', e.message);
+    }
+    grFootprintPedirConfirmacaoAvulso(candle);
+}
+
 function grFootprintPedirConfirmacaoAvulso(candle) {
     if (_grFootprintAvulsoEmAndamento) {
         alert('Já tem uma busca de dia avulso em andamento — espera ela terminar antes de pedir outra.');
@@ -14555,7 +14577,12 @@ function grFootprintAbrirCandleModal(candle) {
     }
 
     if (mapaFino.size === 0) {
-        grFootprintPedirConfirmacaoAvulso(candle);
+        const BACKFILL_INICIO_MS = Date.parse('2026-08-01T00:00:00.000Z');
+        if (candle.t >= BACKFILL_INICIO_MS) {
+            grFootprintTentarWorkerAntesDoLento(candle);
+        } else {
+            grFootprintPedirConfirmacaoAvulso(candle);
+        }
         return;
     }
 
