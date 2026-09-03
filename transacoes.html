@@ -13572,6 +13572,27 @@ function cvFecharSetupSheet() {
 </div>
 
 
+<!-- Confirmação de busca avulsa (candle fora da janela dos 15 dias) -->
+<div id="footprint-avulso-confirma" style="display:none;position:fixed;inset:0;z-index:6900;background:rgba(0,0,0,0.6);align-items:center;justify-content:center;">
+  <div style="background:#1E222D;border-radius:14px;padding:20px;margin:0 24px;max-width:340px;">
+    <div style="color:#fff;font-size:15px;font-weight:600;margin-bottom:8px;">Buscar rastro desse dia?</div>
+    <div id="footprint-avulso-texto" style="color:#8E8E93;font-size:13px;line-height:1.5;margin-bottom:18px;"></div>
+    <div style="display:flex;gap:10px;">
+      <button onclick="grFootprintCancelarAvulso()" style="flex:1;padding:10px;border-radius:8px;background:#2A2E39;color:#fff;border:none;font-size:14px;">Cancelar</button>
+      <button onclick="grFootprintConfirmarAvulso()" style="flex:1;padding:10px;border-radius:8px;background:#FFA726;color:#000;border:none;font-weight:700;font-size:14px;">Buscar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Barra de progresso da busca avulsa — fixa, discreta, não trava a navegação -->
+<div id="footprint-avulso-progresso" style="display:none;position:fixed;left:12px;right:12px;bottom:16px;z-index:99999;background:#1C1C1E;border-radius:10px;padding:10px 14px;box-shadow:0 4px 16px rgba(0,0,0,0.4);">
+  <div id="footprint-avulso-progresso-texto" style="color:#8E8E93;font-size:12px;margin-bottom:6px;"></div>
+  <div style="background:#2A2E39;border-radius:4px;height:6px;overflow:hidden;">
+    <div id="footprint-avulso-progresso-barra" style="background:#FFA726;height:100%;width:0%;transition:width 0.3s;"></div>
+  </div>
+  <button id="footprint-avulso-progresso-btn" onclick="grFootprintAbrirAvulsoConcluido()" style="display:none;margin-top:8px;width:100%;padding:8px;border-radius:8px;background:#FFA726;color:#000;border:none;font-weight:700;font-size:13px;">Abrir candle</button>
+</div>
+
 <!-- Modal de footprint de um candle específico (ladder de preços, compra/venda por nível) -->
 <div id="footprint-candle-overlay" style="display:none;position:fixed;inset:0;z-index:6500;background:rgba(0,0,0,0.6);" onclick="grFootprintFecharCandleModal()">
   <div onclick="event.stopPropagation()" style="position:absolute;bottom:0;left:0;right:0;background:#1E222D;border-radius:20px 20px 0 0;display:flex;flex-direction:column;max-height:92vh;padding-bottom:env(safe-area-inset-bottom);">
@@ -14236,9 +14257,9 @@ function grFootprintFecharSerieModal() {
 // e soma, minuto a minuto, só o volume que caiu no MESMO bucket de preço tocado
 // (usa a mesma regra de arredondamento da ladder: Math.round(Math.round(p/tick)*tick)).
 function grFootprintObterSerieNivel(precoBucket, tick) {
-    if (!_grFootprintCandleContexto || !_grFootprintCandlesRaw) return null;
+    if (!_grFootprintCandleContexto) return null;
     const { de, ate } = _grFootprintCandleContexto;
-    const candles1m = _grFootprintCandlesRaw
+    const candles1m = grFootprintTodosOsCandlesBrutos()
         .filter(c => c.ts >= de && c.ts < ate)
         .sort((a, b) => a.ts - b.ts);
 
@@ -14372,16 +14393,155 @@ function grFootprintDesenharNivelChart(compra, venda, total, delta) {
     });
 }
 
-// Agrega os candles brutos (1min) de _grFootprintCandlesRaw que caem dentro do
+let _grFootprintDiasAvulsos = new Map(); // dayKey ('2026-08-19') -> array de {ts, niveis} baixados sob demanda
+let _grFootprintAvulsoEmAndamento = false;
+let _grFootprintAvulsoCandlePendente = null; // candle que disparou a confirmação, guardado pra reabrir depois de confirmar
+
+// Junta o candle bruto (1min) de todas as fontes disponíveis: a janela rolante
+// dos últimos 15 dias (_grFootprintCandlesRaw) + qualquer dia avulso que já
+// tenha sido baixado sob demanda (_grFootprintDiasAvulsos).
+function grFootprintTodosOsCandlesBrutos() {
+    let todos = _grFootprintCandlesRaw ? _grFootprintCandlesRaw.slice() : [];
+    _grFootprintDiasAvulsos.forEach(candlesDoDia => { todos = todos.concat(candlesDoDia); });
+    return todos;
+}
+
+function grFootprintPedirConfirmacaoAvulso(candle) {
+    if (_grFootprintAvulsoEmAndamento) {
+        alert('Já tem uma busca de dia avulso em andamento — espera ela terminar antes de pedir outra.');
+        return;
+    }
+    _grFootprintAvulsoCandlePendente = candle;
+    const dataStr = new Date(candle.t).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    document.getElementById('footprint-avulso-texto').textContent =
+        `Esse candle é anterior ao que já está carregado. Buscar o rastro do dia inteiro (${dataStr}) direto na Kraken? ` +
+        `Usa o tempo que a Kraken precisar — pode levar alguns minutos — mas roda em segundo plano, dá pra continuar navegando enquanto isso.`;
+    document.getElementById('footprint-avulso-confirma').style.display = 'flex';
+}
+
+function grFootprintCancelarAvulso() {
+    document.getElementById('footprint-avulso-confirma').style.display = 'none';
+    _grFootprintAvulsoCandlePendente = null;
+}
+
+function grFootprintConfirmarAvulso() {
+    document.getElementById('footprint-avulso-confirma').style.display = 'none';
+    const candle = _grFootprintAvulsoCandlePendente;
+    if (candle) grFootprintBuscarDiaAvulso(candle);
+}
+
+function grFootprintAbrirAvulsoConcluido() {
+    document.getElementById('footprint-avulso-progresso').style.display = 'none';
+    const candle = _grFootprintAvulsoCandlePendente;
+    _grFootprintAvulsoCandlePendente = null;
+    if (candle) grFootprintAbrirCandleModal(candle);
+}
+
+// Busca o dia inteiro (00:00 a 23:59:59 UTC) de trades brutos direto na
+// Kraken, pagina respeitando ~1 req/s (o limite seguro documentado por eles),
+// agrega em candles de 1min (mesma lógica do worker, tick $10) e guarda em
+// _grFootprintDiasAvulsos — só na memória da sessão, some se recarregar.
+async function grFootprintBuscarDiaAvulso(candle) {
+    _grFootprintAvulsoEmAndamento = true;
+    const painel = document.getElementById('footprint-avulso-progresso');
+    const txtEl = document.getElementById('footprint-avulso-progresso-texto');
+    const barraEl = document.getElementById('footprint-avulso-progresso-barra');
+    const btnEl = document.getElementById('footprint-avulso-progresso-btn');
+    painel.style.display = 'block';
+    btnEl.style.display = 'none';
+    barraEl.style.width = '0%';
+
+    const dayKeyStr = new Date(candle.t).toISOString().slice(0, 10);
+    const dataLabel = new Date(candle.t).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+    const dayStartMs = new Date(dayKeyStr + 'T00:00:00.000Z').getTime();
+    const dayEndMs = dayStartMs + 24 * 3600 * 1000;
+    const TICK_AVULSO = 10;
+
+    txtEl.textContent = `Buscando rastro de ${dataLabel}... conectando`;
+
+    const candlesPorMinuto = new Map(); // 'HH:MM' -> { niveis: Map(preco -> {c,v,nc,nv}) }
+    let cursor = Math.floor(dayStartMs / 1000);
+    let falhas = 0;
+    const MAX_PAGINAS = 400;
+
+    for (let pagina = 0; pagina < MAX_PAGINAS; pagina++) {
+        let json;
+        try {
+            const r = await fetch(`https://api.kraken.com/0/public/Trades?pair=XBTUSD&since=${cursor}`);
+            json = await r.json();
+            if (json.error && json.error.length > 0) throw new Error(json.error.join(', '));
+            falhas = 0;
+        } catch (e) {
+            falhas++;
+            txtEl.textContent = `Buscando rastro de ${dataLabel}... erro da Kraken, tentando de novo (${falhas})`;
+            await new Promise(res => setTimeout(res, Math.min(15000, 1000 * Math.pow(2, falhas))));
+            if (falhas >= 6) {
+                txtEl.textContent = `Falhou buscar ${dataLabel} depois de várias tentativas. Toca em Abrir pra ver o que já foi coletado, ou tenta de novo depois.`;
+                break;
+            }
+            pagina--; // não gasta uma página da conta numa tentativa que falhou
+            continue;
+        }
+
+        const chave = Object.keys(json.result || {}).find(k => k !== 'last');
+        const trades = chave ? json.result[chave] : null;
+        if (!Array.isArray(trades) || trades.length === 0) break;
+
+        let ultimoTs = dayStartMs;
+        for (const t of trades) {
+            const tsMs = Math.round(parseFloat(t[2]) * 1000);
+            if (tsMs < dayStartMs) continue; // ainda no lixo de antes do dia (raro, mas possível na 1ª página)
+            if (tsMs >= dayEndMs) { ultimoTs = dayEndMs; continue; } // já passou do dia — ignora, mas não para o loop no meio da página
+            ultimoTs = tsMs;
+
+            const preco = Math.round(parseFloat(t[0]) / TICK_AVULSO) * TICK_AVULSO;
+            const qtd = parseFloat(t[1]);
+            const isVenda = t[3] === 's';
+            const minuto = new Date(tsMs).toISOString().slice(11, 16);
+
+            if (!candlesPorMinuto.has(minuto)) candlesPorMinuto.set(minuto, { ts: Math.floor(tsMs / 60000) * 60000, niveis: new Map() });
+            const cm = candlesPorMinuto.get(minuto);
+            if (!cm.niveis.has(preco)) cm.niveis.set(preco, { c: 0, v: 0, nc: 0, nv: 0 });
+            const nivel = cm.niveis.get(preco);
+            if (isVenda) { nivel.v += qtd; nivel.nv += 1; } else { nivel.c += qtd; nivel.nc += 1; }
+        }
+
+        const progresso = Math.min(100, Math.round(((ultimoTs - dayStartMs) / (dayEndMs - dayStartMs)) * 100));
+        barraEl.style.width = progresso + '%';
+        txtEl.textContent = `Buscando rastro de ${dataLabel}... ${progresso}% (página ${pagina + 1})`;
+
+        const novoCursor = json.result.last;
+        if (!novoCursor || novoCursor === String(cursor)) break;
+        cursor = novoCursor;
+        if (ultimoTs >= dayEndMs) break; // já cobriu o dia inteiro
+
+        await new Promise(res => setTimeout(res, 1000)); // ~1 req/s, respeitando o limite da Kraken
+    }
+
+    const candlesFinal = [...candlesPorMinuto.values()].map(cm => ({
+        ts: cm.ts,
+        niveis: [...cm.niveis.entries()].map(([p, v]) => ({ p, c: Math.round(v.c * 100) / 100, v: Math.round(v.v * 100) / 100, nc: v.nc, nv: v.nv }))
+    }));
+    _grFootprintDiasAvulsos.set(dayKeyStr, candlesFinal);
+    _grFootprintAvulsoEmAndamento = false;
+
+    barraEl.style.width = '100%';
+    txtEl.textContent = `Pronto: ${dataLabel} — ${candlesFinal.length} minutos com negociação encontrados.`;
+    btnEl.style.display = 'block';
+}
+
+
+// Agrega os candles brutos (1min) de todas as fontes que caem dentro do
 // período do candle tocado (candle.t até candle.t + duração do timeframe atual).
 function grFootprintAbrirCandleModal(candle) {
-    if (!_grFootprintCandlesRaw) return;
+    const todos = grFootprintTodosOsCandlesBrutos();
+    if (todos.length === 0) return;
     const msPorCandle = grFootprintMsPorCandle();
     const de = candle.t, ate = candle.t + msPorCandle;
 
     const mapaFino = new Map(); // tick $10, só os preços que realmente tiveram negociação
     let encontrados = 0;
-    for (const c of _grFootprintCandlesRaw) {
+    for (const c of todos) {
         if (c.ts < de || c.ts >= ate) continue;
         encontrados++;
         (c.niveis || []).forEach(n => {
@@ -14395,7 +14555,7 @@ function grFootprintAbrirCandleModal(candle) {
     }
 
     if (mapaFino.size === 0) {
-        alert('Sem dados de footprint carregados pra esse candle (fora dos últimos ' + FOOTPRINT_MAX_DIAS + ' dias baixados).');
+        grFootprintPedirConfirmacaoAvulso(candle);
         return;
     }
 
@@ -14422,9 +14582,9 @@ let _grFootprintHistoricoTouchBind = false;
 // minuto vira um traço vertical: altura = faixa (min/max preço com volume
 // naquele minuto), cor = compra/venda dominante, opacidade = volume relativo.
 function grFootprintAbrirHistorico() {
-    if (!_grFootprintCandleContexto || !_grFootprintCandlesRaw) return;
+    if (!_grFootprintCandleContexto) return;
     const { de, ate, candle } = _grFootprintCandleContexto;
-    const candles1m = _grFootprintCandlesRaw
+    const candles1m = grFootprintTodosOsCandlesBrutos()
         .filter(c => c.ts >= de && c.ts < ate)
         .sort((a, b) => a.ts - b.ts);
 
