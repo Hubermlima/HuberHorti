@@ -6158,6 +6158,55 @@ if (fibsParaDesenhar.length > 0) {
                     ctx.fillStyle = '#FFFFFF';
                     ctx.fillText(lastSig.toFixed(1), PAD.left + 22, panY + panPad.top + 22);
             }
+            } else if (_indState.subInd === 'absorcao') {
+                // ── Absorção = Volume / Range (esforço x resultado, lei de Wyckoff) ──
+                const absPeriodo = 20;
+                const absVals = candles.map(c => {
+                    const range = c.h - c.l;
+                    return range > 0 ? (c.v || 0) / range : 0;
+                });
+                const absSma = grSMASimples(absVals, absPeriodo);
+
+                const maxAbs = Math.max(...absVals, 1) * 1.15;
+                const toAbsY = v => panY + panPad.top + panChartH - (v / maxAbs) * panChartH;
+                const baseY = panY + panPad.top + panChartH;
+
+                // Barras — amarelo quando acima da média (absorção), cinza quando abaixo (movimento limpo)
+                absVals.forEach((v, i) => {
+                    const x = PAD.left + (i / totalSlots) * panChartW + cW / 2;
+                    const media = absSma[i];
+                    const acimaMedia = media != null && v > media;
+                    ctx.fillStyle = acimaMedia ? 'rgba(255,193,7,0.85)' : 'rgba(255,255,255,0.28)';
+                    const y = toAbsY(v);
+                    ctx.fillRect(x - cW * 0.4, y, cW * 0.8, baseY - y);
+                });
+
+                // Linha de média móvel
+                ctx.strokeStyle = '#42A5F5';
+                ctx.lineWidth = 1.3;
+                ctx.beginPath();
+                let absStarted = false;
+                absSma.forEach((v, i) => {
+                    if (v === null) { absStarted = false; return; }
+                    const x = PAD.left + (i / totalSlots) * panChartW + cW / 2;
+                    const y = toAbsY(v);
+                    if (!absStarted) { ctx.moveTo(x, y); absStarted = true; } else ctx.lineTo(x, y);
+                });
+                ctx.stroke();
+
+                // Label
+                const lastAbs = absVals[absVals.length - 1];
+                const lastAbsSma = absSma[absSma.length - 1];
+                const absAcima = lastAbsSma != null && lastAbs > lastAbsSma;
+                ctx.font = 'bold 11px -apple-system';
+                ctx.textAlign = 'left';
+                ctx.fillStyle = '#FFC107';
+                ctx.fillText('ABSORÇÃO', PAD.left + 4, panY + panPad.top + 12);
+                if (lastAbs != null) {
+                    ctx.fillStyle = absAcima ? '#FFC107' : '#FFFFFF';
+                    ctx.fillText(lastAbs.toFixed(1) + (absAcima ? '  ▲ absorção' : ''), PAD.left + 84, panY + panPad.top + 12);
+                }
+                window._absorcaoAtual = lastAbs;
         }
     }
 
@@ -8413,6 +8462,18 @@ function cvDesenharIndSheet(key) {
         ctx.strokeStyle = '#FF8A65'; ctx.lineWidth = 1; ctx.beginPath(); let ds=false;
         dVis.forEach((v,i) => { if(v===null){ds=false;return;} const x=PAD.left+(i/totalSlots)*chartW+cW/2,y=toY(v); if(!ds){ctx.moveTo(x,y);ds=true;}else ctx.lineTo(x,y); }); ctx.stroke();
     }
+}
+
+// Liga/desliga o painel de Absorção junto com o Footprint — mesmo contexto,
+// sem precisar de botão próprio. Desliga qualquer outro subInd ativo (vd/rsi/etc).
+function cvSetPainelAbsorcao(ativar) {
+    _indOculto.painel = false;
+    _indState.subInd = ativar ? 'absorcao' : null;
+    ['vd','rsi','vol','macd','atr','obv','stoch','topos'].forEach(k => {
+        const el = document.getElementById('cv-ind-' + k);
+        if (el) el.classList.remove('active');
+    });
+    grDrawChart();
 }
 
 function cvToggleSubInd(key) {
@@ -13750,6 +13811,7 @@ async function grFootprintAtivar() {
         }
 
         _grFootprintAtivo = true;
+        cvSetPainelAbsorcao(true);
         _grFootprintCandlesRaw = flat;
         _grFootprintDiasCarregados = dias;
         _grFootprintUltimoRangeVisto = null;
@@ -13969,6 +14031,7 @@ function grFootprintPararOverlay() {
     document.getElementById('footprint-teste-painel').style.display = 'none';
     const btn = document.getElementById('cv-ind-footprint');
     if (btn) btn.classList.remove('active');
+    if (_indState.subInd === 'absorcao') cvSetPainelAbsorcao(false);
 }
 
 // Desenha as barras na MESMA escala de preço do eixo Y principal (grLineY, que usa
