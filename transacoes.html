@@ -13772,6 +13772,31 @@ let _grFootprintRefreshInterval = null;
 // (o único arquivo que o worker ainda está atualizando ao vivo) e mescla no
 // que já está carregado. Silenciosa: não mostra alert nem interrompe o que
 // você está fazendo, só atualiza o dado por trás.
+// Recalcula o delta de cada zona ZII já marcada, somando TODO o histórico
+// carregado (_grFootprintCandlesRaw) que caiu naquela faixa de preço — não só
+// o candle que originou a zona. Roda junto com a atualização de 1 em 1 minuto,
+// então se um reteste virar o delta pro lado oposto, a zona muda de cor sozinha.
+function grFootprintRecalcularZonasExistentes() {
+    if (!_grFootprintCandlesRaw || !Array.isArray(_grZiiZonas) || _grZiiZonas.length === 0) return;
+
+    _grZiiZonas.forEach(zona => {
+        let c = 0, v = 0, total = 0;
+        for (const candle of _grFootprintCandlesRaw) {
+            (candle.niveis || []).forEach(n => {
+                if (n.p >= zona.lo && n.p < zona.hi) {
+                    c += n.c;
+                    v += n.v;
+                    total += n.c + n.v;
+                }
+            });
+        }
+        if (total <= 0) return; // sem dado nessa faixa ainda — mantém o que já tinha
+        zona.delta = c - v;
+        zona.total = total;
+        zona.tipo = zona.delta >= 0 ? 'compra' : 'venda';
+    });
+}
+
 async function grFootprintAtualizarSeAtivo() {
     if (!_grFootprintAtivo || !_grFootprintCandlesRaw) return;
     try {
@@ -13789,6 +13814,7 @@ async function grFootprintAtualizarSeAtivo() {
 
         _grFootprintDisplayCache = null; // força o histograma principal recalcular com o dado novo
         grFootprintAutoDetectarZonas(); // continua detectando ZII no candle vivo, sem alert
+        grFootprintRecalcularZonasExistentes(); // zonas já marcadas podem trocar de cor com dado novo
     } catch (e) {
         console.log('Atualização automática do footprint falhou, tenta de novo em 60s:', e.message);
     }
@@ -13839,6 +13865,7 @@ async function grFootprintAtivar() {
         grFootprintDesenharOverlay();
 
         const marcadas = grFootprintAutoDetectarZonas();
+        grFootprintRecalcularZonasExistentes(); // já entra com o delta somando o histórico todo, não só o candle que originou
         if (marcadas > 0) {
             alert(`${marcadas} zona(s) ZII detectada(s) automaticamente — só em candles "starter" (range ≥${FOOTPRINT_STARTER_RAZAO_MIN}x a média dos ${FOOTPRINT_STARTER_JANELA} anteriores) e com ≥${Math.round(FOOTPRINT_ZII_CONCENTRACAO_MIN * 100)}% de concentração de volume no nível.\n\nPra desfazer uma, abre o candle correspondente e desmarca o checkbox — ela não volta a ser marcada sozinha depois.`);
         }
@@ -13856,38 +13883,28 @@ async function grFootprintAtivar() {
     }
 }
 
-// Roda a cada tick do interval (200ms). Só refaz o agregado pesado quando o range
-// visível (window._grVisibleTRange, atualizado pelo próprio grDrawCandles a cada
-// scroll/zoom) fica ESTÁVEL por FOOTPRINT_DEBOUNCE_MS — durante o gesto de arrastar,
-// não recalcula nada, só continua desenhando o último resultado válido.
+// Roda a cada tick do interval (200ms). Janela FIXA de 7 dias contados de agora
+// pra trás — não depende mais do que está visível/zoom na tela (tela pequena
+// mostrava poucos candles = pouco contexto). Só recalcula quando o minuto vira,
+// pra não gastar CPU reagregando 10 mil candles a cada 200ms à toa.
+const FOOTPRINT_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000; // 7 dias
+
 function grFootprintRecalcularSeNecessario() {
     if (!_grFootprintCandlesRaw) return;
-    const range = window._grVisibleTRange;
-    if (!range) return;
+    const agora = Date.now();
+    const range = { from: agora - FOOTPRINT_LOOKBACK_MS, to: agora };
 
-    // Faixa degenerada (from === to, ou praticamente isso) — acontece na
-    // primeira renderização da página, antes dos candles reais carregarem
-    // (um estado transitório com 1 candle só ou vazio). Ignora completamente
-    // em vez de tratar como uma faixa visível válida — sem isso, o footprint
-    // calculava em cima de 1 minuto de dado e travava nesse resultado errado
-    // até algo forçar um recálculo de verdade (como trocar de timeframe).
-    if (!range.from || !range.to || (range.to - range.from) < 60000) return;
-
+    const minutoAtual = Math.floor(range.to / 60000);
     const mudou = !_grFootprintUltimoRangeVisto ||
-        range.from !== _grFootprintUltimoRangeVisto.from ||
-        range.to !== _grFootprintUltimoRangeVisto.to;
+        Math.floor(_grFootprintUltimoRangeVisto.to / 60000) !== minutoAtual;
 
-    if (mudou) {
-        _grFootprintUltimoRangeVisto = { from: range.from, to: range.to };
-        _grFootprintUltimaMudancaTs = Date.now();
-        return; // ainda em movimento — espera assentar antes de gastar CPU reagregando
-    }
+    if (!mudou) return; // já calculado pra esse minuto, não repete à toa
 
     const jaCalculado = _grFootprintUltimoRangeCalc &&
-        _grFootprintUltimoRangeCalc.from === range.from &&
-        _grFootprintUltimoRangeCalc.to === range.to;
-    if (jaCalculado) return;
-    if (Date.now() - _grFootprintUltimaMudancaTs < FOOTPRINT_DEBOUNCE_MS) return;
+        Math.floor(_grFootprintUltimoRangeCalc.to / 60000) === minutoAtual;
+    if (jaCalculado) { _grFootprintUltimoRangeVisto = range; return; }
+
+    _grFootprintUltimoRangeVisto = range;
 
     const mapaBase = new Map(); // preco -> {c, v}, sempre em tick $10 fixo
     let totalCandles = 0;
