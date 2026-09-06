@@ -6182,28 +6182,50 @@ if (fibsParaDesenhar.length > 0) {
                     absSma.push(idx >= 0 ? absAllSma[idx] : null);
                 }
 
+                // Cor = rastro do smart money nesse candle — não quem "venceu" o candle,
+                // e sim de que lado está a mão passiva absorvendo o outro lado agressivo.
+                // Delta comprador (agressor) sem o preço subir proporcional = alguém
+                // vendendo contra essa pressão = SM vendedor ali = vermelho. Delta vendedor
+                // (agressor) sem o preço cair proporcional = SM comprador ali = verde.
+                // Precisa do footprint (1min) carregado; sem isso, amarelo neutro (fora
+                // da janela de dias carregada).
+                const msPorCandleAbs = (_grFootprintAtivo && typeof grFootprintMsPorCandle === 'function') ? grFootprintMsPorCandle() : null;
+                const deltaPorIndice = [];
+                for (let i = 0; i < visible; i++) {
+                    const c = candles[i];
+                    if (!c || !msPorCandleAbs || !_grFootprintCandlesRaw) { deltaPorIndice.push(null); continue; }
+                    let dc = 0, achou = false;
+                    const fim = c.t + msPorCandleAbs;
+                    for (const raw of _grFootprintCandlesRaw) {
+                        if (raw.ts < c.t || raw.ts >= fim) continue;
+                        achou = true;
+                        (raw.niveis || []).forEach(n => { dc += (n.c - n.v); });
+                    }
+                    deltaPorIndice.push(achou ? dc : null);
+                }
+                const corPorDelta = d => d == null ? '#FFC107' : (d >= 0 ? '#EF5350' : '#26A69A');
+
                 const maxAbs = Math.max(...absVals, 1) * 1.15;
                 const toAbsY = v => panY + panPad.top + panChartH - (v / maxAbs) * panChartH;
 
-                // Linha do oscilador (absorção) — suavizada por pontos médios
-                ctx.strokeStyle = '#FFC107';
-                ctx.lineWidth = 1.5;
-                ctx.beginPath();
+                // Linha do oscilador (absorção) — cada trecho colorido pelo delta do
+                // candle correspondente, suavizado por ponto médio (mesma técnica de antes,
+                // só que agora um ctx.stroke() por segmento em vez de um traço único).
                 const absPts = absVals.map((v, i) => ({
                     x: PAD.left + (i / totalSlots) * panChartW + cW / 2,
                     y: toAbsY(v)
                 }));
-                if (absPts.length >= 2) {
-                    ctx.moveTo(absPts[0].x, absPts[0].y);
-                    for (let i = 0; i < absPts.length - 1; i++) {
-                        const p0 = absPts[i], p1 = absPts[i + 1];
-                        const mx = (p0.x + p1.x) / 2, my = (p0.y + p1.y) / 2;
-                        ctx.quadraticCurveTo(p0.x, p0.y, mx, my);
-                    }
-                    const last = absPts[absPts.length - 1];
-                    ctx.lineTo(last.x, last.y);
+                ctx.lineWidth = 1.5;
+                for (let i = 0; i < absPts.length - 1; i++) {
+                    const p0 = absPts[i], p1 = absPts[i + 1];
+                    const mx = (p0.x + p1.x) / 2, my = (p0.y + p1.y) / 2;
+                    ctx.strokeStyle = corPorDelta(deltaPorIndice[i]);
+                    ctx.beginPath();
+                    ctx.moveTo(p0.x, p0.y);
+                    ctx.quadraticCurveTo(p0.x, p0.y, mx, my);
+                    ctx.lineTo(p1.x, p1.y);
+                    ctx.stroke();
                 }
-                ctx.stroke();
 
                 // Linha da média
                 ctx.strokeStyle = '#42A5F5';
@@ -6223,6 +6245,11 @@ if (fibsParaDesenhar.length > 0) {
                 ctx.textAlign = 'left';
                 ctx.fillStyle = '#FFC107';
                 ctx.fillText('ABSORÇÃO', PAD.left + 4, panY + panPad.top + 12);
+                ctx.font = '9px -apple-system';
+                ctx.fillStyle = '#EF5350';
+                ctx.fillText('SM vendendo', PAD.left + 84, panY + panPad.top + 12);
+                ctx.fillStyle = '#26A69A';
+                ctx.fillText('SM comprando', PAD.left + 152, panY + panPad.top + 12);
 
                 window._absorcaoAtual = absVals[absVals.length - 1];
         }
