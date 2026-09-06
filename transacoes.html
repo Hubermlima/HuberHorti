@@ -6217,6 +6217,61 @@ if (fibsParaDesenhar.length > 0) {
                     }
                 });
 
+                // ── Barreira — o obstáculo que aquele candle específico enfrentou ──
+                // B = densidade de volume histórico bem no nível de preço do fechamento
+                // (tick $10 já é densidade pura, não precisa dividir de novo).
+                // A = densidade de volume acumulado entre o fechamento e a próxima zona
+                // ZII na direção do candle (a "muralha" ainda pela frente).
+                // Os dois em BTC/$ (mesma unidade), depois cada um normalizado por
+                // z-score contra a própria distribuição da janela visível, e somados —
+                // assim B (pontual, picos extremos) e A (faixa, mais achatada) ficam
+                // comparáveis apesar de terem grandezas naturalmente diferentes.
+                const mapaBarreira = (_grFootprintBins && _grFootprintBins.mapaBase) ? _grFootprintBins.mapaBase : null;
+                const barreiraBruta = candles.map(c => {
+                    if (!mapaBarreira) return 0;
+                    const dir = c.c >= c.o ? 1 : -1;
+                    const pAgr = Math.round(c.c / 10) * 10;
+                    const nivel = mapaBarreira.get(pAgr);
+                    const B = nivel ? (nivel.c + nivel.v) / 10 : 0;
+
+                    let zonaProxima = null;
+                    _grZiiZonas.forEach(z => {
+                        if (dir > 0 && z.lo > c.c) { if (!zonaProxima || z.lo < zonaProxima) zonaProxima = z.lo; }
+                        if (dir < 0 && z.hi < c.c) { if (!zonaProxima || z.hi > zonaProxima) zonaProxima = z.hi; }
+                    });
+                    let A = 0;
+                    if (zonaProxima != null) {
+                        const distancia = Math.abs(zonaProxima - c.c);
+                        if (distancia > 0) {
+                            const lo = Math.min(c.c, zonaProxima), hi = Math.max(c.c, zonaProxima);
+                            let soma = 0;
+                            mapaBarreira.forEach((nv, p) => { if (p >= lo && p < hi) soma += nv.c + nv.v; });
+                            A = soma / distancia;
+                        }
+                    }
+                    return B + A;
+                });
+                const mediaB = barreiraBruta.reduce((a, b) => a + b, 0) / (barreiraBruta.length || 1);
+                const variancia = barreiraBruta.reduce((a, b) => a + (b - mediaB) ** 2, 0) / (barreiraBruta.length || 1);
+                const desvio = Math.sqrt(variancia);
+                const barreiraZ = barreiraBruta.map(b => desvio > 0 ? (b - mediaB) / desvio : 0);
+                const maxZ = Math.max(...barreiraZ.map(Math.abs), 1);
+                const escalaBarreira = (panChartH / 2) / maxZ;
+
+                // Desenhada do lado OPOSTO da barra de absorção — literalmente empurrando
+                // contra ela, o cabo de guerra que a gente desenhou no mockup.
+                barreiraZ.forEach((z, i) => {
+                    const sinal = -absSinal[i]; // lado oposto à absorção desse candle
+                    const x = PAD.left + (i / totalSlots) * panChartW + cW / 2;
+                    const alturaPx = Math.abs(z) * escalaBarreira;
+                    ctx.fillStyle = 'rgba(127,119,221,0.55)'; // roxo — nem compra nem venda, é obstáculo
+                    if (sinal >= 0) {
+                        ctx.fillRect(x - cW * 0.22, zeroY - alturaPx, cW * 0.44, alturaPx);
+                    } else {
+                        ctx.fillRect(x - cW * 0.22, zeroY, cW * 0.44, alturaPx);
+                    }
+                });
+
                 // Média — agora com sinal de verdade (magnitude × direção), uma linha só
                 // cruzando o zero, igual o MACD de verdade faz. Não é mais espelhada.
                 ctx.strokeStyle = '#42A5F5';
@@ -6241,6 +6296,8 @@ if (fibsParaDesenhar.length > 0) {
                 ctx.fillText('▲ compradora', PAD.left + 84, panY + panPad.top + 12);
                 ctx.fillStyle = '#EF5350';
                 ctx.fillText('▼ vendedora', PAD.left + 168, panY + panPad.top + 12);
+                ctx.fillStyle = 'rgba(127,119,221,0.9)';
+                ctx.fillText('◆ barreira', PAD.left + 252, panY + panPad.top + 12);
 
                 window._absorcaoAtual = absVals[absVals.length - 1] * (absSinal[absSinal.length - 1] || 1);
         }
