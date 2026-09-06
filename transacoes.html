@@ -6988,6 +6988,20 @@ function grDrawChartWithCrosshair(yInterno) {
             ...(_indState.subInd === 'absorcao' ? [
                 { label: 'Absorç', val: ((candle.h - candle.l) > 0 ? ((candle.v||0)/(candle.h-candle.l)) : 0).toFixed(1), color: '#FFC107' },
             ] : []),
+            ...((_grFootprintAtivo && _grFootprintBins) ? (() => {
+                const pAgr = Math.round(preco / 10) * 10;
+                const nivel = _grFootprintBins.mapaBase.get(pAgr);
+                if (!nivel) return [];
+                const deltaNivel = nivel.c - nivel.v;
+                const totalNivel = nivel.c + nivel.v;
+                const corDelta = deltaNivel >= 0 ? '#26A69A' : '#EF5350';
+                return [
+                    { label: 'Compra', val: nivel.c.toFixed(1), color: '#26A69A' },
+                    { label: 'Venda',  val: nivel.v.toFixed(1), color: '#EF5350' },
+                    { label: 'Delta',  val: (deltaNivel >= 0 ? '+' : '') + deltaNivel.toFixed(1), color: corDelta },
+                    { label: 'Total',  val: totalNivel.toFixed(1) },
+                ];
+            })() : []),
 
         ];
         const boxPad = 10, lineH = 18;
@@ -13713,7 +13727,7 @@ function cvFecharSetupSheet() {
 <script>
 const FOOTPRINT_DATA_INICIO = '2026-08-01T00:00:00.000Z'; // desde quando carrega ao ativar — bate com o início do backfill do worker
 const FOOTPRINT_MIN_PCT = 0.04;       // esconde barras com menos de 4% do volume do POC (reduz ruído)
-const FOOTPRINT_MIN_ROW_PX = 12;      // altura mínima de linha p/ nunca ficar grudado/sólido, não importa o range
+const FOOTPRINT_MIN_ROW_PX = 2;       // sem texto na barra, pode ser bem fina — efeito "nuvem"
 const FOOTPRINT_DEBOUNCE_MS = 250;    // espera o scroll/zoom "assentar" por esse tempo antes de recalcular
 
 let _grFootprintAtivo = false;         // controla o botão da barra de indicadores
@@ -14045,17 +14059,9 @@ function grFootprintTouchEnd(e) {
     const xInterno = (touch.clientX - rect.left) * (canvas.width / rect.width);
     const yInterno = (touch.clientY - rect.top) * (canvas.height / rect.height);
 
-    // 1) Bateu numa barra do histograma?
-    for (const r of _grFootprintRetangulos) {
-        if (xInterno >= r.xMin && xInterno <= r.xMax && yInterno >= r.yMin && yInterno <= r.yMax) {
-            e.preventDefault();
-            e.stopPropagation();
-            grFootprintAbrirNivelModal(r.p, r.v, r.total, r.tick);
-            return;
-        }
-    }
-
-    // 2) Bateu num candle específico? (fora da faixa do histograma, ou histograma sem barra ali)
+    // Nível do histograma agora só é consultado via crosshair (arrastando o
+    // dedo) — barras finas demais pra acertar com toque direto. Toque rápido
+    // sempre abre o modal do candle.
     const absIdx = grXToIndex(xInterno);
     const candle = _grAllCandles[Math.round(absIdx)];
     if (candle) {
@@ -14144,30 +14150,10 @@ function grFootprintDesenharOverlay() {
         ctx.fillStyle = `rgba(76,175,80,${alpha})`;
         ctx.fillRect(rightEdge - barW + sellW, y0, buyW, rowH - 1);
 
-        if (isPoc) {
-            ctx.strokeStyle = '#FFA726';
-            ctx.lineWidth = 1.5;
-            ctx.strokeRect(rightEdge - barW, y0, barW, rowH - 1);
-        }
+        // POC não recebe destaque especial — o tamanho da barra já entrega sozinho.
 
-        if (rowH >= 10 && barW > 26) {
-            const deltaTxt = (delta >= 0 ? '+' : '') + delta.toFixed(1);
-            const mostraDelta = barW > 65;
-            ctx.font = '9px -apple-system';
-            const totalTxt = total.toFixed(1);
-            const totalW = ctx.measureText(totalTxt).width;
-
-            ctx.font = '9px -apple-system';
-            ctx.textAlign = 'right';
-            ctx.fillStyle = '#1A1A1A';
-            ctx.fillText(totalTxt, rightEdge - 4, yCentro + 3);
-
-            if (mostraDelta) {
-                ctx.font = 'bold 8px -apple-system';
-                ctx.fillStyle = delta >= 0 ? '#1B5E20' : '#B71C1C';
-                ctx.fillText(deltaTxt, rightEdge - 4 - totalW - 5, yCentro + 3);
-            }
-        }
+        // Sem texto na barra — nível vira nuvem contínua. Valor exato aparece
+        // na caixinha do crosshair (arrasta o dedo, sem precisar acertar a barra).
 
         // Área clicável: linha inteira (não só a largura da barra) — mais fácil de acertar no dedo.
         _grFootprintRetangulos.push({
