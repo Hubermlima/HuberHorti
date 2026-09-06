@@ -6171,16 +6171,35 @@ if (fibsParaDesenhar.length > 0) {
                     const range = c.h - c.l;
                     return range > 0 ? (c.v || 0) / range : 0;
                 });
-                // Estilo Elder-Ray (Bull Power / Bear Power): duas médias contínuas,
-                // cada uma só de magnitude do seu próprio lado — candle do lado oposto
-                // entra como ZERO na conta (não é ignorado/pulado). Isso é o que faz as
-                // duas andarem suaves, sem degrau, e ainda assim comparáveis entre si:
-                // quando uma cruza acima da outra, é porque nos últimos 20 candles esse
-                // lado teve mais força entrando na média — cruzamento = dominância real.
-                const absAllCompra = _grAllCandles.map((c, i) => c.c >= c.o ? absAllVals[i] : 0);
-                const absAllVenda = _grAllCandles.map((c, i) => c.c < c.o ? absAllVals[i] : 0);
-                const absAllSmaCompra = grSMASimples(absAllCompra, absPeriodo);
-                const absAllSmaVenda = grSMASimples(absAllVenda, absPeriodo);
+
+                // Duas médias, cada uma só com os candles DE VERDADE do seu lado — sem
+                // contar zero pro lado oposto (isso diluía e enviesava a linha pra baixo,
+                // fazendo quase toda barra parecer "acima da média" mesmo sem nada de
+                // anormal acontecendo). Em vez disso: filtra só os candles daquele lado,
+                // calcula a média SÓ entre eles, e depois "segura" (forward-fill) esse
+                // valor até o próximo candle do mesmo lado atualizar — assim não dilui
+                // E não faz degrau, porque a linha nunca fica esperando/pulando, só
+                // mantém o último valor válido enquanto o outro lado está acontecendo.
+                function mediaSoDoLado(sinalAlvo) {
+                    const valoresCompactos = [];
+                    const indicesOriginais = [];
+                    _grAllCandles.forEach((c, i) => {
+                        const s = c.c >= c.o ? 1 : -1;
+                        if (s === sinalAlvo) { valoresCompactos.push(absAllVals[i]); indicesOriginais.push(i); }
+                    });
+                    const smaCompacta = grSMASimples(valoresCompactos, absPeriodo);
+                    const resultado = new Array(_grAllCandles.length).fill(null);
+                    smaCompacta.forEach((v, j) => { resultado[indicesOriginais[j]] = v; });
+                    // Forward-fill: entre um candle do lado e o próximo, mantém o valor
+                    let ultimo = null;
+                    for (let i = 0; i < resultado.length; i++) {
+                        if (resultado[i] !== null) ultimo = resultado[i];
+                        else resultado[i] = ultimo;
+                    }
+                    return resultado;
+                }
+                const absAllSmaCompra = mediaSoDoLado(1);
+                const absAllSmaVenda = mediaSoDoLado(-1);
                 const absOffset = total - absAllVals.length; // deve ser 0, mas por segurança
 
                 const absVals = [];
