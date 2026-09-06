@@ -6171,7 +6171,11 @@ if (fibsParaDesenhar.length > 0) {
                     const range = c.h - c.l;
                     return range > 0 ? (c.v || 0) / range : 0;
                 });
-                const absAllSma = grSMASimples(absAllVals, absPeriodo);
+                // Versão COM sinal — magnitude × direção do candle. Direção já existe
+                // pronta pra todo o histórico (c.c/c.o), então dá pra ter uma média com
+                // sinal de verdade, sem precisar do footprint nem pesar na performance.
+                const absAllValsSinal = _grAllCandles.map((c, i) => absAllVals[i] * (c.c >= c.o ? 1 : -1));
+                const absAllSmaSinal = grSMASimples(absAllValsSinal, absPeriodo);
                 const absOffset = total - absAllVals.length; // deve ser 0, mas por segurança
 
                 const absVals = [];
@@ -6179,7 +6183,7 @@ if (fibsParaDesenhar.length > 0) {
                 for (let i = 0; i < visible; i++) {
                     const idx = (startIdx + i) - absOffset;
                     absVals.push(idx >= 0 ? absAllVals[idx] : 0);
-                    absSma.push(idx >= 0 ? absAllSma[idx] : null);
+                    absSma.push(idx >= 0 ? absAllSmaSinal[idx] : null);
                 }
 
                 // Sinal = direção do próprio candle (igual você pediu): fechou acima da
@@ -6213,11 +6217,8 @@ if (fibsParaDesenhar.length > 0) {
                     }
                 });
 
-                // Envelope da média — espelhado pra cima E pra baixo de zero, já que a
-                // média em si só descreve magnitude (o sinal não tem histórico completo
-                // carregado pra calcular uma média própria sem pesar demais na performance).
-                // Serve pra responder "essa barra, pra qualquer lado, tá acima do normal
-                // recente?" sem a média precisar "saber" a direção.
+                // Média — agora com sinal de verdade (magnitude × direção), uma linha só
+                // cruzando o zero, igual o MACD de verdade faz. Não é mais espelhada.
                 ctx.strokeStyle = '#42A5F5';
                 ctx.lineWidth = 1.2;
                 ctx.beginPath();
@@ -6226,15 +6227,6 @@ if (fibsParaDesenhar.length > 0) {
                     if (v === null) { started = false; return; }
                     const x = PAD.left + (i / totalSlots) * panChartW + cW / 2;
                     const y = zeroY - v * escala;
-                    if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
-                });
-                ctx.stroke();
-                ctx.beginPath();
-                started = false;
-                absSma.forEach((v, i) => {
-                    if (v === null) { started = false; return; }
-                    const x = PAD.left + (i / totalSlots) * panChartW + cW / 2;
-                    const y = zeroY + v * escala;
                     if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
                 });
                 ctx.stroke();
@@ -6945,11 +6937,26 @@ function grDrawChartWithCrosshair(yInterno) {
     ctx.lineTo(W - _grPAD.right, yInterno);
     ctx.stroke();
 
-    // Linha vertical — do topo ao rodapé do canvas (inclui painel de indicador)
+    // Linha vertical — do topo ao rodapé do canvas (inclui painel de indicador).
+    // O painel (RSI/Absorção/etc) tem fundo escuro FIXO mesmo no tema claro, então
+    // a linha precisa trocar pra branca só nesse trecho — usando corCrosshair (que
+    // no tema claro é escura) ela some contra o fundo escuro do painel.
+    const painelAtivo = _indState.subInd && !_indOculto.painel;
+    const painelTopoY = painelAtivo ? H - (Math.floor(H * 0.28) + _grPAD.bottom) : H;
+
     ctx.beginPath();
     ctx.moveTo(_grCrosshairX, _grPAD.top);
-    ctx.lineTo(_grCrosshairX, H);
+    ctx.lineTo(_grCrosshairX, painelTopoY);
     ctx.stroke();
+
+    if (painelAtivo) {
+        ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+        ctx.beginPath();
+        ctx.moveTo(_grCrosshairX, painelTopoY);
+        ctx.lineTo(_grCrosshairX, H);
+        ctx.stroke();
+        ctx.strokeStyle = corCrosshair; // restaura pro resto da função (pílulas etc usam essa cor depois)
+    }
 
     ctx.setLineDash([]);
     // Pílula no eixo Y esquerdo
