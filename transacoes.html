@@ -6171,19 +6171,26 @@ if (fibsParaDesenhar.length > 0) {
                     const range = c.h - c.l;
                     return range > 0 ? (c.v || 0) / range : 0;
                 });
-                // Versão COM sinal — magnitude × direção do candle. Direção já existe
-                // pronta pra todo o histórico (c.c/c.o), então dá pra ter uma média com
-                // sinal de verdade, sem precisar do footprint nem pesar na performance.
-                const absAllValsSinal = _grAllCandles.map((c, i) => absAllVals[i] * (c.c >= c.o ? 1 : -1));
-                const absAllSmaSinal = grSMASimples(absAllValsSinal, absPeriodo);
+                // Estilo Elder-Ray (Bull Power / Bear Power): duas médias contínuas,
+                // cada uma só de magnitude do seu próprio lado — candle do lado oposto
+                // entra como ZERO na conta (não é ignorado/pulado). Isso é o que faz as
+                // duas andarem suaves, sem degrau, e ainda assim comparáveis entre si:
+                // quando uma cruza acima da outra, é porque nos últimos 20 candles esse
+                // lado teve mais força entrando na média — cruzamento = dominância real.
+                const absAllCompra = _grAllCandles.map((c, i) => c.c >= c.o ? absAllVals[i] : 0);
+                const absAllVenda = _grAllCandles.map((c, i) => c.c < c.o ? absAllVals[i] : 0);
+                const absAllSmaCompra = grSMASimples(absAllCompra, absPeriodo);
+                const absAllSmaVenda = grSMASimples(absAllVenda, absPeriodo);
                 const absOffset = total - absAllVals.length; // deve ser 0, mas por segurança
 
                 const absVals = [];
-                const absSma = [];
+                const absSmaCompra = [];
+                const absSmaVenda = [];
                 for (let i = 0; i < visible; i++) {
                     const idx = (startIdx + i) - absOffset;
                     absVals.push(idx >= 0 ? absAllVals[idx] : 0);
-                    absSma.push(idx >= 0 ? absAllSmaSinal[idx] : null);
+                    absSmaCompra.push(idx >= 0 ? absAllSmaCompra[idx] : null);
+                    absSmaVenda.push(idx >= 0 ? absAllSmaVenda[idx] : null);
                 }
 
                 // Sinal = direção do próprio candle (igual você pediu): fechou acima da
@@ -6191,7 +6198,7 @@ if (fibsParaDesenhar.length > 0) {
                 // Simples, direto, sem precisar do footprint carregado pra funcionar.
                 const absSinal = candles.map(c => c.c >= c.o ? 1 : -1);
 
-                const maxAbs = Math.max(...absVals, 1) * 1.15;
+                const maxAbs = Math.max(...absVals, ...absSmaCompra.filter(v => v != null), ...absSmaVenda.filter(v => v != null), 1) * 1.15;
                 const zeroY = panY + panPad.top + panChartH / 2;
                 const escala = (panChartH / 2) / maxAbs;
 
@@ -6217,74 +6224,24 @@ if (fibsParaDesenhar.length > 0) {
                     }
                 });
 
-                // ── Barreira — o obstáculo que aquele candle específico enfrentou ──
-                // B = densidade de volume histórico bem no nível de preço do fechamento
-                // (tick $10 já é densidade pura, não precisa dividir de novo).
-                // A = densidade de volume acumulado entre o fechamento e a próxima zona
-                // ZII na direção do candle (a "muralha" ainda pela frente).
-                // Os dois em BTC/$ (mesma unidade), depois cada um normalizado por
-                // z-score contra a própria distribuição da janela visível, e somados —
-                // assim B (pontual, picos extremos) e A (faixa, mais achatada) ficam
-                // comparáveis apesar de terem grandezas naturalmente diferentes.
-                const mapaBarreira = (_grFootprintBins && _grFootprintBins.mapaBase) ? _grFootprintBins.mapaBase : null;
-                const barreiraBruta = candles.map(c => {
-                    if (!mapaBarreira) return 0;
-                    const dir = c.c >= c.o ? 1 : -1;
-                    const pAgr = Math.round(c.c / 10) * 10;
-                    const nivel = mapaBarreira.get(pAgr);
-                    const B = nivel ? (nivel.c + nivel.v) / 10 : 0;
-
-                    let zonaProxima = null;
-                    _grZiiZonas.forEach(z => {
-                        if (dir > 0 && z.lo > c.c) { if (!zonaProxima || z.lo < zonaProxima) zonaProxima = z.lo; }
-                        if (dir < 0 && z.hi < c.c) { if (!zonaProxima || z.hi > zonaProxima) zonaProxima = z.hi; }
+                // As duas médias — desenhadas do MESMO lado (acima de zero, sempre
+                // positivas), pra poder se cruzar de verdade. Verde por cima = força
+                // compradora recente dominando; vermelha por cima = vendedora dominando.
+                const desenhaMedia = (serie, cor) => {
+                    ctx.strokeStyle = cor;
+                    ctx.lineWidth = 1.2;
+                    ctx.beginPath();
+                    let started = false;
+                    serie.forEach((v, i) => {
+                        if (v === null) { started = false; return; }
+                        const x = PAD.left + (i / totalSlots) * panChartW + cW / 2;
+                        const y = zeroY - v * escala;
+                        if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
                     });
-                    let A = 0;
-                    if (zonaProxima != null) {
-                        const distancia = Math.abs(zonaProxima - c.c);
-                        if (distancia > 0) {
-                            const lo = Math.min(c.c, zonaProxima), hi = Math.max(c.c, zonaProxima);
-                            let soma = 0;
-                            mapaBarreira.forEach((nv, p) => { if (p >= lo && p < hi) soma += nv.c + nv.v; });
-                            A = soma / distancia;
-                        }
-                    }
-                    return B + A;
-                });
-                const mediaB = barreiraBruta.reduce((a, b) => a + b, 0) / (barreiraBruta.length || 1);
-                const variancia = barreiraBruta.reduce((a, b) => a + (b - mediaB) ** 2, 0) / (barreiraBruta.length || 1);
-                const desvio = Math.sqrt(variancia);
-                const barreiraZ = barreiraBruta.map(b => desvio > 0 ? (b - mediaB) / desvio : 0);
-                const maxZ = Math.max(...barreiraZ.map(Math.abs), 1);
-                const escalaBarreira = (panChartH / 2) / maxZ;
-
-                // Desenhada do lado OPOSTO da barra de absorção — literalmente empurrando
-                // contra ela, o cabo de guerra que a gente desenhou no mockup.
-                barreiraZ.forEach((z, i) => {
-                    const sinal = -absSinal[i]; // lado oposto à absorção desse candle
-                    const x = PAD.left + (i / totalSlots) * panChartW + cW / 2;
-                    const alturaPx = Math.abs(z) * escalaBarreira;
-                    ctx.fillStyle = 'rgba(127,119,221,0.55)'; // roxo — nem compra nem venda, é obstáculo
-                    if (sinal >= 0) {
-                        ctx.fillRect(x - cW * 0.22, zeroY - alturaPx, cW * 0.44, alturaPx);
-                    } else {
-                        ctx.fillRect(x - cW * 0.22, zeroY, cW * 0.44, alturaPx);
-                    }
-                });
-
-                // Média — agora com sinal de verdade (magnitude × direção), uma linha só
-                // cruzando o zero, igual o MACD de verdade faz. Não é mais espelhada.
-                ctx.strokeStyle = '#42A5F5';
-                ctx.lineWidth = 1.2;
-                ctx.beginPath();
-                let started = false;
-                absSma.forEach((v, i) => {
-                    if (v === null) { started = false; return; }
-                    const x = PAD.left + (i / totalSlots) * panChartW + cW / 2;
-                    const y = zeroY - v * escala;
-                    if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
-                });
-                ctx.stroke();
+                    ctx.stroke();
+                };
+                desenhaMedia(absSmaVenda, '#EF5350');
+                desenhaMedia(absSmaCompra, '#26A69A');
 
                 // Label
                 ctx.font = 'bold 11px -apple-system';
@@ -6296,8 +6253,6 @@ if (fibsParaDesenhar.length > 0) {
                 ctx.fillText('▲ compradora', PAD.left + 84, panY + panPad.top + 12);
                 ctx.fillStyle = '#EF5350';
                 ctx.fillText('▼ vendedora', PAD.left + 168, panY + panPad.top + 12);
-                ctx.fillStyle = 'rgba(127,119,221,0.9)';
-                ctx.fillText('◆ barreira', PAD.left + 252, panY + panPad.top + 12);
 
                 window._absorcaoAtual = absVals[absVals.length - 1] * (absSinal[absSinal.length - 1] || 1);
         }
