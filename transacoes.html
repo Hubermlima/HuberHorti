@@ -6182,18 +6182,18 @@ if (fibsParaDesenhar.length > 0) {
                     absSma.push(idx >= 0 ? absAllSma[idx] : null);
                 }
 
-                // Cor = rastro do smart money nesse candle — não quem "venceu" o candle,
-                // e sim de que lado está a mão passiva absorvendo o outro lado agressivo.
-                // Delta comprador (agressor) sem o preço subir proporcional = alguém
-                // vendendo contra essa pressão = SM vendedor ali = vermelho. Delta vendedor
-                // (agressor) sem o preço cair proporcional = SM comprador ali = verde.
-                // Precisa do footprint (1min) carregado; sem isso, amarelo neutro (fora
+                // Sinal = de que lado está a mão passiva absorvendo o outro lado agressivo
+                // nesse candle (não quem "venceu"). Delta comprador (agressor) sem o preço
+                // subir proporcional = alguém vendendo contra essa pressão = SM vendedor ali
+                // = barra pra BAIXO de zero, vermelha. Delta vendedor (agressor) sem o preço
+                // cair proporcional = SM comprador ali = barra pra CIMA de zero, verde.
+                // Precisa do footprint (1min) carregado; sem isso, barra cinza neutra (fora
                 // da janela de dias carregada).
                 const msPorCandleAbs = (_grFootprintAtivo && typeof grFootprintMsPorCandle === 'function') ? grFootprintMsPorCandle() : null;
-                const deltaPorIndice = [];
+                const absSinal = []; // -1, 0 (sem dado) ou +1 por candle
                 for (let i = 0; i < visible; i++) {
                     const c = candles[i];
-                    if (!c || !msPorCandleAbs || !_grFootprintCandlesRaw) { deltaPorIndice.push(null); continue; }
+                    if (!c || !msPorCandleAbs || !_grFootprintCandlesRaw) { absSinal.push(0); continue; }
                     let dc = 0, achou = false;
                     const fim = c.t + msPorCandleAbs;
                     for (const raw of _grFootprintCandlesRaw) {
@@ -6201,41 +6201,57 @@ if (fibsParaDesenhar.length > 0) {
                         achou = true;
                         (raw.niveis || []).forEach(n => { dc += (n.c - n.v); });
                     }
-                    deltaPorIndice.push(achou ? dc : null);
+                    absSinal.push(!achou ? 0 : (dc >= 0 ? -1 : 1)); // delta comprador → -1 (desce/vermelho); delta vendedor → +1 (sobe/verde)
                 }
-                const corPorDelta = d => d == null ? '#FFC107' : (d >= 0 ? '#EF5350' : '#26A69A');
 
                 const maxAbs = Math.max(...absVals, 1) * 1.15;
-                const toAbsY = v => panY + panPad.top + panChartH - (v / maxAbs) * panChartH;
+                const zeroY = panY + panPad.top + panChartH / 2;
+                const escala = (panChartH / 2) / maxAbs;
 
-                // Linha do oscilador (absorção) — cada trecho colorido pelo delta do
-                // candle correspondente, suavizado por ponto médio (mesma técnica de antes,
-                // só que agora um ctx.stroke() por segmento em vez de um traço único).
-                const absPts = absVals.map((v, i) => ({
-                    x: PAD.left + (i / totalSlots) * panChartW + cW / 2,
-                    y: toAbsY(v)
-                }));
-                ctx.lineWidth = 1.5;
-                for (let i = 0; i < absPts.length - 1; i++) {
-                    const p0 = absPts[i], p1 = absPts[i + 1];
-                    const mx = (p0.x + p1.x) / 2, my = (p0.y + p1.y) / 2;
-                    ctx.strokeStyle = corPorDelta(deltaPorIndice[i]);
-                    ctx.beginPath();
-                    ctx.moveTo(p0.x, p0.y);
-                    ctx.quadraticCurveTo(p0.x, p0.y, mx, my);
-                    ctx.lineTo(p1.x, p1.y);
-                    ctx.stroke();
-                }
+                // Linha de zero
+                ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(PAD.left, zeroY);
+                ctx.lineTo(PAD.left + panChartW, zeroY);
+                ctx.stroke();
 
-                // Linha da média
+                // Histograma vertical — igual o MACD: pra cima e verde = absorção
+                // compradora, pra baixo e vermelha = absorção vendedora.
+                absVals.forEach((v, i) => {
+                    const sinal = absSinal[i];
+                    const x = PAD.left + (i / totalSlots) * panChartW + cW / 2;
+                    const alturaPx = v * escala;
+                    ctx.fillStyle = sinal === 0 ? 'rgba(255,255,255,0.30)' : (sinal > 0 ? '#26A69A' : '#EF5350');
+                    if (sinal >= 0) {
+                        ctx.fillRect(x - cW * 0.4, zeroY - alturaPx, cW * 0.8, alturaPx);
+                    } else {
+                        ctx.fillRect(x - cW * 0.4, zeroY, cW * 0.8, alturaPx);
+                    }
+                });
+
+                // Envelope da média — espelhado pra cima E pra baixo de zero, já que a
+                // média em si só descreve magnitude (o sinal não tem histórico completo
+                // carregado pra calcular uma média própria sem pesar demais na performance).
+                // Serve pra responder "essa barra, pra qualquer lado, tá acima do normal
+                // recente?" sem a média precisar "saber" a direção.
                 ctx.strokeStyle = '#42A5F5';
-                ctx.lineWidth = 1.5;
+                ctx.lineWidth = 1.2;
                 ctx.beginPath();
                 let started = false;
                 absSma.forEach((v, i) => {
                     if (v === null) { started = false; return; }
                     const x = PAD.left + (i / totalSlots) * panChartW + cW / 2;
-                    const y = toAbsY(v);
+                    const y = zeroY - v * escala;
+                    if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+                });
+                ctx.stroke();
+                ctx.beginPath();
+                started = false;
+                absSma.forEach((v, i) => {
+                    if (v === null) { started = false; return; }
+                    const x = PAD.left + (i / totalSlots) * panChartW + cW / 2;
+                    const y = zeroY + v * escala;
                     if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
                 });
                 ctx.stroke();
@@ -6246,12 +6262,12 @@ if (fibsParaDesenhar.length > 0) {
                 ctx.fillStyle = '#FFC107';
                 ctx.fillText('ABSORÇÃO', PAD.left + 4, panY + panPad.top + 12);
                 ctx.font = '9px -apple-system';
-                ctx.fillStyle = '#EF5350';
-                ctx.fillText('SM vendendo', PAD.left + 84, panY + panPad.top + 12);
                 ctx.fillStyle = '#26A69A';
-                ctx.fillText('SM comprando', PAD.left + 152, panY + panPad.top + 12);
+                ctx.fillText('▲ compradora', PAD.left + 84, panY + panPad.top + 12);
+                ctx.fillStyle = '#EF5350';
+                ctx.fillText('▼ vendedora', PAD.left + 168, panY + panPad.top + 12);
 
-                window._absorcaoAtual = absVals[absVals.length - 1];
+                window._absorcaoAtual = absVals[absVals.length - 1] * (absSinal[absSinal.length - 1] || 1);
         }
     }
 
