@@ -13626,8 +13626,9 @@ function cvFecharSetupSheet() {
 
 <!-- ═══ INÍCIO Etapa 9 — Footprint alinhado ao eixo Y principal, ativado pela barra de indicadores (temporário, remover depois) ═══ -->
 <div id="footprint-teste-painel" style="display:none;position:fixed;left:12px;right:12px;bottom:16px;z-index:99998;background:#1C1C1E;border-radius:10px;padding:8px 12px;box-shadow:0 4px 16px rgba(0,0,0,0.4);">
-    <div style="display:flex;justify-content:flex-end;align-items:center;gap:8px;">
+    <div style="display:flex;justify-content:flex-end;align-items:center;gap:14px;">
         <div id="footprint-teste-info" style="display:none;"></div>
+        <button onclick="grFootprintAbrirHistogramaAgregado()" id="footprint-detalhar-btn" style="background:none;border:none;color:#FFA726;font-size:12px;font-weight:700;white-space:nowrap;">Detalhar ▤</button>
         <button onclick="grFootprintAjustarLookback()" id="footprint-lookback-btn" style="background:none;border:none;color:#FFA726;font-size:12px;font-weight:700;white-space:nowrap;">Dias: 7</button>
     </div>
 </div>
@@ -13702,7 +13703,7 @@ function cvFecharSetupSheet() {
     </div>
     <div style="padding:10px 16px 4px;text-align:center;font-weight:800;font-size:13px;font-family:-apple-system,sans-serif;border-top:0.5px solid rgba(255,255,255,0.08);flex-shrink:0;" id="footprint-candle-footer"></div>
     <div style="padding:8px 16px 12px;flex-shrink:0;display:flex;flex-direction:column;gap:8px;">
-      <button onclick="grFootprintAbrirHistorico()" style="width:100%;padding:12px;background:#FFA726;color:#1C1C1E;border:none;border-radius:10px;font-size:13px;font-weight:800;font-family:-apple-system,sans-serif;">Ver Histórico</button>
+      <button id="footprint-ver-historico-btn" onclick="grFootprintAbrirHistorico()" style="width:100%;padding:12px;background:#FFA726;color:#1C1C1E;border:none;border-radius:10px;font-size:13px;font-weight:800;font-family:-apple-system,sans-serif;">Ver Histórico</button>
     </div>
   </div>
 </div>
@@ -14739,6 +14740,23 @@ function grFootprintAbrirCandleModal(candle) {
     grFootprintAtualizarVisibilidadePainel();
 }
 
+// Abre o mesmo ladder do candle, mas alimentado pelo histograma agregado dos
+// últimos N dias (_grFootprintBins.mapaBase) em vez de um candle específico —
+// sem corpo/pavio de candle nenhum, só a régua de níveis de preço.
+function grFootprintAbrirHistogramaAgregado() {
+    if (!_grFootprintBins || !_grFootprintBins.mapaBase || _grFootprintBins.mapaBase.size === 0) {
+        alert('Sem dados de histograma carregados ainda.');
+        return;
+    }
+    const precos = [..._grFootprintBins.mapaBase.keys()];
+    const lo = Math.min(...precos);
+    const hi = Math.max(...precos) + 10; // +10 pra fechar a última faixa de $10
+    const candleFake = { o: null, h: hi, l: lo, c: null, t: null };
+    _grFootprintCandleContexto = null; // não é um candle real — "Ver histórico" minuto a minuto não se aplica aqui
+    grFootprintDesenharCandleLadder(candleFake, Date.now(), _grFootprintBins.mapaBase, 0, true);
+    grFootprintAtualizarVisibilidadePainel();
+}
+
 function grFootprintFecharCandleModal() {
     document.getElementById('footprint-candle-overlay').style.display = 'none';
     document.getElementById('footprint-nivel-overlay').style.display = 'none';
@@ -15064,7 +15082,7 @@ let _grFootprintCandleTouchBind = false;
 let _grFootprintCandleContexto = null; // {de, ate, candle} do candle aberto — usado pra série temporal e pelas zonas ZII
 let _grFootprintCandlePocs = null; // {pocCompraPreco, pocVendaPreco, tick} do candle aberto
 
-function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCandles1min) {
+function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCandles1min, semCandle = false) {
     const lo = candle.l, hi = candle.h;
     if (!(hi > lo)) { alert('Candle sem range de preço (H = L).'); return; }
 
@@ -15119,11 +15137,20 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
     _grFootprintCandlePocs = { pocCompraPreco, pocVendaPreco, tick };
 
     const dataStr = new Date(tCandleStart).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
-    document.getElementById('footprint-candle-titulo').textContent = `Candle ${dataStr} · TF ${_grTf}`;
-    document.getElementById('footprint-candle-sub').textContent =
-        `Abertura ${fmtN(candle.o)} · Máxima ${fmtN(candle.h)} · Mínima ${fmtN(candle.l)} · Fechamento ${fmtN(candle.c)} · ` +
-        `${numCandles1min} candles (1min) agregados · tick $${tick}` +
-        (temIntensidade ? ' · cor mais sólida = trades maiores em média' : '');
+    if (semCandle) {
+        document.getElementById('footprint-candle-titulo').textContent = `Histograma agregado — últimos ${_grFootprintLookbackDias} dias`;
+        document.getElementById('footprint-candle-sub').textContent =
+            `Faixa ${fmtN(lo)} – ${fmtN(hi)} · tick $${tick}` +
+            (temIntensidade ? ' · cor mais sólida = trades maiores em média' : '');
+        document.getElementById('footprint-ver-historico-btn').style.display = 'none';
+    } else {
+        document.getElementById('footprint-candle-titulo').textContent = `Candle ${dataStr} · TF ${_grTf}`;
+        document.getElementById('footprint-candle-sub').textContent =
+            `Abertura ${fmtN(candle.o)} · Máxima ${fmtN(candle.h)} · Mínima ${fmtN(candle.l)} · Fechamento ${fmtN(candle.c)} · ` +
+            `${numCandles1min} candles (1min) agregados · tick $${tick}` +
+            (temIntensidade ? ' · cor mais sólida = trades maiores em média' : '');
+        document.getElementById('footprint-ver-historico-btn').style.display = 'block';
+    }
     const pctCompraCandle = totalGeral > 0 ? (totalCompra / totalGeral * 100) : 0;
     const pctVendaCandle = totalGeral > 0 ? (totalVenda / totalGeral * 100) : 0;
     const avgCompraCandle = totalNc > 0 ? totalCompra / totalNc : null;
@@ -15268,26 +15295,28 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
         // Pavio: linha fina de H até L. Corpo: retângulo sólido entre Abertura e
         // Fechamento. É aqui que dá pra ver em que faixa do candle o volume (POC
         // compra/venda) está — dentro do corpo (defesa institucional/ZII) ou nos
-        // pavios (preço rejeitado).
-        const corpoTopoP = Math.max(candle.o, candle.c);
-        const corpoFundoP = Math.min(candle.o, candle.c);
-        const corpoAlta = candle.c >= candle.o;
-        const corCandle = corpoAlta ? '#26A69A' : '#EF5350';
-        const yH = yForPrice(hi), yL = yForPrice(lo);
-        const yCorpoTop = yForPrice(corpoTopoP), yCorpoBot = yForPrice(corpoFundoP);
+        // pavios (preço rejeitado). Pulado no histograma agregado (sem candle).
+        if (!semCandle) {
+            const corpoTopoP = Math.max(candle.o, candle.c);
+            const corpoFundoP = Math.min(candle.o, candle.c);
+            const corpoAlta = candle.c >= candle.o;
+            const corCandle = corpoAlta ? '#26A69A' : '#EF5350';
+            const yH = yForPrice(hi), yL = yForPrice(lo);
+            const yCorpoTop = yForPrice(corpoTopoP), yCorpoBot = yForPrice(corpoFundoP);
 
-        ctx.strokeStyle = corCandle;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(centroX, yH);
-        ctx.lineTo(centroX, yL);
-        ctx.stroke();
+            ctx.strokeStyle = corCandle;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(centroX, yH);
+            ctx.lineTo(centroX, yL);
+            ctx.stroke();
 
-        ctx.fillStyle = corCandle;
-        ctx.fillRect(centroX - candleHalfW, yCorpoTop, candleHalfW * 2, Math.max(2, yCorpoBot - yCorpoTop));
-        ctx.strokeStyle = '#0A0A0A';
-        ctx.lineWidth = 1;
-        ctx.strokeRect(centroX - candleHalfW, yCorpoTop, candleHalfW * 2, Math.max(2, yCorpoBot - yCorpoTop));
+            ctx.fillStyle = corCandle;
+            ctx.fillRect(centroX - candleHalfW, yCorpoTop, candleHalfW * 2, Math.max(2, yCorpoBot - yCorpoTop));
+            ctx.strokeStyle = '#0A0A0A';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(centroX - candleHalfW, yCorpoTop, candleHalfW * 2, Math.max(2, yCorpoBot - yCorpoTop));
+        }
 
         if (!_grFootprintCandleTouchBind) {
             canvas.addEventListener('touchstart', grFootprintCandleTouchStart, { passive: true });
