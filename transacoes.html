@@ -3030,6 +3030,12 @@ function cvIniciarRealTime() {
             _precoAtual = novoPreco;
             grFootprintAtualizarLinhaPrecoAtual();
 
+            // Acumula esse trade no minuto em formação do footprint (mesmo tick $10
+            // do worker) — é isso que alimenta ladder/histograma ao vivo, minuto a
+            // minuto, sem esperar o worker/R2 fechar o dia.
+            const qtd = parseFloat(d.q);
+            if (qtd > 0) grFootprintAcumularTradeLive(novoPreco, qtd, d.m === true);
+
             // Detecção de cruzamento alvo/stop
             if (precoAntes > 0 && window._cvTradeCache) {
                 const cache = window._cvTradeCache;
@@ -13980,6 +13986,77 @@ const FOOTPRINT_DEBOUNCE_MS = 250;    // espera o scroll/zoom "assentar" por ess
 
 let _grFootprintAtivo = false;         // controla o botão da barra de indicadores
 let _grFootprintCandlesRaw = null;     // array flat {ts, niveis} de TODOS os dias carregados (fetch único), ordenado por ts
+
+// ── Footprint AO VIVO — acumula trade a trade do WS (aggTrade), sem esperar
+// o worker/R2 fechar o minuto. É isso que faz o candle em formação, a régua
+// e o histograma agregado se moverem de verdade em tempo real, não só o
+// preço/candle visual: o VOLUME por nível também cresce ao vivo.
+let _grFootprintLiveMinutoTs = null;    // início (ms, arredondado pro minuto) do minuto em formação agora
+let _grFootprintLiveMinutoMap = new Map(); // preco (tick $10) -> {c, v, nc, nv}, só do minuto atual
+
+function grFootprintAcumularTradeLive(preco, qtd, isBuyerMaker) {
+    if (!_grFootprintCandlesRaw) return; // ainda não carregou histórico nenhum, não tem onde acumular
+    const minutoTs = Math.floor(Date.now() / 60000) * 60000;
+    if (_grFootprintLiveMinutoTs !== minutoTs) {
+        grFootprintFecharMinutoLiveNoHistorico(); // vira o minuto: grava o anterior de vez no histórico bruto
+        _grFootprintLiveMinutoTs = minutoTs;
+        _grFootprintLiveMinutoMap = new Map();
+    }
+    const pAgr = Math.round(preco / 10) * 10; // tick fino $10 — mesmo grão que o worker usa
+    let acc = _grFootprintLiveMinutoMap.get(pAgr);
+    if (!acc) { acc = { c: 0, v: 0, nc: 0, nv: 0 }; _grFootprintLiveMinutoMap.set(pAgr, acc); }
+    // isBuyerMaker true = agressor vendeu (bateu no bid) => venda; false = agressor comprou (bateu no ask) => compra
+    if (isBuyerMaker) { acc.v += qtd; acc.nv += 1; } else { acc.c += qtd; acc.nc += 1; }
+
+    grFootprintTalvezRefrescarModalAoVivo();
+}
+
+// Quando o minuto vira, o que tava só na memória (Map do minuto em formação)
+// vira uma entrada de verdade em _grFootprintCandlesRaw — daí em diante esse
+// minuto é histórico igual qualquer outro vindo do worker.
+function grFootprintFecharMinutoLiveNoHistorico() {
+    if (_grFootprintLiveMinutoTs == null || _grFootprintLiveMinutoMap.size === 0) return;
+    const niveis = [..._grFootprintLiveMinutoMap.entries()].map(([p, v]) => ({ p, c: v.c, v: v.v, nc: v.nc, nv: v.nv }));
+    _grFootprintCandlesRaw = _grFootprintCandlesRaw.filter(c => c.ts !== _grFootprintLiveMinutoTs);
+    _grFootprintCandlesRaw.push({ ts: _grFootprintLiveMinutoTs, niveis });
+    _grFootprintCandlesRaw.sort((a, b) => a.ts - b.ts);
+}
+
+// Estado de qual modal tá aberto agora, pra saber COMO refrescar ao vivo:
+// 'candle' = candle único (grFootprintCandleContexto tem de/ate/candle),
+// 'agregado' = histograma dos últimos N dias, null = nenhum modal aberto.
+let _grFootprintModalModo = null;
+let _grFootprintUltimoRefreshModal = 0;
+const FOOTPRINT_REFRESH_MODAL_MS = 1000; // throttle — redesenhar a régua inteira a cada trade seria pesado à toa
+
+// Chamado a cada trade que chega — só realmente refaz o ladder pesado (linhas,
+// checkboxes, delta, POC) no máximo 1x/segundo, e só se o modal tiver aberto.
+function grFootprintTalvezRefrescarModalAoVivo() {
+    if (!_grFootprintModalModo) return;
+    if (document.getElementById('footprint-candle-overlay').style.display !== 'block') return;
+    const agora = Date.now();
+    if (agora - _grFootprintUltimoRefreshModal < FOOTPRINT_REFRESH_MODAL_MS) return;
+    _grFootprintUltimoRefreshModal = agora;
+
+    if (_grFootprintModalModo === 'candle' && _grFootprintCandleContexto) {
+        const { de, ate, candle } = _grFootprintCandleContexto;
+        const mapaFino = new Map();
+        let encontrados = 0;
+        grFootprintTodosOsCandlesBrutos().forEach(c => {
+            if (c.ts < de || c.ts >= ate) return;
+            encontrados++;
+            (c.niveis || []).forEach(n => {
+                if (!mapaFino.has(n.p)) mapaFino.set(n.p, { c: 0, v: 0, nc: 0, nv: 0 });
+                const acc = mapaFino.get(n.p);
+                acc.c += n.c; acc.v += n.v; acc.nc += (n.nc || 0); acc.nv += (n.nv || 0);
+            });
+        });
+        if (mapaFino.size > 0) grFootprintDesenharCandleLadder(candle, de, mapaFino, encontrados);
+    } else if (_grFootprintModalModo === 'agregado') {
+        grFootprintAbrirHistogramaAgregado(true);
+    }
+}
+
 let _grFootprintDiasCarregados = [];
 let _grFootprintBins = null;           // { mapaBase, totalCandles } — já filtrado pro range visível atual
 let _grFootprintDisplayCache = null;   // { tick, mapa, pocPreco, maxTotal } — reagrupamento p/ exibição (por altura mínima de linha)
@@ -14813,6 +14890,14 @@ let _grFootprintAvulsoCandlePendente = null; // candle que disparou a confirmaç
 function grFootprintTodosOsCandlesBrutos() {
     let todos = _grFootprintCandlesRaw ? _grFootprintCandlesRaw.slice() : [];
     _grFootprintDiasAvulsos.forEach(candlesDoDia => { todos = todos.concat(candlesDoDia); });
+    // Minuto em formação agora (ainda não fechou, só existe na memória) — sem
+    // isso, o candle/histograma ficaria sempre ~1min atrasado do que já rolou.
+    if (_grFootprintLiveMinutoTs != null && _grFootprintLiveMinutoMap.size > 0) {
+        todos.push({
+            ts: _grFootprintLiveMinutoTs,
+            niveis: [..._grFootprintLiveMinutoMap.entries()].map(([p, v]) => ({ p, c: v.c, v: v.v, nc: v.nc, nv: v.nv }))
+        });
+    }
     return todos;
 }
 
@@ -14997,19 +15082,35 @@ function grFootprintAbrirCandleModal(candle) {
     }
 
     _grFootprintCandleContexto = { de, ate, candle };
+    _grFootprintModalModo = 'candle';
     grFootprintDesenharCandleLadder(candle, de, mapaFino, encontrados);
     grFootprintAtualizarVisibilidadePainel();
 }
 
 // Abre o mesmo ladder do candle, mas alimentado pelo histograma agregado dos
-// últimos N dias (_grFootprintBins.mapaBase) em vez de um candle específico —
-// sem corpo/pavio de candle nenhum, só a régua de níveis de preço.
-function grFootprintAbrirHistogramaAgregado() {
-    if (!_grFootprintBins || !_grFootprintBins.mapaBase || _grFootprintBins.mapaBase.size === 0) {
-        alert('Sem dados de histograma carregados ainda.');
+// últimos N dias — calculado direto de grFootprintTodosOsCandlesBrutos() (que
+// já inclui o minuto em formação agora), não do _grFootprintBins do overlay
+// principal (esse só atualiza 1x/minuto, rápido demais pra parecer "morto" se
+// usado aqui). Sem corpo/pavio de candle nenhum, só a régua de níveis de preço
+// — refresco='live' pula o "Sem dados" quando é só um refresh vazio no meio
+// de um segundo sem trade novo.
+function grFootprintAbrirHistogramaAgregado(refresco) {
+    const agora = Date.now();
+    const de = agora - (_grFootprintLookbackDias * 24 * 60 * 60 * 1000);
+    const mapaBase = new Map();
+    grFootprintTodosOsCandlesBrutos().forEach(c => {
+        if (c.ts < de || c.ts > agora) return;
+        (c.niveis || []).forEach(n => {
+            if (!mapaBase.has(n.p)) mapaBase.set(n.p, { c: 0, v: 0, nc: 0, nv: 0 });
+            const acc = mapaBase.get(n.p);
+            acc.c += n.c; acc.v += n.v; acc.nc += (n.nc || 0); acc.nv += (n.nv || 0);
+        });
+    });
+    if (mapaBase.size === 0) {
+        if (!refresco) alert('Sem dados de histograma carregados ainda.');
         return;
     }
-    const precos = [..._grFootprintBins.mapaBase.keys()];
+    const precos = [...mapaBase.keys()];
     const lo = Math.min(...precos);
     const hi = Math.max(...precos) + 10; // +10 pra fechar a última faixa de $10
 
@@ -15017,20 +15118,17 @@ function grFootprintAbrirHistogramaAgregado() {
     // janela de lookback — é o candle "de agora pra trás N dias", então não
     // tem abertura real gravada em lugar nenhum, só dá pra estimar assim.
     let abertura = lo;
-    if (_grFootprintBins.from != null) {
-        const todos = grFootprintTodosOsCandlesBrutos();
-        const primeiroMinuto = todos
-            .filter(c => c.ts >= _grFootprintBins.from)
-            .sort((a, b) => a.ts - b.ts)[0];
-        if (primeiroMinuto) {
-            let somaPV = 0, total = 0;
-            (primeiroMinuto.niveis || []).forEach(n => {
-                const vol = n.c + n.v;
-                somaPV += n.p * vol;
-                total += vol;
-            });
-            if (total > 0) abertura = somaPV / total;
-        }
+    const primeiroMinuto = grFootprintTodosOsCandlesBrutos()
+        .filter(c => c.ts >= de)
+        .sort((a, b) => a.ts - b.ts)[0];
+    if (primeiroMinuto) {
+        let somaPV = 0, total = 0;
+        (primeiroMinuto.niveis || []).forEach(n => {
+            const vol = n.c + n.v;
+            somaPV += n.p * vol;
+            total += vol;
+        });
+        if (total > 0) abertura = somaPV / total;
     }
 
     // Fechamento = ao vivo (o "candle" desse histograma é sempre até agora,
@@ -15038,7 +15136,8 @@ function grFootprintAbrirHistogramaAgregado() {
     // cada tick, aqui só entra como valor inicial.
     const candleFake = { o: abertura, h: hi, l: lo, c: _precoAtual, t: null };
     _grFootprintCandleContexto = null; // não é um candle real — "Ver histórico" minuto a minuto não se aplica aqui
-    grFootprintDesenharCandleLadder(candleFake, Date.now(), _grFootprintBins.mapaBase, 0, true);
+    _grFootprintModalModo = 'agregado';
+    grFootprintDesenharCandleLadder(candleFake, agora, mapaBase, 0, true);
     grFootprintAtualizarVisibilidadePainel();
 }
 
@@ -15048,6 +15147,7 @@ function grFootprintFecharCandleModal() {
     document.getElementById('footprint-serie-overlay').style.display = 'none';
     document.getElementById('footprint-historico-overlay').style.display = 'none';
     _grFootprintCandleContexto = null;
+    _grFootprintModalModo = null;
     _grFootprintCandlePocs = null;
     _grFootprintCandleLadderRange = null;
     grFootprintAtualizarVisibilidadePainel();
@@ -15368,14 +15468,22 @@ let _grFootprintCandleLadderRange = null; // {lo, hi, W, H} do ladder aberto ago
 // Redesenha só a linha da cotação atual, num canvas separado por cima do
 // ladder — chamado a cada tick de preço (WS), sem re-processar footprint
 // nenhum. Preço sobe/desce, a linha flutua sozinha em tempo real.
-// Atualiza só o texto/cor do span de % (Abertura→Fechamento), sem tocar no
-// resto do subtítulo — chamado a cada tick de preço nos dois modos ao vivo.
-function grFootprintAtualizarPctSpan(o, c) {
-    const el = document.getElementById('footprint-candle-pct');
-    if (!el || !(o > 0)) return;
-    const pct = (c - o) / o * 100;
-    el.textContent = (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
-    el.style.color = pct >= 0 ? '#4CAF50' : '#EF5350';
+// Atualiza Máxima/Mínima/Fechamento/% no cabeçalho do modal — chamado a cada
+// tick de preço nos dois modos ao vivo, pra não deixar o texto (snapshot de
+// quando abriu) desencontrado do candle/linha que já seguiram em frente.
+function grFootprintAtualizarPctSpan(o, h, l, c) {
+    const elMax = document.getElementById('footprint-candle-max');
+    const elMin = document.getElementById('footprint-candle-min');
+    const elClose = document.getElementById('footprint-candle-close');
+    const elPct = document.getElementById('footprint-candle-pct');
+    if (elMax) elMax.textContent = fmtN(h);
+    if (elMin) elMin.textContent = fmtN(l);
+    if (elClose) elClose.textContent = fmtN(c);
+    if (elPct && o > 0) {
+        const pct = (c - o) / o * 100;
+        elPct.textContent = (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
+        elPct.style.color = pct >= 0 ? '#4CAF50' : '#EF5350';
+    }
 }
 
 function grFootprintAtualizarLinhaPrecoAtual() {
@@ -15424,7 +15532,7 @@ function grFootprintAtualizarLinhaPrecoAtual() {
     if (range.modoLive === 'real' && range.candleReal) {
         const c = range.candleReal;
         desenharCandleOverlay(c.o, c.h, c.l, c.c);
-        grFootprintAtualizarPctSpan(c.o, c.c);
+        grFootprintAtualizarPctSpan(c.o, c.h, c.l, c.c);
     }
 
     // Histograma agregado — não é candle de verdade, então o/h/l ficam fixos
@@ -15433,8 +15541,9 @@ function grFootprintAtualizarLinhaPrecoAtual() {
     // junto (senão o corpo/pavio ficaria cortado incorretamente).
     if (range.modoLive === 'agregado' && range.ohlcAgregado && typeof _precoAtual === 'number') {
         const { o, h, l } = range.ohlcAgregado;
-        desenharCandleOverlay(o, Math.max(h, _precoAtual), Math.min(l, _precoAtual), _precoAtual);
-        grFootprintAtualizarPctSpan(o, _precoAtual);
+        const hLive = Math.max(h, _precoAtual), lLive = Math.min(l, _precoAtual);
+        desenharCandleOverlay(o, hLive, lLive, _precoAtual);
+        grFootprintAtualizarPctSpan(o, hLive, lLive, _precoAtual);
     }
 
     if (typeof _precoAtual !== 'number' || _precoAtual < lo || _precoAtual > hi) return;
@@ -15526,18 +15635,25 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
     // esforço sem resultado (possível absorção/rejeição); delta grande + %
     // grande = esforço validado (continuação genuína).
     const pctVar = candle.o > 0 ? ((candle.c - candle.o) / candle.o * 100) : 0;
-    const pctSpanHtml = (id) => `<span id="${id}" style="color:${pctVar >= 0 ? '#4CAF50' : '#EF5350'};font-weight:700;">${pctVar >= 0 ? '+' : ''}${pctVar.toFixed(2)}%</span>`;
+    const pctSpanHtml = `<span id="footprint-candle-pct" style="color:${pctVar >= 0 ? '#4CAF50' : '#EF5350'};font-weight:700;">${pctVar >= 0 ? '+' : ''}${pctVar.toFixed(2)}%</span>`;
+    // Máxima/Mínima/Fechamento em spans próprios — nos dois modos ao vivo (candle
+    // real e agregado) o overlay reescreve esses três + o % a cada tick, senão o
+    // texto ficava com o valor de quando abriu enquanto o candle desenhado (e o %)
+    // já tinham seguido em frente — mesmo número, duas fontes desencontradas.
+    const maxSpanHtml = `<span id="footprint-candle-max">${fmtN(candle.h)}</span>`;
+    const minSpanHtml = `<span id="footprint-candle-min">${fmtN(candle.l)}</span>`;
+    const closeSpanHtml = `<span id="footprint-candle-close">${fmtN(candle.c)}</span>`;
     if (semCandle) {
         document.getElementById('footprint-candle-titulo').textContent = `Histograma agregado — últimos ${_grFootprintLookbackDias} dias`;
         document.getElementById('footprint-candle-sub').innerHTML =
-            `Abertura ${fmtN(candle.o)} · Máxima ${fmtN(candle.h)} · Mínima ${fmtN(candle.l)} · Fechamento ${fmtN(candle.c)} (${pctSpanHtml('footprint-candle-pct')}) · ` +
+            `Abertura ${fmtN(candle.o)} · Máxima ${maxSpanHtml} · Mínima ${minSpanHtml} · Fechamento ${closeSpanHtml} (${pctSpanHtml}) · ` +
             `Faixa ${fmtN(lo)} – ${fmtN(hi)} · tick $${tick}` +
             (temIntensidade ? ' · cor mais sólida = trades maiores em média' : '');
         document.getElementById('footprint-ver-historico-btn').style.display = 'none';
     } else {
         document.getElementById('footprint-candle-titulo').textContent = `Candle ${dataStr} · TF ${_grTf}`;
         document.getElementById('footprint-candle-sub').innerHTML =
-            `Abertura ${fmtN(candle.o)} · Máxima ${fmtN(candle.h)} · Mínima ${fmtN(candle.l)} · Fechamento ${fmtN(candle.c)} (${pctSpanHtml('footprint-candle-pct')}) · ` +
+            `Abertura ${fmtN(candle.o)} · Máxima ${maxSpanHtml} · Mínima ${minSpanHtml} · Fechamento ${closeSpanHtml} (${pctSpanHtml}) · ` +
             `${numCandles1min} candles (1min) agregados · tick $${tick}` +
             (temIntensidade ? ' · cor mais sólida = trades maiores em média' : '');
         document.getElementById('footprint-ver-historico-btn').style.display = 'block';
