@@ -15368,6 +15368,16 @@ let _grFootprintCandleLadderRange = null; // {lo, hi, W, H} do ladder aberto ago
 // Redesenha só a linha da cotação atual, num canvas separado por cima do
 // ladder — chamado a cada tick de preço (WS), sem re-processar footprint
 // nenhum. Preço sobe/desce, a linha flutua sozinha em tempo real.
+// Atualiza só o texto/cor do span de % (Abertura→Fechamento), sem tocar no
+// resto do subtítulo — chamado a cada tick de preço nos dois modos ao vivo.
+function grFootprintAtualizarPctSpan(o, c) {
+    const el = document.getElementById('footprint-candle-pct');
+    if (!el || !(o > 0)) return;
+    const pct = (c - o) / o * 100;
+    el.textContent = (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
+    el.style.color = pct >= 0 ? '#4CAF50' : '#EF5350';
+}
+
 function grFootprintAtualizarLinhaPrecoAtual() {
     const overlay = document.getElementById('footprint-candle-precoline-canvas');
     const range = _grFootprintCandleLadderRange;
@@ -15414,6 +15424,7 @@ function grFootprintAtualizarLinhaPrecoAtual() {
     if (range.modoLive === 'real' && range.candleReal) {
         const c = range.candleReal;
         desenharCandleOverlay(c.o, c.h, c.l, c.c);
+        grFootprintAtualizarPctSpan(c.o, c.c);
     }
 
     // Histograma agregado — não é candle de verdade, então o/h/l ficam fixos
@@ -15423,6 +15434,7 @@ function grFootprintAtualizarLinhaPrecoAtual() {
     if (range.modoLive === 'agregado' && range.ohlcAgregado && typeof _precoAtual === 'number') {
         const { o, h, l } = range.ohlcAgregado;
         desenharCandleOverlay(o, Math.max(h, _precoAtual), Math.min(l, _precoAtual), _precoAtual);
+        grFootprintAtualizarPctSpan(o, _precoAtual);
     }
 
     if (typeof _precoAtual !== 'number' || _precoAtual < lo || _precoAtual > hi) return;
@@ -15509,17 +15521,23 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
     _grFootprintCandlePocs = { pocCompraPreco, pocVendaPreco, tick };
 
     const dataStr = new Date(tCandleStart).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    // % de variação abertura→fechamento — é esse número que diz a MAGNITUDE do
+    // movimento, pra cruzar com o esforço (delta): delta grande + % pequena =
+    // esforço sem resultado (possível absorção/rejeição); delta grande + %
+    // grande = esforço validado (continuação genuína).
+    const pctVar = candle.o > 0 ? ((candle.c - candle.o) / candle.o * 100) : 0;
+    const pctSpanHtml = (id) => `<span id="${id}" style="color:${pctVar >= 0 ? '#4CAF50' : '#EF5350'};font-weight:700;">${pctVar >= 0 ? '+' : ''}${pctVar.toFixed(2)}%</span>`;
     if (semCandle) {
         document.getElementById('footprint-candle-titulo').textContent = `Histograma agregado — últimos ${_grFootprintLookbackDias} dias`;
-        document.getElementById('footprint-candle-sub').textContent =
-            `Abertura ${fmtN(candle.o)} · Máxima ${fmtN(candle.h)} · Mínima ${fmtN(candle.l)} · Fechamento ${fmtN(candle.c)} · ` +
+        document.getElementById('footprint-candle-sub').innerHTML =
+            `Abertura ${fmtN(candle.o)} · Máxima ${fmtN(candle.h)} · Mínima ${fmtN(candle.l)} · Fechamento ${fmtN(candle.c)} (${pctSpanHtml('footprint-candle-pct')}) · ` +
             `Faixa ${fmtN(lo)} – ${fmtN(hi)} · tick $${tick}` +
             (temIntensidade ? ' · cor mais sólida = trades maiores em média' : '');
         document.getElementById('footprint-ver-historico-btn').style.display = 'none';
     } else {
         document.getElementById('footprint-candle-titulo').textContent = `Candle ${dataStr} · TF ${_grTf}`;
-        document.getElementById('footprint-candle-sub').textContent =
-            `Abertura ${fmtN(candle.o)} · Máxima ${fmtN(candle.h)} · Mínima ${fmtN(candle.l)} · Fechamento ${fmtN(candle.c)} · ` +
+        document.getElementById('footprint-candle-sub').innerHTML =
+            `Abertura ${fmtN(candle.o)} · Máxima ${fmtN(candle.h)} · Mínima ${fmtN(candle.l)} · Fechamento ${fmtN(candle.c)} (${pctSpanHtml('footprint-candle-pct')}) · ` +
             `${numCandles1min} candles (1min) agregados · tick $${tick}` +
             (temIntensidade ? ' · cor mais sólida = trades maiores em média' : '');
         document.getElementById('footprint-ver-historico-btn').style.display = 'block';
