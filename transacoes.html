@@ -15357,6 +15357,37 @@ function grFootprintAtualizarLinhaPrecoAtual() {
     }
     const ctx = overlay.getContext('2d');
     ctx.clearRect(0, 0, W, H);
+
+    // yForPrice clampado — o candle ao vivo pode furar o range que o ladder
+    // tinha quando abriu (lo/hi foram capturados naquele momento); em vez de
+    // desenhar fora do canvas, prende na borda.
+    const yForPriceClamp = p => Math.max(0, Math.min(H, ((hi - p) / (hi - lo)) * H));
+
+    // Candle ao vivo — lê o.h.l.c direto do objeto (é o mesmo item que o
+    // WS/polling mutam em _grAllCandles, então já vem atualizado sozinho).
+    if (range.isLive && range.candle) {
+        const c = range.candle;
+        const corpoTopoP = Math.max(c.o, c.c);
+        const corpoFundoP = Math.min(c.o, c.c);
+        const corCandle = c.c >= c.o ? '#26A69A' : '#EF5350';
+        const yH = yForPriceClamp(c.h), yL = yForPriceClamp(c.l);
+        const yCorpoTop = yForPriceClamp(corpoTopoP), yCorpoBot = yForPriceClamp(corpoFundoP);
+        const { centroX, candleHalfW } = range;
+
+        ctx.strokeStyle = corCandle;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(centroX, yH);
+        ctx.lineTo(centroX, yL);
+        ctx.stroke();
+
+        ctx.fillStyle = corCandle;
+        ctx.fillRect(centroX - candleHalfW, yCorpoTop, candleHalfW * 2, Math.max(2, yCorpoBot - yCorpoTop));
+        ctx.strokeStyle = '#0A0A0A';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(centroX - candleHalfW, yCorpoTop, candleHalfW * 2, Math.max(2, yCorpoBot - yCorpoTop));
+    }
+
     if (typeof _precoAtual !== 'number' || _precoAtual < lo || _precoAtual > hi) return;
 
     const yAtual = ((hi - _precoAtual) / (hi - lo)) * H;
@@ -15595,17 +15626,22 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
             _grFootprintCandleLinhas.push({ p, v, total, tick, yTop: y, yBottom: y + rowH });
         });
 
-        // Guarda o range desse ladder pra o updater leve da linha de preço atual
-        // (chamado a cada tick de preço, sem precisar redesenhar tudo isso de novo).
-        _grFootprintCandleLadderRange = { lo, hi, W, H };
+        // Guarda o range + o que o updater da linha/candle ao vivo precisa.
+        // isLive: o candle aberto é o MESMO objeto que tá no topo de
+        // _grAllCandles (ainda em formação, sendo mutado pelo WS) — nesse
+        // caso o candle de verdade também é redesenhado no overlay a cada
+        // tick, em vez de ficar estático com o snapshot de quando abriu.
+        const isLive = !semCandle && _grAllCandles.length > 0 && candle === _grAllCandles[_grAllCandles.length - 1];
+        _grFootprintCandleLadderRange = { lo, hi, W, H, isLive, candle: isLive ? candle : null, centroX, candleHalfW };
         grFootprintAtualizarLinhaPrecoAtual();
 
         // ── O CANDLE DE VERDADE, desenhado no vão central ──────────────────
         // Pavio: linha fina de H até L. Corpo: retângulo sólido entre Abertura e
         // Fechamento. É aqui que dá pra ver em que faixa do candle o volume (POC
         // compra/venda) está — dentro do corpo (defesa institucional/ZII) ou nos
-        // pavios (preço rejeitado). Pulado no histograma agregado (sem candle).
-        if (!semCandle) {
+        // pavios (preço rejeitado). Pulado no histograma agregado (sem candle) e
+        // no candle ao vivo (esse é redesenhado no overlay, ver isLive acima).
+        if (!semCandle && !isLive) {
             const corpoTopoP = Math.max(candle.o, candle.c);
             const corpoFundoP = Math.min(candle.o, candle.c);
             const corpoAlta = candle.c >= candle.o;
