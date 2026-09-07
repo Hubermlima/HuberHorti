@@ -13915,7 +13915,7 @@ function cvFecharSetupSheet() {
       <div style="font-size:15px;font-weight:800;color:#FFFFFF;font-family:-apple-system,sans-serif;" id="footprint-historico-titulo">Histórico do candle</div>
       <button onclick="grFootprintFecharHistorico()" style="background:rgba(255,255,255,0.1);border:none;color:#FFFFFF;font-size:16px;width:28px;height:28px;border-radius:50%;cursor:pointer;">✕</button>
     </div>
-    <div style="padding:0 16px 4px;color:#8E8E93;font-size:11px;font-family:-apple-system,sans-serif;flex-shrink:0;" id="footprint-historico-sub">Linha = preço médio por minuto. Barras embaixo = volume por minuto. Barra destacada = absorção (volume alto, preço quase parado); contorno laranja = confirmada por trade médio alto (poucos players grandes). Faixa laranja no preço = onde a absorção confirmada aconteceu. Linha laranja tracejada = média de volume do candle. Toca pra ver o detalhe.</div>
+    <div style="padding:0 16px 4px;color:#8E8E93;font-size:11px;font-family:-apple-system,sans-serif;flex-shrink:0;" id="footprint-historico-sub">Linha = preço médio por minuto. Barras embaixo = volume por minuto. Barra destacada = absorção (volume alto, preço quase parado); contorno laranja = confirmada por trade médio alto (poucos players grandes). Faixa laranja no preço = onde a absorção confirmada aconteceu. Linha laranja tracejada = média de volume do candle. Painel de baixo = λ(t), impacto de preço por volume — pico acima do limiar (z≥2) sustentado por 2+ minutos na mesma direção = possível empurrão, marcado com 🟠. Toca pra ver o detalhe.</div>
     <div style="padding:0 16px 8px;color:#E5E5EA;font-size:12px;font-weight:700;font-family:-apple-system,sans-serif;min-height:16px;flex-shrink:0;" id="footprint-historico-detalhe"></div>
     <div style="flex:1;min-height:0;overflow-y:auto;padding:0 16px 16px;-webkit-overflow-scrolling:touch;">
       <canvas id="footprint-historico-canvas" style="width:100%;height:460px;display:block;"></canvas>
@@ -15263,7 +15263,7 @@ function grFootprintFecharHistorico() {
 function grFootprintDesenharHistorico(colunas, candle) {
     const canvas = document.getElementById('footprint-historico-canvas');
     if (!canvas) return;
-    const W = canvas.parentElement.clientWidth, H = 460;
+    const W = canvas.parentElement.clientWidth, H = 578;
     canvas.width = W;
     canvas.height = H;
     canvas.style.height = H + 'px';
@@ -15274,9 +15274,11 @@ function grFootprintDesenharHistorico(colunas, candle) {
 
     const padEsq = 54, padDir = 8, padTop = 10, padEntrePaineis = 8, padBot = 24;
     const alturaVolume = 190;
+    const alturaLambda = 110; // painel novo — impacto de preço por volume (λ de Kyle)
     const chartW = W - padEsq - padDir;
-    const chartH = H - padTop - padEntrePaineis - alturaVolume - padBot; // painel de preço
+    const chartH = H - padTop - padEntrePaineis - alturaVolume - padEntrePaineis - alturaLambda - padBot; // painel de preço
     const volTop = padTop + chartH + padEntrePaineis; // topo do painel de volume
+    const lambdaTop = volTop + alturaVolume + padEntrePaineis; // topo do painel de λ
     const lo = candle.l, hi = candle.h;
     const yForPrice = p => padTop + chartH - ((p - lo) / (hi - lo)) * chartH;
 
@@ -15353,7 +15355,7 @@ function grFootprintDesenharHistorico(colunas, candle) {
             ctx.setLineDash([2, 3]);
             ctx.beginPath();
             ctx.moveTo(xMarca, padTop);
-            ctx.lineTo(xMarca, volTop + alturaVolume);
+            ctx.lineTo(xMarca, lambdaTop + alturaLambda);
             ctx.stroke();
             ctx.setLineDash([]);
             ctx.font = '8px -apple-system';
@@ -15464,6 +15466,91 @@ function grFootprintDesenharHistorico(colunas, candle) {
     ctx.textAlign = 'right';
     ctx.fillText(fmtHora(colunas[colunas.length - 1].ts), W - padDir, H - 8);
 
+    // ── Painel λ(t) — impacto de preço por volume (Kyle's Lambda, 1985) ──
+    // λ(t) = |Δpreço médio(t)| / volume(t): quanto o preço se move por cada
+    // unidade de volume negociado nesse minuto. É a contrapartida exata da
+    // absorção: absorção = muito volume, λ ≈ 0 (mercado "grosso", segurando).
+    // Quando o book fica "fino" — a liquidez que segurava foi consumida — o
+    // MESMO volume passa a mover MUITO mais preço, e λ dispara. Não é o pico
+    // isolado que importa, é a TRANSIÇÃO estatística: por isso o limiar aqui
+    // é z-score (média + 2 desvios-padrão), não "olhômetro".
+    ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(padEsq, lambdaTop); ctx.lineTo(W - padDir, lambdaTop); ctx.stroke();
+
+    const lambdas = colunas.map((c, i) => {
+        if (i === 0 || c.precoMedio == null || colunas[i - 1].precoMedio == null || c.total <= 0) return null;
+        return Math.abs(c.precoMedio - colunas[i - 1].precoMedio) / c.total;
+    });
+    const lambdasValidos = lambdas.filter(v => v != null);
+    let marcouEmpurrao = false;
+
+    if (lambdasValidos.length >= 3) {
+        const mediaLambda = lambdasValidos.reduce((a, b) => a + b, 0) / lambdasValidos.length;
+        const varLambda = lambdasValidos.reduce((a, b) => a + (b - mediaLambda) ** 2, 0) / lambdasValidos.length;
+        const desvioLambda = Math.sqrt(varLambda);
+        const limiarZ2 = mediaLambda + 2 * desvioLambda;
+        const maxLambda = Math.max(...lambdasValidos, limiarZ2) * 1.1;
+        const yForLambda = v => lambdaTop + alturaLambda - (Math.max(0, v) / maxLambda) * alturaLambda;
+
+        // Linha de threshold z=2 — acima dela é estatisticamente fora da curva,
+        // não só "parece maior que os outros".
+        const yLimiar = yForLambda(limiarZ2);
+        ctx.strokeStyle = 'rgba(211,47,47,0.55)';
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath(); ctx.moveTo(padEsq, yLimiar); ctx.lineTo(W - padDir, yLimiar); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.font = 'bold 8px -apple-system';
+        ctx.fillStyle = '#B71C1C';
+        ctx.textAlign = 'left';
+        ctx.fillText('z = 2 (limiar estatístico)', padEsq + 2, yLimiar - 3);
+
+        // Barras de λ, coloridas pelo sinal do delta daquele minuto (mesma
+        // convenção do painel de volume acima).
+        _grFootprintHistoricoColunas.forEach((col, i) => {
+            const lv = lambdas[i];
+            if (lv == null) { col._zScoreLambda = null; return; }
+            const z = desvioLambda > 0 ? (lv - mediaLambda) / desvioLambda : 0;
+            col._zScoreLambda = z;
+            const y = yForLambda(lv);
+            const larguraBarra = Math.max(1, colW * 0.7);
+            const acimaLimiar = lv >= limiarZ2;
+            ctx.fillStyle = col.delta >= 0
+                ? `rgba(46,145,50,${acimaLimiar ? 0.9 : 0.35})`
+                : `rgba(211,47,47,${acimaLimiar ? 0.9 : 0.35})`;
+            ctx.fillRect(col.x - larguraBarra / 2, y, larguraBarra, (lambdaTop + alturaLambda) - y);
+        });
+
+        // Marca o PRIMEIRO ponto onde z≥2 E o sinal do delta se sustenta por
+        // pelo menos mais 2 minutos seguidos na mesma direção — isso é o
+        // "empurrão confirmado", não só um pico de 1 minuto que pode ser ruído.
+        for (let i = 0; i < _grFootprintHistoricoColunas.length - 2; i++) {
+            const col = _grFootprintHistoricoColunas[i];
+            if (col._zScoreLambda == null || col._zScoreLambda < 2) continue;
+            const sinal = Math.sign(col.delta) || 1;
+            const seg1 = _grFootprintHistoricoColunas[i + 1], seg2 = _grFootprintHistoricoColunas[i + 2];
+            const sustentou = Math.sign(seg1.delta || 0) === sinal && Math.sign(seg2.delta || 0) === sinal;
+            if (!sustentou) continue;
+            const y = yForLambda(lambdas[i]);
+            ctx.beginPath();
+            ctx.arc(col.x, y - 6, 4, 0, Math.PI * 2);
+            ctx.fillStyle = '#FFA726';
+            ctx.fill();
+            ctx.font = 'bold 8px -apple-system';
+            ctx.fillStyle = '#B8860B';
+            ctx.textAlign = 'center';
+            ctx.fillText('empurrão', col.x, y - 12);
+            marcouEmpurrao = true;
+            break; // só marca o primeiro — os seguintes já são consequência dele
+        }
+    }
+
+    ctx.font = 'bold 9px -apple-system';
+    ctx.fillStyle = '#666666';
+    ctx.textAlign = 'left';
+    ctx.fillText('λ(t) = |Δpreço| / volume — pico + sustentação = possível empurrão', padEsq + 2, lambdaTop + 10);
+
     if (!_grFootprintHistoricoTouchBind) {
         canvas.addEventListener('touchstart', grFootprintHistoricoTouchStart, { passive: true });
         canvas.addEventListener('touchmove', grFootprintHistoricoTouchMove, { passive: true });
@@ -15484,7 +15571,8 @@ function grFootprintHistoricoMostrarDetalhe(clientX) {
     document.getElementById('footprint-historico-detalhe').innerHTML =
         `${fmtHora(col.ts)} · Faixa $${col.minP.toLocaleString('pt-BR')}–$${col.maxP.toLocaleString('pt-BR')} · ` +
         `<span style="color:${delta >= 0 ? '#4CAF50' : '#EF5350'}">Delta ${delta >= 0 ? '+' : ''}${fmtBtc2(delta)}</span> · Total ${fmtBtc2(col.total)} BTC` +
-        (col.avgTrade != null ? ` · trade médio ${fmtBtc2(col.avgTrade)} BTC` : '');
+        (col.avgTrade != null ? ` · trade médio ${fmtBtc2(col.avgTrade)} BTC` : '') +
+        (col._zScoreLambda != null ? ` · λ z-score ${col._zScoreLambda >= 0 ? '+' : ''}${col._zScoreLambda.toFixed(1)}` : '');
 }
 
 function grFootprintHistoricoTouchStart(evt) {
