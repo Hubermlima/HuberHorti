@@ -2927,9 +2927,14 @@ async function cvAtualizarCandle() {
     // Atualiza o candle atual e recalcula indicadores (a cada 30s)
     if (_grAllCandles.length === 0) return;
     const last = _grAllCandles[_grAllCandles.length - 1];
-    last.c = _precoAtual;
-    last.h = Math.max(last.h, _precoAtual);
-    last.l = Math.min(last.l, _precoAtual);
+    const inicioAtual = grInicioPeriodoAtual(Date.now());
+    if (inicioAtual > last.t) {
+        _grAllCandles.push({ t: inicioAtual, o: _precoAtual, h: _precoAtual, l: _precoAtual, c: _precoAtual, v: 0, bv: null });
+    } else {
+        last.c = _precoAtual;
+        last.h = Math.max(last.h, _precoAtual);
+        last.l = Math.min(last.l, _precoAtual);
+    }
     grDrawChart();
 }
 
@@ -3070,12 +3075,18 @@ function cvIniciarRealTime() {
                 document.getElementById('cv-ind-reg').classList.add('active');
             }
 
-            // Candle atual
+            // Candle atual — se virou o período (nova semana/dia/hora/etc), abre
+            // candle novo em vez de ficar mutando o antigo pra sempre.
             if (_grAllCandles.length > 0) {
                 const last = _grAllCandles[_grAllCandles.length - 1];
-                last.c = novoPreco;
-                last.h = Math.max(last.h, novoPreco);
-                last.l = Math.min(last.l, novoPreco);
+                const inicioAtual = grInicioPeriodoAtual(Date.now());
+                if (inicioAtual > last.t) {
+                    _grAllCandles.push({ t: inicioAtual, o: novoPreco, h: novoPreco, l: novoPreco, c: novoPreco, v: 0, bv: null });
+                } else {
+                    last.c = novoPreco;
+                    last.h = Math.max(last.h, novoPreco);
+                    last.l = Math.min(last.l, novoPreco);
+                }
             }
 
             // Throttle: atualiza topbar + gráfico a cada 5s
@@ -3366,6 +3377,57 @@ function grAgruparCandles(candles, unit, amount) {
         }
     }
     return Array.from(buckets.values()).sort((a, b) => a.t - b.t);
+}
+
+// Agrupa candles diários em semanas de calendário real: segunda 00:00 UTC até
+// domingo 23:59 UTC (= domingo ~20h em Manaus/UTC-4, ~21h em Brasília/UTC-3).
+// Existe pra substituir o '1w' nativo da Kraken/Binance, que bucketiza em
+// blocos fixos de 7 dias a partir do epoch Unix (1970-01-01, quinta-feira) —
+// isso faz a "semana" da exchange virar quarta/quinta em vez de domingo/segunda.
+function grInicioSemanaCivilUTC(tMs) {
+    const d = new Date(tMs);
+    const dia = d.getUTCDay(); // domingo=0, segunda=1, ..., sábado=6
+    const deltaSegunda = dia === 0 ? 6 : dia - 1;
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - deltaSegunda, 0, 0, 0, 0);
+}
+
+function grAgruparCandlesSemanaCivil(diarios) {
+    if (!diarios || !diarios.length) return [];
+    const buckets = new Map();
+    for (const c of diarios) {
+        const key = grInicioSemanaCivilUTC(c.t);
+        let b = buckets.get(key);
+        if (!b) {
+            buckets.set(key, { t: key, o: c.o, h: c.h, l: c.l, c: c.c, v: c.v || 0, bv: c.bv || 0 });
+        } else {
+            if (c.h > b.h) b.h = c.h;
+            if (c.l < b.l) b.l = c.l;
+            b.c = c.c; // candles diários vêm ordenados, o último dia processado é o fechamento da semana
+            b.v += (c.v || 0);
+            b.bv += (c.bv || 0);
+        }
+    }
+    return Array.from(buckets.values()).sort((a, b) => a.t - b.t);
+}
+
+// Início (timestamp) do período do timeframe ATUAL que contém tMs — usado
+// pra detectar virada de candle nas atualizações ao vivo (WS e polling de
+// 30s), em vez de só mutar o último candle do array pra sempre. Pra tudo que
+// é bucket epoch-alinhado (15m/1h/4h/1d e custom min/hor/dia), o próprio
+// exchange já usa múltiplos fixos desde 1970 — replica isso. Pra '1week' usa
+// a MESMA semana civil (segunda 00:00 UTC) que agrupa o histórico, senão o
+// boundary detectado nunca bateria com o `t` dos candles já carregados.
+function grInicioPeriodoAtual(tMs) {
+    if (_grTf === '1week') return grInicioSemanaCivilUTC(tMs);
+    if (_grTf === '1month' || (_grTf === 'custom' && _grTfCustomUnit === 'mes')) {
+        const d = new Date(tMs);
+        const amount = (_grTf === 'custom' && _grTfCustomAmount) ? _grTfCustomAmount : 1;
+        const mi = d.getUTCFullYear() * 12 + d.getUTCMonth();
+        const inicioMi = Math.floor(mi / amount) * amount;
+        return Date.UTC(Math.floor(inicioMi / 12), inicioMi % 12, 1, 0, 0, 0, 0);
+    }
+    const dur = grFootprintMsPorCandle();
+    return Math.floor(tMs / dur) * dur;
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -3694,7 +3756,10 @@ async function grRenderChart() {
         if (_grAllCandles.length === 0) {
             const binSymbol = ((_ticker || 'BTC/USD').replace('/', '').replace('-','').toUpperCase()
                 .replace('USD','USDT').replace('USDTT','USDT'));
-            const binInterval = _grTf === '15m' ? '15m' : _grTf === '1h' ? '1h' : _grTf === '1day' ? '1d' : _grTf === '1week' ? '1w' : _grTf === '1month' ? '1M' : _grTf === 'custom' ? grBaseIntervalCustom(_grTfCustomUnit) : '4h';
+            // '1week' busca candles DIÁRIOS e agrupa em semana civil (seg-dom) na mão —
+            // o '1w' nativo da Kraken/Binance bucketiza em blocos fixos de 7 dias a
+            // partir do epoch Unix (quinta-feira), não em semana de calendário real.
+            const binInterval = _grTf === '15m' ? '15m' : _grTf === '1h' ? '1h' : (_grTf === '1day' || _grTf === '1week') ? '1d' : _grTf === '1month' ? '1M' : _grTf === 'custom' ? grBaseIntervalCustom(_grTfCustomUnit) : '4h';
             const fetchBin = async (endTime) => {
                 const d = await grBuscarKlines(binSymbol, binInterval, 1000, endTime);
                 return d.map(k => ({
@@ -3707,19 +3772,41 @@ async function grRenderChart() {
             const page1 = await fetchBin(null);
             const page2 = page1.length > 0 ? await fetchBin(page1[0].t - 1) : [];
             _grAllCandles = [...page2, ...page1];
-            if (_grTf === 'custom' && _grTfCustomUnit && _grTfCustomAmount) {
+            if (_grTf === '1week') {
+                _grAllCandles = grAgruparCandlesSemanaCivil(_grAllCandles);
+            } else if (_grTf === 'custom' && _grTfCustomUnit && _grTfCustomAmount) {
                 _grAllCandles = grAgruparCandles(_grAllCandles, _grTfCustomUnit, _grTfCustomAmount);
             }
             _grZonasCache = null;
 
-            // Busca candles diários e semanais para EMA MTF (em paralelo)
+            // Busca candles diários e semanais para EMA MTF (em paralelo).
+            // _grCandlesW é reconstruído a partir de diários agrupados em semana civil
+            // (mesmo motivo do _grAllCandles acima) — o '1w' nativo da exchange fica
+            // fora de fase (vira quarta/quinta em vez de domingo/segunda), o que
+            // deslocava a EMA21S e as SMA 250/300/350 semanais.
             try {
-                const [resD, resW] = await Promise.all([
+                const fetchDiariosPaginado = async (paginas) => {
+                    let todos = [];
+                    let endTime = null;
+                    for (let i = 0; i < paginas; i++) {
+                        const d = await grBuscarKlines(binSymbol, '1d', 1000, endTime);
+                        if (!Array.isArray(d) || d.length === 0) break;
+                        const mapeados = d.map(k => ({
+                            t: k[0], o: parseFloat(k[1]), h: parseFloat(k[2]),
+                            l: parseFloat(k[3]), c: parseFloat(k[4]), v: parseFloat(k[5])
+                        }));
+                        todos = [...mapeados, ...todos];
+                        endTime = mapeados[0].t - 1;
+                        if (mapeados.length < 1000) break; // acabou o histórico disponível
+                    }
+                    return todos;
+                };
+                const [resD, diariosParaSemana] = await Promise.all([
                     grBuscarKlines(binSymbol, '1d', 100),
-                    grBuscarKlines(binSymbol, '1w', 1000)
+                    fetchDiariosPaginado(3) // ~3000 dias ⇒ cobre as 350 semanas da SMA semanal com folga
                 ]);
                 _grCandlesD = (Array.isArray(resD) ? resD : []).map(k => ({ t: k[0], c: parseFloat(k[4]) }));
-                _grCandlesW = (Array.isArray(resW) ? resW : []).map(k => ({ t: k[0], c: parseFloat(k[4]) }));
+                _grCandlesW = grAgruparCandlesSemanaCivil(diariosParaSemana).map(c => ({ t: c.t, c: c.c }));
             } catch(e) {}
         }
 
