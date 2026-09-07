@@ -6260,107 +6260,54 @@ if (fibsParaDesenhar.length > 0) {
             }
             } else if (_indState.subInd === 'absorcao') {
                 // ── Absorção = Volume / Range (esforço x resultado, lei de Wyckoff) ──
-                // Calculada sobre o histórico completo (igual ao RSI) para que a média
-                // móvel não recalcule a cada scroll — senão o mesmo candle piscava
-                // entre amarelo/cinza dependendo do que mais estava visível na tela.
+                // SEM direção — a fase de absorção é justamente o smart money agindo
+                // disfarçado, então o candle em si (cor, delta) não é confiável pra
+                // apontar de que lado ele tá. A barra só sinaliza "tem algo suspeito
+                // aqui" (quanto maior, mais volume pra pouco movimento); o lado só se
+                // revela DEPOIS, quando ele vira agressor visível e empurra o preço.
                 const absPeriodo = 20;
                 const absAllVals = _grAllCandles.map(c => {
                     const range = c.h - c.l;
                     return range > 0 ? (c.v || 0) / range : 0;
                 });
-
-                // Duas médias, cada uma só com os candles DE VERDADE do seu lado — sem
-                // contar zero pro lado oposto (isso diluía e enviesava a linha pra baixo,
-                // fazendo quase toda barra parecer "acima da média" mesmo sem nada de
-                // anormal acontecendo). Em vez disso: filtra só os candles daquele lado,
-                // calcula a média SÓ entre eles, e depois "segura" (forward-fill) esse
-                // valor até o próximo candle do mesmo lado atualizar — assim não dilui
-                // E não faz degrau, porque a linha nunca fica esperando/pulando, só
-                // mantém o último valor válido enquanto o outro lado está acontecendo.
-                function mediaSoDoLado(sinalAlvo) {
-                    const valoresCompactos = [];
-                    const indicesOriginais = [];
-                    _grAllCandles.forEach((c, i) => {
-                        const s = c.c >= c.o ? 1 : -1;
-                        if (s === sinalAlvo) { valoresCompactos.push(absAllVals[i]); indicesOriginais.push(i); }
-                    });
-                    const smaCompacta = grSMASimples(valoresCompactos, absPeriodo);
-                    const resultado = new Array(_grAllCandles.length).fill(null);
-                    smaCompacta.forEach((v, j) => { resultado[indicesOriginais[j]] = v; });
-                    // Forward-fill: entre um candle do lado e o próximo, mantém o valor
-                    let ultimo = null;
-                    for (let i = 0; i < resultado.length; i++) {
-                        if (resultado[i] !== null) ultimo = resultado[i];
-                        else resultado[i] = ultimo;
-                    }
-                    return resultado;
-                }
-                const absAllSmaCompra = mediaSoDoLado(1);
-                const absAllSmaVenda = mediaSoDoLado(-1);
+                const absAllSma = grSMASimples(absAllVals, absPeriodo);
                 const absOffset = total - absAllVals.length; // deve ser 0, mas por segurança
 
                 const absVals = [];
-                const absSmaCompra = [];
-                const absSmaVenda = [];
+                const absSma = [];
                 for (let i = 0; i < visible; i++) {
                     const idx = (startIdx + i) - absOffset;
                     absVals.push(idx >= 0 ? absAllVals[idx] : 0);
-                    absSmaCompra.push(idx >= 0 ? absAllSmaCompra[idx] : null);
-                    absSmaVenda.push(idx >= 0 ? absAllSmaVenda[idx] : null);
+                    absSma.push(idx >= 0 ? absAllSma[idx] : null);
                 }
 
-                // Sinal = direção do próprio candle (igual você pediu): fechou acima da
-                // abertura → verde, barra sobe. Fechou abaixo → vermelho, barra desce.
-                // Simples, direto, sem precisar do footprint carregado pra funcionar.
-                const absSinal = candles.map(c => c.c >= c.o ? 1 : -1);
-
-                // Escala ÚNICA — barra e sua própria média precisam estar na mesma
-                // escala, senão a comparação visual (barra maior ou menor que a média)
-                // fica mentirosa. Escala separada foi erro meu, revertido.
                 const maxAbs = Math.max(...absVals, 1) * 1.15;
-                const zeroY = panY + panPad.top + panChartH / 2;
-                const escala = (panChartH / 2) / maxAbs;
+                const baseY = panY + panPad.top + panChartH; // linha de base embaixo — barra só cresce pra cima
+                const escala = panChartH / maxAbs;
 
-                // Linha de zero
-                ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-                ctx.lineWidth = 1;
-                ctx.beginPath();
-                ctx.moveTo(PAD.left, zeroY);
-                ctx.lineTo(PAD.left + panChartW, zeroY);
-                ctx.stroke();
-
-                // Histograma vertical — igual o MACD: pra cima e verde = absorção
-                // compradora, pra baixo e vermelha = absorção vendedora.
+                // Histograma vertical — sempre pra cima, sem verde/vermelho. Opacidade
+                // escala com a intensidade (igual heatmap do footprint): quanto maior a
+                // absorção, mais sólida a barra.
                 absVals.forEach((v, i) => {
-                    const sinal = absSinal[i];
                     const x = PAD.left + (i / totalSlots) * panChartW + cW / 2;
                     const alturaPx = v * escala;
-                    ctx.fillStyle = sinal === 0 ? 'rgba(255,255,255,0.30)' : (sinal > 0 ? '#26A69A' : '#EF5350');
-                    if (sinal >= 0) {
-                        ctx.fillRect(x - cW * 0.4, zeroY - alturaPx, cW * 0.8, alturaPx);
-                    } else {
-                        ctx.fillRect(x - cW * 0.4, zeroY, cW * 0.8, alturaPx);
-                    }
+                    const intensidade = Math.min(1, v / maxAbs);
+                    ctx.fillStyle = `rgba(255,193,7,${0.30 + intensidade * 0.60})`;
+                    ctx.fillRect(x - cW * 0.4, baseY - alturaPx, cW * 0.8, alturaPx);
                 });
 
-                // Cada média do seu próprio lado, igual a barra — verde só em cima
-                // (média dos candles de compra), vermelha só embaixo (média dos de
-                // venda). Sem cruzamento, sem comparação entre as duas.
-                const desenhaMedia = (serie, cor, ladoPositivo) => {
-                    ctx.strokeStyle = cor;
-                    ctx.lineWidth = 1.2;
-                    ctx.beginPath();
-                    let started = false;
-                    serie.forEach((v, i) => {
-                        if (v === null) { started = false; return; }
-                        const x = PAD.left + (i / totalSlots) * panChartW + cW / 2;
-                        const y = ladoPositivo ? (zeroY - v * escala) : (zeroY + v * escala);
-                        if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
-                    });
-                    ctx.stroke();
-                };
-                desenhaMedia(absSmaVenda, '#EF5350', false);
-                desenhaMedia(absSmaCompra, '#26A69A', true);
+                // Média móvel única — sem separar por lado (não tem mais lado aqui).
+                ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+                ctx.lineWidth = 1.2;
+                ctx.beginPath();
+                let started = false;
+                absSma.forEach((v, i) => {
+                    if (v === null) { started = false; return; }
+                    const x = PAD.left + (i / totalSlots) * panChartW + cW / 2;
+                    const y = baseY - v * escala;
+                    if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+                });
+                ctx.stroke();
 
                 // Label
                 ctx.font = 'bold 11px -apple-system';
@@ -6368,12 +6315,10 @@ if (fibsParaDesenhar.length > 0) {
                 ctx.fillStyle = '#FFC107';
                 ctx.fillText('ABSORÇÃO', PAD.left + 4, panY + panPad.top + 12);
                 ctx.font = '9px -apple-system';
-                ctx.fillStyle = '#26A69A';
-                ctx.fillText('▲ compradora', PAD.left + 84, panY + panPad.top + 12);
-                ctx.fillStyle = '#EF5350';
-                ctx.fillText('▼ vendedora', PAD.left + 168, panY + panPad.top + 12);
+                ctx.fillStyle = 'rgba(255,255,255,0.55)';
+                ctx.fillText('volume alto + range baixo — lado só se confirma depois', PAD.left + 84, panY + panPad.top + 12);
 
-                window._absorcaoAtual = absVals[absVals.length - 1] * (absSinal[absSinal.length - 1] || 1);
+                window._absorcaoAtual = absVals[absVals.length - 1];
 
             } else if (_indState.subInd === 'cvd') {
                 // ── CVD = Delta Acumulado ── soma o delta (compra-venda) candle a
