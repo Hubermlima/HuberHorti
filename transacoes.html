@@ -1257,6 +1257,8 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
 <span class="btn-sigla">Vol</span><span class="btn-nome">Volume</span></button>
       <button class="cv-ind-btn macd" id="cv-ind-macd" onclick="cvToggleSubInd('macd')">
 <span class="btn-sigla">MACD</span><span class="btn-nome">Convergência</span></button>
+      <button class="cv-ind-btn cvd" id="cv-ind-cvd" onclick="cvToggleSubInd('cvd')">
+<span class="btn-sigla">CVD</span><span class="btn-nome">Delta Acumulado</span></button>
       <button class="cv-ind-btn fib" id="cv-ind-fib" onclick="cvToggleFib()"><span class="btn-sigla">Fib</span><span class="btn-nome">Fibonacci</span></button>
       <button class="cv-ind-btn sup" id="cv-ind-sup" onclick="cvToggleNivel('sup')"><span class="btn-sigla">Sup</span><span class="btn-nome">Suporte</span></button>
       <button class="cv-ind-btn res" id="cv-ind-res" onclick="cvToggleNivel('res')"><span class="btn-sigla">Res</span><span class="btn-nome">Resistência</span></button>
@@ -6277,6 +6279,71 @@ if (fibsParaDesenhar.length > 0) {
                 ctx.fillText('▼ vendedora', PAD.left + 168, panY + panPad.top + 12);
 
                 window._absorcaoAtual = absVals[absVals.length - 1] * (absSinal[absSinal.length - 1] || 1);
+
+            } else if (_indState.subInd === 'cvd') {
+                // ── CVD = Delta Acumulado ── soma o delta (compra-venda) candle a
+                // candle, acumulando. Janela de acumulação = a mesma dos "Dias" do
+                // histograma (_grFootprintLookbackDias) — não reseta por sessão/dia,
+                // reseta junto com o mesmo período que você já configura lá.
+                const msPorCandleCvd = (_grFootprintAtivo && typeof grFootprintMsPorCandle === 'function') ? grFootprintMsPorCandle() : null;
+                const janelaMs = (_grFootprintLookbackDias || 7) * 24 * 60 * 60 * 1000;
+                const inicioJanela = Date.now() - janelaMs;
+
+                const cvdAll = new Array(_grAllCandles.length).fill(null);
+                if (msPorCandleCvd && _grFootprintCandlesRaw) {
+                    let acumulado = 0;
+                    for (let i = 0; i < _grAllCandles.length; i++) {
+                        const c = _grAllCandles[i];
+                        if (c.t < inicioJanela) continue; // fora da janela — ainda não começou a acumular
+                        let dc = 0;
+                        const fim = c.t + msPorCandleCvd;
+                        for (const raw of _grFootprintCandlesRaw) {
+                            if (raw.ts < c.t || raw.ts >= fim) continue;
+                            (raw.niveis || []).forEach(n => { dc += (n.c - n.v); });
+                        }
+                        acumulado += dc;
+                        cvdAll[i] = acumulado;
+                    }
+                }
+
+                const cvdVals = [];
+                for (let i = 0; i < visible; i++) {
+                    const idx = startIdx + i;
+                    cvdVals.push(idx >= 0 && idx < cvdAll.length ? cvdAll[idx] : null);
+                }
+
+                const validosAbs = cvdAll.filter(v => v != null).map(Math.abs);
+                const maxCvd = Math.max(...validosAbs, 1) * 1.15;
+                const zeroYc = panY + panPad.top + panChartH / 2;
+                const escalaC = (panChartH / 2) / maxCvd;
+
+                ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(PAD.left, zeroYc);
+                ctx.lineTo(PAD.left + panChartW, zeroYc);
+                ctx.stroke();
+
+                // Barras — verde acima de zero (delta acumulado positivo, comprador
+                // dominando desde o início da janela), vermelha abaixo (vendedor).
+                cvdVals.forEach((v, i) => {
+                    if (v == null) return;
+                    const x = PAD.left + (i / totalSlots) * panChartW + cW / 2;
+                    const alturaPx = Math.abs(v) * escalaC;
+                    ctx.fillStyle = v >= 0 ? '#26A69A' : '#EF5350';
+                    if (v >= 0) ctx.fillRect(x - cW * 0.4, zeroYc - alturaPx, cW * 0.8, alturaPx);
+                    else ctx.fillRect(x - cW * 0.4, zeroYc, cW * 0.8, alturaPx);
+                });
+
+                ctx.font = 'bold 11px -apple-system';
+                ctx.textAlign = 'left';
+                ctx.fillStyle = '#42A5F5';
+                ctx.fillText('CVD', PAD.left + 4, panY + panPad.top + 12);
+                ctx.font = '9px -apple-system';
+                ctx.fillStyle = 'rgba(255,255,255,0.5)';
+                ctx.fillText(`janela: ${(_grFootprintLookbackDias || 7)} dias`, PAD.left + 48, panY + panPad.top + 12);
+
+                window._cvdAtual = cvdVals[cvdVals.length - 1];
         }
     }
 
@@ -8571,7 +8638,7 @@ function cvDesenharIndSheet(key) {
 function cvSetPainelAbsorcao(ativar) {
     _indOculto.painel = false;
     _indState.subInd = ativar ? 'absorcao' : null;
-    ['vd','rsi','vol','macd','atr','obv','stoch','topos'].forEach(k => {
+    ['vd','rsi','vol','macd','atr','obv','stoch','topos','cvd'].forEach(k => {
         const el = document.getElementById('cv-ind-' + k);
         if (el) el.classList.remove('active');
     });
@@ -8591,6 +8658,7 @@ function cvToggleSubInd(key) {
     document.getElementById('cv-ind-obv').classList.toggle('active', _indState.subInd === 'obv');
     document.getElementById('cv-ind-stoch').classList.toggle('active', _indState.subInd === 'stoch');
     document.getElementById('cv-ind-topos').classList.toggle('active', _indState.subInd === 'topos');
+    if (document.getElementById('cv-ind-cvd')) document.getElementById('cv-ind-cvd').classList.toggle('active', _indState.subInd === 'cvd');
     if (document.getElementById('cv-ind-liq')) document.getElementById('cv-ind-liq').classList.remove('active');
     // Fechar menu EMA se aberto
     document.getElementById('cv-med-menu').classList.remove('active');
