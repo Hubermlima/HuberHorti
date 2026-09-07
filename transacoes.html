@@ -14207,7 +14207,7 @@ function grFootprintRecalcularSeNecessario() {
         return;
     }
 
-    _grFootprintBins = { mapaBase, totalCandles };
+    _grFootprintBins = { mapaBase, totalCandles, from: range.from, to: range.to };
     _grFootprintDisplayCache = null; // força recálculo do reagrupamento de exibição no próximo desenho
 }
 
@@ -15012,7 +15012,31 @@ function grFootprintAbrirHistogramaAgregado() {
     const precos = [..._grFootprintBins.mapaBase.keys()];
     const lo = Math.min(...precos);
     const hi = Math.max(...precos) + 10; // +10 pra fechar a última faixa de $10
-    const candleFake = { o: null, h: hi, l: lo, c: null, t: null };
+
+    // Abertura = preço médio (volume-weighted) do primeiro minuto dentro da
+    // janela de lookback — é o candle "de agora pra trás N dias", então não
+    // tem abertura real gravada em lugar nenhum, só dá pra estimar assim.
+    let abertura = lo;
+    if (_grFootprintBins.from != null) {
+        const todos = grFootprintTodosOsCandlesBrutos();
+        const primeiroMinuto = todos
+            .filter(c => c.ts >= _grFootprintBins.from)
+            .sort((a, b) => a.ts - b.ts)[0];
+        if (primeiroMinuto) {
+            let somaPV = 0, total = 0;
+            (primeiroMinuto.niveis || []).forEach(n => {
+                const vol = n.c + n.v;
+                somaPV += n.p * vol;
+                total += vol;
+            });
+            if (total > 0) abertura = somaPV / total;
+        }
+    }
+
+    // Fechamento = ao vivo (o "candle" desse histograma é sempre até agora,
+    // por definição — nunca fecha de verdade). O overlay recalcula isso a
+    // cada tick, aqui só entra como valor inicial.
+    const candleFake = { o: abertura, h: hi, l: lo, c: _precoAtual, t: null };
     _grFootprintCandleContexto = null; // não é um candle real — "Ver histórico" minuto a minuto não se aplica aqui
     grFootprintDesenharCandleLadder(candleFake, Date.now(), _grFootprintBins.mapaBase, 0, true);
     grFootprintAtualizarVisibilidadePainel();
@@ -15363,14 +15387,11 @@ function grFootprintAtualizarLinhaPrecoAtual() {
     // desenhar fora do canvas, prende na borda.
     const yForPriceClamp = p => Math.max(0, Math.min(H, ((hi - p) / (hi - lo)) * H));
 
-    // Candle ao vivo — lê o.h.l.c direto do objeto (é o mesmo item que o
-    // WS/polling mutam em _grAllCandles, então já vem atualizado sozinho).
-    if (range.isLive && range.candle) {
-        const c = range.candle;
-        const corpoTopoP = Math.max(c.o, c.c);
-        const corpoFundoP = Math.min(c.o, c.c);
-        const corCandle = c.c >= c.o ? '#26A69A' : '#EF5350';
-        const yH = yForPriceClamp(c.h), yL = yForPriceClamp(c.l);
+    const desenharCandleOverlay = (o, h, l, c) => {
+        const corpoTopoP = Math.max(o, c);
+        const corpoFundoP = Math.min(o, c);
+        const corCandle = c >= o ? '#26A69A' : '#EF5350';
+        const yH = yForPriceClamp(h), yL = yForPriceClamp(l);
         const yCorpoTop = yForPriceClamp(corpoTopoP), yCorpoBot = yForPriceClamp(corpoFundoP);
         const { centroX, candleHalfW } = range;
 
@@ -15386,6 +15407,22 @@ function grFootprintAtualizarLinhaPrecoAtual() {
         ctx.strokeStyle = '#0A0A0A';
         ctx.lineWidth = 1;
         ctx.strokeRect(centroX - candleHalfW, yCorpoTop, candleHalfW * 2, Math.max(2, yCorpoBot - yCorpoTop));
+    };
+
+    // Candle real ao vivo — lê o.h.l.c direto do objeto (é o mesmo item que o
+    // WS/polling mutam em _grAllCandles, então já vem atualizado sozinho).
+    if (range.modoLive === 'real' && range.candleReal) {
+        const c = range.candleReal;
+        desenharCandleOverlay(c.o, c.h, c.l, c.c);
+    }
+
+    // Histograma agregado — não é candle de verdade, então o/h/l ficam fixos
+    // (calculados quando abriu) e só o fechamento acompanha _precoAtual a
+    // cada tick. Se o preço atual furar o high/low registrado, estica os dois
+    // junto (senão o corpo/pavio ficaria cortado incorretamente).
+    if (range.modoLive === 'agregado' && range.ohlcAgregado && typeof _precoAtual === 'number') {
+        const { o, h, l } = range.ohlcAgregado;
+        desenharCandleOverlay(o, Math.max(h, _precoAtual), Math.min(l, _precoAtual), _precoAtual);
     }
 
     if (typeof _precoAtual !== 'number' || _precoAtual < lo || _precoAtual > hi) return;
@@ -15475,6 +15512,7 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
     if (semCandle) {
         document.getElementById('footprint-candle-titulo').textContent = `Histograma agregado — últimos ${_grFootprintLookbackDias} dias`;
         document.getElementById('footprint-candle-sub').textContent =
+            `Abertura ${fmtN(candle.o)} · Máxima ${fmtN(candle.h)} · Mínima ${fmtN(candle.l)} · Fechamento ${fmtN(candle.c)} · ` +
             `Faixa ${fmtN(lo)} – ${fmtN(hi)} · tick $${tick}` +
             (temIntensidade ? ' · cor mais sólida = trades maiores em média' : '');
         document.getElementById('footprint-ver-historico-btn').style.display = 'none';
@@ -15634,21 +15672,31 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
         });
 
         // Guarda o range + o que o updater da linha/candle ao vivo precisa.
-        // isLive: o candle aberto é o MESMO objeto que tá no topo de
-        // _grAllCandles (ainda em formação, sendo mutado pelo WS) — nesse
-        // caso o candle de verdade também é redesenhado no overlay a cada
-        // tick, em vez de ficar estático com o snapshot de quando abriu.
-        const isLive = !semCandle && _grAllCandles.length > 0 && candle === _grAllCandles[_grAllCandles.length - 1];
-        _grFootprintCandleLadderRange = { lo: escalaBase, hi: escalaTopo, W, H, isLive, candle: isLive ? candle : null, centroX, candleHalfW };
+        // Dois modos "ao vivo":
+        // - 'real': o candle aberto é o MESMO objeto que tá no topo de
+        //   _grAllCandles (ainda em formação, mutado pelo WS) — usa o.h.l.c
+        //   direto do objeto, que já vem atualizado sozinho.
+        // - 'agregado': histograma dos últimos N dias — não é candle de
+        //   verdade, então o.h.l ficam fixos (calculados na abertura) e só o
+        //   fechamento acompanha _precoAtual a cada tick.
+        const isLiveReal = !semCandle && _grAllCandles.length > 0 && candle === _grAllCandles[_grAllCandles.length - 1];
+        const modoLive = isLiveReal ? 'real' : (semCandle ? 'agregado' : null);
+        _grFootprintCandleLadderRange = {
+            lo: escalaBase, hi: escalaTopo, W, H, centroX, candleHalfW,
+            modoLive,
+            candleReal: isLiveReal ? candle : null,
+            ohlcAgregado: modoLive === 'agregado' ? { o: candle.o, h: candle.h, l: candle.l } : null,
+        };
         grFootprintAtualizarLinhaPrecoAtual();
 
         // ── O CANDLE DE VERDADE, desenhado no vão central ──────────────────
         // Pavio: linha fina de H até L. Corpo: retângulo sólido entre Abertura e
         // Fechamento. É aqui que dá pra ver em que faixa do candle o volume (POC
         // compra/venda) está — dentro do corpo (defesa institucional/ZII) ou nos
-        // pavios (preço rejeitado). Pulado no histograma agregado (sem candle) e
-        // no candle ao vivo (esse é redesenhado no overlay, ver isLive acima).
-        if (!semCandle && !isLive) {
+        // pavios (preço rejeitado). Pulado aqui sempre que for algum dos dois
+        // modos ao vivo (ver modoLive acima) — nesses casos quem desenha o
+        // candle é o overlay, redesenhado a cada tick.
+        if (!modoLive) {
             const corpoTopoP = Math.max(candle.o, candle.c);
             const corpoFundoP = Math.min(candle.o, candle.c);
             const corpoAlta = candle.c >= candle.o;
