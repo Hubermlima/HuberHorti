@@ -14051,7 +14051,7 @@ function grFootprintTalvezRefrescarModalAoVivo() {
                 acc.c += n.c; acc.v += n.v; acc.nc += (n.nc || 0); acc.nv += (n.nv || 0);
             });
         });
-        if (mapaFino.size > 0) grFootprintDesenharCandleLadder(candle, de, mapaFino, encontrados);
+        if (mapaFino.size > 0) grFootprintDesenharCandleLadder(candle, de, mapaFino, encontrados, false, _grFootprintCandleContexto.cvdAnterior);
     } else if (_grFootprintModalModo === 'agregado') {
         grFootprintAbrirHistogramaAgregado(true);
     }
@@ -14065,6 +14065,32 @@ let _grFootprintUltimaMudancaTs = 0;
 let _grFootprintUltimoRangeCalc = null;   // {from,to} já processado — evita reprocessar o mesmo range à toa
 let _grFootprintOverlayInterval = null;
 let _grFootprintRetangulos = [];       // retângulos desenhados no último frame, p/ detectar toque numa barra
+
+// CVD acumulado (mesma lógica e mesma janela do painel CVD do gráfico
+// principal — _grFootprintLookbackDias, sem reset por sessão) somando só os
+// candles ANTES do índice dado em _grAllCandles. Existe pra achar o "CVD
+// anterior" de qualquer candle sem precisar que o painel CVD esteja aberto
+// no gráfico — calculado 1x quando o modal abre (candles antes já fecharam,
+// não mudam mais), não a cada refresh ao vivo.
+function grFootprintCvdAcumuladoAntes(antesDoIdx) {
+    if (!_grFootprintCandlesRaw || antesDoIdx <= 0) return 0;
+    const msPorCandleCvd = grFootprintMsPorCandle();
+    const janelaMs = (_grFootprintLookbackDias || 7) * 24 * 60 * 60 * 1000;
+    const inicioJanela = Date.now() - janelaMs;
+    let acumulado = 0;
+    for (let i = 0; i < antesDoIdx && i < _grAllCandles.length; i++) {
+        const c = _grAllCandles[i];
+        if (c.t < inicioJanela) continue;
+        const fim = c.t + msPorCandleCvd;
+        let dc = 0;
+        for (const raw of _grFootprintCandlesRaw) {
+            if (raw.ts < c.t || raw.ts >= fim) continue;
+            (raw.niveis || []).forEach(n => { dc += (n.c - n.v); });
+        }
+        acumulado += dc;
+    }
+    return acumulado;
+}
 
 // Duração de 1 candle do timeframe ATUAL do gráfico principal, em ms.
 function grFootprintMsPorCandle() {
@@ -15081,9 +15107,11 @@ function grFootprintAbrirCandleModal(candle) {
         return;
     }
 
-    _grFootprintCandleContexto = { de, ate, candle };
+    const candleIdx = _grAllCandles.indexOf(candle);
+    const cvdAnterior = candleIdx >= 0 ? grFootprintCvdAcumuladoAntes(candleIdx) : null;
+    _grFootprintCandleContexto = { de, ate, candle, cvdAnterior };
     _grFootprintModalModo = 'candle';
-    grFootprintDesenharCandleLadder(candle, de, mapaFino, encontrados);
+    grFootprintDesenharCandleLadder(candle, de, mapaFino, encontrados, false, cvdAnterior);
     grFootprintAtualizarVisibilidadePainel();
 }
 
@@ -15575,7 +15603,7 @@ let _grFootprintCandleTouchBind = false;
 let _grFootprintCandleContexto = null; // {de, ate, candle} do candle aberto — usado pra série temporal e pelas zonas ZII
 let _grFootprintCandlePocs = null; // {pocCompraPreco, pocVendaPreco, tick} do candle aberto
 
-function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCandles1min, semCandle = false) {
+function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCandles1min, semCandle = false, cvdAnterior = null) {
     const lo = candle.l, hi = candle.h;
     if (!(hi > lo)) { alert('Candle sem range de preço (H = L).'); return; }
 
@@ -15663,11 +15691,24 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
     const avgCompraCandle = totalNc > 0 ? totalCompra / totalNc : null;
     const avgVendaCandle = totalNv > 0 ? totalVenda / totalNv : null;
     const forcaDemanda = (avgCompraCandle != null && avgVendaCandle != null) ? avgCompraCandle - avgVendaCandle : null;
-    document.getElementById('footprint-candle-footer').textContent =
+    const linhaDelta = `<span style="color:${delta >= 0 ? '#4CAF50' : '#EF5350'};">` +
         `Delta ${delta >= 0 ? '+' : ''}${fmtBtc2(delta)} BTC · Total ${fmtBtc2(totalGeral)} BTC · ` +
         `Compra ${pctCompraCandle.toFixed(0)}% · Venda ${pctVendaCandle.toFixed(0)}%` +
-        (forcaDemanda != null ? ` · Força ${forcaDemanda >= 0 ? '+' : ''}${fmtBtc2(forcaDemanda)}` : '');
-    document.getElementById('footprint-candle-footer').style.color = delta >= 0 ? '#4CAF50' : '#EF5350';
+        (forcaDemanda != null ? ` · Força ${forcaDemanda >= 0 ? '+' : ''}${fmtBtc2(forcaDemanda)}` : '') +
+        `</span>`;
+    // CVD anterior (candles já fechados, mesma janela/lógica do painel CVD do
+    // gráfico principal) → CVD atual (anterior + delta desse candle, que já
+    // vem ao vivo). Só existe pro candle único — no histograma agregado não
+    // tem um "candle anterior" bem definido pra ancorar isso.
+    let linhaCvd = '';
+    if (cvdAnterior != null) {
+        const cvdAtual = cvdAnterior + delta;
+        linhaCvd = `<br><span style="font-size:11px;font-weight:600;">` +
+            `<span style="color:${cvdAnterior >= 0 ? '#4CAF50' : '#EF5350'};">CVD anterior ${cvdAnterior >= 0 ? '+' : ''}${fmtBtc2(cvdAnterior)}</span>` +
+            ` → <span style="color:${cvdAtual >= 0 ? '#4CAF50' : '#EF5350'};">CVD atual ${cvdAtual >= 0 ? '+' : ''}${fmtBtc2(cvdAtual)}</span>` +
+            `</span>`;
+    }
+    document.getElementById('footprint-candle-footer').innerHTML = linhaDelta + linhaCvd;
 
     document.getElementById('footprint-candle-overlay').style.display = 'block';
     requestAnimationFrame(() => {
