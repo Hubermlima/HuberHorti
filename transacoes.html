@@ -14051,7 +14051,10 @@ function grFootprintTalvezRefrescarModalAoVivo() {
                 acc.c += n.c; acc.v += n.v; acc.nc += (n.nc || 0); acc.nv += (n.nv || 0);
             });
         });
-        if (mapaFino.size > 0) grFootprintDesenharCandleLadder(candle, de, mapaFino, encontrados, false, _grFootprintCandleContexto.cvdAnterior);
+        if (mapaFino.size > 0) grFootprintDesenharCandleLadder(candle, de, mapaFino, encontrados, false, {
+            cvdAnterior: _grFootprintCandleContexto.cvdAnterior,
+            zonasDisputa: _grFootprintCandleContexto.zonasDisputa
+        });
     } else if (_grFootprintModalModo === 'agregado') {
         grFootprintAbrirHistogramaAgregado(true);
     }
@@ -15109,9 +15112,10 @@ function grFootprintAbrirCandleModal(candle) {
 
     const candleIdx = _grAllCandles.indexOf(candle);
     const cvdAnterior = candleIdx >= 0 ? grFootprintCvdAcumuladoAntes(candleIdx) : null;
-    _grFootprintCandleContexto = { de, ate, candle, cvdAnterior };
+    const zonasDisputa = grFootprintZonasAltoVolumeAgregado();
+    _grFootprintCandleContexto = { de, ate, candle, cvdAnterior, zonasDisputa };
     _grFootprintModalModo = 'candle';
-    grFootprintDesenharCandleLadder(candle, de, mapaFino, encontrados, false, cvdAnterior);
+    grFootprintDesenharCandleLadder(candle, de, mapaFino, encontrados, false, { cvdAnterior, zonasDisputa });
     grFootprintAtualizarVisibilidadePainel();
 }
 
@@ -15122,7 +15126,10 @@ function grFootprintAbrirCandleModal(candle) {
 // usado aqui). Sem corpo/pavio de candle nenhum, só a régua de níveis de preço
 // — refresco='live' pula o "Sem dados" quando é só um refresh vazio no meio
 // de um segundo sem trade novo.
-function grFootprintAbrirHistogramaAgregado(refresco) {
+// Extraído de grFootprintAbrirHistogramaAgregado pra ser reaproveitado por
+// outras features (ex: detecção de zona de alto volume no candle único) sem
+// precisar abrir o modal do histograma pra isso.
+function grFootprintCalcularMapaAgregado() {
     const agora = Date.now();
     const de = agora - (_grFootprintLookbackDias * 24 * 60 * 60 * 1000);
     const mapaBase = new Map();
@@ -15134,6 +15141,45 @@ function grFootprintAbrirHistogramaAgregado(refresco) {
             acc.c += n.c; acc.v += n.v; acc.nc += (n.nc || 0); acc.nv += (n.nv || 0);
         });
     });
+    return mapaBase;
+}
+
+// Acha a(s) zona(s) de volume "fora da curva" no agregado de N dias — não é
+// top-1, é qualquer nível cujo total fique perto do maior (>=50% dele), o que
+// naturalmente pega quando tem 2-3 níveis empatados no topo (o padrão de HVN
+// duplo que você achou em 77.290/78.600) sem precisar configurar nada.
+// Agrupa níveis destacados que estão próximos entre si (dentro de 2x o tick
+// fino) na mesma banda — se tiver dois clusters bem separados, vira duas
+// bandas em vez de uma faixa gigante que engloba nível fraco no meio.
+// Retorna array de {lo, hi}, ou [] se o volume tá distribuído sem destaque.
+function grFootprintZonasAltoVolumeAgregado() {
+    const mapaBase = grFootprintCalcularMapaAgregado();
+    if (mapaBase.size === 0) return [];
+    const entradas = [...mapaBase.entries()].map(([p, v]) => ({ p, total: v.c + v.v }));
+    const maiorTotal = Math.max(...entradas.map(e => e.total));
+    if (maiorTotal <= 0) return [];
+    const destacados = entradas.filter(e => e.total >= maiorTotal * 0.5).map(e => e.p).sort((a, b) => a - b);
+    if (destacados.length === 0) return [];
+
+    const GAP_MAX = 20; // 2x o tick fino ($10) — além disso, considera cluster novo
+    const bandas = [];
+    let atual = { lo: destacados[0], hi: destacados[0] + 10 };
+    for (let i = 1; i < destacados.length; i++) {
+        if (destacados[i] - (atual.hi - 10) <= GAP_MAX) {
+            atual.hi = destacados[i] + 10;
+        } else {
+            bandas.push(atual);
+            atual = { lo: destacados[i], hi: destacados[i] + 10 };
+        }
+    }
+    bandas.push(atual);
+    return bandas;
+}
+
+function grFootprintAbrirHistogramaAgregado(refresco) {
+    const mapaBase = grFootprintCalcularMapaAgregado();
+    const agora = Date.now();
+    const de = agora - (_grFootprintLookbackDias * 24 * 60 * 60 * 1000);
     if (mapaBase.size === 0) {
         if (!refresco) alert('Sem dados de histograma carregados ainda.');
         return;
@@ -15603,7 +15649,9 @@ let _grFootprintCandleTouchBind = false;
 let _grFootprintCandleContexto = null; // {de, ate, candle} do candle aberto — usado pra série temporal e pelas zonas ZII
 let _grFootprintCandlePocs = null; // {pocCompraPreco, pocVendaPreco, tick} do candle aberto
 
-function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCandles1min, semCandle = false, cvdAnterior = null) {
+function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCandles1min, semCandle = false, extras = null) {
+    const cvdAnterior = extras ? extras.cvdAnterior : null;
+    const zonasDisputa = (extras && extras.zonasDisputa) ? extras.zonasDisputa : [];
     const lo = candle.l, hi = candle.h;
     if (!(hi > lo)) { alert('Candle sem range de preço (H = L).'); return; }
 
@@ -15725,7 +15773,14 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
             `</span>` +
             (divergiu ? `<br><span style="font-size:11px;font-weight:600;color:#FFC107;">⚠ ${msgDivergencia}</span>` : '');
     }
-    document.getElementById('footprint-candle-footer').innerHTML = linhaDelta + linhaCvd;
+    // Legenda do fundo dourado — só aparece se esse candle de fato cruza
+    // alguma zona de alta disputa do agregado (não checa linha por linha
+    // aqui, só a faixa toda do candle; o desenho por linha acontece embaixo).
+    const cruzaZonaDisputa = !semCandle && zonasDisputa.some(z => hi > z.lo && lo < z.hi);
+    const legendaZonaDisputa = cruzaZonaDisputa
+        ? `<br><span style="font-size:10px;color:#FFC107;opacity:0.85;">🟨 fundo dourado = nível também é zona de alta disputa nos últimos ${_grFootprintLookbackDias} dias</span>`
+        : '';
+    document.getElementById('footprint-candle-footer').innerHTML = linhaDelta + linhaCvd + legendaZonaDisputa;
 
     document.getElementById('footprint-candle-overlay').style.display = 'block';
     requestAnimationFrame(() => {
@@ -15777,6 +15832,16 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
             if (total > 0) {
                 ctx.fillStyle = deltaLinha >= 0 ? 'rgba(76,175,80,0.20)' : 'rgba(239,83,80,0.20)';
 
+                ctx.fillRect(0, y, W, rowH);
+            }
+
+            // Zona de alta disputa (nível também se destaca no agregado de N
+            // dias) — tom dourado por cima, sutil, só pra sinalizar sem
+            // apagar o verde/vermelho de cima.
+            const rowLo = p - tick / 2, rowHi = p + tick / 2;
+            const emZonaDisputa = zonasDisputa.some(z => rowHi > z.lo && rowLo < z.hi);
+            if (emZonaDisputa) {
+                ctx.fillStyle = 'rgba(255,193,7,0.16)';
                 ctx.fillRect(0, y, W, rowH);
             }
 
