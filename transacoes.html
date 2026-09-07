@@ -13915,7 +13915,7 @@ function cvFecharSetupSheet() {
       <div style="font-size:15px;font-weight:800;color:#FFFFFF;font-family:-apple-system,sans-serif;" id="footprint-historico-titulo">Histórico do candle</div>
       <button onclick="grFootprintFecharHistorico()" style="background:rgba(255,255,255,0.1);border:none;color:#FFFFFF;font-size:16px;width:28px;height:28px;border-radius:50%;cursor:pointer;">✕</button>
     </div>
-    <div style="padding:0 16px 4px;color:#8E8E93;font-size:11px;font-family:-apple-system,sans-serif;flex-shrink:0;" id="footprint-historico-sub">Linha preta = preço médio por minuto. Área laranja (mesmo painel) = magnitude da aceleração do preço — quanto mais alta, mais forte a virada de devagar pra rápido naquele instante; a direção (pra cima ou pra baixo) já dá pra ver na própria linha do preço. Barras embaixo = volume por minuto. Barra destacada = absorção (volume alto, preço quase parado); contorno laranja = confirmada por trade médio alto (poucos players grandes). Faixa laranja no preço = onde a absorção confirmada aconteceu. Linha laranja tracejada nas barras = média de volume do candle. Toca pra ver o detalhe.</div>
+    <div style="padding:0 16px 4px;color:#8E8E93;font-size:11px;font-family:-apple-system,sans-serif;flex-shrink:0;" id="footprint-historico-sub">Linha preta = preço médio por minuto. Sino laranja (mesmo painel) = pico de aceleração do candle inteiro — centrado no minuto de maior curvatura, com o preço daquele instante marcado. Tocar em qualquer lugar mostra o mesmo valor (é a aceleração TOTAL do candle, não por minuto). Barras embaixo = volume por minuto. Barra destacada = absorção (volume alto, preço quase parado); contorno laranja = confirmada por trade médio alto (poucos players grandes). Faixa laranja no preço = onde a absorção confirmada aconteceu. Linha laranja tracejada nas barras = média de volume do candle. Toca pra ver o detalhe.</div>
     <div style="padding:0 16px 8px;color:#E5E5EA;font-size:12px;font-weight:700;font-family:-apple-system,sans-serif;min-height:16px;flex-shrink:0;" id="footprint-historico-detalhe"></div>
     <div style="flex:1;min-height:0;overflow-y:auto;padding:0 16px 16px;-webkit-overflow-scrolling:touch;">
       <canvas id="footprint-historico-canvas" style="width:100%;height:460px;display:block;"></canvas>
@@ -15317,9 +15317,13 @@ function grFootprintDesenharHistorico(colunas, candle) {
     // Cinemática pura, sem volume — preço é posição, tempo é o eixo X.
     // v(t) = Δpreço/Δt (velocidade) → suavizada (média móvel curta) pra não
     // amplificar ruído → a(t) = Δv_suave/Δt (aceleração, 2ª diferença finita).
-    // Gráfico de ÁREA, só magnitude (|a(t)|), sem direção — pra saber se
-    // empurrou pra cima ou pra baixo já dá pra ver olhando o próprio preço
-    // (linha preta) ao lado; a área só diz "aqui acelerou forte ou não".
+    // Em vez de mostrar |a(t)| minuto a minuto (virava ruído com vários picos
+    // pequenos sem significado) — acha o ÚNICO pico global do candle inteiro
+    // e desenha uma curva de sino (gaussiana) centrada ali. A curva não é o
+    // dado cru, é só a REPRESENTAÇÃO visual de "aqui foi o pico, e essa foi a
+    // força dele" — por isso o valor mostrado ao tocar é sempre o mesmo (o
+    // pico), não importa em que ponto da curva você toque: é a aceleração
+    // TOTAL do candle, não mais uma série por minuto.
     const precos = _grFootprintHistoricoColunas.map(c => c.precoMedio);
     const velRaw = precos.map((p, i) => (i === 0 || p == null || precos[i - 1] == null) ? null : p - precos[i - 1]);
     const VEL_SUAV = 3;
@@ -15328,51 +15332,70 @@ function grFootprintDesenharHistorico(colunas, candle) {
         return janela.length > 0 ? janela.reduce((a, b) => a + b, 0) / janela.length : null;
     });
     const acel = velSuave.map((v, i) => (i === 0 || v == null || velSuave[i - 1] == null) ? null : Math.abs(v - velSuave[i - 1]));
-    const acelValidos = acel.filter(v => v != null);
 
-    if (acelValidos.length >= 3) {
-        // Escala PRÓPRIA, independente do preço — a área ocupa até 55% da
-        // altura do painel (de baixo pra cima), preço continua lendo normal
-        // por cima dela.
-        const maxAcel = Math.max(...acelValidos, 0.0001) * 1.15;
+    let idxPico = -1, picoValor = -1;
+    acel.forEach((v, i) => { if (v != null && v > picoValor) { picoValor = v; idxPico = i; } });
+
+    if (idxPico >= 0) {
+        const colPico = _grFootprintHistoricoColunas[idxPico];
+        const precoPico = colPico.precoMedio;
         const baseYAcel = padTop + chartH; // base = fundo do painel de preço
         const alturaAreaAcel = chartH * 0.55;
-        const yForAcel = v => baseYAcel - (Math.max(0, v) / maxAcel) * alturaAreaAcel;
+
+        // Largura do sino: proporcional à duração do candle, não fixa em
+        // minutos — assim continua com cara de sino tanto num candle de 15m
+        // quanto num de 1d. ~12% da duração total de cada lado do pico.
+        const sigmaPx = chartW * 0.12;
+        const gaussiana = x => Math.exp(-0.5 * ((x - colPico.x) / sigmaPx) ** 2);
+        const yForAcel = alturaNormalizada => baseYAcel - alturaNormalizada * alturaAreaAcel;
 
         ctx.beginPath();
-        ctx.moveTo(_grFootprintHistoricoColunas[0].x, baseYAcel);
-        let ultimoX = _grFootprintHistoricoColunas[0].x;
-        _grFootprintHistoricoColunas.forEach((col, i) => {
-            const v = acel[i];
-            const y = v == null ? baseYAcel : yForAcel(v);
-            ctx.lineTo(col.x, y);
-            ultimoX = col.x;
-        });
-        ctx.lineTo(ultimoX, baseYAcel);
+        ctx.moveTo(padEsq, baseYAcel);
+        const passo = Math.max(1, chartW / 200); // resolução da curva, independente do nº de colunas
+        for (let x = padEsq; x <= padEsq + chartW; x += passo) {
+            ctx.lineTo(x, yForAcel(gaussiana(x)));
+        }
+        ctx.lineTo(padEsq + chartW, baseYAcel);
         ctx.closePath();
         ctx.fillStyle = 'rgba(255,152,0,0.30)';
         ctx.fill();
 
-        // Contorno por cima, só pra dar uma borda de definição na área.
         ctx.strokeStyle = 'rgba(230,81,0,0.75)';
         ctx.lineWidth = 1.3;
         ctx.lineJoin = 'round';
         ctx.beginPath();
-        let started = false;
-        _grFootprintHistoricoColunas.forEach((col, i) => {
-            const v = acel[i];
-            if (v == null) { started = false; return; }
-            const y = yForAcel(v);
-            if (!started) { ctx.moveTo(col.x, y); started = true; } else ctx.lineTo(col.x, y);
-        });
+        let iniciouTraco = false;
+        for (let x = padEsq; x <= padEsq + chartW; x += passo) {
+            const y = yForAcel(gaussiana(x));
+            if (!iniciouTraco) { ctx.moveTo(x, y); iniciouTraco = true; } else ctx.lineTo(x, y);
+        }
         ctx.stroke();
+
+        // Marca o preço exato onde o pico aconteceu — sobe do topo do sino
+        // até a linha do preço, com o valor escrito.
+        const yTopoSino = yForAcel(1);
+        const yPreco = yForPrice(precoPico);
+        ctx.strokeStyle = 'rgba(230,81,0,0.55)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 2]);
+        ctx.beginPath();
+        ctx.moveTo(colPico.x, yTopoSino);
+        ctx.lineTo(colPico.x, yPreco);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.font = 'bold 9px -apple-system';
+        ctx.fillStyle = '#E65100';
+        ctx.textAlign = 'center';
+        ctx.fillText('pico $' + precoPico.toLocaleString('pt-BR'), colPico.x, yTopoSino - 4);
 
         ctx.font = 'bold 9px -apple-system';
         ctx.fillStyle = '#E65100';
         ctx.textAlign = 'left';
-        ctx.fillText('área laranja = magnitude da aceleração (direção: veja o preço)', padEsq + 2, padTop + 11);
+        ctx.fillText('sino laranja = pico de aceleração do candle', padEsq + 2, padTop + 11);
 
-        _grFootprintHistoricoColunas.forEach((col, i) => { col._acel = acel[i]; });
+        // O mesmo valor (o pico) em TODAS as colunas — tocar em qualquer
+        // lugar mostra a aceleração total do candle, não mais por minuto.
+        _grFootprintHistoricoColunas.forEach(col => { col._acel = picoValor; col._acelPrecoPico = precoPico; });
     }
 
     // Linhas dos POCs/zonas ZII marcadas nesse candle específico — mostra onde
@@ -15547,7 +15570,7 @@ function grFootprintHistoricoMostrarDetalhe(clientX) {
         `${fmtHora(col.ts)} · Faixa $${col.minP.toLocaleString('pt-BR')}–$${col.maxP.toLocaleString('pt-BR')} · ` +
         `<span style="color:${delta >= 0 ? '#4CAF50' : '#EF5350'}">Delta ${delta >= 0 ? '+' : ''}${fmtBtc2(delta)}</span> · Total ${fmtBtc2(col.total)} BTC` +
         (col.avgTrade != null ? ` · trade médio ${fmtBtc2(col.avgTrade)} BTC` : '') +
-        (col._acel != null ? ` · <span style="color:#E65100;">aceleração ${col._acel.toFixed(1)}</span>` : '');
+        (col._acel != null ? ` · <span style="color:#E65100;">aceleração (pico do candle) ${col._acel.toFixed(1)} em $${col._acelPrecoPico.toLocaleString('pt-BR')}</span>` : '');
 }
 
 function grFootprintHistoricoTouchStart(evt) {
