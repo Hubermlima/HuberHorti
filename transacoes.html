@@ -13893,6 +13893,7 @@ function cvFecharSetupSheet() {
       <button onclick="grFootprintFecharCandleModal()" style="background:rgba(255,255,255,0.1);border:none;color:#FFFFFF;font-size:16px;width:28px;height:28px;border-radius:50%;cursor:pointer;">✕</button>
     </div>
     <div style="padding:0 16px 8px;color:#8E8E93;font-size:11px;font-family:-apple-system,sans-serif;flex-shrink:0;" id="footprint-candle-sub"></div>
+    <div id="footprint-fibo-selector" style="display:none;padding:0 16px 8px;flex-shrink:0;overflow-x:auto;white-space:nowrap;"></div>
     <div id="footprint-candle-scrollwrap" style="flex:1;min-height:0;overflow-y:auto;padding:0 16px;-webkit-overflow-scrolling:touch;">
       <div id="footprint-candle-canvas-holder" style="position:relative;">
         <canvas id="footprint-candle-canvas" style="width:100%;display:block;"></canvas>
@@ -15091,6 +15092,7 @@ function grFootprintAbrirCandleModal(candle) {
     const zonasDisputa = grFootprintZonasAltoVolumeAgregado();
     _grFootprintCandleContexto = { de, ate, candle, cvdAnterior, zonasDisputa };
     _grFootprintModalModo = 'candle';
+    document.getElementById('footprint-fibo-selector').style.display = 'none';
     grFootprintDesenharCandleLadder(candle, de, mapaFino, encontrados, false, { cvdAnterior, zonasDisputa }, true);
     grFootprintAtualizarVisibilidadePainel();
 }
@@ -15154,6 +15156,52 @@ function grFootprintZonasAltoVolumeAgregado() {
 
 let _grFootprintCvdAnteriorAgregadoCache = null; // cache do CVD anterior do histograma agregado — só recalcula no open de verdade
 
+// ── Histograma agregado reagrupado por níveis de Fibonacci ──────────────
+// Em vez de tick uniforme, agrupa em 6 bandas entre os 7 níveis padrão
+// (0/23.6/38.2/50/61.8/78.6/100%), calculados a partir do p1/p2 do fibo
+// escolhido — os únicos dois valores realmente gravados, o resto é fórmula.
+let _grFootprintFiboSelecionadoIdx = null; // índice em _fibs, ou null = tick uniforme (padrão)
+const FIB_RATIOS_HISTOGRAMA = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+
+function grFootprintBandasFibo(fib) {
+    if (!fib || !(fib.p2 !== fib.p1)) return null;
+    const precoDe = r => fib.p1 + (fib.p2 - fib.p1) * r;
+    const pontos = FIB_RATIOS_HISTOGRAMA.map(r => ({ r, preco: precoDe(r) }));
+    const bandas = [];
+    for (let i = 0; i < pontos.length - 1; i++) {
+        const a = pontos[i], b = pontos[i + 1];
+        bandas.push({
+            loP: Math.min(a.preco, b.preco),
+            hiP: Math.max(a.preco, b.preco),
+            label: `${(a.r * 100).toFixed(1)}–${(b.r * 100).toFixed(1)}%`,
+        });
+    }
+    bandas.sort((x, y) => y.hiP - x.hiP); // maior preço primeiro (topo da régua)
+    return bandas;
+}
+
+// Pilulas "Nenhum / Fibonacci 1 / Fibonacci 2..." — só aparece no histograma
+// agregado (no candle único não faz sentido, fibo é ferramenta de timeframe
+// maior, não de um candle isolado).
+function grFootprintRenderizarSeletorFibo() {
+    const wrap = document.getElementById('footprint-fibo-selector');
+    if (!wrap) return;
+    if (!_fibs || _fibs.length === 0) { wrap.style.display = 'none'; return; }
+    wrap.style.display = 'block';
+    const pill = (label, ativo, onclick) =>
+        `<button onclick="${onclick}" style="display:inline-block;margin-right:6px;padding:5px 10px;border-radius:12px;border:1px solid ${ativo ? '#FFA726' : 'rgba(255,255,255,0.2)'};background:${ativo ? 'rgba(255,167,38,0.25)' : 'transparent'};color:${ativo ? '#FFA726' : '#8E8E93'};font-size:11px;font-weight:700;white-space:nowrap;">${label}</button>`;
+    let html = pill('Régua uniforme', _grFootprintFiboSelecionadoIdx == null, 'grFootprintSelecionarFibo(null)');
+    _fibs.forEach((fib, i) => {
+        html += pill(`Fibonacci ${i + 1}`, _grFootprintFiboSelecionadoIdx === i, `grFootprintSelecionarFibo(${i})`);
+    });
+    wrap.innerHTML = html;
+}
+
+function grFootprintSelecionarFibo(idx) {
+    _grFootprintFiboSelecionadoIdx = idx;
+    grFootprintAbrirHistogramaAgregado();
+}
+
 function grFootprintAbrirHistogramaAgregado(refresco) {
     const mapaBase = grFootprintCalcularMapaAgregado();
     const agora = Date.now();
@@ -15200,7 +15248,10 @@ function grFootprintAbrirHistogramaAgregado(refresco) {
 
     _grFootprintCandleContexto = null; // não é um candle real — "Ver histórico" minuto a minuto não se aplica aqui
     _grFootprintModalModo = 'agregado';
-    grFootprintDesenharCandleLadder(candleFake, agora, mapaBase, 0, true, { cvdAnterior }, !refresco);
+    grFootprintRenderizarSeletorFibo();
+    const fibEscolhido = _grFootprintFiboSelecionadoIdx != null ? _fibs[_grFootprintFiboSelecionadoIdx] : null;
+    const bandasFibo = grFootprintBandasFibo(fibEscolhido);
+    grFootprintDesenharCandleLadder(candleFake, agora, mapaBase, 0, true, { cvdAnterior }, !refresco, bandasFibo);
     grFootprintAtualizarVisibilidadePainel();
 }
 
@@ -15660,7 +15711,7 @@ function grFootprintAtualizarLinhaPrecoAtual() {
     const range = _grFootprintCandleLadderRange;
     if (!overlay || !range) return;
     if (document.getElementById('footprint-candle-overlay').style.display !== 'block') return;
-    const { lo, hi, W, H } = range;
+    const { lo, hi, W, H, bandasFibo, rowH } = range;
     if (overlay.width !== W || overlay.height !== H) {
         overlay.width = W;
         overlay.height = H;
@@ -15671,8 +15722,18 @@ function grFootprintAtualizarLinhaPrecoAtual() {
 
     // yForPrice clampado — o candle ao vivo pode furar o range que o ladder
     // tinha quando abriu (lo/hi foram capturados naquele momento); em vez de
-    // desenhar fora do canvas, prende na borda.
-    const yForPriceClamp = p => Math.max(0, Math.min(H, ((hi - p) / (hi - lo)) * H));
+    // desenhar fora do canvas, prende na borda. Em modo fibo usa a MESMA
+    // função por partes do render estático, senão a linha ao vivo desalinha
+    // da régua (bandas não têm largura em $ igual entre si).
+    const yForPriceClamp = bandasFibo
+        ? (p => {
+            for (let i = 0; i < bandasFibo.length; i++) {
+                const b = bandasFibo[i];
+                if (p >= b.loP && p <= b.hiP) return i * rowH + ((b.hiP - p) / (b.hiP - b.loP)) * rowH;
+            }
+            return Math.max(0, Math.min(H, p > bandasFibo[0].hiP ? 0 : bandasFibo.length * rowH));
+        })
+        : (p => Math.max(0, Math.min(H, ((hi - p) / (hi - lo)) * H)));
 
     const desenharCandleOverlay = (o, h, l, c) => {
         const corpoTopoP = Math.max(o, c);
@@ -15744,7 +15805,7 @@ let _grFootprintCandleTouchBind = false;
 let _grFootprintCandleContexto = null; // {de, ate, candle} do candle aberto — usado pra série temporal e pelas zonas ZII
 let _grFootprintCandlePocs = null; // {pocCompraPreco, pocVendaPreco, tick} do candle aberto
 
-function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCandles1min, semCandle = false, extras = null, scrollParaPreco = false) {
+function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCandles1min, semCandle = false, extras = null, scrollParaPreco = false, bandasFibo = null) {
     const cvdAnterior = extras ? extras.cvdAnterior : null;
     const zonasDisputa = (extras && extras.zonasDisputa) ? extras.zonasDisputa : [];
     const lo = candle.l, hi = candle.h;
@@ -15753,27 +15814,43 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
     // Sempre mira num número compacto de linhas (~14), não importa o tamanho do
     // candle — é o que faz tudo (corpo + pavios) caber numa régua enxuta, igual
     // referência, em vez de uma lista gigante de 100+ linhas de $10 em $10.
+    // MODO FIBO: em vez de tick uniforme, agrupa nas 6 bandas entre os níveis
+    // de Fibonacci escolhidos (0/23.6/38.2/50/61.8/78.6/100%) — cada banda vira
+    // uma linha, largura em $ desigual entre elas (é o preço do fibo que manda).
     const TICK_BASE = 10, TARGET_LINHAS = 14;
     const tick = Math.max(TICK_BASE, Math.round(((hi - lo) / TARGET_LINHAS) / TICK_BASE) * TICK_BASE);
     _grFootprintCandleTickAtual = tick;
 
-    const beginP = Math.floor(lo / tick) * tick;
-    const endP = Math.ceil(hi / tick) * tick;
-    const mapa = new Map();
-    for (let p = beginP; p <= endP + 1e-6; p += tick) {
-        mapa.set(Math.round(p), { c: 0, v: 0, nc: 0, nv: 0 });
+    let beginP, endP, niveis;
+    if (bandasFibo) {
+        const mapa = new Map();
+        bandasFibo.forEach(b => mapa.set(b.hiP, { c: 0, v: 0, nc: 0, nv: 0, _loP: b.loP, _hiP: b.hiP, _fibLabel: b.label }));
+        mapaFino.forEach((v, p) => {
+            const banda = bandasFibo.find(b => p >= b.loP && p <= b.hiP) || bandasFibo[bandasFibo.length - 1];
+            const acc = mapa.get(banda.hiP);
+            acc.c += v.c; acc.v += v.v; acc.nc += (v.nc || 0); acc.nv += (v.nv || 0);
+        });
+        niveis = [...mapa.entries()].sort((a, b) => b[0] - a[0]);
+        beginP = bandasFibo[bandasFibo.length - 1].loP;
+        endP = bandasFibo[0].hiP;
+    } else {
+        beginP = Math.floor(lo / tick) * tick;
+        endP = Math.ceil(hi / tick) * tick;
+        const mapa = new Map();
+        for (let p = beginP; p <= endP + 1e-6; p += tick) {
+            mapa.set(Math.round(p), { c: 0, v: 0, nc: 0, nv: 0 });
+        }
+        mapaFino.forEach((v, p) => {
+            const pAgr = Math.round(Math.round(p / tick) * tick);
+            if (!mapa.has(pAgr)) mapa.set(pAgr, { c: 0, v: 0, nc: 0, nv: 0 });
+            const acc = mapa.get(pAgr);
+            acc.c += v.c;
+            acc.v += v.v;
+            acc.nc += (v.nc || 0);
+            acc.nv += (v.nv || 0);
+        });
+        niveis = [...mapa.entries()].sort((a, b) => b[0] - a[0]); // preço decrescente, topo pro fundo
     }
-    mapaFino.forEach((v, p) => {
-        const pAgr = Math.round(Math.round(p / tick) * tick);
-        if (!mapa.has(pAgr)) mapa.set(pAgr, { c: 0, v: 0, nc: 0, nv: 0 });
-        const acc = mapa.get(pAgr);
-        acc.c += v.c;
-        acc.v += v.v;
-        acc.nc += (v.nc || 0);
-        acc.nv += (v.nv || 0);
-    });
-
-    const niveis = [...mapa.entries()].sort((a, b) => b[0] - a[0]); // preço decrescente, topo pro fundo
 
     // Tamanho médio de trade por lado (c/nc, v/nv) — maior média = poucos
     // players concentrando volume grande cada um; média pequena = muitos
@@ -15905,9 +15982,26 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
         // arredondada, então mapear direto por lo/hi cru desalinha o candle (e a
         // linha de preço atual) da régua sempre que lo/hi não caírem num múltiplo
         // exato de tick, que é quase sempre.
-        const escalaTopo = endP + tick / 2;
-        const escalaBase = beginP - tick / 2;
-        const yForPrice = p => ((escalaTopo - p) / (escalaTopo - escalaBase)) * H;
+        // MODO FIBO: as bandas não têm largura em $ igual entre si, então a escala
+        // não pode ser uma reta única — é uma função por partes, uma reta por banda,
+        // cada uma esticada pra ocupar exatamente rowH pixels (a linha da banda).
+        let yForPrice;
+        if (bandasFibo) {
+            yForPrice = p => {
+                for (let i = 0; i < bandasFibo.length; i++) {
+                    const b = bandasFibo[i];
+                    if (p >= b.loP && p <= b.hiP) {
+                        const frac = (b.hiP - p) / (b.hiP - b.loP);
+                        return i * rowH + frac * rowH;
+                    }
+                }
+                return p > bandasFibo[0].hiP ? 0 : bandasFibo.length * rowH;
+            };
+        } else {
+            const escalaTopo = endP + tick / 2;
+            const escalaBase = beginP - tick / 2;
+            yForPrice = p => ((escalaTopo - p) / (escalaTopo - escalaBase)) * H;
+        }
 
         _grFootprintCandleLinhas = [];
 
@@ -15933,7 +16027,8 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
             // Zona de alta disputa (nível também se destaca no agregado de N
             // dias) — tom dourado por cima, sutil, só pra sinalizar sem
             // apagar o verde/vermelho de cima.
-            const rowLo = p - tick / 2, rowHi = p + tick / 2;
+            const rowLo = v._loP != null ? v._loP : p - tick / 2;
+            const rowHi = v._hiP != null ? v._hiP : p + tick / 2;
             const emZonaDisputa = zonasDisputa.some(z => rowHi > z.lo && rowLo < z.hi);
             if (emZonaDisputa) {
                 ctx.fillStyle = 'rgba(255,193,7,0.16)';
@@ -15979,7 +16074,7 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
             // Preço — plaquinha escura colada na borda do candle (dentro do vão livre
             // entre o candle e a barra de compra), pra nunca colidir com a barra.
             ctx.font = 'bold 9px -apple-system';
-            const txt = p.toLocaleString('pt-BR');
+            const txt = p.toLocaleString('pt-BR') + (v._fibLabel ? ` (${v._fibLabel})` : '');
             const tw = ctx.measureText(txt).width;
             const candleLeftEdge = centroX - candleHalfW;
             ctx.textAlign = 'left';
@@ -16033,8 +16128,10 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
         //   fechamento acompanha _precoAtual a cada tick.
         const isLiveReal = !semCandle && _grAllCandles.length > 0 && candle === _grAllCandles[_grAllCandles.length - 1];
         const modoLive = isLiveReal ? 'real' : (semCandle ? 'agregado' : null);
+        const rangeTopo = bandasFibo ? bandasFibo[0].hiP : endP + tick / 2;
+        const rangeBase = bandasFibo ? bandasFibo[bandasFibo.length - 1].loP : beginP - tick / 2;
         _grFootprintCandleLadderRange = {
-            lo: escalaBase, hi: escalaTopo, W, H, centroX, candleHalfW,
+            lo: rangeBase, hi: rangeTopo, W, H, centroX, candleHalfW, bandasFibo, rowH,
             modoLive,
             candleReal: isLiveReal ? candle : null,
             ohlcAgregado: modoLive === 'agregado' ? { o: candle.o, h: candle.h, l: candle.l } : null,
