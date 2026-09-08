@@ -9360,7 +9360,11 @@ async function cvCarregarAlertasGrafico() {
             if (n0 && n100) {
                 const p1 = parseFloat(n0.preco);  // nivel=0 → valor inicial (0%)
                 const p2 = parseFloat(n100.preco); // nivel=1 → valor final (100%)
-                _fibs.push({ p1, p2, tipo });
+                // Guarda TODOS os níveis gravados (não só 0%/100%) — o preço de
+                // cada nível já vem pronto do banco, sem precisar recalcular via
+                // fórmula (que erra 23.6%/78.6% se não souber a direção certa).
+                const niveisSalvos = grupo.map(a => ({ r: parseFloat(a.nivel), preco: parseFloat(a.preco) }));
+                _fibs.push({ p1, p2, tipo, niveisSalvos });
             }
         });
         if (_fibs.length > 0) {
@@ -15164,12 +15168,19 @@ let _grFootprintFiboSelecionadoIdx = null; // índice em _fibs, ou null = tick u
 const FIB_RATIOS_HISTOGRAMA = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
 
 function grFootprintNiveisFibo(fib) {
-    if (!fib || !(fib.p2 !== fib.p1)) return null;
-    // 0% sempre no preço mais alto, 100% no mais baixo — independente de qual
-    // ponta você arrastou primeiro (p1/p2 gravam na ordem do arrasto, não por
-    // preço).
-    const pontoAlto = Math.max(fib.p1, fib.p2), pontoBaixo = Math.min(fib.p1, fib.p2);
-    const precoDe = r => pontoAlto - r * (pontoAlto - pontoBaixo);
+    if (!fib) return null;
+    // Usa os preços JÁ GRAVADOS no banco por nível, sem recalcular por fórmula
+    // — isso evita qualquer ambiguidade de direção do arrasto (23.6%/78.6% não
+    // são complementares, então recalcular podia dar valor diferente do real).
+    if (fib.niveisSalvos && fib.niveisSalvos.length > 0) {
+        return FIB_RATIOS_HISTOGRAMA.map(r => {
+            const salvo = fib.niveisSalvos.find(n => Math.abs(n.r - r) < 0.001);
+            return salvo ? { r, preco: salvo.preco } : { r, preco: fib.p1 + (fib.p2 - fib.p1) * r };
+        });
+    }
+    // Fallback (fibo antigo sem niveisSalvos carregado): calcula pela fórmula.
+    if (!(fib.p2 !== fib.p1)) return null;
+    const precoDe = r => fib.p1 + (fib.p2 - fib.p1) * r;
     return FIB_RATIOS_HISTOGRAMA.map(r => ({ r, preco: precoDe(r) }));
 }
 
