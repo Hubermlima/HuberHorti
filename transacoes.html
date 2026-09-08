@@ -13915,7 +13915,7 @@ function cvFecharSetupSheet() {
       <div style="font-size:15px;font-weight:800;color:#FFFFFF;font-family:-apple-system,sans-serif;" id="footprint-historico-titulo">Histórico do candle</div>
       <button onclick="grFootprintFecharHistorico()" style="background:rgba(255,255,255,0.1);border:none;color:#FFFFFF;font-size:16px;width:28px;height:28px;border-radius:50%;cursor:pointer;">✕</button>
     </div>
-    <div style="padding:0 16px 4px;color:#8E8E93;font-size:11px;font-family:-apple-system,sans-serif;flex-shrink:0;" id="footprint-historico-sub">Linha preta = preço médio por minuto. Sino laranja (mesmo painel) = pico de aceleração do candle inteiro — centrado no minuto de maior curvatura, com o preço daquele instante marcado. Tocar em qualquer lugar mostra o mesmo valor (é a aceleração TOTAL do candle, não por minuto). Barras embaixo = volume por minuto. Barra destacada = absorção (volume alto, preço quase parado); contorno laranja = confirmada por trade médio alto (poucos players grandes). Faixa laranja no preço = onde a absorção confirmada aconteceu. Linha laranja tracejada nas barras = média de volume do candle. Toca pra ver o detalhe.</div>
+    <div style="display:none;" id="footprint-historico-sub"></div>
     <div style="padding:0 16px 8px;color:#E5E5EA;font-size:12px;font-weight:700;font-family:-apple-system,sans-serif;min-height:16px;flex-shrink:0;" id="footprint-historico-detalhe"></div>
     <div style="flex:1;min-height:0;overflow-y:auto;padding:0 16px 16px;-webkit-overflow-scrolling:touch;">
       <canvas id="footprint-historico-canvas" style="width:100%;height:460px;display:block;"></canvas>
@@ -15251,7 +15251,10 @@ function grFootprintAbrirHistorico() {
         document.getElementById('footprint-historico-detalhe').innerHTML =
             `Maior pico: ${fmtHora(pico.ts)} · Faixa $${pico.minP.toLocaleString('pt-BR')}–$${pico.maxP.toLocaleString('pt-BR')} · ` +
             `<span style="color:${pico.delta >= 0 ? '#4CAF50' : '#EF5350'}">Delta ${pico.delta >= 0 ? '+' : ''}${fmtBtc2(pico.delta)}</span> · Total ${fmtBtc2(pico.total)} BTC` +
-            (pico.avgTrade != null ? ` · trade médio ${fmtBtc2(pico.avgTrade)} BTC` : '');
+            (pico.avgTrade != null ? ` · trade médio ${fmtBtc2(pico.avgTrade)} BTC` : '') +
+            (_grFootprintHistoricoColunas[0] && _grFootprintHistoricoColunas[0]._acel != null
+                ? `<br><span style="color:#E65100;">Pico de aceleração do candle: ${_grFootprintHistoricoColunas[0]._acel.toFixed(1)} em $${_grFootprintHistoricoColunas[0]._acelPrecoPico.toLocaleString('pt-BR')}</span>`
+                : '');
     });
 }
 
@@ -15336,7 +15339,18 @@ function grFootprintDesenharHistorico(colunas, candle) {
     let idxPico = -1, picoValor = -1;
     acel.forEach((v, i) => { if (v != null && v > picoValor) { picoValor = v; idxPico = i; } });
 
-    if (idxPico >= 0) {
+    // Só mostra o sino se o pico for estatisticamente fora da curva DENTRO
+    // desse candle (z-score ≥2) — senão todo candle ganhava sino, até os sem
+    // evento nenhum, e o número não era comparável entre candles diferentes.
+    const acelValidos = acel.filter(v => v != null);
+    let picoSignificativo = false;
+    if (idxPico >= 0 && acelValidos.length >= 3) {
+        const media = acelValidos.reduce((a, b) => a + b, 0) / acelValidos.length;
+        const desvio = Math.sqrt(acelValidos.reduce((a, b) => a + (b - media) ** 2, 0) / acelValidos.length);
+        picoSignificativo = desvio > 0 && (picoValor - media) / desvio >= 2;
+    }
+
+    if (idxPico >= 0 && picoSignificativo) {
         const colPico = _grFootprintHistoricoColunas[idxPico];
         const precoPico = colPico.precoMedio;
         const baseYAcel = padTop + chartH; // base = fundo do painel de preço
