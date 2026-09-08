@@ -14014,6 +14014,21 @@ let _grFootprintUltimoRangeCalc = null;   // {from,to} já processado — evita 
 let _grFootprintOverlayInterval = null;
 let _grFootprintRetangulos = [];       // retângulos desenhados no último frame, p/ detectar toque numa barra
 
+// Versão pra janela rolante (histograma agregado): soma TODO o delta bruto
+// antes de um timestamp de corte, sem depender de candle do gráfico
+// principal — é o "CVD anterior" pro caso em que não existe candle anterior
+// de verdade, só uma janela de N dias. cvdAtual = isso + delta da própria
+// janela (que já vem no rodapé do histograma agregado).
+function grFootprintCvdAcumuladoAntesDe(tsCorte) {
+    if (!_grFootprintCandlesRaw) return 0;
+    let acumulado = 0;
+    for (const raw of grFootprintTodosOsCandlesBrutos()) {
+        if (raw.ts >= tsCorte) continue;
+        (raw.niveis || []).forEach(n => { acumulado += (n.c - n.v); });
+    }
+    return acumulado;
+}
+
 // CVD acumulado (mesma lógica e mesma janela do painel CVD do gráfico
 // principal — _grFootprintLookbackDias, sem reset por sessão) somando só os
 // candles ANTES do índice dado em _grAllCandles. Existe pra achar o "CVD
@@ -15137,6 +15152,8 @@ function grFootprintZonasAltoVolumeAgregado() {
     return bandas;
 }
 
+let _grFootprintCvdAnteriorAgregadoCache = null; // cache do CVD anterior do histograma agregado — só recalcula no open de verdade
+
 function grFootprintAbrirHistogramaAgregado(refresco) {
     const mapaBase = grFootprintCalcularMapaAgregado();
     const agora = Date.now();
@@ -15170,9 +15187,20 @@ function grFootprintAbrirHistogramaAgregado(refresco) {
     // por definição — nunca fecha de verdade). O overlay recalcula isso a
     // cada tick, aqui só entra como valor inicial.
     const candleFake = { o: abertura, h: hi, l: lo, c: _precoAtual, t: null };
+
+    // CVD anterior = todo delta bruto acumulado ANTES do início dessa janela
+    // de N dias (não candle anterior, já que aqui não existe — é janela
+    // rolante). Só recalcula no open de verdade (!refresco), não a cada
+    // refresh de 1s — varrer todo o histórico bruto é caro pra fazer toda
+    // hora, e o corte (de) só se move alguns segundos entre refreshs.
+    if (!refresco || _grFootprintCvdAnteriorAgregadoCache == null) {
+        _grFootprintCvdAnteriorAgregadoCache = grFootprintCvdAcumuladoAntesDe(de);
+    }
+    const cvdAnterior = _grFootprintCvdAnteriorAgregadoCache;
+
     _grFootprintCandleContexto = null; // não é um candle real — "Ver histórico" minuto a minuto não se aplica aqui
     _grFootprintModalModo = 'agregado';
-    grFootprintDesenharCandleLadder(candleFake, agora, mapaBase, 0, true, null, !refresco);
+    grFootprintDesenharCandleLadder(candleFake, agora, mapaBase, 0, true, { cvdAnterior }, !refresco);
     grFootprintAtualizarVisibilidadePainel();
 }
 
@@ -15183,6 +15211,7 @@ function grFootprintFecharCandleModal() {
     document.getElementById('footprint-historico-overlay').style.display = 'none';
     _grFootprintCandleContexto = null;
     _grFootprintModalModo = null;
+    _grFootprintCvdAnteriorAgregadoCache = null;
     _grFootprintCandlePocs = null;
     _grFootprintCandleLadderRange = null;
     grFootprintAtualizarVisibilidadePainel();
