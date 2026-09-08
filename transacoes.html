@@ -15825,44 +15825,52 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
     // Sempre mira num número compacto de linhas (~14), não importa o tamanho do
     // candle — é o que faz tudo (corpo + pavios) caber numa régua enxuta, igual
     // referência, em vez de uma lista gigante de 100+ linhas de $10 em $10.
-    // MODO FIBO: em vez de tick uniforme, agrupa nas 6 bandas entre os níveis
-    // de Fibonacci escolhidos (0/23.6/38.2/50/61.8/78.6/100%) — cada banda vira
-    // uma linha, largura em $ desigual entre elas (é o preço do fibo que manda).
+    // MODO FIBO: os 7 níveis de fibo viram fronteiras REAIS da régua — mescla
+    // as fronteiras do tick uniforme com as fronteiras de fibo, recalcula os
+    // ticks ao redor (ficam desiguais perto do fibo, é esperado), e TODA linha
+    // resultante — inclusive as cortadas pelo fibo — agrega dado de verdade
+    // (compra/venda/delta), nenhuma fica em branco só com o preço.
     const TICK_BASE = 10, TARGET_LINHAS = 14;
     const tick = Math.max(TICK_BASE, Math.round(((hi - lo) / TARGET_LINHAS) / TICK_BASE) * TICK_BASE);
     _grFootprintCandleTickAtual = tick;
 
     const beginP = Math.floor(lo / tick) * tick;
     const endP = Math.ceil(hi / tick) * tick;
-    const mapa = new Map();
-    for (let p = beginP; p <= endP + 1e-6; p += tick) {
-        mapa.set(Math.round(p), { c: 0, v: 0, nc: 0, nv: 0 });
-    }
-    mapaFino.forEach((v, p) => {
-        const pAgr = Math.round(Math.round(p / tick) * tick);
-        if (!mapa.has(pAgr)) mapa.set(pAgr, { c: 0, v: 0, nc: 0, nv: 0 });
-        const acc = mapa.get(pAgr);
-        acc.c += v.c;
-        acc.v += v.v;
-        acc.nc += (v.nc || 0);
-        acc.nv += (v.nv || 0);
-    });
 
-    let niveis = [...mapa.entries()].sort((a, b) => b[0] - a[0]); // preço decrescente, topo pro fundo
+    // Fronteiras do tick uniforme (N+1 bordas pra N linhas, borda = centro ± tick/2).
+    let fronteiras = [];
+    for (let p = beginP - tick / 2; p <= endP + tick / 2 + 1e-6; p += tick) fronteiras.push(p);
 
-    // MODO FIBO: não muda o agrupamento (continua tick uniforme) — só INSERE
-    // uma linha marcadora na altura exata de cada nível de Fibonacci, no meio
-    // das linhas normais. Marcador não tem barra nenhuma, só o preço, numa
-    // cor diferente (laranja) pra destacar. A régua toda continua a mesma.
+    // Insere as fronteiras de fibo que caem dentro do range visível, mescla e
+    // remove duplicata (dentro de $1 de diferença — evita linha de 1px).
     if (nivelFibo) {
         nivelFibo.forEach(nf => {
-            const p = Math.round(nf.preco);
-            if (!niveis.some(([pn]) => pn === p)) {
-                niveis.push([p, { isFibMarker: true }]);
+            if (nf.preco >= fronteiras[0] && nf.preco <= fronteiras[fronteiras.length - 1]) {
+                fronteiras.push(nf.preco);
             }
         });
-        niveis.sort((a, b) => b[0] - a[0]);
     }
+    fronteiras = fronteiras.map(p => Math.round(p)).sort((a, b) => a - b);
+    fronteiras = fronteiras.filter((p, i) => i === 0 || p - fronteiras[i - 1] > 1); // dedupe
+
+    // Cada par de fronteiras consecutivas vira uma linha — agrega o mapaFino
+    // que cai dentro dela. isFibRow: a linha nasceu de/toca um corte de fibo
+    // (pra destacar visualmente), mas o dado dela é normal, igual qualquer outra.
+    const linhasCalc = [];
+    for (let i = fronteiras.length - 1; i > 0; i--) {
+        const hiP = fronteiras[i], loP = fronteiras[i - 1];
+        const tocaFibo = !!(nivelFibo && nivelFibo.some(nf => Math.abs(nf.preco - hiP) <= 1 || Math.abs(nf.preco - loP) <= 1));
+        linhasCalc.push({ loP, hiP, c: 0, v: 0, nc: 0, nv: 0, isFibRow: tocaFibo });
+    }
+    mapaFino.forEach((v, p) => {
+        let row = linhasCalc.find(r => p >= r.loP && p < r.hiP);
+        if (!row) row = p >= linhasCalc[0].hiP ? linhasCalc[0] : linhasCalc[linhasCalc.length - 1];
+        row.c += v.c; row.v += v.v; row.nc += (v.nc || 0); row.nv += (v.nv || 0);
+    });
+
+    let niveis = linhasCalc.map(r => [Math.round(r.hiP), {
+        c: r.c, v: r.v, nc: r.nc, nv: r.nv, isFibRow: r.isFibRow, _loP: r.loP, _hiP: r.hiP,
+    }]);
 
     // Tamanho médio de trade por lado (c/nc, v/nv) — maior média = poucos
     // players concentrando volume grande cada um; média pequena = muitos
@@ -15870,7 +15878,6 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
     // candles a partir de 01/09/26 (quando o worker passou a contar nc/nv).
     let maxAvgCompra = 0, maxAvgVenda = 0, temIntensidade = false;
     niveis.forEach(([, v]) => {
-        if (v.isFibMarker) return;
         if (v.nc > 0) { temIntensidade = true; maxAvgCompra = Math.max(maxAvgCompra, v.c / v.nc); }
         if (v.nv > 0) { temIntensidade = true; maxAvgVenda = Math.max(maxAvgVenda, v.v / v.nv); }
     });
@@ -15879,7 +15886,6 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
     let pocCompraPreco = null, maxCompra = -1;
     let pocVendaPreco = null, maxVenda = -1;
     niveis.forEach(([p, v]) => {
-        if (v.isFibMarker) return;
         totalCompra += v.c;
         totalVenda += v.v;
         totalNc += (v.nc || 0);
@@ -16004,31 +16010,6 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
 
         niveis.forEach(([p, v], i) => {
             const y = i * rowH;
-
-            // Linha marcadora de nível de Fibonacci — inserida na régua normal,
-            // sem barra nenhuma, só o preço em laranja pra destacar. Não conta
-            // como linha de dado (sem checkbox, sem POC, sem zona de disputa).
-            if (v.isFibMarker) {
-                ctx.strokeStyle = 'rgba(255,167,38,0.6)';
-                ctx.lineWidth = 1;
-                ctx.setLineDash([4, 3]);
-                ctx.beginPath();
-                ctx.moveTo(0, y + rowH / 2);
-                ctx.lineTo(W, y + rowH / 2);
-                ctx.stroke();
-                ctx.setLineDash([]);
-
-                const txtFib = Math.round(p).toLocaleString('pt-BR');
-                ctx.font = 'bold 10px -apple-system';
-                const twFib = ctx.measureText(txtFib).width;
-                ctx.textAlign = 'center';
-                ctx.fillStyle = '#1E222D';
-                ctx.fillRect(W / 2 - twFib / 2 - 5, y + rowH / 2 - 8, twFib + 10, 16);
-                ctx.fillStyle = '#FFA726';
-                ctx.fillText(txtFib, W / 2, y + rowH / 2 + 3);
-                return;
-            }
-
             const total = v.c + v.v;
             const deltaLinha = v.c - v.v;
             const isPocCompra = p === pocCompraPreco && maxCompra > 0;
@@ -16043,11 +16024,24 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
                 ctx.fillRect(0, y, W, rowH);
             }
 
+            // Linha que nasceu de um corte de fibo (fronteira dela é um nível de
+            // fibo) — borda tracejada laranja em cima, só pra destacar. O dado
+            // dela continua normal, real, igual qualquer outra linha.
+            if (v.isFibRow) {
+                ctx.strokeStyle = 'rgba(255,167,38,0.7)';
+                ctx.lineWidth = 1.5;
+                ctx.setLineDash([4, 3]);
+                ctx.beginPath();
+                ctx.moveTo(0, y); ctx.lineTo(W, y);
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
+
             // Zona de alta disputa (nível também se destaca no agregado de N
             // dias) — tom dourado por cima, sutil, só pra sinalizar sem
             // apagar o verde/vermelho de cima.
-            const rowLo = p - tick / 2;
-            const rowHi = p + tick / 2;
+            const rowLo = v._loP != null ? v._loP : p - tick / 2;
+            const rowHi = v._hiP != null ? v._hiP : p + tick / 2;
             const emZonaDisputa = zonasDisputa.some(z => rowHi > z.lo && rowLo < z.hi);
             if (emZonaDisputa) {
                 ctx.fillStyle = 'rgba(255,193,7,0.16)';
@@ -16093,13 +16087,13 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
             // Preço — plaquinha escura colada na borda do candle (dentro do vão livre
             // entre o candle e a barra de compra), pra nunca colidir com a barra.
             ctx.font = 'bold 9px -apple-system';
-            const txt = p.toLocaleString('pt-BR') + (v._fibLabel ? ` (${v._fibLabel})` : '');
+            const txt = p.toLocaleString('pt-BR');
             const tw = ctx.measureText(txt).width;
             const candleLeftEdge = centroX - candleHalfW;
             ctx.textAlign = 'left';
             ctx.fillStyle = 'rgba(0,0,0,0.55)';
             ctx.fillRect(candleLeftEdge - tw - 10, y + rowH / 2 - 7, tw + 4, 14);
-            ctx.fillStyle = '#E5E5EA';
+            ctx.fillStyle = v.isFibRow ? '#FFA726' : '#E5E5EA';
             ctx.fillText(txt, candleLeftEdge - tw - 8, y + rowH / 2 + 3);
 
             // Delta (compra − venda) — espelhando o chip de preço, do lado direito
