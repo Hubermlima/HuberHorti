@@ -16000,15 +16000,29 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
         const niveisDentroDoRange = nivelFibo.filter(nf => nf.preco >= lo && nf.preco <= hi).length;
         targetLinhas = TARGET_LINHAS_BASE + niveisDentroDoRange;
     }
-    const tick = Math.max(TICK_BASE, Math.round(((hi - lo) / targetLinhas) / TICK_BASE) * TICK_BASE);
+
+    // MODO EXPLODIDO: sem o padding de grade (floor/ceil pro múltiplo de tick
+    // mais próximo + meio-tick de folga em cada ponta) — aqui [lo, hi) já É a
+    // faixa exata que o usuário marcou, então a régua tem que bater ponta a
+    // ponta com ela, nem um Real sobrando. Mantém as ~14 linhas de altura
+    // padrão dividindo a faixa em partes iguais, mesmo que o tick resultante
+    // fique bem abaixo de $10 — a granularidade real do dado É $10 (não tem
+    // resolução nova a ganhar descendo mais que isso), então tick fracionário
+    // aqui é só pra régua não ficar baixinha, não representa dado mais fino.
+    let tick, fronteiras;
+    if (_grFootprintModalModo === 'explodido') {
+        tick = (hi - lo) / targetLinhas;
+        fronteiras = [];
+        for (let i = 0; i <= targetLinhas; i++) fronteiras.push(lo + i * tick);
+    } else {
+        tick = Math.max(TICK_BASE, Math.round(((hi - lo) / targetLinhas) / TICK_BASE) * TICK_BASE);
+        const beginP = Math.floor(lo / tick) * tick;
+        const endP = Math.ceil(hi / tick) * tick;
+        // Fronteiras do tick uniforme (N+1 bordas pra N linhas, borda = centro ± tick/2).
+        fronteiras = [];
+        for (let p = beginP - tick / 2; p <= endP + tick / 2 + 1e-6; p += tick) fronteiras.push(p);
+    }
     _grFootprintCandleTickAtual = tick;
-
-    const beginP = Math.floor(lo / tick) * tick;
-    const endP = Math.ceil(hi / tick) * tick;
-
-    // Fronteiras do tick uniforme (N+1 bordas pra N linhas, borda = centro ± tick/2).
-    let fronteiras = [];
-    for (let p = beginP - tick / 2; p <= endP + tick / 2 + 1e-6; p += tick) fronteiras.push(p);
 
     // Insere as fronteiras de fibo que caem dentro do range visível, mescla e
     // remove duplicata (dentro de $1 de diferença — evita linha de 1px).
@@ -16025,6 +16039,7 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
     }
     fronteiras = fronteiras.map(p => Math.round(p)).sort((a, b) => a - b);
     fronteiras = fronteiras.filter((p, i) => i === 0 || p - fronteiras[i - 1] > 1); // dedupe
+    const loRegua = fronteiras[0], hiRegua = fronteiras[fronteiras.length - 1]; // bordas reais da régua já desenhada (com ou sem padding, conforme o modo)
 
     // Cada par de fronteiras consecutivas vira uma linha — agrega o mapaFino
     // que cai dentro dela. isFibRow: a linha nasceu de/toca um corte de fibo
@@ -16090,7 +16105,7 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
         const ladoTxt = zona.tipos.length === 2 ? 'compra + venda' : (zona.tipos[0] === 'compra' ? 'compra' : 'venda');
         document.getElementById('footprint-candle-titulo').textContent = `Zona explodida · nível ${nivel} (${ladoTxt})`;
         document.getElementById('footprint-candle-sub').innerHTML =
-            `Faixa ${fmtN(lo)} – ${fmtN(hi)} · tick $${tick} · resolução fina da faixa marcada` +
+            `Faixa ${fmtN(lo)} – ${fmtN(hi)} · tick $${fmtN(tick)} · resolução fina da faixa marcada` +
             (temIntensidade ? ' · cor mais sólida = trades maiores em média' : '');
         document.getElementById('footprint-ver-historico-btn').style.display = 'none';
     } else if (semCandle) {
@@ -16328,7 +16343,7 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
         const isLiveReal = !semCandle && _grAllCandles.length > 0 && candle === _grAllCandles[_grAllCandles.length - 1];
         const modoLive = isLiveReal ? 'real' : (semCandle ? 'agregado' : null);
         _grFootprintCandleLadderRange = {
-            lo: beginP - tick / 2, hi: endP + tick / 2, W, H, centroX, candleHalfW, rowH,
+            lo: loRegua, hi: hiRegua, W, H, centroX, candleHalfW, rowH,
             niveisPrecos, tick,
             modoLive,
             candleReal: isLiveReal ? candle : null,
@@ -16340,7 +16355,7 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
         // na tela — só na abertura do modal (scrollParaPreco=true). No refresh
         // ao vivo de 1s isso NÃO roda de novo, senão ficava puxando a tela pra
         // fora de onde o dedo do usuário tá, toda hora.
-        if (scrollParaPreco && typeof _precoAtual === 'number' && _precoAtual >= (beginP - tick / 2) && _precoAtual <= (endP + tick / 2)) {
+        if (scrollParaPreco && typeof _precoAtual === 'number' && _precoAtual >= loRegua && _precoAtual <= hiRegua) {
             const wrapEl = document.getElementById('footprint-candle-scrollwrap');
             if (wrapEl) {
                 const yAtualPx = grFootprintYParaPreco(niveisPrecos, tick, rowH, _precoAtual);
