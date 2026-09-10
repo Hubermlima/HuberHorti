@@ -13935,6 +13935,7 @@ function cvFecharSetupSheet() {
     <div style="padding:10px 16px 4px;text-align:center;font-weight:800;font-size:13px;font-family:-apple-system,sans-serif;border-top:0.5px solid rgba(255,255,255,0.08);flex-shrink:0;" id="footprint-candle-footer"></div>
     <div style="padding:8px 16px 12px;flex-shrink:0;display:flex;flex-direction:column;gap:8px;">
       <button id="footprint-ver-historico-btn" onclick="grFootprintAbrirHistorico()" style="width:100%;padding:12px;background:#FFA726;color:#1C1C1E;border:none;border-radius:10px;font-size:13px;font-weight:800;font-family:-apple-system,sans-serif;">Ver Histórico</button>
+      <button id="footprint-explodir-btn" onclick="grFootprintExplodirZona()" style="display:none;width:100%;padding:12px;background:transparent;color:#FFA726;border:1.5px solid #FFA726;border-radius:10px;font-size:13px;font-weight:800;font-family:-apple-system,sans-serif;">Explodir Zona 🔍</button>
     </div>
   </div>
 </div>
@@ -14035,6 +14036,8 @@ function grFootprintTalvezRefrescarModalAoVivo() {
         });
     } else if (_grFootprintModalModo === 'agregado') {
         grFootprintAbrirHistogramaAgregado(true);
+    } else if (_grFootprintModalModo === 'explodido') {
+        grFootprintRenderizarExplosao(false);
     }
 }
 
@@ -14588,6 +14591,7 @@ function grFootprintToggleZonaZii(marcado, p, tick, tipo, total, delta, candleTs
         _grZiiZonas = _grZiiZonas.filter(z => !(z.lo === p && z.tipo === tipo));
     }
     grDrawChart();
+    grFootprintAtualizarBotaoExplodir();
 }
 
 // Varre os candles do timeframe atual que forem "starter" de movimento (range
@@ -15277,6 +15281,112 @@ function grFootprintAbrirHistogramaAgregado(refresco) {
     grFootprintAtualizarVisibilidadePainel();
 }
 
+// Mostra/esconde o botão "Explodir Zona" conforme tem ou não checkbox ZII
+// marcado no ladder ATUALMENTE aberto (candle específico ou agregado — nunca
+// mistura marcação de um candle com a do outro, mesmo preço).
+function grFootprintAtualizarBotaoExplodir() {
+    const btn = document.getElementById('footprint-explodir-btn');
+    if (!btn) return;
+    if (_grFootprintModalModo === 'explodido') return; // já mostra "◀ Voltar" nesse modo, não mexe
+    const candleTsAtual = (_grFootprintModalModo === 'candle' && _grFootprintCandleContexto)
+        ? _grFootprintCandleContexto.candle.t : null;
+    const temMarcada = _grZiiZonas.some(z => z.candleTs === candleTsAtual);
+    btn.style.display = temMarcada ? 'block' : 'none';
+}
+
+// Clique em "Explodir Zona": acha a linha marcada mais recente no ladder
+// aberto agora (compra e/ou venda) e reabre o ladder só daquela faixa de
+// preço, com resolução fina — "não vamos complicar": só considera 1 faixa
+// por vez, mesmo que o usuário tenha marcado mais de uma linha sem querer.
+function grFootprintExplodirZona() {
+    if (_grFootprintModalModo === 'explodido') return;
+    const candleTsOrigem = (_grFootprintModalModo === 'candle' && _grFootprintCandleContexto)
+        ? _grFootprintCandleContexto.candle.t : null;
+    const candidatas = _grZiiZonas.filter(z => z.candleTs === candleTsOrigem);
+    if (candidatas.length === 0) {
+        alert('Marca o checkbox verde (compra) ou vermelho (venda) da linha que quer explodir.');
+        return;
+    }
+    const maisRecente = candidatas.reduce((a, b) => (b.criadoEm > a.criadoEm ? b : a));
+    const mesmaFaixa = candidatas.filter(z => z.lo === maisRecente.lo && z.hi === maisRecente.hi);
+    const tipos = mesmaFaixa.map(z => z.tipo); // ['compra'] | ['venda'] | ['compra','venda']
+
+    _grFootprintZonaExplodida = { lo: maisRecente.lo, hi: maisRecente.hi, tipos, candleTsOrigem };
+    grFootprintRenderizarExplosao(true);
+}
+
+// Reconstrói o mapa fino ($10) só com os trades dentro da faixa [lo, hi) da
+// zona marcada, zerando o lado (compra/venda) que não foi marcado — sempre a
+// partir do histórico bruto (_grFootprintCandlesRaw via grFootprintTodosOsCandlesBrutos),
+// nunca de um mapa já agregado, pra garantir a resolução máxima disponível.
+function grFootprintRenderizarExplosao(scrollParaPreco) {
+    const zona = _grFootprintZonaExplodida;
+    if (!zona) return;
+
+    const mapaExplodido = new Map();
+    const somarNiveis = (niveis) => {
+        (niveis || []).forEach(n => {
+            if (n.p < zona.lo || n.p >= zona.hi) return;
+            if (!mapaExplodido.has(n.p)) mapaExplodido.set(n.p, { c: 0, v: 0, nc: 0, nv: 0 });
+            const acc = mapaExplodido.get(n.p);
+            if (zona.tipos.includes('compra')) { acc.c += n.c; acc.nc += (n.nc || 0); }
+            if (zona.tipos.includes('venda')) { acc.v += n.v; acc.nv += (n.nv || 0); }
+        });
+    };
+
+    let contadorMinutos = 0;
+    if (zona.candleTsOrigem == null) {
+        // Zona veio do histograma agregado (últimos N dias) — mesma janela de lookback.
+        const de = Date.now() - (_grFootprintLookbackDias * 24 * 60 * 60 * 1000);
+        grFootprintTodosOsCandlesBrutos().forEach(c => {
+            if (c.ts < de) return;
+            contadorMinutos++;
+            somarNiveis(c.niveis);
+        });
+    } else {
+        // Zona veio de um candle específico — só o intervalo daquele candle
+        // (contexto ainda vivo: só é limpo se o modal inteiro for fechado).
+        const ctx = _grFootprintCandleContexto;
+        if (!ctx) return;
+        grFootprintTodosOsCandlesBrutos().forEach(c => {
+            if (c.ts < ctx.de || c.ts >= ctx.ate) return;
+            contadorMinutos++;
+            somarNiveis(c.niveis);
+        });
+    }
+
+    if (mapaExplodido.size === 0) {
+        alert('Sem dados nessa faixa de preço ainda.');
+        return;
+    }
+
+    const candleFake = { o: zona.lo, h: zona.hi, l: zona.lo, c: _precoAtual, t: null };
+    _grFootprintModalModo = 'explodido';
+    grFootprintDesenharCandleLadder(candleFake, null, mapaExplodido, contadorMinutos, true, null, scrollParaPreco, null);
+
+    const btn = document.getElementById('footprint-explodir-btn');
+    if (btn) {
+        btn.style.display = 'block';
+        btn.textContent = '◀ Voltar';
+        btn.onclick = grFootprintVoltarDaExplosao;
+    }
+}
+
+// "Voltar" da explosão: reabre o ladder de origem (candle específico ou
+// agregado) do zero, do jeito normal — mais simples e seguro que tentar
+// reconstruir o estado anterior manualmente.
+function grFootprintVoltarDaExplosao() {
+    const zona = _grFootprintZonaExplodida;
+    _grFootprintZonaExplodida = null;
+    const btn = document.getElementById('footprint-explodir-btn');
+    if (btn) { btn.onclick = grFootprintExplodirZona; btn.textContent = 'Explodir Zona 🔍'; }
+    if (zona && zona.candleTsOrigem != null && _grFootprintCandleContexto) {
+        grFootprintAbrirCandleModal(_grFootprintCandleContexto.candle);
+    } else {
+        grFootprintAbrirHistogramaAgregado(false);
+    }
+}
+
 function grFootprintFecharCandleModal() {
     document.getElementById('footprint-candle-overlay').style.display = 'none';
     document.getElementById('footprint-nivel-overlay').style.display = 'none';
@@ -15287,6 +15397,9 @@ function grFootprintFecharCandleModal() {
     _grFootprintCvdAnteriorAgregadoCache = null;
     _grFootprintCandlePocs = null;
     _grFootprintCandleLadderRange = null;
+    _grFootprintZonaExplodida = null;
+    const btnExplodir = document.getElementById('footprint-explodir-btn');
+    if (btnExplodir) { btnExplodir.onclick = grFootprintExplodirZona; btnExplodir.textContent = 'Explodir Zona 🔍'; }
     grFootprintAtualizarVisibilidadePainel();
 }
 
@@ -15817,6 +15930,12 @@ function grFootprintAtualizarLinhaPrecoAtual() {
 let _grFootprintCandleTickAtual = 10;
 let _grFootprintCandleTouchBind = false;
 let _grFootprintCandleContexto = null; // {de, ate, candle} do candle aberto — usado pra série temporal e pelas zonas ZII
+
+// ── Explodir Zona: reabre o ladder só da faixa de preço de UMA linha marcada
+// (checkbox verde=compra e/ou vermelho=venda), reconstruindo o mapa fino
+// ($10) direto do histórico bruto só daquela faixa — resolução bem maior que
+// a régua ampla original (que agrupa em ~14 linhas pra caber na tela).
+let _grFootprintZonaExplodida = null; // {lo, hi, tipos:['compra'|'venda',...], candleTsOrigem} da zona atual, ou null se não tá explodido
 let _grFootprintCandlePocs = null; // {pocCompraPreco, pocVendaPreco, tick} do candle aberto
 
 // Preço -> y contínuo, genérico: interpola entre os preços REAIS das linhas
@@ -15949,7 +16068,15 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
     const maxSpanHtml = `<span id="footprint-candle-max">${fmtN(candle.h)}</span>`;
     const minSpanHtml = `<span id="footprint-candle-min">${fmtN(candle.l)}</span>`;
     const closeSpanHtml = `<span id="footprint-candle-close">${fmtN(candle.c)}</span>`;
-    if (semCandle) {
+    if (_grFootprintModalModo === 'explodido' && _grFootprintZonaExplodida) {
+        const zona = _grFootprintZonaExplodida;
+        const ladoTxt = zona.tipos.length === 2 ? 'compra + venda' : (zona.tipos[0] === 'compra' ? 'compra' : 'venda');
+        document.getElementById('footprint-candle-titulo').textContent = `Zona explodida (${ladoTxt})`;
+        document.getElementById('footprint-candle-sub').innerHTML =
+            `Faixa ${fmtN(lo)} – ${fmtN(hi)} · tick $${tick} · resolução fina da faixa marcada` +
+            (temIntensidade ? ' · cor mais sólida = trades maiores em média' : '');
+        document.getElementById('footprint-ver-historico-btn').style.display = 'none';
+    } else if (semCandle) {
         document.getElementById('footprint-candle-titulo').textContent = `Histograma agregado — últimos ${_grFootprintLookbackDias} dias`;
         document.getElementById('footprint-candle-sub').innerHTML =
             `Abertura ${fmtN(candle.o)} · Máxima ${maxSpanHtml} · Mínima ${minSpanHtml} · Fechamento ${closeSpanHtml} (${pctSpanHtml}) · ` +
@@ -16199,6 +16326,7 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
                 wrapEl.scrollTop = Math.max(0, yAtualPx - wrapEl.clientHeight / 2);
             }
         }
+        grFootprintAtualizarBotaoExplodir();
 
         // ── O CANDLE DE VERDADE, desenhado no vão central ──────────────────
         // Pavio: linha fina de H até L. Corpo: retângulo sólido entre Abertura e
