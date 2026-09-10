@@ -16589,14 +16589,16 @@ let _grFootprintCandleToqueInicio = null; // {x,y} do touchstart, só pra distin
 
 // ── Rastreio por crosshair (segura e arrasta) ────────────────────────────
 // Toque longo (500ms, mesmo tempo do crosshair do price action) arma o modo
-// rastreio: a partir daí, arrastar o dedo pela régua mostra o POC exato ($10)
-// de cada linha, sem precisar "Explodir Zona". Recalcula só quando o dedo
-// TROCA de linha, nunca a cada pixel. Soltar o dedo NÃO limpa a informação —
-// só o botão ✕ do painel limpa.
+// rastreio: a partir daí, arrastar o dedo INTERPOLA a posição exata dentro da
+// linha larga, em degraus de $10 (a granularidade real do dado) — não fica
+// preso a pular entre as ~14 fronteiras visíveis. Mostra uma pílula de preço
+// (igual o crosshair do price action) grudada na linha. Recalcula só quando
+// o degrau de $10 muda, nunca a cada pixel. Soltar o dedo NÃO limpa a
+// informação — só o botão ✕ do painel limpa.
 let _grFootprintRastreioTimer = null;
 let _grFootprintRastreioArmado = false;
-let _grFootprintRastreioUltimoP = null; // p da última linha processada nesse arraste
-window._grFootprintRastreioInfo = null; // {p, loP, hiP, yTop, yBottom, precoExato, volExato, ladoExato, compraTot, vendaTot, deltaTot} — sobrevive ao soltar
+let _grFootprintRastreioUltimoP = null; // último preço de $10 já processado nesse arraste (evita recalcular a cada pixel)
+window._grFootprintRastreioInfo = null; // {loP, hiP, precoSnap, yExato, compraTot, vendaTot, deltaTot, ladoExato} — sobrevive ao soltar
 
 function grFootprintCandleTouchStart(evt) {
     if (evt.touches.length !== 1) { _grFootprintCandleToqueInicio = null; return; }
@@ -16644,8 +16646,10 @@ function grFootprintCandleTouchEnd(evt) {
     grFootprintCandleProcessarToque(touch.clientY);
 }
 
-// Acha a linha sob o dedo e, só se for uma linha DIFERENTE da última
-// processada nesse arraste, recalcula o detalhe fino daquela faixa.
+// Acha a linha sob o dedo e interpola a posição EXATA dentro dela, em passos
+// de $10 (a granularidade real do dado) — não fica preso às ~14 fronteiras
+// visíveis da régua larga. Só recalcula quando o preço interpolado muda de
+// fato (mudou de degrau de $10), não a cada pixel.
 function grFootprintRastrearToque(clientY) {
     const canvas = document.getElementById('footprint-candle-canvas');
     if (!canvas) return;
@@ -16653,32 +16657,39 @@ function grFootprintRastrearToque(clientY) {
     const y = (clientY - rect.top) * (canvas.height / rect.height);
     for (const linha of _grFootprintCandleLinhas) {
         if (y >= linha.yTop && y < linha.yBottom) {
-            if (_grFootprintRastreioUltimoP === linha.p) return; // mesma linha — não recalcula à toa
-            _grFootprintRastreioUltimoP = linha.p;
             const loP = linha.v._loP != null ? linha.v._loP : linha.p - linha.tick;
             const hiP = linha.v._hiP != null ? linha.v._hiP : linha.p;
-            const fino = grFootprintRastrearFaixa(loP, hiP);
-            window._grFootprintRastreioInfo = fino ? { loP, hiP, p: linha.p, yTop: linha.yTop, yBottom: linha.yBottom, ...fino } : null;
+            // Topo da linha = preço mais alto (hiP); fundo = preço mais baixo (loP) —
+            // mesma orientação da régua (preço decrescente de cima pra baixo).
+            const frac = Math.max(0, Math.min(1, (y - linha.yTop) / (linha.yBottom - linha.yTop)));
+            const precoInterp = hiP - frac * (hiP - loP);
+            const precoSnap = Math.round(precoInterp / 10) * 10; // degrau de $10
+            if (_grFootprintRastreioUltimoP === precoSnap) return; // mesmo degrau — não recalcula à toa
+            _grFootprintRastreioUltimoP = precoSnap;
+
+            // Y exato do degrau (não o meio da linha larga) — é isso que faz o
+            // crosshair se mover suavemente DENTRO da faixa, não só pular entre linhas.
+            const fracSnap = (hiP - precoSnap) / (hiP - loP);
+            const yExato = linha.yTop + fracSnap * (linha.yBottom - linha.yTop);
+
+            const fino = grFootprintRastrearNivel(precoSnap);
+            window._grFootprintRastreioInfo = { loP, hiP, precoSnap, yExato, ...fino };
             grFootprintDesenharOverlayRastreio();
             return;
         }
     }
 }
 
-// Varre o histórico bruto ($10) só dentro de [loP, hiP) e acha o nível exato
-// de maior volume ali dentro — o mesmo dado que "Explodir Zona" mostra, só
-// que calculado na hora, sem abrir régua nova. Reaproveita a mesma fonte
-// (candle específico vs. janela agregada) que a explosão já usa.
-function grFootprintRastrearFaixa(loP, hiP) {
-    let melhorP = null, melhorVol = -1, melhorLado = null;
+// Soma o volume no histórico bruto EXATAMENTE naquele preço de $10 (não numa
+// faixa — o ponto que o dedo tá tocando agora). Reaproveita a mesma fonte
+// (candle específico vs. janela agregada) que a explosão de zona já usa.
+function grFootprintRastrearNivel(precoExato) {
     let compraTot = 0, vendaTot = 0;
     const somar = (niveis) => {
         (niveis || []).forEach(n => {
-            if (n.p < loP || n.p >= hiP) return;
-            const c = n.c || 0, v = n.v || 0;
-            compraTot += c; vendaTot += v;
-            const vol = c + v;
-            if (vol > melhorVol) { melhorVol = vol; melhorP = n.p; melhorLado = c >= v ? 'compra' : 'venda'; }
+            if (n.p !== precoExato) return;
+            compraTot += (n.c || 0);
+            vendaTot  += (n.v || 0);
         });
     };
     if (_grFootprintModalModo === 'candle' && _grFootprintCandleContexto) {
@@ -16694,13 +16705,13 @@ function grFootprintRastrearFaixa(loP, hiP) {
             somar(c.niveis);
         });
     }
-    if (melhorP == null) return null;
-    return { precoExato: melhorP, volExato: melhorVol, ladoExato: melhorLado, compraTot, vendaTot, deltaTot: compraTot - vendaTot };
+    const ladoExato = compraTot === vendaTot ? null : (compraTot > vendaTot ? 'compra' : 'venda');
+    return { compraTot, vendaTot, deltaTot: compraTot - vendaTot, ladoExato };
 }
 
-// Desenha só a linha do crosshair (canvas overlay leve, separado do ladder —
-// não precisa re-renderizar a régua inteira a cada troca de linha) e atualiza
-// o painel de texto flutuante.
+// Desenha a linha do crosshair NO PONTO EXATO interpolado (canvas overlay
+// leve, separado do ladder — não precisa re-renderizar a régua inteira a
+// cada degrau) + a pílula de preço, igual o crosshair do price action.
 function grFootprintDesenharOverlayRastreio() {
     grFootprintAtualizarPainelRastreio();
     const overlay = document.getElementById('footprint-candle-rastreio-canvas');
@@ -16716,16 +16727,31 @@ function grFootprintDesenharOverlayRastreio() {
     ctx.clearRect(0, 0, W, H);
     const info = window._grFootprintRastreioInfo;
     if (!info) return;
-    const ymid = (info.yTop + info.yBottom) / 2;
+
     ctx.save();
     ctx.strokeStyle = '#FFA726';
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 1.5;
     ctx.setLineDash([5, 4]);
     ctx.beginPath();
-    ctx.moveTo(0, ymid);
-    ctx.lineTo(W, ymid);
+    ctx.moveTo(0, info.yExato);
+    ctx.lineTo(W, info.yExato);
     ctx.stroke();
     ctx.restore();
+
+    // Pílula do preço — grudada na margem esquerda, acompanha a linha.
+    ctx.font = 'bold 11px -apple-system';
+    const txt = fmtN(info.precoSnap);
+    const tw = ctx.measureText(txt).width;
+    const pH = 18, pW = tw + 12;
+    let pY = info.yExato - pH / 2;
+    pY = Math.max(0, Math.min(H - pH, pY)); // não deixa a pílula sair do canvas
+    ctx.fillStyle = '#FFA726';
+    ctx.beginPath();
+    ctx.roundRect(0, pY, pW, pH, 4);
+    ctx.fill();
+    ctx.fillStyle = '#1E222D';
+    ctx.textAlign = 'left';
+    ctx.fillText(txt, 6, pY + pH / 2 + 4);
 }
 
 function grFootprintAtualizarPainelRastreio() {
@@ -16734,17 +16760,19 @@ function grFootprintAtualizarPainelRastreio() {
     if (!painel || !texto) return;
     const info = window._grFootprintRastreioInfo;
     if (!info) { painel.style.display = 'none'; return; }
-    const corLado = info.ladoExato === 'compra' ? '#4CAF50' : '#EF5350';
+    const semNegociacao = info.compraTot === 0 && info.vendaTot === 0;
+    const corLado = info.ladoExato === 'compra' ? '#4CAF50' : (info.ladoExato === 'venda' ? '#EF5350' : '#8E8E93');
     const deltaTxt = (info.deltaTot >= 0 ? '+' : '') + fmtBtc2(info.deltaTot);
     texto.innerHTML =
-        `<b>Faixa ${fmtN(info.loP)} – ${fmtN(info.hiP)}</b><br>` +
-        `POC exato: <b style="color:${corLado}">${fmtN(info.precoExato)}</b> (${fmtBtc2(info.volExato)} BTC, ${info.ladoExato})<br>` +
-        `Compra ${fmtBtc2(info.compraTot)} · Venda ${fmtBtc2(info.vendaTot)} · Delta ${deltaTxt}`;
+        `<b>Preço exato: <span style="color:${corLado}">${fmtN(info.precoSnap)}</span></b><br>` +
+        (semNegociacao
+            ? `Sem negociação registrada exatamente nesse degrau de $10.`
+            : `Compra ${fmtBtc2(info.compraTot)} · Venda ${fmtBtc2(info.vendaTot)} · Delta ${deltaTxt}`);
     painel.style.display = 'block';
-    // Painel sempre logo abaixo da linha rastreada, sem sair da área visível.
+    // Painel sempre perto da linha rastreada, sem sair da área visível.
     const range = _grFootprintCandleLadderRange;
-    let topPx = info.yBottom + 6;
-    if (range && topPx + 60 > range.H) topPx = Math.max(4, info.yTop - 66);
+    let topPx = info.yExato + 14;
+    if (range && topPx + 60 > range.H) topPx = Math.max(4, info.yExato - 74);
     painel.style.top = topPx + 'px';
 }
 
