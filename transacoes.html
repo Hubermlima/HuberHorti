@@ -339,6 +339,8 @@ input[type=range]::-webkit-slider-runnable-track{border-radius:100px;}
 .cv-ind-btn.pat.active{color:#CE93D8;background:linear-gradient(180deg,#25183d 0%,#1a102e 100%);}
 .cv-ind-btn.atr.active{color:#FF8A65;background:linear-gradient(180deg,#2e1a0d 0%,#1e1008 100%);}
 .cv-ind-btn.vwap.active{color:#80DEEA;background:linear-gradient(180deg,#0d2830 0%,#081820 100%);}
+.cv-ind-btn.vwap-ancorar.armado{color:#FFA726;background:linear-gradient(180deg,#302008 0%,#201404 100%);animation:cvPulseAncora 1s ease-in-out infinite;}
+@keyframes cvPulseAncora{0%,100%{opacity:1;}50%{opacity:0.55;}}
 .cv-ind-btn.obv.active{color:#A5D6A7;background:linear-gradient(180deg,#0d2810 0%,#081808 100%);}
 .cv-ind-btn.stoch.active{color:#FFF176;background:linear-gradient(180deg,#2e2a00 0%,#1e1c00 100%);}
 .cv-ind-btn.liq.active{color:#FF6B6B;background:linear-gradient(180deg,#2e0a0a 0%,#1e0606 100%);}
@@ -1274,6 +1276,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
 <span class="btn-sigla">Vol%</span><span class="btn-nome">Volatilidade</span></button>
       <button class="cv-ind-btn" id="cv-ind-chandelier" onclick="cvToggleChandelier()"><span class="btn-sigla">CE</span><span class="btn-nome">Chandelier</span></button>
       <button class="cv-ind-btn vwap" id="cv-ind-vwap" onclick="cvToggleInd('vwap')"><span class="btn-sigla">VWAP</span><span class="btn-nome">Preço por Volume</span></button>
+      <button class="cv-ind-btn vwap-ancorar" id="cv-vwap-ancorar-btn" onclick="grVwapArmarAncora()"><span class="btn-sigla">⚓</span><span class="btn-nome">Ancorar VWAP</span></button>
       <button class="cv-ind-btn footprint" id="cv-ind-footprint" onclick="cvToggleFootprint()"><span class="btn-sigla">FP</span><span class="btn-nome">Footprint</span></button>
       <button class="cv-ind-btn ichimoku" id="cv-ind-ichimoku" onclick="cvToggleInd('ichimoku')"><span class="btn-sigla">Ichi</span><span class="btn-nome">Nuvem de Ichimoku</span></button>
       <button class="cv-ind-btn obv" id="cv-ind-obv" onclick="cvToggleSubInd('obv')">
@@ -3516,6 +3519,19 @@ function grSwitchTab(tab) {
 let _grChart = null;
 let _grTf = '4h';
 let _grAllCandles = [];
+let _grVwapAncoraIdx = null;      // índice em _grAllCandles do candle-âncora escolhido pelo usuário (null = usa início da tela como padrão de exibição)
+let _grVwapAncorarArmado = false; // true = o PRÓXIMO toque no gráfico define a âncora, depois desarma sozinho
+
+// Ativa o "modo mira": o próximo toque no candle do price action vira a nova
+// âncora do VWAP. Também liga o VWAP se ele tiver desligado, porque ancorar
+// um indicador invisível não faz sentido nenhum.
+function grVwapArmarAncora() {
+    _grVwapAncorarArmado = true;
+    const btn = document.getElementById('cv-vwap-ancorar-btn');
+    if (btn) btn.classList.add('armado');
+    if (!_indState.vwap) cvToggleInd('vwap');
+}
+
 let _grCandlesD = [];  // candles diários para EMA MTF
 let _grCandlesW = [];  // candles semanais para EMA MTF
 let _grZonasCache = null; // {res: [], sup: []} — calculado uma vez por load
@@ -4225,11 +4241,32 @@ function grDrawCandles(candles, emptyRight) {
             if (plUlt != null) window._compValores.powerlaw = { cor: '#FFEB3B', valor: fmtN(plUlt) };
         }
 
-        // VWAP no price action
-        if (_indState.vwap) {
-            const vwapAll = grVWAP(_grAllCandles);
+        // VWAP ancorado no price action
+        if (_indState.vwap && !_indOculto.vwap) {
+            // Sem âncora escolhida ainda: usa o início da janela visível como
+            // padrão só pra sempre mostrar algo — não é "a" âncora oficial,
+            // é só um fallback de exibição até o usuário tocar em ⚓ Ancorar.
+            const ancoraEfetiva = _grVwapAncoraIdx != null ? _grVwapAncoraIdx : (window._grStartIdx || 0);
+            const vwapAll = grVWAPAncorado(_grAllCandles, ancoraEfetiva);
             const vwapVis = extrairJanela(vwapAll, 1);
             desenharLinha(vwapVis, '#80DEEA', 1.5, [5, 3]);
+
+            // Marcador (âncora ⚓) no candle exato — só quando foi escolhido
+            // manualmente, pra deixar claro de onde a linha tá contando.
+            if (_grVwapAncoraIdx != null) {
+                const cAncora = _grAllCandles[_grVwapAncoraIdx];
+                const xAncora = grIndexToX(_grVwapAncoraIdx);
+                if (cAncora && xAncora >= PAD.left - 10 && xAncora <= PAD.left + chartW + 10) {
+                    const yAncora = toY((cAncora.h + cAncora.l + cAncora.c) / 3);
+                    ctx.beginPath();
+                    ctx.arc(xAncora, yAncora, 4.5, 0, Math.PI * 2);
+                    ctx.fillStyle = '#80DEEA';
+                    ctx.fill();
+                    ctx.lineWidth = 1;
+                    ctx.strokeStyle = '#0d2830';
+                    ctx.stroke();
+                }
+            }
             // Label + pílula
             const lastVwap = vwapVis.filter(v=>v!==null).pop();
             if (lastVwap) {
@@ -6465,6 +6502,20 @@ function grInitTouch() {
             // Toggle de volume VD
             const ex2 = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (canvas.width / canvas.getBoundingClientRect().width);
             const ey2 = (e.touches[0].clientY - canvas.getBoundingClientRect().top) * (canvas.height / canvas.getBoundingClientRect().height);
+
+            // ⚓ Modo "ancorar VWAP" armado — esse toque escolhe o candle e
+            // desarma sozinho, sem entrar em nenhum outro gesto (scroll, drag
+            // de linha, crosshair etc). Prioridade máxima enquanto armado.
+            if (_grVwapAncorarArmado) {
+                const idx = Math.round(grXToIndex(ex2));
+                if (_grAllCandles[idx]) _grVwapAncoraIdx = idx;
+                _grVwapAncorarArmado = false;
+                const btnA = document.getElementById('cv-vwap-ancorar-btn');
+                if (btnA) btnA.classList.remove('armado');
+                grDrawChart();
+                e.preventDefault();
+                return;
+            }
             
             if (window._vdVolToggleArea && _indState.subInd === 'vd') {
                 const t = window._vdVolToggleArea;
@@ -10690,6 +10741,26 @@ function grVWAP(candles) {
             cumPV = 0; cumV = 0;
             lastDay = day;
         }
+        const tp = (c.h + c.l + c.c) / 3;
+        const v = c.v || 0;
+        cumPV += tp * v;
+        cumV  += v;
+        return cumV > 0 ? cumPV / cumV : tp;
+    });
+}
+
+// ── VWAP Ancorado — acumula a partir de um candle específico escolhido pelo
+// usuário (toque no botão ⚓ Ancorar VWAP + toque no candle desejado), em vez
+// de resetar sozinho todo dia. Antes do candle-âncora não desenha nada (null).
+// Ideia: topo/fundo de um evento relevante vira o "zero" — a linha mostra o
+// preço médio de quem entrou dali pra frente, ponderado por volume.
+function grVWAPAncorado(candles, ancoraIdx) {
+    if (ancoraIdx == null || ancoraIdx < 0 || ancoraIdx >= candles.length) {
+        return candles.map(() => null);
+    }
+    let cumPV = 0, cumV = 0;
+    return candles.map((c, i) => {
+        if (i < ancoraIdx) return null;
         const tp = (c.h + c.l + c.c) / 3;
         const v = c.v || 0;
         cumPV += tp * v;
