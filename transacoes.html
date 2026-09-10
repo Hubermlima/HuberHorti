@@ -338,9 +338,7 @@ input[type=range]::-webkit-slider-runnable-track{border-radius:100px;}
 .cv-ind-btn.reg.active{color:#64B5F6;background:linear-gradient(180deg,#0d1a2e 0%,#081020 100%);}
 .cv-ind-btn.pat.active{color:#CE93D8;background:linear-gradient(180deg,#25183d 0%,#1a102e 100%);}
 .cv-ind-btn.atr.active{color:#FF8A65;background:linear-gradient(180deg,#2e1a0d 0%,#1e1008 100%);}
-.cv-ind-btn.vwap.active{color:#80DEEA;background:linear-gradient(180deg,#0d2830 0%,#081820 100%);}
-.cv-ind-btn.vwap-ancorar.armado{color:#FFA726;background:linear-gradient(180deg,#302008 0%,#201404 100%);animation:cvPulseAncora 1s ease-in-out infinite;}
-@keyframes cvPulseAncora{0%,100%{opacity:1;}50%{opacity:0.55;}}
+.cv-ind-btn.vwap-limpar{color:#EF5350;}
 .cv-ind-btn.obv.active{color:#A5D6A7;background:linear-gradient(180deg,#0d2810 0%,#081808 100%);}
 .cv-ind-btn.stoch.active{color:#FFF176;background:linear-gradient(180deg,#2e2a00 0%,#1e1c00 100%);}
 .cv-ind-btn.liq.active{color:#FF6B6B;background:linear-gradient(180deg,#2e0a0a 0%,#1e0606 100%);}
@@ -1275,8 +1273,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <button class="cv-ind-btn atr" id="cv-ind-atr" onclick="cvToggleSubInd('atr')">
 <span class="btn-sigla">Vol%</span><span class="btn-nome">Volatilidade</span></button>
       <button class="cv-ind-btn" id="cv-ind-chandelier" onclick="cvToggleChandelier()"><span class="btn-sigla">CE</span><span class="btn-nome">Chandelier</span></button>
-      <button class="cv-ind-btn vwap" id="cv-ind-vwap" onclick="cvToggleInd('vwap')"><span class="btn-sigla">VWAP</span><span class="btn-nome">Preço por Volume</span></button>
-      <button class="cv-ind-btn vwap-ancorar" id="cv-vwap-ancorar-btn" onclick="grVwapArmarAncora()"><span class="btn-sigla">⚓</span><span class="btn-nome">Ancorar VWAP</span></button>
+      <button class="cv-ind-btn vwap-limpar" id="cv-vwap-limpar-btn" onclick="grVwapLimparAncora()" style="display:none;"><span class="btn-sigla">✕</span><span class="btn-nome">Remover Âncora</span></button>
       <button class="cv-ind-btn footprint" id="cv-ind-footprint" onclick="cvToggleFootprint()"><span class="btn-sigla">FP</span><span class="btn-nome">Footprint</span></button>
       <button class="cv-ind-btn ichimoku" id="cv-ind-ichimoku" onclick="cvToggleInd('ichimoku')"><span class="btn-sigla">Ichi</span><span class="btn-nome">Nuvem de Ichimoku</span></button>
       <button class="cv-ind-btn obv" id="cv-ind-obv" onclick="cvToggleSubInd('obv')">
@@ -3213,11 +3210,16 @@ function cvAbrirComponentesVisiveis() {
     const chaveLabel = {
         ema9: 'EMA 9', ema21: 'EMA 21', ema50: 'EMA 50', ema100: 'EMA 100', ema200: 'EMA 200',
         ema21d: 'EMA 21 Diário', ema21w: 'EMA 21 Semanal', mm3s: 'SMA 250/300/350 Semanal',
-        chandelier: 'Chandelier Exit', bollinger: 'Bollinger', powerlaw: 'Power Law', vwap: 'VWAP', ichimoku: 'Ichimoku',
+        chandelier: 'Chandelier Exit', bollinger: 'Bollinger', powerlaw: 'Power Law', vwap: 'VWAP Ancorado', ichimoku: 'Ichimoku',
         srSup: 'Suporte (Zonas Auto)', srRes: 'Resistência (Zonas Auto)'
     };
     const vals = window._compValores || {};
-    const ativos = Object.keys(chaveLabel).filter(k => _indState[k] && !_indOculto[k] && vals[k]);
+    // VWAP Ancorado não tem _indState próprio — vive dentro do framework do
+    // footprint, então "ativo" aqui significa footprint ligado + âncora escolhida.
+    const ativos = Object.keys(chaveLabel).filter(k => {
+        if (k === 'vwap') return _grFootprintAtivo && _grVwapAncoraIdx != null && vals[k];
+        return _indState[k] && !_indOculto[k] && vals[k];
+    });
 
     if (ativos.length === 0) {
         lista.innerHTML = `<div style="text-align:center;padding:24px 0;color:#8E8E93;font-size:13px;font-family:-apple-system,sans-serif;">Nenhum componente ativo no momento.</div>`;
@@ -3519,21 +3521,29 @@ function grSwitchTab(tab) {
 let _grChart = null;
 let _grTf = '4h';
 let _grAllCandles = [];
-let _grVwapAncoraIdx = null;      // índice em _grAllCandles do candle-âncora escolhido pelo usuário (null = usa início da tela como padrão de exibição)
-let _grVwapAncorarArmado = false; // true = o PRÓXIMO toque no gráfico define a âncora, depois desarma sozinho
+let _grVwapAncoraIdx = null; // índice em _grAllCandles do candle-âncora escolhido pelo usuário — null = VWAP ancorado não desenha nada. Vive dentro do framework do footprint: sem _indState próprio, só aparece quando _grFootprintAtivo.
 
-// Ativa o "modo mira": o próximo toque no candle do price action vira a nova
-// âncora do VWAP. Também liga o VWAP se ele tiver desligado, e força a flag
-// de visibilidade (_indOculto.vwap) pra false — porque um save antigo no menu
-// "Ocultar Indicadores" pode ter deixado ela travada em true (indicador não
-// marcado como fixo lá vira "escondido" por padrão), e aí o VWAP nunca
-// aparece mesmo com a âncora escolhida certinho.
-function grVwapArmarAncora() {
-    _grVwapAncorarArmado = true;
-    const btn = document.getElementById('cv-vwap-ancorar-btn');
-    if (btn) btn.classList.add('armado');
-    if (!_indState.vwap) cvToggleInd('vwap');
-    _indOculto.vwap = false;
+// Chamado pelo botão "⚓ Ancorar" dentro da janela suspensa do crosshair.
+// Se o candle tocado já É a âncora atual, funciona como "toggle" e remove —
+// não precisa procurar o botão ✕ separado pra desfazer o mesmo candle.
+function grVwapAncorarNoCandle(idxCandle) {
+    if (idxCandle == null || !_grAllCandles[idxCandle]) return;
+    _grVwapAncoraIdx = (_grVwapAncoraIdx === idxCandle) ? null : idxCandle;
+    grVwapAtualizarBotaoLimpar();
+    grDrawChart();
+}
+
+// Botão ✕ "Remover Âncora" na toolbar — só aparece com footprint ligado E
+// âncora escolhida; some sozinho caso contrário.
+function grVwapLimparAncora() {
+    _grVwapAncoraIdx = null;
+    grVwapAtualizarBotaoLimpar();
+    grDrawChart();
+}
+
+function grVwapAtualizarBotaoLimpar() {
+    const btn = document.getElementById('cv-vwap-limpar-btn');
+    if (btn) btn.style.display = (_grFootprintAtivo && _grVwapAncoraIdx != null) ? '' : 'none';
 }
 
 let _grCandlesD = [];  // candles diários para EMA MTF
@@ -4245,49 +4255,49 @@ function grDrawCandles(candles, emptyRight) {
             if (plUlt != null) window._compValores.powerlaw = { cor: '#FFEB3B', valor: fmtN(plUlt) };
         }
 
-        // VWAP ancorado no price action
-        if (_indState.vwap && !_indOculto.vwap) {
-            // Sem âncora escolhida ainda: usa o início da janela visível como
-            // padrão só pra sempre mostrar algo — não é "a" âncora oficial,
-            // é só um fallback de exibição até o usuário tocar em ⚓ Ancorar.
-            const ancoraEfetiva = _grVwapAncoraIdx != null ? _grVwapAncoraIdx : (window._grStartIdx || 0);
-            const vwapAll = grVWAPAncorado(_grAllCandles, ancoraEfetiva);
+        // VWAP ancorado — agora vive dentro do framework do footprint, sem
+        // indicador/botão próprio: só desenha quando o footprint tá ligado E
+        // existe uma âncora escolhida (o indicador "VWAP" antigo, com botão
+        // independente e reset diário automático, foi eliminado).
+        if (_grFootprintAtivo && _grVwapAncoraIdx != null) {
+            const vwapAll = grVWAPAncorado(_grAllCandles, _grVwapAncoraIdx);
             const vwapVis = extrairJanela(vwapAll, 1);
-            desenharLinha(vwapVis, '#80DEEA', 1.5, [5, 3]);
+            const CorVwap = '#37474F'; // linha escura sólida — antes era ciano tracejado apagado
+            desenharLinha(vwapVis, CorVwap, 1.8);
 
-            // Marcador (âncora ⚓) no candle exato — só quando foi escolhido
-            // manualmente, pra deixar claro de onde a linha tá contando.
-            if (_grVwapAncoraIdx != null) {
-                const cAncora = _grAllCandles[_grVwapAncoraIdx];
-                const xAncora = grIndexToX(_grVwapAncoraIdx);
-                if (cAncora && xAncora >= PAD.left - 10 && xAncora <= PAD.left + chartW + 10) {
-                    const yAncora = toY((cAncora.h + cAncora.l + cAncora.c) / 3);
-                    ctx.beginPath();
-                    ctx.arc(xAncora, yAncora, 4.5, 0, Math.PI * 2);
-                    ctx.fillStyle = '#80DEEA';
-                    ctx.fill();
-                    ctx.lineWidth = 1;
-                    ctx.strokeStyle = '#0d2830';
-                    ctx.stroke();
-                }
+            // Marcador (bolinha) no candle-âncora exato, pra deixar claro de
+            // onde a linha começa a contar.
+            const cAncora = _grAllCandles[_grVwapAncoraIdx];
+            const xAncora = grIndexToX(_grVwapAncoraIdx);
+            if (cAncora && xAncora >= PAD.left - 10 && xAncora <= PAD.left + chartW + 10) {
+                const yAncora = toY((cAncora.h + cAncora.l + cAncora.c) / 3);
+                ctx.beginPath();
+                ctx.arc(xAncora, yAncora, 4.5, 0, Math.PI * 2);
+                ctx.fillStyle = CorVwap;
+                ctx.fill();
+                ctx.lineWidth = 1;
+                ctx.strokeStyle = '#FFFFFF';
+                ctx.stroke();
             }
+
             // Label + pílula
             const lastVwap = vwapVis.filter(v=>v!==null).pop();
             if (lastVwap) {
-                window._compValores.vwap = { cor: '#80DEEA', valor: fmtN(lastVwap) };
+                window._compValores.vwap = { cor: CorVwap, valor: fmtN(lastVwap) };
                 const yv = toY(lastVwap);
                 if (yv >= PAD.top && yv <= PAD.top + chartH) {
                     const tv = 'V ' + fmtN(lastVwap);
                     ctx.font = 'bold 10px -apple-system';
                     const pH = 14, pW = PAD.left - 4;
-                    ctx.fillStyle = '#80DEEA';
+                    ctx.fillStyle = CorVwap;
                     ctx.beginPath(); ctx.roundRect(3, yv - pH/2, pW, pH, 3); ctx.fill();
-                    ctx.fillStyle = '#000';
+                    ctx.fillStyle = '#FFF';
                     ctx.textAlign = 'right';
                     ctx.fillText(tv, pW - 1, yv + pH/2 - 3);
                 }
             }
         }
+        grVwapAtualizarBotaoLimpar();
 
                // Nuvem de Ichimoku
         if (_indState.ichimoku) {
@@ -6507,21 +6517,6 @@ function grInitTouch() {
             const ex2 = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (canvas.width / canvas.getBoundingClientRect().width);
             const ey2 = (e.touches[0].clientY - canvas.getBoundingClientRect().top) * (canvas.height / canvas.getBoundingClientRect().height);
 
-            // ⚓ Modo "ancorar VWAP" armado — esse toque escolhe o candle e
-            // desarma sozinho, sem entrar em nenhum outro gesto (scroll, drag
-            // de linha, crosshair etc). Prioridade máxima enquanto armado.
-            if (_grVwapAncorarArmado) {
-                const idxBruto = Math.round(grXToIndex(ex2));
-                const idx = Math.max(0, Math.min(_grAllCandles.length - 1, idxBruto));
-                if (_grAllCandles[idx]) _grVwapAncoraIdx = idx;
-                _grVwapAncorarArmado = false;
-                const btnA = document.getElementById('cv-vwap-ancorar-btn');
-                if (btnA) btnA.classList.remove('armado');
-                grDrawChart();
-                e.preventDefault();
-                return;
-            }
-            
             if (window._vdVolToggleArea && _indState.subInd === 'vd') {
                 const t = window._vdVolToggleArea;
                 if (ex2 >= t.x && ex2 <= t.x + t.w && ey2 >= t.y && ey2 <= t.y + t.h) {
@@ -6536,6 +6531,17 @@ function grInitTouch() {
                 const t = window._grCrosshairFootprintBtnArea;
                 if (ex2 >= t.x && ex2 <= t.x + t.w && ey2 >= t.y && ey2 <= t.y + t.h) {
                     if (window._grCrosshairCandleAtual) grFootprintAbrirCandleModal(window._grCrosshairCandleAtual);
+                    e.preventDefault();
+                    return;
+                }
+            }
+            // Toque no botão "⚓ Ancorar" / "✕ Remover Âncora" da janela do crosshair
+            if (window._longPressActive && window._grCrosshairAncorarBtnArea) {
+                const ta = window._grCrosshairAncorarBtnArea;
+                if (ex2 >= ta.x && ex2 <= ta.x + ta.w && ey2 >= ta.y && ey2 <= ta.y + ta.h) {
+                    grVwapAncorarNoCandle(window._grCrosshairAncorarIdx);
+                    window._longPressActive = false;
+                    clearTimeout(_longPressTimer);
                     e.preventDefault();
                     return;
                 }
@@ -7199,6 +7205,7 @@ function grDrawChartWithCrosshair(yInterno) {
     
 
     const candle = _grAllCandles[Math.max(0, Math.min(total - 1, candleIdx))];
+    const idxCandleCrosshair = Math.max(0, Math.min(total - 1, candleIdx));
     if (candle) {
         const d = new Date(candle.t);
         const _customSoData = _grTf === 'custom' && (_grTfCustomUnit === 'dia' || _grTfCustomUnit === 'mes');
@@ -7260,7 +7267,8 @@ function grDrawChartWithCrosshair(yInterno) {
         const dateLineH = 16; // altura extra para a data no topo
         const temBotaoFootprint = _grFootprintAtivo && _grFootprintBins;
         const btnH = temBotaoFootprint ? 26 : 0;
-        const boxH = linhas.length * lineH + boxPad + dateLineH + btnH;
+        const btnHAncorar = temBotaoFootprint ? 26 : 0; // Ancorar só existe com footprint ligado — é parte do framework dele agora
+        const boxH = linhas.length * lineH + boxPad + dateLineH + btnH + btnHAncorar;
         const colLabel = 44, colVal = 80;
         const boxW = colLabel + colVal + boxPad;
         let bx = _grCrosshairX + 10;
@@ -7294,7 +7302,7 @@ function grDrawChartWithCrosshair(yInterno) {
         // Botão "Ver Footprint" — abre o modal do candle direto da janela do
         // crosshair, sem precisar fechar e tocar no candle de novo.
         if (temBotaoFootprint) {
-            const btnY = by + boxH - btnH - 4;
+            const btnY = by + boxH - btnH - btnHAncorar - 4;
             const btnRect = { x: bx + 4, y: btnY, w: boxW - 8, h: btnH - 4 };
             ctx.fillStyle = '#FFA726';
             ctx.beginPath(); ctx.roundRect(btnRect.x, btnRect.y, btnRect.w, btnRect.h, 6); ctx.fill();
@@ -7307,6 +7315,27 @@ function grDrawChartWithCrosshair(yInterno) {
         } else {
             window._grCrosshairFootprintBtnArea = null;
         }
+
+        // Botão "⚓ Ancorar" — só existe com o footprint ligado (é parte do
+        // framework dele agora, não um indicador independente). Se o candle
+        // atual já for a âncora escolhida, vira "✕ Remover Âncora" (mesmo
+        // botão, função de toggle).
+        if (temBotaoFootprint) {
+            const jaEAncora = _grVwapAncoraIdx === idxCandleCrosshair;
+            const btnAncY = by + boxH - btnHAncorar - 4;
+            const btnAncRect = { x: bx + 4, y: btnAncY, w: boxW - 8, h: btnHAncorar - 4 };
+            ctx.fillStyle = jaEAncora ? '#EF5350' : '#37474F';
+            ctx.beginPath(); ctx.roundRect(btnAncRect.x, btnAncRect.y, btnAncRect.w, btnAncRect.h, 6); ctx.fill();
+            ctx.font = 'bold 11px -apple-system';
+            ctx.textAlign = 'center';
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillText(jaEAncora ? '✕ Remover Âncora' : '⚓ Ancorar', bx + boxW / 2, btnAncY + btnAncRect.h / 2 + 4);
+            window._grCrosshairAncorarBtnArea = btnAncRect;
+            window._grCrosshairAncorarIdx = idxCandleCrosshair;
+        } else {
+            window._grCrosshairAncorarBtnArea = null;
+        }
+
 
         // Remove pílula temporal do eixo X
     }
@@ -7350,7 +7379,6 @@ const _indState = {
     freehand:  false,
     reg:       false,
     patterns:  false,
-    vwap:      false,
     liq:       false,
     figAtivas: new Set(),
 };
@@ -8206,7 +8234,6 @@ const _indLabels = {
     fib:       'Fibonacci',
     reg:       'Régua',
     patterns:  'Padrões',
-    vwap:      'VWAP',
     ichimoku:  'Nuvem de Ichimoku',
     srSup:     'Suporte (Zonas Auto)',
     srRes:     'Resistência (Zonas Auto)',
@@ -8246,7 +8273,6 @@ const _todosComponentes = [
     { key: 'vol',        label: 'Volume',           tipo: 1 },
     { key: 'macd',       label: 'MACD',             tipo: 1 },
     { key: 'atr',        label: 'ATR',              tipo: 1 },
-    { key: 'vwap',       label: 'VWAP',             tipo: 1 },
     { key: 'ichimoku',   label: 'Nuvem de Ichimoku', tipo: 1 },
     { key: 'srSup',      label: 'Suporte (Zonas Auto)', tipo: 1 },
     { key: 'srRes',      label: 'Resistência (Zonas Auto)', tipo: 1 },
@@ -8261,7 +8287,7 @@ const _todosComponentes = [
 ];
 
 // Locked — apenas os que faz sentido travar
-const _lockavel = ['ema9','ema21','ema50','ema100','ema200','ema21d','ema21w','mm3s','chandelier','bollinger','powerlaw','fib','alertas','reguaS','reguaA','vwap','ichimoku','crosshair','minimapa'];
+const _lockavel = ['ema9','ema21','ema50','ema100','ema200','ema21d','ema21w','mm3s','chandelier','bollinger','powerlaw','fib','alertas','reguaS','reguaA','ichimoku','crosshair','minimapa'];
 
 async function cvCarregarPreferencias() {
     try {
@@ -8459,7 +8485,6 @@ function cvAtivarComponente(key) {
         case 'bollinger': if (!_indState.bollinger) cvToggleBol();            break;
         case 'powerlaw':  if (!_indState.powerlaw)  cvTogglePowerLaw();       break;
         case 'patterns':  if (!_indState.patterns)  cvTogglePat();            break;
-        case 'vwap':      if (!_indState.vwap)      cvToggleInd('vwap');      break;
         case 'ichimoku':  if (!_indState.ichimoku)  cvToggleInd('ichimoku');  break;
         case 'liq':       if (!_indState.liq)       cvToggleLiq();            break;
         case 'footprint': if (!_grFootprintAtivo)   cvToggleFootprint();      break;
@@ -8492,7 +8517,6 @@ function cvDesativarComponente(key) {
         case 'bollinger': if (_indState.bollinger) cvToggleBol();            break;
         case 'powerlaw':  if (_indState.powerlaw)  cvTogglePowerLaw();       break;
         case 'patterns':  if (_indState.patterns)  cvTogglePat();            break;
-        case 'vwap':      if (_indState.vwap)      cvToggleInd('vwap');      break;
         case 'ichimoku':  if (_indState.ichimoku)  cvToggleInd('ichimoku');  break;
         case 'liq':       if (_indState.liq)       cvToggleLiq();            break;
         case 'footprint': if (_grFootprintAtivo)   cvToggleFootprint();      break;
@@ -9883,10 +9907,6 @@ function cvTogglePat() {
 function cvToggleInd(key) {
     _indState[key] = !_indState[key];
     document.getElementById('cv-ind-' + key).classList.toggle('active', _indState[key]);
-    // Garante que ligar o VWAP pelo botão normal também funciona mesmo se um
-    // save antigo no menu "Ocultar Indicadores" tiver deixado a flag de
-    // visibilidade travada (mesmo problema que corrigimos no botão ⚓ Ancorar).
-    if (key === 'vwap' && _indState.vwap) _indOculto.vwap = false;
     grDrawChart();
 }
 
@@ -10759,10 +10779,12 @@ function grVWAP(candles) {
 }
 
 // ── VWAP Ancorado — acumula a partir de um candle específico escolhido pelo
-// usuário (toque no botão ⚓ Ancorar VWAP + toque no candle desejado), em vez
-// de resetar sozinho todo dia. Antes do candle-âncora não desenha nada (null).
-// Ideia: topo/fundo de um evento relevante vira o "zero" — a linha mostra o
-// preço médio de quem entrou dali pra frente, ponderado por volume.
+// usuário. Vive dentro do framework do footprint (não tem indicador/botão
+// próprio): a âncora é escolhida pelo botão "⚓ Ancorar" dentro da janela
+// suspensa do crosshair, e só desenha enquanto o footprint tiver ligado.
+// Antes do candle-âncora não desenha nada (null). Ideia: topo/fundo de um
+// evento relevante vira o "zero" — a linha mostra o preço médio de quem
+// entrou dali pra frente, ponderado por volume.
 function grVWAPAncorado(candles, ancoraIdx) {
     if (ancoraIdx == null || ancoraIdx < 0 || ancoraIdx >= candles.length) {
         return candles.map(() => null);
