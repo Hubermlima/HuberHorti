@@ -13936,6 +13936,7 @@ function cvFecharSetupSheet() {
     <div style="padding:8px 16px 12px;flex-shrink:0;display:flex;flex-direction:column;gap:8px;">
       <button id="footprint-ver-historico-btn" onclick="grFootprintAbrirHistorico()" style="width:100%;padding:12px;background:#FFA726;color:#1C1C1E;border:none;border-radius:10px;font-size:13px;font-weight:800;font-family:-apple-system,sans-serif;">Ver Histórico</button>
       <button id="footprint-explodir-btn" onclick="grFootprintExplodirZona()" style="display:none;width:100%;padding:12px;background:transparent;color:#FFA726;border:1.5px solid #FFA726;border-radius:10px;font-size:13px;font-weight:800;font-family:-apple-system,sans-serif;">Explodir Zona 🔍</button>
+      <button id="footprint-voltar-explosao-btn" onclick="grFootprintVoltarDaExplosao()" style="display:none;width:100%;padding:12px;background:#2C2C2E;color:#8E8E93;border:none;border-radius:10px;font-size:13px;font-weight:800;font-family:-apple-system,sans-serif;">◀ Voltar</button>
     </div>
   </div>
 </div>
@@ -15281,47 +15282,58 @@ function grFootprintAbrirHistogramaAgregado(refresco) {
     grFootprintAtualizarVisibilidadePainel();
 }
 
-// Mostra/esconde o botão "Explodir Zona" conforme tem ou não checkbox ZII
-// marcado no ladder ATUALMENTE aberto (candle específico ou agregado — nunca
-// mistura marcação de um candle com a do outro, mesmo preço).
+// Mostra/esconde os botões "Explodir Zona" e "◀ Voltar" — são independentes:
+// "Explodir Zona" reage ao checkbox marcado no ladder AGORA NA TELA (funciona
+// em qualquer profundidade, lendo o DOM direto em vez de tentar inferir pela
+// pilha); "Voltar" só aparece se a pilha tiver pelo menos 1 nível.
 function grFootprintAtualizarBotaoExplodir() {
-    const btn = document.getElementById('footprint-explodir-btn');
-    if (!btn) return;
-    if (_grFootprintModalModo === 'explodido') return; // já mostra "◀ Voltar" nesse modo, não mexe
-    const candleTsAtual = (_grFootprintModalModo === 'candle' && _grFootprintCandleContexto)
-        ? _grFootprintCandleContexto.candle.t : null;
-    const temMarcada = _grZiiZonas.some(z => z.candleTs === candleTsAtual);
-    btn.style.display = temMarcada ? 'block' : 'none';
+    const btnVoltar = document.getElementById('footprint-voltar-explosao-btn');
+    if (btnVoltar) btnVoltar.style.display = _grFootprintPilhaExplosao.length > 0 ? 'block' : 'none';
+
+    const btnExplodir = document.getElementById('footprint-explodir-btn');
+    if (!btnExplodir) return;
+    const holder = document.getElementById('footprint-candle-canvas-holder');
+    const temMarcada = holder && holder.querySelector('.zii-check:checked');
+    btnExplodir.style.display = temMarcada ? 'block' : 'none';
 }
 
-// Clique em "Explodir Zona": acha a linha marcada mais recente no ladder
-// aberto agora (compra e/ou venda) e reabre o ladder só daquela faixa de
-// preço, com resolução fina — "não vamos complicar": só considera 1 faixa
-// por vez, mesmo que o usuário tenha marcado mais de uma linha sem querer.
+// Clique em "Explodir Zona": lê direto do DOM quais checkboxes estão marcados
+// no ladder atual (candle, agregado, OU já dentro de uma explosão — funciona
+// em qualquer nível) e empilha mais um nível, com resolução ainda mais fina.
+// "Não vamos complicar": só considera a PRIMEIRA linha marcada encontrada,
+// mesmo se o usuário tiver marcado mais de uma sem querer.
 function grFootprintExplodirZona() {
-    if (_grFootprintModalModo === 'explodido') return;
-    const candleTsOrigem = (_grFootprintModalModo === 'candle' && _grFootprintCandleContexto)
-        ? _grFootprintCandleContexto.candle.t : null;
-    const candidatas = _grZiiZonas.filter(z => z.candleTs === candleTsOrigem);
-    if (candidatas.length === 0) {
+    const holder = document.getElementById('footprint-candle-canvas-holder');
+    const marcados = holder ? Array.from(holder.querySelectorAll('.zii-check:checked')) : [];
+    if (marcados.length === 0) {
         alert('Marca o checkbox verde (compra) ou vermelho (venda) da linha que quer explodir.');
         return;
     }
-    const maisRecente = candidatas.reduce((a, b) => (b.criadoEm > a.criadoEm ? b : a));
-    const mesmaFaixa = candidatas.filter(z => z.lo === maisRecente.lo && z.hi === maisRecente.hi);
-    const tipos = mesmaFaixa.map(z => z.tipo); // ['compra'] | ['venda'] | ['compra','venda']
+    const pAlvo = Number(marcados[0].dataset.p);
+    const tickAlvo = Number(marcados[0].dataset.tick);
+    const tipos = marcados
+        .filter(el => Number(el.dataset.p) === pAlvo)
+        .map(el => el.dataset.tipo); // ['compra'] | ['venda'] | ['compra','venda']
 
-    _grFootprintZonaExplodida = { lo: maisRecente.lo, hi: maisRecente.hi, tipos, candleTsOrigem };
+    // De onde vem o dado bruto: se já tá dentro de uma explosão, herda a
+    // origem do nível anterior; se é a 1ª explosão, detecta pelo modal aberto.
+    const pilha = _grFootprintPilhaExplosao;
+    const candleTsOrigem = pilha.length > 0
+        ? pilha[pilha.length - 1].candleTsOrigem
+        : ((_grFootprintModalModo === 'candle' && _grFootprintCandleContexto) ? _grFootprintCandleContexto.candle.t : null);
+
+    pilha.push({ lo: pAlvo, hi: pAlvo + tickAlvo, tipos, candleTsOrigem });
     grFootprintRenderizarExplosao(true);
 }
 
-// Reconstrói o mapa fino ($10) só com os trades dentro da faixa [lo, hi) da
-// zona marcada, zerando o lado (compra/venda) que não foi marcado — sempre a
-// partir do histórico bruto (_grFootprintCandlesRaw via grFootprintTodosOsCandlesBrutos),
-// nunca de um mapa já agregado, pra garantir a resolução máxima disponível.
+// Reconstrói o mapa fino ($10) só com os trades dentro da faixa [lo, hi) do
+// TOPO da pilha (nível atual), zerando o lado não marcado — sempre a partir
+// do histórico bruto (nunca de um mapa já agregado por um nível anterior),
+// pra garantir a resolução máxima disponível em cada explosão.
 function grFootprintRenderizarExplosao(scrollParaPreco) {
-    const zona = _grFootprintZonaExplodida;
-    if (!zona) return;
+    const pilha = _grFootprintPilhaExplosao;
+    if (pilha.length === 0) return;
+    const zona = pilha[pilha.length - 1];
 
     const mapaExplodido = new Map();
     const somarNiveis = (niveis) => {
@@ -15336,7 +15348,7 @@ function grFootprintRenderizarExplosao(scrollParaPreco) {
 
     let contadorMinutos = 0;
     if (zona.candleTsOrigem == null) {
-        // Zona veio do histograma agregado (últimos N dias) — mesma janela de lookback.
+        // Origem = histograma agregado (últimos N dias) — mesma janela de lookback.
         const de = Date.now() - (_grFootprintLookbackDias * 24 * 60 * 60 * 1000);
         grFootprintTodosOsCandlesBrutos().forEach(c => {
             if (c.ts < de) return;
@@ -15344,7 +15356,7 @@ function grFootprintRenderizarExplosao(scrollParaPreco) {
             somarNiveis(c.niveis);
         });
     } else {
-        // Zona veio de um candle específico — só o intervalo daquele candle
+        // Origem = um candle específico — só o intervalo daquele candle
         // (contexto ainda vivo: só é limpo se o modal inteiro for fechado).
         const ctx = _grFootprintCandleContexto;
         if (!ctx) return;
@@ -15357,30 +15369,27 @@ function grFootprintRenderizarExplosao(scrollParaPreco) {
 
     if (mapaExplodido.size === 0) {
         alert('Sem dados nessa faixa de preço ainda.');
+        pilha.pop(); // desfaz o push desse nível, já que não deu pra abrir
+        grFootprintAtualizarBotaoExplodir();
         return;
     }
 
     const candleFake = { o: zona.lo, h: zona.hi, l: zona.lo, c: _precoAtual, t: null };
     _grFootprintModalModo = 'explodido';
     grFootprintDesenharCandleLadder(candleFake, null, mapaExplodido, contadorMinutos, true, null, scrollParaPreco, null);
-
-    const btn = document.getElementById('footprint-explodir-btn');
-    if (btn) {
-        btn.style.display = 'block';
-        btn.textContent = '◀ Voltar';
-        btn.onclick = grFootprintVoltarDaExplosao;
-    }
 }
 
-// "Voltar" da explosão: reabre o ladder de origem (candle específico ou
-// agregado) do zero, do jeito normal — mais simples e seguro que tentar
-// reconstruir o estado anterior manualmente.
+// "Voltar": desempilha UM nível. Se ainda sobrar pilha, redesenha o nível
+// anterior (ainda explodido, só que mais largo); se a pilha esvaziar,
+// reabre do zero o candle/agregado de origem — mais simples e seguro que
+// tentar reconstruir manualmente o estado de antes da 1ª explosão.
 function grFootprintVoltarDaExplosao() {
-    const zona = _grFootprintZonaExplodida;
-    _grFootprintZonaExplodida = null;
-    const btn = document.getElementById('footprint-explodir-btn');
-    if (btn) { btn.onclick = grFootprintExplodirZona; btn.textContent = 'Explodir Zona 🔍'; }
-    if (zona && zona.candleTsOrigem != null && _grFootprintCandleContexto) {
+    const pilha = _grFootprintPilhaExplosao;
+    if (pilha.length === 0) return;
+    const zonaSaindo = pilha.pop();
+    if (pilha.length > 0) {
+        grFootprintRenderizarExplosao(true);
+    } else if (zonaSaindo.candleTsOrigem != null && _grFootprintCandleContexto) {
         grFootprintAbrirCandleModal(_grFootprintCandleContexto.candle);
     } else {
         grFootprintAbrirHistogramaAgregado(false);
@@ -15397,9 +15406,7 @@ function grFootprintFecharCandleModal() {
     _grFootprintCvdAnteriorAgregadoCache = null;
     _grFootprintCandlePocs = null;
     _grFootprintCandleLadderRange = null;
-    _grFootprintZonaExplodida = null;
-    const btnExplodir = document.getElementById('footprint-explodir-btn');
-    if (btnExplodir) { btnExplodir.onclick = grFootprintExplodirZona; btnExplodir.textContent = 'Explodir Zona 🔍'; }
+    _grFootprintPilhaExplosao = [];
     grFootprintAtualizarVisibilidadePainel();
 }
 
@@ -15935,7 +15942,10 @@ let _grFootprintCandleContexto = null; // {de, ate, candle} do candle aberto —
 // (checkbox verde=compra e/ou vermelho=venda), reconstruindo o mapa fino
 // ($10) direto do histórico bruto só daquela faixa — resolução bem maior que
 // a régua ampla original (que agrupa em ~14 linhas pra caber na tela).
-let _grFootprintZonaExplodida = null; // {lo, hi, tipos:['compra'|'venda',...], candleTsOrigem} da zona atual, ou null se não tá explodido
+// PILHA (não zona única): cada explosão empilha um nível, permitindo explodir
+// de novo dentro do já explodido, indefinidamente — "Voltar" desempilha um
+// nível por vez, até sobrar vazio (aí volta pro candle/agregado de origem).
+let _grFootprintPilhaExplosao = []; // [{lo, hi, tipos:['compra'|'venda',...], candleTsOrigem}, ...] — topo = nível atual
 let _grFootprintCandlePocs = null; // {pocCompraPreco, pocVendaPreco, tick} do candle aberto
 
 // Preço -> y contínuo, genérico: interpola entre os preços REAIS das linhas
@@ -16068,10 +16078,11 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
     const maxSpanHtml = `<span id="footprint-candle-max">${fmtN(candle.h)}</span>`;
     const minSpanHtml = `<span id="footprint-candle-min">${fmtN(candle.l)}</span>`;
     const closeSpanHtml = `<span id="footprint-candle-close">${fmtN(candle.c)}</span>`;
-    if (_grFootprintModalModo === 'explodido' && _grFootprintZonaExplodida) {
-        const zona = _grFootprintZonaExplodida;
+    if (_grFootprintModalModo === 'explodido' && _grFootprintPilhaExplosao.length > 0) {
+        const zona = _grFootprintPilhaExplosao[_grFootprintPilhaExplosao.length - 1];
+        const nivel = _grFootprintPilhaExplosao.length;
         const ladoTxt = zona.tipos.length === 2 ? 'compra + venda' : (zona.tipos[0] === 'compra' ? 'compra' : 'venda');
-        document.getElementById('footprint-candle-titulo').textContent = `Zona explodida (${ladoTxt})`;
+        document.getElementById('footprint-candle-titulo').textContent = `Zona explodida · nível ${nivel} (${ladoTxt})`;
         document.getElementById('footprint-candle-sub').innerHTML =
             `Faixa ${fmtN(lo)} – ${fmtN(hi)} · tick $${tick} · resolução fina da faixa marcada` +
             (temIntensidade ? ' · cor mais sólida = trades maiores em média' : '');
@@ -16282,7 +16293,8 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
             chkCompra.className = 'zii-check';
             chkCompra.style.cssText = `position:absolute;left:2px;top:${yTopoCss}px;width:16px;height:16px;accent-color:#4CAF50;margin:0;`;
             chkCompra.checked = _grZiiZonas.some(z => z.lo === p && z.tipo === 'compra');
-            chkCompra.addEventListener('change', () => grFootprintToggleZonaZii(chkCompra.checked, p, tick, 'compra', v.c, deltaLinha, candle.t));
+            chkCompra.dataset.p = p; chkCompra.dataset.tick = tick; chkCompra.dataset.tipo = 'compra';
+            chkCompra.addEventListener('change', () => { grFootprintToggleZonaZii(chkCompra.checked, p, tick, 'compra', v.c, deltaLinha, candle.t); });
             holder.appendChild(chkCompra);
 
             const chkVenda = document.createElement('input');
@@ -16290,7 +16302,8 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
             chkVenda.className = 'zii-check';
             chkVenda.style.cssText = `position:absolute;right:2px;top:${yTopoCss}px;width:16px;height:16px;accent-color:#EF5350;margin:0;`;
             chkVenda.checked = _grZiiZonas.some(z => z.lo === p && z.tipo === 'venda');
-            chkVenda.addEventListener('change', () => grFootprintToggleZonaZii(chkVenda.checked, p, tick, 'venda', v.v, deltaLinha, candle.t));
+            chkVenda.dataset.p = p; chkVenda.dataset.tick = tick; chkVenda.dataset.tipo = 'venda';
+            chkVenda.addEventListener('change', () => { grFootprintToggleZonaZii(chkVenda.checked, p, tick, 'venda', v.v, deltaLinha, candle.t); });
             holder.appendChild(chkVenda);
 
             _grFootprintCandleLinhas.push({ p, v, total, tick, yTop: y, yBottom: y + rowH });
