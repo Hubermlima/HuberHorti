@@ -14095,6 +14095,11 @@ function cvFecharSetupSheet() {
       <div id="footprint-candle-canvas-holder" style="position:relative;">
         <canvas id="footprint-candle-canvas" style="width:100%;display:block;"></canvas>
         <canvas id="footprint-candle-precoline-canvas" style="position:absolute;top:0;left:0;width:100%;pointer-events:none;"></canvas>
+        <canvas id="footprint-candle-rastreio-canvas" style="position:absolute;top:0;left:0;width:100%;pointer-events:none;"></canvas>
+        <div id="footprint-rastreio-painel" style="display:none;position:absolute;left:8px;right:8px;background:rgba(20,20,24,0.95);border:1px solid #FFA726;border-radius:8px;padding:8px 10px;font-family:-apple-system,sans-serif;font-size:12px;color:#FFF;z-index:5;">
+          <button onclick="grFootprintFecharRastreio()" style="position:absolute;top:4px;right:6px;background:none;border:none;color:#8E8E93;font-size:16px;font-weight:800;line-height:1;padding:2px 6px;">✕</button>
+          <div id="footprint-rastreio-painel-texto" style="padding-right:20px;"></div>
+        </div>
       </div>
     </div>
     <div style="padding:10px 16px 4px;text-align:center;font-weight:800;font-size:13px;font-family:-apple-system,sans-serif;border-top:0.5px solid rgba(255,255,255,0.08);flex-shrink:0;" id="footprint-candle-footer"></div>
@@ -15578,6 +15583,9 @@ function grFootprintFecharCandleModal() {
     _grFootprintCandlePocs = null;
     _grFootprintCandleLadderRange = null;
     _grFootprintPilhaExplosao = [];
+    window._grFootprintRastreioInfo = null;
+    const painelRastreio = document.getElementById('footprint-rastreio-painel');
+    if (painelRastreio) painelRastreio.style.display = 'none';
     grFootprintAtualizarVisibilidadePainel();
 }
 
@@ -16151,6 +16159,15 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
     const lo = candle.l, hi = candle.h;
     if (!(hi > lo)) { alert('Candle sem range de preço (H = L).'); return; }
 
+    // Régua nova (não um refresh ao vivo da mesma régua) — limpa o rastreio
+    // do crosshair, já que ele se refere a coordenadas da régua anterior.
+    if (scrollParaPreco) {
+        window._grFootprintRastreioInfo = null;
+        _grFootprintRastreioUltimoP = null;
+        const painelRastreio = document.getElementById('footprint-rastreio-painel');
+        if (painelRastreio) painelRastreio.style.display = 'none';
+    }
+
     // Sempre mira num número compacto de linhas (~14), não importa o tamanho do
     // candle — é o que faz tudo (corpo + pavios) caber numa régua enxuta, igual
     // referência, em vez de uma lista gigante de 100+ linhas de $10 em $10.
@@ -16560,6 +16577,7 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
 
         if (!_grFootprintCandleTouchBind) {
             canvas.addEventListener('touchstart', grFootprintCandleTouchStart, { passive: true });
+            canvas.addEventListener('touchmove', grFootprintCandleTouchMove, { passive: false });
             canvas.addEventListener('touchend', grFootprintCandleTouchEnd, { passive: true });
             canvas.addEventListener('click', grFootprintCandleTapHandler); // fallback desktop/mouse
             _grFootprintCandleTouchBind = true;
@@ -16569,14 +16587,54 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
 
 let _grFootprintCandleToqueInicio = null; // {x,y} do touchstart, só pra distinguir toque de scroll
 
+// ── Rastreio por crosshair (segura e arrasta) ────────────────────────────
+// Toque longo (500ms, mesmo tempo do crosshair do price action) arma o modo
+// rastreio: a partir daí, arrastar o dedo pela régua mostra o POC exato ($10)
+// de cada linha, sem precisar "Explodir Zona". Recalcula só quando o dedo
+// TROCA de linha, nunca a cada pixel. Soltar o dedo NÃO limpa a informação —
+// só o botão ✕ do painel limpa.
+let _grFootprintRastreioTimer = null;
+let _grFootprintRastreioArmado = false;
+let _grFootprintRastreioUltimoP = null; // p da última linha processada nesse arraste
+window._grFootprintRastreioInfo = null; // {p, loP, hiP, yTop, yBottom, precoExato, volExato, ladoExato, compraTot, vendaTot, deltaTot} — sobrevive ao soltar
+
 function grFootprintCandleTouchStart(evt) {
     if (evt.touches.length !== 1) { _grFootprintCandleToqueInicio = null; return; }
     _grFootprintCandleToqueInicio = { x: evt.touches[0].clientX, y: evt.touches[0].clientY };
+    clearTimeout(_grFootprintRastreioTimer);
+    _grFootprintRastreioArmado = false;
+    const startY = evt.touches[0].clientY;
+    _grFootprintRastreioTimer = setTimeout(() => {
+        _grFootprintRastreioArmado = true;
+        _grFootprintRastreioUltimoP = null;
+        grFootprintRastrearToque(startY); // primeira leitura, no ponto onde segurou
+    }, 500);
+}
+
+function grFootprintCandleTouchMove(evt) {
+    if (!_grFootprintRastreioArmado) {
+        // Ainda não armou — se o dedo já andou bastante antes do timer disparar,
+        // cancela o rastreio (é scroll normal, não long-press).
+        if (_grFootprintCandleToqueInicio && evt.touches[0]) {
+            const dx = evt.touches[0].clientX - _grFootprintCandleToqueInicio.x;
+            const dy = evt.touches[0].clientY - _grFootprintCandleToqueInicio.y;
+            if (Math.hypot(dx, dy) > 12) clearTimeout(_grFootprintRastreioTimer);
+        }
+        return;
+    }
+    // Armado: sequestra o scroll nativo enquanto rastreia.
+    evt.preventDefault();
+    if (evt.touches[0]) grFootprintRastrearToque(evt.touches[0].clientY);
 }
 
 // 'touchend' é muito mais confiável que 'click' aqui — dentro de uma área com
 // scroll (overflow-y:auto), o mobile às vezes não sintetiza o click do toque.
 function grFootprintCandleTouchEnd(evt) {
+    clearTimeout(_grFootprintRastreioTimer);
+    if (_grFootprintRastreioArmado) {
+        _grFootprintRastreioArmado = false; // solta o dedo — a info fica congelada na tela
+        return;
+    }
     if (!_grFootprintCandleToqueInicio) return;
     const inicio = _grFootprintCandleToqueInicio;
     _grFootprintCandleToqueInicio = null;
@@ -16584,6 +16642,117 @@ function grFootprintCandleTouchEnd(evt) {
     if (!touch) return;
     if (Math.hypot(touch.clientX - inicio.x, touch.clientY - inicio.y) > 12) return; // moveu — foi scroll, não toque
     grFootprintCandleProcessarToque(touch.clientY);
+}
+
+// Acha a linha sob o dedo e, só se for uma linha DIFERENTE da última
+// processada nesse arraste, recalcula o detalhe fino daquela faixa.
+function grFootprintRastrearToque(clientY) {
+    const canvas = document.getElementById('footprint-candle-canvas');
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const y = (clientY - rect.top) * (canvas.height / rect.height);
+    for (const linha of _grFootprintCandleLinhas) {
+        if (y >= linha.yTop && y < linha.yBottom) {
+            if (_grFootprintRastreioUltimoP === linha.p) return; // mesma linha — não recalcula à toa
+            _grFootprintRastreioUltimoP = linha.p;
+            const loP = linha.v._loP != null ? linha.v._loP : linha.p - linha.tick;
+            const hiP = linha.v._hiP != null ? linha.v._hiP : linha.p;
+            const fino = grFootprintRastrearFaixa(loP, hiP);
+            window._grFootprintRastreioInfo = fino ? { loP, hiP, p: linha.p, yTop: linha.yTop, yBottom: linha.yBottom, ...fino } : null;
+            grFootprintDesenharOverlayRastreio();
+            return;
+        }
+    }
+}
+
+// Varre o histórico bruto ($10) só dentro de [loP, hiP) e acha o nível exato
+// de maior volume ali dentro — o mesmo dado que "Explodir Zona" mostra, só
+// que calculado na hora, sem abrir régua nova. Reaproveita a mesma fonte
+// (candle específico vs. janela agregada) que a explosão já usa.
+function grFootprintRastrearFaixa(loP, hiP) {
+    let melhorP = null, melhorVol = -1, melhorLado = null;
+    let compraTot = 0, vendaTot = 0;
+    const somar = (niveis) => {
+        (niveis || []).forEach(n => {
+            if (n.p < loP || n.p >= hiP) return;
+            const c = n.c || 0, v = n.v || 0;
+            compraTot += c; vendaTot += v;
+            const vol = c + v;
+            if (vol > melhorVol) { melhorVol = vol; melhorP = n.p; melhorLado = c >= v ? 'compra' : 'venda'; }
+        });
+    };
+    if (_grFootprintModalModo === 'candle' && _grFootprintCandleContexto) {
+        const ctx = _grFootprintCandleContexto;
+        grFootprintTodosOsCandlesBrutos().forEach(c => {
+            if (c.ts < ctx.de || c.ts >= ctx.ate) return;
+            somar(c.niveis);
+        });
+    } else {
+        const de = Date.now() - (_grFootprintLookbackDias * 24 * 60 * 60 * 1000);
+        grFootprintTodosOsCandlesBrutos().forEach(c => {
+            if (c.ts < de) return;
+            somar(c.niveis);
+        });
+    }
+    if (melhorP == null) return null;
+    return { precoExato: melhorP, volExato: melhorVol, ladoExato: melhorLado, compraTot, vendaTot, deltaTot: compraTot - vendaTot };
+}
+
+// Desenha só a linha do crosshair (canvas overlay leve, separado do ladder —
+// não precisa re-renderizar a régua inteira a cada troca de linha) e atualiza
+// o painel de texto flutuante.
+function grFootprintDesenharOverlayRastreio() {
+    grFootprintAtualizarPainelRastreio();
+    const overlay = document.getElementById('footprint-candle-rastreio-canvas');
+    const range = _grFootprintCandleLadderRange;
+    if (!overlay || !range) return;
+    const { W, H } = range;
+    if (overlay.width !== W || overlay.height !== H) {
+        overlay.width = W;
+        overlay.height = H;
+        overlay.style.height = H + 'px';
+    }
+    const ctx = overlay.getContext('2d');
+    ctx.clearRect(0, 0, W, H);
+    const info = window._grFootprintRastreioInfo;
+    if (!info) return;
+    const ymid = (info.yTop + info.yBottom) / 2;
+    ctx.save();
+    ctx.strokeStyle = '#FFA726';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    ctx.moveTo(0, ymid);
+    ctx.lineTo(W, ymid);
+    ctx.stroke();
+    ctx.restore();
+}
+
+function grFootprintAtualizarPainelRastreio() {
+    const painel = document.getElementById('footprint-rastreio-painel');
+    const texto = document.getElementById('footprint-rastreio-painel-texto');
+    if (!painel || !texto) return;
+    const info = window._grFootprintRastreioInfo;
+    if (!info) { painel.style.display = 'none'; return; }
+    const corLado = info.ladoExato === 'compra' ? '#4CAF50' : '#EF5350';
+    const deltaTxt = (info.deltaTot >= 0 ? '+' : '') + fmtBtc2(info.deltaTot);
+    texto.innerHTML =
+        `<b>Faixa ${fmtN(info.loP)} – ${fmtN(info.hiP)}</b><br>` +
+        `POC exato: <b style="color:${corLado}">${fmtN(info.precoExato)}</b> (${fmtBtc2(info.volExato)} BTC, ${info.ladoExato})<br>` +
+        `Compra ${fmtBtc2(info.compraTot)} · Venda ${fmtBtc2(info.vendaTot)} · Delta ${deltaTxt}`;
+    painel.style.display = 'block';
+    // Painel sempre logo abaixo da linha rastreada, sem sair da área visível.
+    const range = _grFootprintCandleLadderRange;
+    let topPx = info.yBottom + 6;
+    if (range && topPx + 60 > range.H) topPx = Math.max(4, info.yTop - 66);
+    painel.style.top = topPx + 'px';
+}
+
+// Botão ✕ do painel — limpa a linha e a informação rastreadas.
+function grFootprintFecharRastreio() {
+    window._grFootprintRastreioInfo = null;
+    _grFootprintRastreioUltimoP = null;
+    grFootprintDesenharOverlayRastreio();
 }
 
 // Toque numa linha do ladder do candle — mostra o detalhe (com Delta) daquele nível.
