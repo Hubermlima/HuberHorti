@@ -1273,7 +1273,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <button class="cv-ind-btn atr" id="cv-ind-atr" onclick="cvToggleSubInd('atr')">
 <span class="btn-sigla">Vol%</span><span class="btn-nome">Volatilidade</span></button>
       <button class="cv-ind-btn" id="cv-ind-chandelier" onclick="cvToggleChandelier()"><span class="btn-sigla">CE</span><span class="btn-nome">Chandelier</span></button>
-      <button class="cv-ind-btn vwap-limpar" id="cv-vwap-limpar-btn" onclick="grVwapLimparAncora()" style="display:none;"><span class="btn-sigla">✕</span><span class="btn-nome">Remover Âncora</span></button>
+      <button class="cv-ind-btn vwap-limpar" id="cv-vwap-limpar-btn" onclick="grVwapLimparAncora()" style="display:none;"><span class="btn-sigla">✕</span><span class="btn-nome">Limpar Âncoras</span></button>
       <button class="cv-ind-btn footprint" id="cv-ind-footprint" onclick="cvToggleFootprint()"><span class="btn-sigla">FP</span><span class="btn-nome">Footprint</span></button>
       <button class="cv-ind-btn ichimoku" id="cv-ind-ichimoku" onclick="cvToggleInd('ichimoku')"><span class="btn-sigla">Ichi</span><span class="btn-nome">Nuvem de Ichimoku</span></button>
       <button class="cv-ind-btn obv" id="cv-ind-obv" onclick="cvToggleSubInd('obv')">
@@ -3217,7 +3217,7 @@ function cvAbrirComponentesVisiveis() {
     // VWAP Ancorado não tem _indState próprio — vive dentro do framework do
     // footprint, então "ativo" aqui significa footprint ligado + âncora escolhida.
     const ativos = Object.keys(chaveLabel).filter(k => {
-        if (k === 'vwap') return _grFootprintAtivo && _grVwapAncoraIdx != null && vals[k];
+        if (k === 'vwap') return _grFootprintAtivo && _grVwapAncoras.length > 0 && vals[k];
         return _indState[k] && !_indOculto[k] && vals[k];
     });
 
@@ -3521,29 +3521,80 @@ function grSwitchTab(tab) {
 let _grChart = null;
 let _grTf = '4h';
 let _grAllCandles = [];
-let _grVwapAncoraIdx = null; // índice em _grAllCandles do candle-âncora escolhido pelo usuário — null = VWAP ancorado não desenha nada. Vive dentro do framework do footprint: sem _indState próprio, só aparece quando _grFootprintAtivo.
+
+// ── VWAP Ancorado — MÚLTIPLAS âncoras, persistidas no localStorage (chave
+// escopada por ativo+timeframe). Cada âncora guarda o TIMESTAMP do candle
+// (não o índice — o índice muda quando a lista de candles recarrega, o
+// timestamp não) e o tipo ('topo' ou 'fundo'), que decide a cor da linha.
+let _grVwapAncoras = []; // [{ts, tipo:'topo'|'fundo'}, ...]
+
+function _grVwapLSKey() {
+    return 'gr_vwap_ancoras_' + (_ativoId || 'default') + '_' + _grTf;
+}
+function grVwapSalvarAncoras() {
+    try { localStorage.setItem(_grVwapLSKey(), JSON.stringify(_grVwapAncoras)); } catch (e) {}
+}
+function grVwapCarregarAncoras() {
+    try {
+        const raw = localStorage.getItem(_grVwapLSKey());
+        _grVwapAncoras = raw ? (JSON.parse(raw) || []) : [];
+    } catch (e) { _grVwapAncoras = []; }
+}
+
+// Acha o índice atual em _grAllCandles pelo timestamp guardado — precisa
+// disso porque a lista de candles pode recarregar (troca de timeframe,
+// scroll de histórico, refresh) e os índices deixam de bater.
+function grVwapIdxPorTs(ts) {
+    return _grAllCandles.findIndex(c => c.t === ts);
+}
+
+// Classifica automaticamente se o candle ancorado é mais perto de um topo ou
+// de um fundo LOCAL (janela de ±15 candles ao redor) — decide a cor da linha
+// (vermelha = topo, azul = fundo), sem precisar perguntar pro usuário.
+function grVwapClassificarTipo(idx) {
+    const janela = 15;
+    const ini = Math.max(0, idx - janela);
+    const fim = Math.min(_grAllCandles.length - 1, idx + janela);
+    let maxH = -Infinity, minL = Infinity;
+    for (let i = ini; i <= fim; i++) {
+        maxH = Math.max(maxH, _grAllCandles[i].h);
+        minL = Math.min(minL, _grAllCandles[i].l);
+    }
+    const c = _grAllCandles[idx];
+    const distTopo = maxH - c.h;
+    const distFundo = c.l - minL;
+    return distTopo <= distFundo ? 'topo' : 'fundo';
+}
 
 // Chamado pelo botão "⚓ Ancorar" dentro da janela suspensa do crosshair.
-// Se o candle tocado já É a âncora atual, funciona como "toggle" e remove —
-// não precisa procurar o botão ✕ separado pra desfazer o mesmo candle.
+// Se o candle tocado JÁ é uma âncora, funciona como "toggle" e remove só
+// essa — as outras âncoras continuam intactas (múltiplas ao mesmo tempo).
 function grVwapAncorarNoCandle(idxCandle) {
     if (idxCandle == null || !_grAllCandles[idxCandle]) return;
-    _grVwapAncoraIdx = (_grVwapAncoraIdx === idxCandle) ? null : idxCandle;
+    const ts = _grAllCandles[idxCandle].t;
+    const pos = _grVwapAncoras.findIndex(a => a.ts === ts);
+    if (pos >= 0) {
+        _grVwapAncoras.splice(pos, 1);
+    } else {
+        _grVwapAncoras.push({ ts, tipo: grVwapClassificarTipo(idxCandle) });
+    }
+    grVwapSalvarAncoras();
     grVwapAtualizarBotaoLimpar();
     grDrawChart();
 }
 
-// Botão ✕ "Remover Âncora" na toolbar — só aparece com footprint ligado E
-// âncora escolhida; some sozinho caso contrário.
+// Botão ✕ "Limpar Âncoras" na toolbar — remove TODAS de uma vez. Só aparece
+// com footprint ligado E pelo menos 1 âncora ativa; some sozinho caso contrário.
 function grVwapLimparAncora() {
-    _grVwapAncoraIdx = null;
+    _grVwapAncoras = [];
+    grVwapSalvarAncoras();
     grVwapAtualizarBotaoLimpar();
     grDrawChart();
 }
 
 function grVwapAtualizarBotaoLimpar() {
     const btn = document.getElementById('cv-vwap-limpar-btn');
-    if (btn) btn.style.display = (_grFootprintAtivo && _grVwapAncoraIdx != null) ? '' : 'none';
+    if (btn) btn.style.display = (_grFootprintAtivo && _grVwapAncoras.length > 0) ? '' : 'none';
 }
 
 let _grCandlesD = [];  // candles diários para EMA MTF
@@ -3816,6 +3867,7 @@ async function grRenderChart() {
                 _grAllCandles = grAgruparCandles(_grAllCandles, _grTfCustomUnit, _grTfCustomAmount);
             }
             _grZonasCache = null;
+            grVwapCarregarAncoras(); // recarrega as âncoras salvas pra esse ativo+timeframe
 
             // Busca candles diários e semanais para EMA MTF (em paralelo).
             // _grCandlesW é reconstruído a partir de diários agrupados em semana civil
@@ -4257,45 +4309,50 @@ function grDrawCandles(candles, emptyRight) {
 
         // VWAP ancorado — agora vive dentro do framework do footprint, sem
         // indicador/botão próprio: só desenha quando o footprint tá ligado E
-        // existe uma âncora escolhida (o indicador "VWAP" antigo, com botão
-        // independente e reset diário automático, foi eliminado).
-        if (_grFootprintAtivo && _grVwapAncoraIdx != null) {
-            const vwapAll = grVWAPAncorado(_grAllCandles, _grVwapAncoraIdx);
-            const vwapVis = extrairJanela(vwapAll, 1);
-            const CorVwap = '#37474F'; // linha escura sólida — antes era ciano tracejado apagado
-            desenharLinha(vwapVis, CorVwap, 1.8);
+        // existe pelo menos 1 âncora escolhida. Suporta MÚLTIPLAS âncoras ao
+        // mesmo tempo — cada uma com sua própria linha, cor conforme o tipo
+        // (vermelho = candle mais perto de um topo local, azul = mais perto
+        // de um fundo local — classificação automática, ver grVwapClassificarTipo).
+        if (_grFootprintAtivo && _grVwapAncoras.length > 0) {
+            _grVwapAncoras.forEach(ancora => {
+                const idxA = grVwapIdxPorTs(ancora.ts);
+                if (idxA < 0) return; // candle dessa âncora não tá na janela de dados carregada agora
+                const vwapAll = grVWAPAncorado(_grAllCandles, idxA);
+                const vwapVis = extrairJanela(vwapAll, 1);
+                const CorVwap = ancora.tipo === 'topo' ? '#C62828' : '#1565C0';
+                desenharLinha(vwapVis, CorVwap, 1.1); // fina — antes tava grossa (1.8)
 
-            // Marcador (bolinha) no candle-âncora exato, pra deixar claro de
-            // onde a linha começa a contar.
-            const cAncora = _grAllCandles[_grVwapAncoraIdx];
-            const xAncora = grIndexToX(_grVwapAncoraIdx);
-            if (cAncora && xAncora >= PAD.left - 10 && xAncora <= PAD.left + chartW + 10) {
-                const yAncora = toY((cAncora.h + cAncora.l + cAncora.c) / 3);
-                ctx.beginPath();
-                ctx.arc(xAncora, yAncora, 4.5, 0, Math.PI * 2);
-                ctx.fillStyle = CorVwap;
-                ctx.fill();
-                ctx.lineWidth = 1;
-                ctx.strokeStyle = '#FFFFFF';
-                ctx.stroke();
-            }
-
-            // Label + pílula
-            const lastVwap = vwapVis.filter(v=>v!==null).pop();
-            if (lastVwap) {
-                window._compValores.vwap = { cor: CorVwap, valor: fmtN(lastVwap) };
-                const yv = toY(lastVwap);
-                if (yv >= PAD.top && yv <= PAD.top + chartH) {
-                    const tv = 'V ' + fmtN(lastVwap);
-                    ctx.font = 'bold 10px -apple-system';
-                    const pH = 14, pW = PAD.left - 4;
+                // Marcador (bolinha) no candle-âncora exato.
+                const cAncora = _grAllCandles[idxA];
+                const xAncora = grIndexToX(idxA);
+                if (cAncora && xAncora >= PAD.left - 10 && xAncora <= PAD.left + chartW + 10) {
+                    const yAncora = toY((cAncora.h + cAncora.l + cAncora.c) / 3);
+                    ctx.beginPath();
+                    ctx.arc(xAncora, yAncora, 4, 0, Math.PI * 2);
                     ctx.fillStyle = CorVwap;
-                    ctx.beginPath(); ctx.roundRect(3, yv - pH/2, pW, pH, 3); ctx.fill();
-                    ctx.fillStyle = '#FFF';
-                    ctx.textAlign = 'right';
-                    ctx.fillText(tv, pW - 1, yv + pH/2 - 3);
+                    ctx.fill();
+                    ctx.lineWidth = 1;
+                    ctx.strokeStyle = '#FFFFFF';
+                    ctx.stroke();
                 }
-            }
+
+                // Label + pílula (uma por âncora, na margem esquerda)
+                const lastVwap = vwapVis.filter(v=>v!==null).pop();
+                if (lastVwap) {
+                    window._compValores.vwap = { cor: CorVwap, valor: fmtN(lastVwap) };
+                    const yv = toY(lastVwap);
+                    if (yv >= PAD.top && yv <= PAD.top + chartH) {
+                        const tv = 'V ' + fmtN(lastVwap);
+                        ctx.font = 'bold 10px -apple-system';
+                        const pH = 13, pW = PAD.left - 4;
+                        ctx.fillStyle = CorVwap;
+                        ctx.beginPath(); ctx.roundRect(3, yv - pH/2, pW, pH, 3); ctx.fill();
+                        ctx.fillStyle = '#FFF';
+                        ctx.textAlign = 'right';
+                        ctx.fillText(tv, pW - 1, yv + pH/2 - 3);
+                    }
+                }
+            });
         }
         grVwapAtualizarBotaoLimpar();
 
@@ -7321,15 +7378,21 @@ function grDrawChartWithCrosshair(yInterno) {
         // atual já for a âncora escolhida, vira "✕ Remover Âncora" (mesmo
         // botão, função de toggle).
         if (temBotaoFootprint) {
-            const jaEAncora = _grVwapAncoraIdx === idxCandleCrosshair;
+            const tsCandleCrosshair = _grAllCandles[idxCandleCrosshair] ? _grAllCandles[idxCandleCrosshair].t : null;
+            const jaEAncora = _grVwapAncoras.some(a => a.ts === tsCandleCrosshair);
+            // Prévia da cor: se ainda não é âncora, mostra a cor que ela vai
+            // ganhar (vermelho=topo / azul=fundo) — mesma classificação
+            // automática usada no desenho da linha.
+            const tipoPreview = jaEAncora ? null : grVwapClassificarTipo(idxCandleCrosshair);
+            const corBtnAnc = jaEAncora ? '#EF5350' : (tipoPreview === 'topo' ? '#C62828' : '#1565C0');
             const btnAncY = by + boxH - btnHAncorar - 4;
             const btnAncRect = { x: bx + 4, y: btnAncY, w: boxW - 8, h: btnHAncorar - 4 };
-            ctx.fillStyle = jaEAncora ? '#EF5350' : '#37474F';
+            ctx.fillStyle = corBtnAnc;
             ctx.beginPath(); ctx.roundRect(btnAncRect.x, btnAncRect.y, btnAncRect.w, btnAncRect.h, 6); ctx.fill();
             ctx.font = 'bold 11px -apple-system';
             ctx.textAlign = 'center';
             ctx.fillStyle = '#FFFFFF';
-            ctx.fillText(jaEAncora ? '✕ Remover Âncora' : '⚓ Ancorar', bx + boxW / 2, btnAncY + btnAncRect.h / 2 + 4);
+            ctx.fillText(jaEAncora ? '✕ Remover Âncora' : ('⚓ Ancorar (' + tipoPreview + ')'), bx + boxW / 2, btnAncY + btnAncRect.h / 2 + 4);
             window._grCrosshairAncorarBtnArea = btnAncRect;
             window._grCrosshairAncorarIdx = idxCandleCrosshair;
         } else {
