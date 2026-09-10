@@ -14091,8 +14091,8 @@ function cvFecharSetupSheet() {
     </div>
     <div style="padding:0 16px 8px;color:#8E8E93;font-size:11px;font-family:-apple-system,sans-serif;flex-shrink:0;" id="footprint-candle-sub"></div>
     <div id="footprint-fibo-selector" style="display:none;padding:0 16px 8px;flex-shrink:0;overflow-x:auto;white-space:nowrap;"></div>
-    <div id="footprint-candle-scrollwrap" style="flex:1;min-height:0;overflow-y:auto;padding:0 16px;-webkit-overflow-scrolling:touch;">
-      <div id="footprint-candle-canvas-holder" style="position:relative;">
+    <div id="footprint-candle-scrollwrap" style="flex:1;min-height:0;overflow-y:auto;padding:0 16px;-webkit-overflow-scrolling:touch;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;">
+      <div id="footprint-candle-canvas-holder" style="position:relative;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;">
         <canvas id="footprint-candle-canvas" style="width:100%;display:block;"></canvas>
         <canvas id="footprint-candle-precoline-canvas" style="position:absolute;top:0;left:0;width:100%;pointer-events:none;"></canvas>
         <canvas id="footprint-candle-rastreio-canvas" style="position:absolute;top:0;left:0;width:100%;pointer-events:none;"></canvas>
@@ -16647,9 +16647,11 @@ function grFootprintCandleTouchEnd(evt) {
 }
 
 // Acha a linha sob o dedo e interpola a posição EXATA dentro dela, em passos
-// de $10 (a granularidade real do dado) — não fica preso às ~14 fronteiras
-// visíveis da régua larga. Só recalcula quando o preço interpolado muda de
-// fato (mudou de degrau de $10), não a cada pixel.
+// ADAPTATIVOS (~20 por linha, arredondado pro múltiplo de $10 mais próximo —
+// nunca abaixo de $10, que é o piso real do dado). Passo fixo de $10 tava
+// vazio na maioria dos pontos (pouquíssimo comprador/vendedor por degrau);
+// o passo adaptativo agrupa uma faixinha em volta, com informação de verdade,
+// mas ainda bem mais fino que pular só entre as ~14 fronteiras visíveis.
 function grFootprintRastrearToque(clientY) {
     const canvas = document.getElementById('footprint-candle-canvas');
     if (!canvas) return;
@@ -16659,11 +16661,12 @@ function grFootprintRastrearToque(clientY) {
         if (y >= linha.yTop && y < linha.yBottom) {
             const loP = linha.v._loP != null ? linha.v._loP : linha.p - linha.tick;
             const hiP = linha.v._hiP != null ? linha.v._hiP : linha.p;
+            const passo = Math.max(10, Math.round(((hiP - loP) / 20) / 10) * 10);
             // Topo da linha = preço mais alto (hiP); fundo = preço mais baixo (loP) —
             // mesma orientação da régua (preço decrescente de cima pra baixo).
             const frac = Math.max(0, Math.min(1, (y - linha.yTop) / (linha.yBottom - linha.yTop)));
             const precoInterp = hiP - frac * (hiP - loP);
-            const precoSnap = Math.round(precoInterp / 10) * 10; // degrau de $10
+            const precoSnap = Math.round(precoInterp / passo) * passo;
             if (_grFootprintRastreioUltimoP === precoSnap) return; // mesmo degrau — não recalcula à toa
             _grFootprintRastreioUltimoP = precoSnap;
 
@@ -16672,22 +16675,24 @@ function grFootprintRastrearToque(clientY) {
             const fracSnap = (hiP - precoSnap) / (hiP - loP);
             const yExato = linha.yTop + fracSnap * (linha.yBottom - linha.yTop);
 
-            const fino = grFootprintRastrearNivel(precoSnap);
-            window._grFootprintRastreioInfo = { loP, hiP, precoSnap, yExato, ...fino };
+            const fino = grFootprintRastrearNivel(precoSnap, passo);
+            window._grFootprintRastreioInfo = { loP, hiP, precoSnap, passo, yExato, ...fino };
             grFootprintDesenharOverlayRastreio();
             return;
         }
     }
 }
 
-// Soma o volume no histórico bruto EXATAMENTE naquele preço de $10 (não numa
-// faixa — o ponto que o dedo tá tocando agora). Reaproveita a mesma fonte
-// (candle específico vs. janela agregada) que a explosão de zona já usa.
-function grFootprintRastrearNivel(precoExato) {
+// Soma o volume no histórico bruto dentro de [precoCentro - passo/2, + passo/2)
+// — uma faixinha em volta do ponto tocado, não o preço exato isolado (que na
+// prática tava quase sempre vazio). Reaproveita a mesma fonte (candle
+// específico vs. janela agregada) que a explosão de zona já usa.
+function grFootprintRastrearNivel(precoCentro, passo) {
+    const lo = precoCentro - passo / 2, hi = precoCentro + passo / 2;
     let compraTot = 0, vendaTot = 0;
     const somar = (niveis) => {
         (niveis || []).forEach(n => {
-            if (n.p !== precoExato) return;
+            if (n.p < lo || n.p >= hi) return;
             compraTot += (n.c || 0);
             vendaTot  += (n.v || 0);
         });
@@ -16763,10 +16768,11 @@ function grFootprintAtualizarPainelRastreio() {
     const semNegociacao = info.compraTot === 0 && info.vendaTot === 0;
     const corLado = info.ladoExato === 'compra' ? '#4CAF50' : (info.ladoExato === 'venda' ? '#EF5350' : '#8E8E93');
     const deltaTxt = (info.deltaTot >= 0 ? '+' : '') + fmtBtc2(info.deltaTot);
+    const loFaixa = info.precoSnap - info.passo / 2, hiFaixa = info.precoSnap + info.passo / 2;
     texto.innerHTML =
-        `<b>Preço exato: <span style="color:${corLado}">${fmtN(info.precoSnap)}</span></b><br>` +
+        `<b>≈ <span style="color:${corLado}">${fmtN(info.precoSnap)}</span></b> <span style="color:#8E8E93;font-weight:400;">(faixa ${fmtN(loFaixa)}–${fmtN(hiFaixa)})</span><br>` +
         (semNegociacao
-            ? `Sem negociação registrada exatamente nesse degrau de $10.`
+            ? `Sem negociação registrada nessa faixa.`
             : `Compra ${fmtBtc2(info.compraTot)} · Venda ${fmtBtc2(info.vendaTot)} · Delta ${deltaTxt}`);
     painel.style.display = 'block';
     // Painel sempre perto da linha rastreada, sem sair da área visível.
