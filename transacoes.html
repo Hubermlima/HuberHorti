@@ -1163,6 +1163,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
   <div id="gr-chart-container" style="position:relative;flex:1;background:#131722;display:flex;flex-direction:column;overflow:hidden;">
     <div id="gr-chart-canvas-wrap" style="position:relative;flex:1;min-height:0;">
       <canvas id="gr-chart-canvas" style="width:100%;height:100%;display:block;" onclick="if(_tickerDropdownAberto){cvToggleTickerDropdown();}"></canvas>
+      <canvas id="gr-valuearea-overlay-canvas" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:6;"></canvas>
       <canvas id="gr-crosshair-overlay-canvas" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:6;"></canvas>
     </div>
     <!-- Minimapa panorâmico: visão de linha de um timeframe acima, oculto por padrão (ativado como indicador) -->
@@ -4000,6 +4001,18 @@ function grDrawCandles(candles, emptyRight) {
     const canvas = document.getElementById('gr-chart-canvas');
     const ctx = canvas.getContext('2d');
         const W = canvas.width, H = canvas.height;
+        // Canvas próprio pra Value Area (VAH/POC/VAL) — precisa ficar ACIMA do
+        // overlay do histograma do footprint (z-index 5), senão as linhas e os
+        // labels ficam escondidos atrás das barras. Sincroniza resolução e
+        // limpa a cada redesenho (só desenha de novo se footprint ativo).
+        const canvasVA = document.getElementById('gr-valuearea-overlay-canvas');
+        let ctxVA = null;
+        if (canvasVA) {
+            if (canvasVA.width !== W) canvasVA.width = W;
+            if (canvasVA.height !== H) canvasVA.height = H;
+            ctxVA = canvasVA.getContext('2d');
+            ctxVA.clearRect(0, 0, W, H);
+        }
         const PAD = { ..._grPAD };
         if (_indState.subInd && !_indOculto.painel) PAD.bottom = Math.floor(H * 0.28) + _grPAD.bottom;
 
@@ -4519,10 +4532,13 @@ function grDrawCandles(candles, emptyRight) {
         });
 
         // ── Value Area (VAH/POC/VAL) — mesma janela "Dias: X" do footprint ──
-        if (_grFootprintAtivo && _grFootprintBins && !_indOculto.valueArea) {
+        // Desenhada no canvasVA (acima do overlay do footprint) — não no
+        // canvas principal — pra não ficar escondida atrás das barras.
+        if (ctxVA && _grFootprintAtivo && _grFootprintBins && !_indOculto.valueArea) {
             const va = grFootprintCalcularValueArea();
             if (va) {
                 const corVA = _grTemaClaro ? '#3A3A3C' : '#D1D1D6'; // escura no tema claro, clara no escuro (senão some no fundo)
+                const corPoc = '#EF5350'; // POC em vermelho, a pedido — se destaca de VAH/VAL
 
                 // Faixa de fundo entre VAH e VAL — bem clarinha, só pra indicar a
                 // zona sem competir visualmente com candle/footprint por cima.
@@ -4530,32 +4546,32 @@ function grDrawCandles(candles, emptyRight) {
                 const yTopo = Math.max(PAD.top, Math.min(yVah, yVal));
                 const yFundo = Math.min(PAD.top + _grChartH, Math.max(yVah, yVal));
                 if (yFundo > yTopo) {
-                    ctx.save();
-                    ctx.fillStyle = 'rgba(120,120,130,0.07)';
-                    ctx.fillRect(PAD.left, yTopo, chartW, yFundo - yTopo);
-                    ctx.restore();
+                    ctxVA.save();
+                    ctxVA.fillStyle = 'rgba(120,120,130,0.07)';
+                    ctxVA.fillRect(PAD.left, yTopo, chartW, yFundo - yTopo);
+                    ctxVA.restore();
                 }
 
-                const desenharLinhaVA = (preco, label) => {
+                const desenharLinhaVA = (preco, label, cor) => {
                     const y = toY(preco);
                     if (y < PAD.top || y > PAD.top + _grChartH) return;
-                    ctx.save();
-                    ctx.strokeStyle = corVA;
-                    ctx.lineWidth = label === 'POC' ? 1.5 : 1;
-                    ctx.setLineDash([]); // contínua — antes VAH/VAL vinham tracejadas
-                    ctx.beginPath();
-                    ctx.moveTo(PAD.left, y);
-                    ctx.lineTo(PAD.left + chartW, y);
-                    ctx.stroke();
-                    ctx.font = 'bold 9px -apple-system';
-                    ctx.fillStyle = corVA;
-                    ctx.textAlign = 'right';
-                    ctx.fillText(label + ' ' + fmtN(preco), PAD.left + chartW - 4, y - 3);
-                    ctx.restore();
+                    ctxVA.save();
+                    ctxVA.strokeStyle = cor;
+                    ctxVA.lineWidth = label.startsWith('POC') ? 1.5 : 1;
+                    ctxVA.setLineDash([]); // contínua — antes VAH/VAL vinham tracejadas
+                    ctxVA.beginPath();
+                    ctxVA.moveTo(PAD.left, y);
+                    ctxVA.lineTo(PAD.left + chartW, y);
+                    ctxVA.stroke();
+                    ctxVA.font = 'bold 9px -apple-system';
+                    ctxVA.fillStyle = cor;
+                    ctxVA.textAlign = 'right';
+                    ctxVA.fillText(label + ' ' + fmtN(preco), PAD.left + chartW - 4, y - 3);
+                    ctxVA.restore();
                 };
-                desenharLinhaVA(va.vah, va.ancorado ? 'VAH ⚓' : 'VAH');
-                desenharLinhaVA(va.poc, va.ancorado ? 'POC ⚓' : 'POC');
-                desenharLinhaVA(va.val, va.ancorado ? 'VAL ⚓' : 'VAL');
+                desenharLinhaVA(va.vah, va.ancorado ? 'VAH ⚓' : 'VAH', corVA);
+                desenharLinhaVA(va.poc, va.ancorado ? 'POC ⚓' : 'POC', corPoc);
+                desenharLinhaVA(va.val, va.ancorado ? 'VAL ⚓' : 'VAL', corVA);
 
                 // Marcador no candle-âncora exato (mesmo estilo do VWAP ancorado).
                 if (va.ancorado && _grValueAreaAncoraTs != null) {
@@ -4565,15 +4581,15 @@ function grDrawCandles(candles, emptyRight) {
                         const xAncoraVA = grIndexToX(idxAncoraVA);
                         if (xAncoraVA >= PAD.left - 10 && xAncoraVA <= PAD.left + chartW + 10) {
                             const yAncoraVA = toY((cAncoraVA.h + cAncoraVA.l + cAncoraVA.c) / 3);
-                            ctx.save();
-                            ctx.beginPath();
-                            ctx.arc(xAncoraVA, yAncoraVA, 4, 0, Math.PI * 2);
-                            ctx.fillStyle = corVA;
-                            ctx.fill();
-                            ctx.lineWidth = 1;
-                            ctx.strokeStyle = '#FFFFFF';
-                            ctx.stroke();
-                            ctx.restore();
+                            ctxVA.save();
+                            ctxVA.beginPath();
+                            ctxVA.arc(xAncoraVA, yAncoraVA, 4, 0, Math.PI * 2);
+                            ctxVA.fillStyle = corVA;
+                            ctxVA.fill();
+                            ctxVA.lineWidth = 1;
+                            ctxVA.strokeStyle = '#FFFFFF';
+                            ctxVA.stroke();
+                            ctxVA.restore();
                         }
                     }
                 }
@@ -8422,7 +8438,7 @@ function cvCapSlider(v) { /* análise IA removida */ }
 
 
 // ── Gerenciar Componentes ─────────────────────────────────────────
-let _indOculto = {};
+let _indOculto = { footprint: true }; // histograma escondido por padrão — função dele foi pro modal ("Detalhar"), fica só atravancando a tela por cima do price action
 let _prefComponentes = {};
 
 const _indLabels = {
