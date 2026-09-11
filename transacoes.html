@@ -3521,6 +3521,7 @@ function grSwitchTab(tab) {
 let _grChart = null;
 let _grTf = '4h';
 let _grAllCandles = [];
+window._grCrosshairMiniFootCache = { t: null, niveis: [] }; // cache do mini-footprint do crosshair — só recalcula quando o candle muda
 
 // ── VWAP Ancorado — MÚLTIPLAS âncoras, persistidas no localStorage (chave
 // escopada por ativo+timeframe). Cada âncora guarda o TIMESTAMP do candle
@@ -7204,31 +7205,45 @@ function grDrawChartWithCrosshair(yInterno) {
                 { label: sellPct, val: fmtBtc(sellVol), color: '#EF5350' },
                 { label: buyPct,  val: fmtBtc(buyVol),  color: '#26A69A' },
             ] : []),
-            ...(_indState.subInd === 'absorcao' ? [
-                { label: 'Absorç', val: ((candle.h - candle.l) > 0 ? ((candle.v||0)/(candle.h-candle.l)) : 0).toFixed(1), color: '#FFC107' },
-            ] : []),
-            ...((_grFootprintAtivo && _grFootprintBins) ? (() => {
-                const pAgr = Math.round(preco / 10) * 10;
-                const nivel = _grFootprintBins.mapaBase.get(pAgr);
-                if (!nivel) return [];
-                const deltaNivel = nivel.c - nivel.v;
-                const totalNivel = nivel.c + nivel.v;
-                const corDelta = deltaNivel >= 0 ? '#26A69A' : '#EF5350';
-                return [
-                    { label: 'Compra', val: fmtBtc2(nivel.c), color: '#26A69A' },
-                    { label: 'Venda',  val: fmtBtc2(nivel.v), color: '#EF5350' },
-                    { label: 'Delta',  val: (deltaNivel >= 0 ? '+' : '') + fmtBtc2(deltaNivel), color: corDelta },
-                    { label: 'Total',  val: fmtBtc2(totalNivel) },
-                ];
-            })() : []),
-
         ];
+        const temBotaoFootprint = _grFootprintAtivo && _grFootprintBins;
+
+        // Mini-footprint (preview) — só os 3 níveis de MAIOR volume dentro
+        // desse candle específico, pra não abrir modal só pra espiar onde
+        // concentrou. Cache por candle.t: o crosshair redesenha a cada frame
+        // de arraste, e varrer o histórico bruto toda vez seria pesado —
+        // só recalcula quando o dedo troca de CANDLE, não a cada pixel.
+        const MINI_FOOT_N = 3, MINI_FOOT_ROW_H = 14;
+        let miniNiveis = [];
+        if (temBotaoFootprint) {
+            if (window._grCrosshairMiniFootCache.t !== candle.t) {
+                const todos = grFootprintTodosOsCandlesBrutos();
+                const msPorCandle = grFootprintMsPorCandle();
+                const de = candle.t, ate = candle.t + msPorCandle;
+                const mapa = new Map();
+                for (const c of todos) {
+                    if (c.ts < de || c.ts >= ate) continue;
+                    (c.niveis || []).forEach(n => {
+                        if (!mapa.has(n.p)) mapa.set(n.p, { c: 0, v: 0 });
+                        const acc = mapa.get(n.p);
+                        acc.c += n.c; acc.v += n.v;
+                    });
+                }
+                const niveis = Array.from(mapa.entries())
+                    .map(([p, v]) => ({ p, total: v.c + v.v, c: v.c, v: v.v }))
+                    .sort((a, b) => b.total - a.total)
+                    .slice(0, MINI_FOOT_N);
+                window._grCrosshairMiniFootCache = { t: candle.t, niveis };
+            }
+            miniNiveis = window._grCrosshairMiniFootCache.niveis;
+        }
+        const miniFootH = miniNiveis.length > 0 ? (miniNiveis.length * MINI_FOOT_ROW_H + 8) : 0;
+
         const boxPad = 10, lineH = 18;
         const dateLineH = 16; // altura extra para a data no topo
-        const temBotaoFootprint = _grFootprintAtivo && _grFootprintBins;
         const btnH = temBotaoFootprint ? 26 : 0;
         const btnHAncorar = temBotaoFootprint ? 26 : 0; // Ancorar só existe com footprint ligado — é parte do framework dele agora
-        const boxH = linhas.length * lineH + boxPad + dateLineH + btnH + btnHAncorar;
+        const boxH = linhas.length * lineH + boxPad + dateLineH + miniFootH + btnH + btnHAncorar;
         const colLabel = 44, colVal = 80;
         const boxW = colLabel + colVal + boxPad;
         let bx = _grCrosshairX + 10;
@@ -7269,6 +7284,26 @@ function grDrawChartWithCrosshair(yInterno) {
             ctx.textAlign = 'right';
             ctx.fillText(l.val, bx + boxW - boxPad / 2, ly);
         });
+
+        // Mini-footprint (preview) — só os top 3 níveis de volume desse
+        // candle, barrinha proporcional ao maior deles, cor pelo lado
+        // dominante (verde = compra maior, vermelho = venda maior).
+        if (miniNiveis.length > 0) {
+            const miniTop = by + dateLineH + boxPad / 2 + linhas.length * lineH;
+            const maxTotal = miniNiveis[0].total || 1;
+            const corTexto = _grTemaClaro ? '#1C1C1E' : '#FFFFFF';
+            miniNiveis.forEach((n, i) => {
+                const ry = miniTop + i * MINI_FOOT_ROW_H;
+                const barMaxW = boxW - boxPad - 44; // deixa espaço pro preço à esquerda
+                const barW = Math.max(2, (n.total / maxTotal) * barMaxW);
+                ctx.font = '9px -apple-system';
+                ctx.textAlign = 'left';
+                ctx.fillStyle = corTexto;
+                ctx.fillText(fmtN(n.p), bx + boxPad / 2, ry + MINI_FOOT_ROW_H - 4);
+                ctx.fillStyle = n.c >= n.v ? 'rgba(38,166,154,0.8)' : 'rgba(239,83,80,0.8)';
+                ctx.fillRect(bx + 40, ry + 2, barW, MINI_FOOT_ROW_H - 5);
+            });
+        }
 
         // Botão "Ver Footprint" — abre o modal do candle direto da janela do
         // crosshair, sem precisar fechar e tocar no candle de novo. Fundo
