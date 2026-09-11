@@ -1163,6 +1163,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
   <div id="gr-chart-container" style="position:relative;flex:1;background:#131722;display:flex;flex-direction:column;overflow:hidden;">
     <div id="gr-chart-canvas-wrap" style="position:relative;flex:1;min-height:0;">
       <canvas id="gr-chart-canvas" style="width:100%;height:100%;display:block;" onclick="if(_tickerDropdownAberto){cvToggleTickerDropdown();}"></canvas>
+      <canvas id="gr-crosshair-overlay-canvas" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:6;"></canvas>
     </div>
     <!-- Minimapa panorâmico: visão de linha de um timeframe acima, oculto por padrão (ativado como indicador) -->
     <div id="cv-minimap-wrap" style="display:none;flex-direction:column;flex-shrink:0;background:#0c0f16;border-top:1px solid rgba(255,255,255,0.1);user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;">
@@ -3849,6 +3850,15 @@ async function grRenderChart() {
     const canvas = document.getElementById('gr-chart-canvas');
     canvas.width = canvasWrap.clientWidth;
     canvas.height = canvasWrap.clientHeight - 10;
+    // Canvas do crosshair (linhas/janela) sincroniza resolução com o principal
+    // e limpa — sem isso a janela antiga ficava presa na tela em renders
+    // normais (fora do arrasto de crosshair).
+    const crosshairCanvas = document.getElementById('gr-crosshair-overlay-canvas');
+    if (crosshairCanvas) {
+        crosshairCanvas.width = canvas.width;
+        crosshairCanvas.height = canvas.height;
+        crosshairCanvas.getContext('2d').clearRect(0, 0, crosshairCanvas.width, crosshairCanvas.height);
+    }
     const miniCanvas = document.getElementById('cv-minimap-canvas');
     if (miniCanvas && _cvMinimapAtivo) {
         const miniHolder = miniCanvas.parentElement;
@@ -7099,8 +7109,15 @@ function grDrawChartWithCrosshair(yInterno) {
         }
     }
     const canvas = document.getElementById('gr-chart-canvas');
-    const ctx = canvas.getContext('2d');
+    // Desenha em canvas próprio (z-index acima do overlay do footprint) — antes
+    // a janela do crosshair era pintada no canvas principal e ficava atrás do
+    // histograma do price action, que vive num canvas separado por cima dele.
+    const crosshairCanvas = document.getElementById('gr-crosshair-overlay-canvas');
+    if (crosshairCanvas.width !== canvas.width) crosshairCanvas.width = canvas.width;
+    if (crosshairCanvas.height !== canvas.height) crosshairCanvas.height = canvas.height;
+    const ctx = crosshairCanvas.getContext('2d');
     const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
     const preco = grToPrice(yInterno);
     if (!preco || preco <= 0) return;
 
@@ -7229,10 +7246,27 @@ function grDrawChartWithCrosshair(yInterno) {
                         acc.c += n.c; acc.v += n.v;
                     });
                 }
-                const niveis = Array.from(mapa.entries())
+                const todosOrdenados = Array.from(mapa.entries())
                     .map(([p, v]) => ({ p, total: v.c + v.v, c: v.c, v: v.v }))
-                    .sort((a, b) => b.total - a.total)
-                    .slice(0, MINI_FOOT_N);
+                    .sort((a, b) => b.total - a.total);
+                // Garante representação dos dois lados: pegar só os N maiores por
+                // volume total podia trazer 3 níveis dominados por compra e nunca
+                // mostrar o vendedor relevante do candle (mesmo que ele exista com
+                // volume um pouco menor). Pega o maior geral, o maior do lado
+                // oposto a ele (se existir), e completa com os próximos por volume.
+                const niveis = [];
+                if (todosOrdenados.length > 0) {
+                    const topo = todosOrdenados[0];
+                    niveis.push(topo);
+                    const ladoTopoCompra = topo.c >= topo.v;
+                    const melhorLadoOposto = todosOrdenados.find(n => (n.c >= n.v) !== ladoTopoCompra);
+                    if (melhorLadoOposto) niveis.push(melhorLadoOposto);
+                    for (const n of todosOrdenados) {
+                        if (niveis.length >= MINI_FOOT_N) break;
+                        if (niveis.includes(n)) continue;
+                        niveis.push(n);
+                    }
+                }
                 window._grCrosshairMiniFootCache = { t: candle.t, niveis };
             }
             miniNiveis = window._grCrosshairMiniFootCache.niveis;
@@ -7250,18 +7284,10 @@ function grDrawChartWithCrosshair(yInterno) {
         if (bx + boxW > W - _grPAD.right) bx = _grCrosshairX - boxW - 10;
         const by = _grPAD.top + 10;
 
-        // Opacidade ligada à posição do conteúdo: transparente onde tem só
-        // rótulo de texto (coluna esquerda), opaco a partir de onde os
-        // NÚMEROS começam (coluna direita) até a borda — não é mais um
-        // degradê genérico, é a própria coluna de valores.
+        // Fundo totalmente opaco — sem degradê de transparência na coluna
+        // de rótulos, que atrapalhava a leitura sobre o gráfico atrás.
         const bgRGB = _grTemaClaro ? '255,255,255' : '19,23,34';
-        const fracNumeros = colLabel / boxW; // onde a coluna de números começa
-        const gradFundo = ctx.createLinearGradient(bx, 0, bx + boxW, 0);
-        gradFundo.addColorStop(0,                     `rgba(${bgRGB},0)`);
-        gradFundo.addColorStop(fracNumeros,           `rgba(${bgRGB},0)`);
-        gradFundo.addColorStop(fracNumeros + 0.04,     `rgba(${bgRGB},0.97)`);
-        gradFundo.addColorStop(1,                     `rgba(${bgRGB},0.97)`);
-        ctx.fillStyle = gradFundo;
+        ctx.fillStyle = `rgba(${bgRGB},1)`;
         ctx.beginPath(); ctx.roundRect(bx, by, boxW, boxH, 8); ctx.fill();
         ctx.strokeStyle = corCandle;
         ctx.lineWidth = 1.5;
