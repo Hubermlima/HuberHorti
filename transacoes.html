@@ -7213,16 +7213,6 @@ function grDrawChartWithCrosshair(yInterno) {
         const buyPct  = totalVol ? (buyVol  / totalVol * 100).toFixed(0) + '%' : '';
         const sellPct = totalVol ? (sellVol / totalVol * 100).toFixed(0) + '%' : '';
 
-        const linhas = [
-            { label: 'Abert', val: fmtN(candle.o) },
-            { label: 'Max',   val: fmtN(candle.h) },
-            { label: 'Min',   val: fmtN(candle.l) },
-            { label: 'Fech',  val: fmtN(candle.c) },
-                        ...(buyVol != null ? [
-                { label: sellPct, val: fmtBtc(sellVol), color: '#EF5350' },
-                { label: buyPct,  val: fmtBtc(buyVol),  color: '#26A69A' },
-            ] : []),
-        ];
         const temBotaoFootprint = _grFootprintAtivo && _grFootprintBins;
 
         // Mini-footprint (preview) — só os 3 níveis de MAIOR volume dentro
@@ -7230,8 +7220,13 @@ function grDrawChartWithCrosshair(yInterno) {
         // concentrou. Cache por candle.t: o crosshair redesenha a cada frame
         // de arraste, e varrer o histórico bruto toda vez seria pesado —
         // só recalcula quando o dedo troca de CANDLE, não a cada pixel.
+        // O cache também guarda os totais agregados do candle inteiro
+        // (Delta/Compradores/Vendedores/Total), somados sobre TODOS os
+        // níveis (não só os 3 do preview) — é a fonte real de compra/venda
+        // do candle, mais confiável que o campo bv (que a Kraken não envia).
         const MINI_FOOT_N = 3, MINI_FOOT_ROW_H = 14;
         let miniNiveis = [];
+        let footAgregado = null;
         if (temBotaoFootprint) {
             if (window._grCrosshairMiniFootCache.t !== candle.t) {
                 const todos = grFootprintTodosOsCandlesBrutos();
@@ -7249,6 +7244,8 @@ function grDrawChartWithCrosshair(yInterno) {
                 const todosOrdenados = Array.from(mapa.entries())
                     .map(([p, v]) => ({ p, total: v.c + v.v, c: v.c, v: v.v }))
                     .sort((a, b) => b.total - a.total);
+                const compraTotal = todosOrdenados.reduce((s, n) => s + n.c, 0);
+                const vendaTotal = todosOrdenados.reduce((s, n) => s + n.v, 0);
                 // Garante representação dos dois lados: pegar só os N maiores por
                 // volume total podia trazer 3 níveis dominados por compra e nunca
                 // mostrar o vendedor relevante do candle (mesmo que ele exista com
@@ -7267,10 +7264,27 @@ function grDrawChartWithCrosshair(yInterno) {
                         niveis.push(n);
                     }
                 }
-                window._grCrosshairMiniFootCache = { t: candle.t, niveis };
+                window._grCrosshairMiniFootCache = { t: candle.t, niveis, compraTotal, vendaTotal };
             }
             miniNiveis = window._grCrosshairMiniFootCache.niveis;
+            footAgregado = window._grCrosshairMiniFootCache;
         }
+
+        const linhas = [
+            { label: 'Abert', val: fmtN(candle.o) },
+            { label: 'Max',   val: fmtN(candle.h) },
+            { label: 'Min',   val: fmtN(candle.l) },
+            { label: 'Fech',  val: fmtN(candle.c) },
+            ...(footAgregado ? [
+                { label: 'Delta',        val: fmtBtc(footAgregado.compraTotal - footAgregado.vendaTotal), color: footAgregado.compraTotal >= footAgregado.vendaTotal ? '#26A69A' : '#EF5350' },
+                { label: 'Compradores',  val: fmtBtc(footAgregado.compraTotal), color: '#26A69A' },
+                { label: 'Vendedores',   val: fmtBtc(footAgregado.vendaTotal),  color: '#EF5350' },
+                { label: 'Total',        val: fmtBtc(footAgregado.compraTotal + footAgregado.vendaTotal) },
+            ] : (buyVol != null ? [
+                { label: sellPct, val: fmtBtc(sellVol), color: '#EF5350' },
+                { label: buyPct,  val: fmtBtc(buyVol),  color: '#26A69A' },
+            ] : [])),
+        ];
         const miniFootH = miniNiveis.length > 0 ? (miniNiveis.length * MINI_FOOT_ROW_H + 8) : 0;
 
         const boxPad = 10, lineH = 18;
@@ -7278,7 +7292,12 @@ function grDrawChartWithCrosshair(yInterno) {
         const btnH = temBotaoFootprint ? 26 : 0;
         const btnHAncorar = temBotaoFootprint ? 26 : 0; // Ancorar só existe com footprint ligado — é parte do framework dele agora
         const boxH = linhas.length * lineH + boxPad + dateLineH + miniFootH + btnH + btnHAncorar;
-        const colLabel = 44, colVal = 80;
+        // colLabel dinâmico: rótulos como "Compradores"/"Vendedores" são bem
+        // mais largos que "Abert"/"Max" — largura fixa de 44px cortava/
+        // sobrepunha o texto. Mede o maior rótulo real da janela.
+        ctx.font = 'bold 11px -apple-system';
+        const maiorLabelW = Math.max(...linhas.map(l => ctx.measureText(l.label).width));
+        const colLabel = Math.max(44, Math.ceil(maiorLabelW) + 6), colVal = 80;
         const boxW = colLabel + colVal + boxPad;
         let bx = _grCrosshairX + 10;
         if (bx + boxW > W - _grPAD.right) bx = _grCrosshairX - boxW - 10;
