@@ -3599,6 +3599,43 @@ function grVwapAtualizarBotaoLimpar() {
     if (btn) btn.style.display = (_grFootprintAtivo && _grVwapAncoras.length > 0) ? '' : 'none';
 }
 
+// ── Value Area Ancorada — UMA âncora só (diferente do VWAP, que aceita
+// várias). Cada Value Area desenha 3 linhas + uma faixa preenchida; com
+// mais de uma ativa ao mesmo tempo, as faixas translúcidas se empilham e
+// viram bagunça visual — por isso aqui é sempre 0 ou 1, nunca uma lista.
+// Guarda só o TIMESTAMP do candle (mesmo motivo do VWAP: índice muda quando
+// a lista de candles recarrega, timestamp não).
+let _grValueAreaAncoraTs = null;
+
+function _grValueAreaLSKey() {
+    return 'gr_va_ancora_' + (_ativoId || 'default') + '_' + _grTf;
+}
+function grValueAreaSalvarAncora() {
+    try {
+        if (_grValueAreaAncoraTs == null) localStorage.removeItem(_grValueAreaLSKey());
+        else localStorage.setItem(_grValueAreaLSKey(), String(_grValueAreaAncoraTs));
+    } catch (e) {}
+}
+function grValueAreaCarregarAncora() {
+    try {
+        const raw = localStorage.getItem(_grValueAreaLSKey());
+        _grValueAreaAncoraTs = raw ? parseInt(raw) : null;
+    } catch (e) { _grValueAreaAncoraTs = null; }
+}
+
+// Chamado pelo botão "Ancorar Value Area" da janela do crosshair. Toggle:
+// tocar no MESMO candle já ancorado remove a âncora (volta pra janela
+// rolante padrão "Dias: X"); tocar em outro candle SUBSTITUI a âncora atual.
+function grValueAreaAncorarNoCandle(idxCandle) {
+    if (idxCandle == null || !_grAllCandles[idxCandle]) return;
+    const ts = _grAllCandles[idxCandle].t;
+    _grValueAreaAncoraTs = (_grValueAreaAncoraTs === ts) ? null : ts;
+    grValueAreaSalvarAncora();
+    _grValueAreaCache = { binsRef: null, poc: null, vah: null, val: null }; // força recálculo imediato
+    grDrawChart();
+}
+
+
 let _grCandlesD = [];  // candles diários para EMA MTF
 let _grCandlesW = [];  // candles semanais para EMA MTF
 let _grZonasCache = null; // {res: [], sup: []} — calculado uma vez por load
@@ -3897,6 +3934,7 @@ async function grRenderChart() {
             }
             _grZonasCache = null;
             grVwapCarregarAncoras(); // recarrega as âncoras salvas pra esse ativo+timeframe
+            grValueAreaCarregarAncora();
 
             // Busca candles diários e semanais para EMA MTF (em paralelo).
             // _grCandlesW é reconstruído a partir de diários agrupados em semana civil
@@ -4515,9 +4553,30 @@ function grDrawCandles(candles, emptyRight) {
                     ctx.fillText(label + ' ' + fmtN(preco), PAD.left + chartW - 4, y - 3);
                     ctx.restore();
                 };
-                desenharLinhaVA(va.vah, 'VAH');
-                desenharLinhaVA(va.poc, 'POC');
-                desenharLinhaVA(va.val, 'VAL');
+                desenharLinhaVA(va.vah, va.ancorado ? 'VAH ⚓' : 'VAH');
+                desenharLinhaVA(va.poc, va.ancorado ? 'POC ⚓' : 'POC');
+                desenharLinhaVA(va.val, va.ancorado ? 'VAL ⚓' : 'VAL');
+
+                // Marcador no candle-âncora exato (mesmo estilo do VWAP ancorado).
+                if (va.ancorado && _grValueAreaAncoraTs != null) {
+                    const idxAncoraVA = grVwapIdxPorTs(_grValueAreaAncoraTs);
+                    const cAncoraVA = _grAllCandles[idxAncoraVA];
+                    if (cAncoraVA) {
+                        const xAncoraVA = grIndexToX(idxAncoraVA);
+                        if (xAncoraVA >= PAD.left - 10 && xAncoraVA <= PAD.left + chartW + 10) {
+                            const yAncoraVA = toY((cAncoraVA.h + cAncoraVA.l + cAncoraVA.c) / 3);
+                            ctx.save();
+                            ctx.beginPath();
+                            ctx.arc(xAncoraVA, yAncoraVA, 4, 0, Math.PI * 2);
+                            ctx.fillStyle = corVA;
+                            ctx.fill();
+                            ctx.lineWidth = 1;
+                            ctx.strokeStyle = '#FFFFFF';
+                            ctx.stroke();
+                            ctx.restore();
+                        }
+                    }
+                }
             }
         }
 
@@ -6558,6 +6617,17 @@ function grInitTouch() {
                     return;
                 }
             }
+            // Toque no botão "Ancorar Value Area" / "Remover Value Area" da janela do crosshair
+            if (window._longPressActive && window._grCrosshairValueAreaBtnArea) {
+                const tva = window._grCrosshairValueAreaBtnArea;
+                if (ex2 >= tva.x && ex2 <= tva.x + tva.w && ey2 >= tva.y && ey2 <= tva.y + tva.h) {
+                    grValueAreaAncorarNoCandle(window._grCrosshairValueAreaIdx);
+                    window._longPressActive = false;
+                    clearTimeout(_longPressTimer);
+                    e.preventDefault();
+                    return;
+                }
+            }
             // Toque simples fecha o crosshair se estava ativo
             if (window._longPressActive) {
                 window._longPressActive = false;
@@ -7337,7 +7407,8 @@ function grDrawChartWithCrosshair(yInterno) {
         const dateLineH = 16; // altura extra para a data no topo
         const btnH = temBotaoFootprint ? 26 : 0;
         const btnHAncorar = temBotaoFootprint ? 26 : 0; // Ancorar só existe com footprint ligado — é parte do framework dele agora
-        const boxH = linhas.length * lineH + boxPad + dateLineH + miniFootH + btnH + btnHAncorar;
+        const btnHValueArea = temBotaoFootprint ? 26 : 0; // Ancorar Value Area — mesma condição
+        const boxH = linhas.length * lineH + boxPad + dateLineH + miniFootH + btnH + btnHAncorar + btnHValueArea;
         // colLabel dinâmico: rótulos como "Compradores"/"Vendedores" são bem
         // mais largos que "Abert"/"Max" — largura fixa de 44px cortava/
         // sobrepunha o texto. Mede o maior rótulo real da janela.
@@ -7400,7 +7471,7 @@ function grDrawChartWithCrosshair(yInterno) {
         // crosshair, sem precisar fechar e tocar no candle de novo. Fundo
         // cinza padrão + label escuro, com ícone Heroicon (chart-bar).
         if (temBotaoFootprint) {
-            const btnY = by + boxH - btnH - btnHAncorar - 4;
+            const btnY = by + boxH - btnH - btnHAncorar - btnHValueArea - 4;
             const btnRect = { x: bx + 4, y: btnY, w: boxW - 8, h: btnH - 4 };
             ctx.fillStyle = '#D1D1D6';
             ctx.beginPath(); ctx.roundRect(btnRect.x, btnRect.y, btnRect.w, btnRect.h, 6); ctx.fill();
@@ -7426,7 +7497,7 @@ function grDrawChartWithCrosshair(yInterno) {
             const tsCandleCrosshair = _grAllCandles[idxCandleCrosshair] ? _grAllCandles[idxCandleCrosshair].t : null;
             const jaEAncora = _grVwapAncoras.some(a => a.ts === tsCandleCrosshair);
             const tipoPreview = jaEAncora ? null : grVwapClassificarTipo(idxCandleCrosshair);
-            const btnAncY = by + boxH - btnHAncorar - 4;
+            const btnAncY = by + boxH - btnHAncorar - btnHValueArea - 4;
             const btnAncRect = { x: bx + 4, y: btnAncY, w: boxW - 8, h: btnHAncorar - 4 };
             ctx.fillStyle = '#D1D1D6';
             ctx.beginPath(); ctx.roundRect(btnAncRect.x, btnAncRect.y, btnAncRect.w, btnAncRect.h, 6); ctx.fill();
@@ -7441,6 +7512,30 @@ function grDrawChartWithCrosshair(yInterno) {
             window._grCrosshairAncorarIdx = idxCandleCrosshair;
         } else {
             window._grCrosshairAncorarBtnArea = null;
+        }
+
+        // Botão "Ancorar Value Area" — só existe com footprint ligado. UMA
+        // âncora só (diferente do VWAP): marcar candle novo substitui a
+        // anterior. Vira "Remover Value Area" se esse já for o candle
+        // ancorado atual.
+        if (temBotaoFootprint) {
+            const tsCandleCrosshairVA = _grAllCandles[idxCandleCrosshair] ? _grAllCandles[idxCandleCrosshair].t : null;
+            const jaEAncoraVA = _grValueAreaAncoraTs != null && _grValueAreaAncoraTs === tsCandleCrosshairVA;
+            const btnVaY = by + boxH - btnHValueArea - 4;
+            const btnVaRect = { x: bx + 4, y: btnVaY, w: boxW - 8, h: btnHValueArea - 4 };
+            ctx.fillStyle = '#D1D1D6';
+            ctx.beginPath(); ctx.roundRect(btnVaRect.x, btnVaRect.y, btnVaRect.w, btnVaRect.h, 6); ctx.fill();
+            const txtVa = jaEAncoraVA ? 'Remover Value Area' : 'Ancorar Value Area';
+            const iconCx3 = btnVaRect.x + 12;
+            grDesenharIconeHeroicon(ctx, jaEAncoraVA ? HEROICON_XMARK : HEROICON_BOOKMARK, iconCx3, btnVaY + btnVaRect.h / 2, 13, '#1C1C1E');
+            ctx.font = 'bold 11px -apple-system';
+            ctx.textAlign = 'left';
+            ctx.fillStyle = '#1C1C1E';
+            ctx.fillText(txtVa, btnVaRect.x + 22, btnVaY + btnVaRect.h / 2 + 4);
+            window._grCrosshairValueAreaBtnArea = btnVaRect;
+            window._grCrosshairValueAreaIdx = idxCandleCrosshair;
+        } else {
+            window._grCrosshairValueAreaBtnArea = null;
         }
 
 
@@ -14535,11 +14630,49 @@ function grFootprintRecalcularSeNecessario() {
 let _grValueAreaCache = { binsRef: null, poc: null, vah: null, val: null };
 const GR_VALUE_AREA_PCT = 0.70;
 
-function grFootprintCalcularValueArea() {
-    if (!_grFootprintBins || !_grFootprintBins.mapaBase) return null;
-    if (_grValueAreaCache.binsRef === _grFootprintBins) return _grValueAreaCache;
+// Fonte do mapaBase pra Value Area: se tiver âncora escolhida, soma o
+// histórico bruto DESSE candle até agora (mesmo espírito do VWAP ancorado);
+// senão usa a janela rolante padrão "Dias: X" que o footprint já mantém.
+// Recalcula só 1x por minuto (igual o resto do footprint) — sem isso, somar
+// o histórico bruto inteiro a cada redesenho (200ms) seria pesado demais
+// quando a âncora é antiga.
+let _grValueAreaAncoradaBins = null; // { mapaBase, anchorTs, minutoCalc }
 
-    const niveis = Array.from(_grFootprintBins.mapaBase.entries())
+function grFootprintObterMapaBaseValueArea() {
+    if (_grValueAreaAncoraTs == null) {
+        return _grFootprintBins ? _grFootprintBins.mapaBase : null;
+    }
+    if (!_grFootprintCandlesRaw) return null;
+    const minutoAtual = Math.floor(Date.now() / 60000);
+    if (_grValueAreaAncoradaBins &&
+        _grValueAreaAncoradaBins.anchorTs === _grValueAreaAncoraTs &&
+        _grValueAreaAncoradaBins.minutoCalc === minutoAtual) {
+        return _grValueAreaAncoradaBins.mapaBase;
+    }
+    const mapaBase = new Map();
+    for (const c of _grFootprintCandlesRaw) {
+        if (c.ts < _grValueAreaAncoraTs) continue;
+        (c.niveis || []).forEach(n => {
+            if (!mapaBase.has(n.p)) mapaBase.set(n.p, { c: 0, v: 0 });
+            const acc = mapaBase.get(n.p);
+            acc.c += n.c; acc.v += n.v;
+        });
+    }
+    _grValueAreaAncoradaBins = { mapaBase, anchorTs: _grValueAreaAncoraTs, minutoCalc: minutoAtual };
+    return mapaBase;
+}
+
+function grFootprintCalcularValueArea() {
+    const mapaBase = grFootprintObterMapaBaseValueArea();
+    if (!mapaBase) return null;
+    // Chave de cache: quando ancorada, usa o objeto de bins ancorados (troca
+    // a cada minuto/âncora nova); senão o _grFootprintBins normal (já troca
+    // a cada minuto sozinho). Os dois casos nunca se confundem porque são
+    // objetos diferentes.
+    const cacheKey = _grValueAreaAncoraTs != null ? _grValueAreaAncoradaBins : _grFootprintBins;
+    if (_grValueAreaCache.binsRef === cacheKey) return _grValueAreaCache;
+
+    const niveis = Array.from(mapaBase.entries())
         .map(([p, v]) => ({ p, total: v.c + v.v }))
         .sort((a, b) => a.p - b.p); // ordenado por PREÇO (crescente) pra expansão vizinha
     if (niveis.length === 0) return null;
@@ -14564,10 +14697,11 @@ function grFootprintCalcularValueArea() {
     }
 
     _grValueAreaCache = {
-        binsRef: _grFootprintBins,
+        binsRef: cacheKey,
         poc: niveis[idxPoc].p,
         vah: niveis[iHi].p,
         val: niveis[iLo].p,
+        ancorado: _grValueAreaAncoraTs != null,
     };
     return _grValueAreaCache;
 }
@@ -14783,8 +14917,16 @@ function grFootprintDesenharOverlay() {
     // sombra normal verde/vermelho do próprio nível POC (que também é um dos
     // itens do mapa) cobriria ela por cima. Serve pra ver de cara se um nível
     // marcado manualmente (ex: um Order Block) coincide com o POC de verdade.
-    if (pocPreco != null) {
-        const yCentroPoc = grLineY(pocPreco);
+    // Usa a POC da Value Area (calculada sobre o mapaBase CRU, tick $10, sem
+    // reagrupamento) em vez do pocPreco local — esse último é calculado em
+    // cima do tick reagrupado pra caber na tela (tickNecessario), que pode
+    // deslocar o pico pro bucket vizinho. Sem isso, essa sombra e a linha
+    // "POC" da Value Area podiam apontar preços levemente diferentes pro
+    // MESMO conceito — agora as duas usam a mesma fonte (o dado cru).
+    const vaPoc = grFootprintCalcularValueArea();
+    const pocRealParaSombra = vaPoc ? vaPoc.poc : pocPreco;
+    if (pocRealParaSombra != null) {
+        const yCentroPoc = grLineY(pocRealParaSombra);
         if (yCentroPoc >= _grPAD.top - rowH && yCentroPoc <= _grPAD.top + _grChartH + rowH) {
             const y0Poc = Math.round(yCentroPoc - rowH / 2);
             const alturaPoc = Math.max(2, Math.ceil(rowH) + 1);
