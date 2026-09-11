@@ -4480,6 +4480,34 @@ function grDrawCandles(candles, emptyRight) {
             ctx.restore();
         });
 
+        // ── Value Area (VAH/POC/VAL) — mesma janela "Dias: X" do footprint ──
+        if (_grFootprintAtivo && _grFootprintBins && !_indOculto.valueArea) {
+            const va = grFootprintCalcularValueArea();
+            if (va) {
+                const desenharLinhaVA = (preco, label, cor, dash) => {
+                    const y = toY(preco);
+                    if (y < PAD.top || y > PAD.top + _grChartH) return;
+                    ctx.save();
+                    ctx.strokeStyle = cor;
+                    ctx.lineWidth = label === 'POC' ? 1.5 : 1;
+                    ctx.setLineDash(dash);
+                    ctx.beginPath();
+                    ctx.moveTo(PAD.left, y);
+                    ctx.lineTo(PAD.left + chartW, y);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                    ctx.font = 'bold 9px -apple-system';
+                    ctx.fillStyle = cor;
+                    ctx.textAlign = 'right';
+                    ctx.fillText(label + ' ' + fmtN(preco), PAD.left + chartW - 4, y - 3);
+                    ctx.restore();
+                };
+                desenharLinhaVA(va.vah, 'VAH', 'rgba(255,193,7,0.85)', [5, 3]);
+                desenharLinhaVA(va.poc, 'POC', 'rgba(255,255,255,0.9)', []);
+                desenharLinhaVA(va.val, 'VAL', 'rgba(255,193,7,0.85)', [5, 3]);
+            }
+        }
+
        // ── Alertas ──────────────────────────────────────────────────
         if (!_indOculto.alertas) _grAlertas.forEach((alerta, i) => {
             const y = toY(alerta.preco);
@@ -14485,9 +14513,53 @@ function grFootprintRecalcularSeNecessario() {
 // Reagrupa mapaBase (tick $10) num tick maior sempre que necessário pra garantir
 // FOOTPRINT_MIN_ROW_PX de altura por linha na escala de preço ATUAL do eixo Y principal
 // (_grMinP/_grMaxP) — as barras ficam sempre no mesmo nível de preço do gráfico.
-// Cacheia o resultado e só recalcula quando o tick necessário muda — evita
-// reprocessar o mapa inteiro a cada frame (roda no intervalo de 200ms).
-function grFootprintObterMapaExibicao(pxPorDolar) {
+// ── Value Area (VAH/POC/VAL) ──────────────────────────────────────────
+// POC = nível de preço (não candle!) com mais volume total na janela
+// "Dias: X" do footprint. VAH/VAL = limites que fecham 70% do volume,
+// expandindo do POC pro nível vizinho (acima ou abaixo) de maior volume
+// a cada passo — é o Value Area clássico de Market Profile, calculado
+// sobre volume REAL por preço (mapaBase), não sobre close de candle.
+let _grValueAreaCache = { binsRef: null, poc: null, vah: null, val: null };
+const GR_VALUE_AREA_PCT = 0.70;
+
+function grFootprintCalcularValueArea() {
+    if (!_grFootprintBins || !_grFootprintBins.mapaBase) return null;
+    if (_grValueAreaCache.binsRef === _grFootprintBins) return _grValueAreaCache;
+
+    const niveis = Array.from(_grFootprintBins.mapaBase.entries())
+        .map(([p, v]) => ({ p, total: v.c + v.v }))
+        .sort((a, b) => a.p - b.p); // ordenado por PREÇO (crescente) pra expansão vizinha
+    if (niveis.length === 0) return null;
+
+    const volumeTotal = niveis.reduce((s, n) => s + n.total, 0);
+    if (volumeTotal <= 0) return null;
+
+    let idxPoc = 0;
+    for (let i = 1; i < niveis.length; i++) {
+        if (niveis[i].total > niveis[idxPoc].total) idxPoc = i;
+    }
+
+    let iLo = idxPoc, iHi = idxPoc;
+    let acumulado = niveis[idxPoc].total;
+    const alvo = volumeTotal * GR_VALUE_AREA_PCT;
+
+    while (acumulado < alvo && (iLo > 0 || iHi < niveis.length - 1)) {
+        const volAbaixo = iLo > 0 ? niveis[iLo - 1].total : -1;
+        const volAcima = iHi < niveis.length - 1 ? niveis[iHi + 1].total : -1;
+        if (volAcima >= volAbaixo) { iHi++; acumulado += niveis[iHi].total; }
+        else { iLo--; acumulado += niveis[iLo].total; }
+    }
+
+    _grValueAreaCache = {
+        binsRef: _grFootprintBins,
+        poc: niveis[idxPoc].p,
+        vah: niveis[iHi].p,
+        val: niveis[iLo].p,
+    };
+    return _grValueAreaCache;
+}
+
+
     const { mapaBase } = _grFootprintBins;
 
     const tickNecessario = Math.max(10, Math.ceil((FOOTPRINT_MIN_ROW_PX / pxPorDolar) / 10) * 10);
