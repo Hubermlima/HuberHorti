@@ -3528,6 +3528,35 @@ let _grTf = '4h';
 let _grAllCandles = [];
 window._grCrosshairMiniFootCache = { t: null, niveis: [] }; // cache do mini-footprint do crosshair — só recalcula quando o candle muda
 
+// Delta agressor (compra-venda) por candle EXIBIDO, pra colorir o corpo do
+// candlestick — separado da cor da borda (que é direção do preço). Varredura
+// única (dois ponteiros, candles e histórico bruto já vêm ordenados por
+// tempo), com cache pra não recalcular a cada frame sem necessidade.
+let _grDeltaPorCandleCache = { key: null, mapa: null };
+function grObterDeltaPorCandle(candles) {
+    if (!_grFootprintAtivo || !_grFootprintCandlesRaw || candles.length === 0) return null;
+    const key = candles.length + '_' + candles[0].t + '_' + candles[candles.length - 1].t + '_' + _grFootprintCandlesRaw.length;
+    if (_grDeltaPorCandleCache.key === key) return _grDeltaPorCandleCache.mapa;
+
+    const msPorCandle = grFootprintMsPorCandle();
+    const raw = _grFootprintCandlesRaw;
+    const mapa = new Map();
+    let idx = 0;
+    for (let i = 0; i < candles.length; i++) {
+        const de = candles[i].t;
+        const ate = de + msPorCandle;
+        while (idx < raw.length && raw[idx].ts < de) idx++; // avança sem voltar — os dois arrays estão ordenados
+        let j = idx, compra = 0, venda = 0;
+        while (j < raw.length && raw[j].ts < ate) {
+            (raw[j].niveis || []).forEach(n => { compra += (n.c || 0); venda += (n.v || 0); });
+            j++;
+        }
+        mapa.set(candles[i].t, compra - venda);
+    }
+    _grDeltaPorCandleCache = { key, mapa };
+    return mapa;
+}
+
 // Liga/desliga as barras de volume profile ("nuvem") desenhadas no price
 // action — separado do footprint em si (o footprint continua ativo, só as
 // barrinhas na régua de preço é que somem). Persistido, começa DESLIGADO —
@@ -4806,6 +4835,7 @@ if (_grTipoGrafico === 'linha') {
     ctx.stroke();
 
 } else {
+    const deltaPorCandle = grObterDeltaPorCandle(candles); // null se footprint desligado — cai no comportamento antigo
     candles.forEach((c, i) => {
         const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
         const isUp = c.c >= c.o;
@@ -4814,8 +4844,20 @@ if (_grTipoGrafico === 'linha') {
             color = isUp ? '#F5F5F5' : '#4A4A4A'; // cinza claro (alta) / cinza escuro (baixa), não branco/preto puro
             strokeColor = '#5C5C5C'; // contorno cinza médio, suave — desenha o pavio e delimita o corpo sem pesar
         } else {
-            color = isUp ? '#26A69A' : '#EF5350';
-            strokeColor = color;
+            // Borda (e pavio) SEMPRE pela direção do preço — fechamento vs
+            // abertura, igual candle tradicional.
+            strokeColor = isUp ? '#26A69A' : '#EF5350';
+            // Corpo pelo DELTA agressor do candle (compra-venda), quando
+            // disponível — as duas cores podem discordar (candle de
+            // "absorção": subiu no preço, mas quem dominou foi vendedor, ou
+            // vice-versa). Sem footprint ligado, cai no mesmo critério da
+            // borda (não tem delta pra usar).
+            if (deltaPorCandle) {
+                const delta = deltaPorCandle.get(c.t) || 0;
+                color = delta >= 0 ? '#26A69A' : '#EF5350';
+            } else {
+                color = strokeColor;
+            }
         }
         ctx.strokeStyle = strokeColor;
         ctx.fillStyle = color;
@@ -4833,7 +4875,10 @@ if (_grTipoGrafico === 'linha') {
         const bodyBot = toY(Math.min(c.o, c.c));
         const bodyH = Math.max(1, bodyBot - bodyTop);
         ctx.fillRect(x - cW / 2, bodyTop, cW, bodyH);
-        if (_grTemaClaro) ctx.strokeRect(x - cW / 2, bodyTop, cW, bodyH);
+        // Contorno do corpo: sempre visível agora (não só no tema claro) —
+        // é o que deixa a borda (preço) distinguível do preenchimento (delta)
+        // quando as duas cores discordam.
+        ctx.strokeRect(x - cW / 2, bodyTop, cW, bodyH);
 
         // Destaque ZII: se esse candle tem zona(s) marcada(s) (auto ou manual),
         // pinta uma camada clara por cima do corpo — metade verde/metade
