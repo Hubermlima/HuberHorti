@@ -3557,6 +3557,44 @@ function grObterDeltaPorCandle(candles) {
     return mapa;
 }
 
+// PoC comprador/vendedor por candle EXIBIDO — os 2 níveis de maior volume de
+// CADA lado (olhando só a coluna compra pra ranquear um, só venda pro outro),
+// pra marcar como traço fino no candle. Mesma varredura de dois ponteiros do
+// delta por candle, só que aqui guarda os níveis, não só a soma.
+let _grPocsPorCandleCache = { key: null, mapa: null };
+function grObterPocsPorCandle(candles) {
+    if (!_grFootprintAtivo || !_grFootprintCandlesRaw || candles.length === 0) return null;
+    const key = candles.length + '_' + candles[0].t + '_' + candles[candles.length - 1].t + '_' + _grFootprintCandlesRaw.length;
+    if (_grPocsPorCandleCache.key === key) return _grPocsPorCandleCache.mapa;
+
+    const msPorCandle = grFootprintMsPorCandle();
+    const raw = _grFootprintCandlesRaw;
+    const mapa = new Map();
+    let idx = 0;
+    for (let i = 0; i < candles.length; i++) {
+        const de = candles[i].t;
+        const ate = de + msPorCandle;
+        while (idx < raw.length && raw[idx].ts < de) idx++;
+        let j = idx;
+        const niveis = new Map(); // p -> {c, v}
+        while (j < raw.length && raw[j].ts < ate) {
+            (raw[j].niveis || []).forEach(n => {
+                if (!niveis.has(n.p)) niveis.set(n.p, { c: 0, v: 0 });
+                const acc = niveis.get(n.p);
+                acc.c += (n.c || 0);
+                acc.v += (n.v || 0);
+            });
+            j++;
+        }
+        const arr = Array.from(niveis.entries()).map(([p, v]) => ({ p, c: v.c, v: v.v }));
+        const comprasTop = arr.filter(n => n.c > 0).sort((a, b) => b.c - a.c).slice(0, 2);
+        const vendasTop = arr.filter(n => n.v > 0).sort((a, b) => b.v - a.v).slice(0, 2);
+        mapa.set(candles[i].t, { comprasTop, vendasTop });
+    }
+    _grPocsPorCandleCache = { key, mapa };
+    return mapa;
+}
+
 // Liga/desliga as barras de volume profile ("nuvem") desenhadas no price
 // action — separado do footprint em si (o footprint continua ativo, só as
 // barrinhas na régua de preço é que somem). Persistido, começa DESLIGADO —
@@ -4836,8 +4874,10 @@ if (_grTipoGrafico === 'linha') {
 
 } else {
     const deltaPorCandle = grObterDeltaPorCandle(candles); // null se footprint desligado — sem dado pra saber se diverge
+    const pocsPorCandle = grObterPocsPorCandle(candles); // null se footprint desligado — sem dado pra marcar os PoCs
     const CorDivergAlta = '#7B1FA2';  // roxo — candle subiu, mas delta foi negativo (vendedor dominou apesar do preço)
     const CorDivergBaixa = '#1E88E5'; // azul — candle caiu, mas delta foi positivo (comprador dominou apesar do preço)
+    const ALTURA_MIN_POC_PX = 12; // candle (H até L, na tela) menor que isso não recebe traço de PoC — vira poluição
     candles.forEach((c, i) => {
         const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
         const isUp = c.c >= c.o;
@@ -4880,6 +4920,44 @@ if (_grTipoGrafico === 'linha') {
         const bodyH = Math.max(1, bodyBot - bodyTop);
         ctx.fillRect(x - cW / 2, bodyTop, cW, bodyH);
         if (_grTemaClaro || divergCor) ctx.strokeRect(x - cW / 2, bodyTop, cW, bodyH);
+
+        // Traços de PoC comprador/vendedor — os 2 níveis de maior volume de
+        // cada lado dentro do candle (corpo OU pavio, tanto faz onde caírem).
+        // Fininho, atravessa a largura do candle. Se comprador e vendedor
+        // caem no mesmo nível, divide a linha meio a meio (mesma "assinatura"
+        // visual do destaque ZII, já usada logo abaixo).
+        if (pocsPorCandle) {
+            const alturaCandlePx = toY(c.l) - toY(c.h);
+            if (alturaCandlePx >= ALTURA_MIN_POC_PX) {
+                const pocs = pocsPorCandle.get(c.t);
+                if (pocs && (pocs.comprasTop.length || pocs.vendasTop.length)) {
+                    const porPreco = new Map();
+                    pocs.comprasTop.forEach(n => {
+                        if (!porPreco.has(n.p)) porPreco.set(n.p, { compra: false, venda: false });
+                        porPreco.get(n.p).compra = true;
+                    });
+                    pocs.vendasTop.forEach(n => {
+                        if (!porPreco.has(n.p)) porPreco.set(n.p, { compra: false, venda: false });
+                        porPreco.get(n.p).venda = true;
+                    });
+                    ctx.save();
+                    ctx.lineWidth = 1.5;
+                    porPreco.forEach((lados, p) => {
+                        const yLinha = Math.round(toY(p)) + 0.5; // +0.5 pra linha nítida, sem borrão de anti-aliasing
+                        if (lados.compra && lados.venda) {
+                            ctx.strokeStyle = '#26A69A';
+                            ctx.beginPath(); ctx.moveTo(x - cW / 2, yLinha); ctx.lineTo(x, yLinha); ctx.stroke();
+                            ctx.strokeStyle = '#EF5350';
+                            ctx.beginPath(); ctx.moveTo(x, yLinha); ctx.lineTo(x + cW / 2, yLinha); ctx.stroke();
+                        } else {
+                            ctx.strokeStyle = lados.compra ? '#26A69A' : '#EF5350';
+                            ctx.beginPath(); ctx.moveTo(x - cW / 2, yLinha); ctx.lineTo(x + cW / 2, yLinha); ctx.stroke();
+                        }
+                    });
+                    ctx.restore();
+                }
+            }
+        }
 
         // Destaque ZII: se esse candle tem zona(s) marcada(s) (auto ou manual),
         // pinta uma camada clara por cima do corpo — metade verde/metade
