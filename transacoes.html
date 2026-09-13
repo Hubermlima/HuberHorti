@@ -7523,17 +7523,14 @@ function grDrawChartWithCrosshair(yInterno) {
 
         const temBotaoFootprint = _grFootprintAtivo && _grFootprintBins;
 
-        // Mini-footprint (preview) — só os 3 níveis de MAIOR volume dentro
-        // desse candle específico, pra não abrir modal só pra espiar onde
-        // concentrou. Cache por candle.t: o crosshair redesenha a cada frame
-        // de arraste, e varrer o histórico bruto toda vez seria pesado —
-        // só recalcula quando o dedo troca de CANDLE, não a cada pixel.
-        // O cache também guarda os totais agregados do candle inteiro
-        // (Delta/Compradores/Vendedores/Total), somados sobre TODOS os
-        // níveis (não só os 3 do preview) — é a fonte real de compra/venda
-        // do candle, mais confiável que o campo bv (que a Kraken não envia).
-        const MINI_FOOT_N = 3, MINI_FOOT_ROW_H = 14;
-        let miniNiveis = [];
+        // Mini-footprint (ladder compacta) — TODOS os níveis de preço desse
+        // candle (não só os maiores), no formato de régua: compra à esquerda,
+        // venda à direita, número do preço centralizado na reta vertical.
+        // Cache por candle.t: o crosshair redesenha a cada frame de arraste,
+        // e varrer o histórico bruto toda vez seria pesado — só recalcula
+        // quando o dedo troca de CANDLE, não a cada pixel.
+        const MINI_FOOT_ROW_H = 9; // bem compacto — sem delta/checkbox, cabe mais nível
+        let niveisPrecoDesc = [];
         let footAgregado = null;
         if (temBotaoFootprint) {
             if (window._grCrosshairMiniFootCache.t !== candle.t) {
@@ -7549,32 +7546,13 @@ function grDrawChartWithCrosshair(yInterno) {
                         acc.c += n.c; acc.v += n.v;
                     });
                 }
-                const todosOrdenados = Array.from(mapa.entries())
-                    .map(([p, v]) => ({ p, total: v.c + v.v, c: v.c, v: v.v }))
-                    .sort((a, b) => b.total - a.total);
-                const compraTotal = todosOrdenados.reduce((s, n) => s + n.c, 0);
-                const vendaTotal = todosOrdenados.reduce((s, n) => s + n.v, 0);
-                // Garante representação dos dois lados: pegar só os N maiores por
-                // volume total podia trazer 3 níveis dominados por compra e nunca
-                // mostrar o vendedor relevante do candle (mesmo que ele exista com
-                // volume um pouco menor). Pega o maior geral, o maior do lado
-                // oposto a ele (se existir), e completa com os próximos por volume.
-                const niveis = [];
-                if (todosOrdenados.length > 0) {
-                    const topo = todosOrdenados[0];
-                    niveis.push(topo);
-                    const ladoTopoCompra = topo.c >= topo.v;
-                    const melhorLadoOposto = todosOrdenados.find(n => (n.c >= n.v) !== ladoTopoCompra);
-                    if (melhorLadoOposto) niveis.push(melhorLadoOposto);
-                    for (const n of todosOrdenados) {
-                        if (niveis.length >= MINI_FOOT_N) break;
-                        if (niveis.includes(n)) continue;
-                        niveis.push(n);
-                    }
-                }
-                window._grCrosshairMiniFootCache = { t: candle.t, niveis, compraTotal, vendaTotal };
+                const todosNiveis = Array.from(mapa.entries()).map(([p, v]) => ({ p, total: v.c + v.v, c: v.c, v: v.v }));
+                const porPreco = todosNiveis.slice().sort((a, b) => b.p - a.p); // preço decrescente — de cima pra baixo na régua
+                const compraTotal = todosNiveis.reduce((s, n) => s + n.c, 0);
+                const vendaTotal = todosNiveis.reduce((s, n) => s + n.v, 0);
+                window._grCrosshairMiniFootCache = { t: candle.t, niveisPrecoDesc: porPreco, compraTotal, vendaTotal };
             }
-            miniNiveis = window._grCrosshairMiniFootCache.niveis;
+            niveisPrecoDesc = window._grCrosshairMiniFootCache.niveisPrecoDesc;
             footAgregado = window._grCrosshairMiniFootCache;
         }
 
@@ -7593,7 +7571,7 @@ function grDrawChartWithCrosshair(yInterno) {
                 { label: buyPct,  val: fmtBtc(buyVol),  color: '#26A69A' },
             ] : [])),
         ];
-        const miniFootH = miniNiveis.length > 0 ? (miniNiveis.length * MINI_FOOT_ROW_H + 8) : 0;
+        const miniFootH = niveisPrecoDesc.length > 0 ? (niveisPrecoDesc.length * MINI_FOOT_ROW_H + 8) : 0;
 
         const boxPad = 10, lineH = 18;
         const dateLineH = 16; // altura extra para a data no topo
@@ -7607,7 +7585,11 @@ function grDrawChartWithCrosshair(yInterno) {
         ctx.font = 'bold 11px -apple-system';
         const maiorLabelW = Math.max(...linhas.map(l => ctx.measureText(l.label).width));
         const colLabel = Math.max(44, Math.ceil(maiorLabelW) + 6), colVal = 80;
-        const boxW = colLabel + colVal + boxPad;
+        // Largura mínima pra régua da mini-ladder caber: barra de cada lado +
+        // coluna central estreita só pro número do preço.
+        const MINI_PRECO_COL_W = 32, MINI_BAR_MAX_W = 46;
+        const miniW = MINI_BAR_MAX_W * 2 + MINI_PRECO_COL_W;
+        const boxW = Math.max(colLabel + colVal + boxPad, miniW + boxPad);
         let bx = _grCrosshairX + 10;
         if (bx + boxW > W - _grPAD.right) bx = _grCrosshairX - boxW - 10;
         const by = _grPAD.top + 10;
@@ -7639,24 +7621,63 @@ function grDrawChartWithCrosshair(yInterno) {
             ctx.fillText(l.val, bx + boxW - boxPad / 2, ly);
         });
 
-        // Mini-footprint (preview) — só os top 3 níveis de volume desse
-        // candle, barrinha proporcional ao maior deles, cor pelo lado
-        // dominante (verde = compra maior, vermelho = venda maior).
-        if (miniNiveis.length > 0) {
+        // Mini-footprint (ladder compacta) — reta vertical central no eixo de
+        // preço (preta, com o trecho abertura↔fechamento colorido verde/
+        // vermelho conforme o candle), compra saindo pra esquerda, venda pra
+        // direita, número do nível centralizado bem em cima da reta.
+        if (niveisPrecoDesc.length > 0) {
             const miniTop = by + dateLineH + boxPad / 2 + linhas.length * lineH;
-            const maxTotal = miniNiveis[0].total || 1;
-            const corTexto = _grTemaClaro ? '#1C1C1E' : '#FFFFFF';
-            miniNiveis.forEach((n, i) => {
+            const centroX = bx + boxW / 2;
+            const maxTotal = Math.max(...niveisPrecoDesc.map(n => n.total), 1);
+            const nRows = niveisPrecoDesc.length;
+            const miniBottom = miniTop + nRows * MINI_FOOT_ROW_H;
+
+            // Posição Y (interpolada) da abertura e do fechamento dentro da
+            // régua — mesmo preço mais alto (topo) até mais baixo (fundo).
+            const topoP = niveisPrecoDesc[0].p, fundoP = niveisPrecoDesc[nRows - 1].p;
+            const spanP = (topoP - fundoP) || 1;
+            const yParaPreco = (p) => miniTop + ((topoP - p) / spanP) * (miniBottom - miniTop);
+            const yAbert = Math.max(miniTop, Math.min(miniBottom, yParaPreco(candle.o)));
+            const yFech  = Math.max(miniTop, Math.min(miniBottom, yParaPreco(candle.c)));
+            const corCorpo = candle.c >= candle.o ? '#26A69A' : '#EF5350';
+
+            ctx.save();
+            // Reta preta (topo a fundo da régua)
+            ctx.strokeStyle = _grTemaClaro ? '#8E8E93' : '#8E8E93';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath(); ctx.moveTo(centroX, miniTop); ctx.lineTo(centroX, miniBottom); ctx.stroke();
+            // Trecho abertura↔fechamento, colorido por cima
+            ctx.strokeStyle = corCorpo;
+            ctx.lineWidth = 2.5;
+            ctx.beginPath(); ctx.moveTo(centroX, Math.min(yAbert, yFech)); ctx.lineTo(centroX, Math.max(yAbert, yFech)); ctx.stroke();
+
+            niveisPrecoDesc.forEach((n, i) => {
                 const ry = miniTop + i * MINI_FOOT_ROW_H;
-                const barMaxW = boxW - boxPad - 44; // deixa espaço pro preço à esquerda
-                const barW = Math.max(2, (n.total / maxTotal) * barMaxW);
-                ctx.font = '9px -apple-system';
-                ctx.textAlign = 'left';
-                ctx.fillStyle = corTexto;
-                ctx.fillText(fmtN(n.p), bx + boxPad / 2, ry + MINI_FOOT_ROW_H - 4);
-                ctx.fillStyle = n.c >= n.v ? 'rgba(38,166,154,0.8)' : 'rgba(239,83,80,0.8)';
-                ctx.fillRect(bx + 40, ry + 2, barW, MINI_FOOT_ROW_H - 5);
+                const rowMeioY = ry + MINI_FOOT_ROW_H / 2;
+                const barCompraW = Math.max(1, (n.c / maxTotal) * MINI_BAR_MAX_W);
+                const barVendaW  = Math.max(1, (n.v / maxTotal) * MINI_BAR_MAX_W);
+                // Compra: barra saindo do centro pra ESQUERDA
+                if (n.c > 0) {
+                    ctx.fillStyle = 'rgba(38,166,154,0.75)';
+                    ctx.fillRect(centroX - MINI_PRECO_COL_W / 2 - barCompraW, ry + 1, barCompraW, MINI_FOOT_ROW_H - 2);
+                }
+                // Venda: barra saindo do centro pra DIREITA
+                if (n.v > 0) {
+                    ctx.fillStyle = 'rgba(239,83,80,0.75)';
+                    ctx.fillRect(centroX + MINI_PRECO_COL_W / 2, ry + 1, barVendaW, MINI_FOOT_ROW_H - 2);
+                }
+                // Número do preço — centralizado bem em cima da reta central,
+                // com um fundo opaco atrás pra não ficar ilegível cruzando a linha.
+                const txt = fmtN(n.p);
+                ctx.font = '6.5px -apple-system';
+                const tw = ctx.measureText(txt).width;
+                ctx.fillStyle = `rgba(${bgRGB},1)`;
+                ctx.fillRect(centroX - tw / 2 - 1, ry, tw + 2, MINI_FOOT_ROW_H);
+                ctx.fillStyle = _grTemaClaro ? '#1C1C1E' : '#FFFFFF';
+                ctx.textAlign = 'center';
+                ctx.fillText(txt, centroX, rowMeioY + 2);
             });
+            ctx.restore();
         }
 
         // Botão "Ver Footprint" — abre o modal do candle direto da janela do
