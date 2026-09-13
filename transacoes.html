@@ -7523,12 +7523,17 @@ function grDrawChartWithCrosshair(yInterno) {
 
         const temBotaoFootprint = _grFootprintAtivo && _grFootprintBins;
 
-        // Mini-footprint (ladder compacta) — TODOS os níveis de preço desse
-        // candle (não só os maiores), no formato de régua: compra à esquerda,
-        // venda à direita, número do preço centralizado na reta vertical.
+        // Mini-footprint (ladder compacta) — SEMPRE 13 faixas uniformes
+        // cobrindo exatamente Max→Min do candle (não "um nível por cada $10
+        // que teve trade", que variava de 1 a 40+ dependendo do range do
+        // candle — isso que causava linha ou número sumindo em alguns
+        // candles). Com 13 fixo, a régua sempre cobre o candle inteiro e a
+        // altura de linha fica estável. Compra à esquerda, venda à direita,
+        // número do preço (centro da faixa) centralizado na reta vertical.
         // Cache por candle.t: o crosshair redesenha a cada frame de arraste,
         // e varrer o histórico bruto toda vez seria pesado — só recalcula
         // quando o dedo troca de CANDLE, não a cada pixel.
+        const NIVEIS_MINI = 13;
         let niveisPrecoDesc = [];
         let footAgregado = null;
         if (temBotaoFootprint) {
@@ -7545,11 +7550,30 @@ function grDrawChartWithCrosshair(yInterno) {
                         acc.c += n.c; acc.v += n.v;
                     });
                 }
-                const todosNiveis = Array.from(mapa.entries()).map(([p, v]) => ({ p, total: v.c + v.v, c: v.c, v: v.v }));
-                const porPreco = todosNiveis.slice().sort((a, b) => b.p - a.p); // preço decrescente — de cima pra baixo na régua
+                const todosNiveis = Array.from(mapa.entries()).map(([p, v]) => ({ p, c: v.c, v: v.v }));
                 const compraTotal = todosNiveis.reduce((s, n) => s + n.c, 0);
                 const vendaTotal = todosNiveis.reduce((s, n) => s + n.v, 0);
-                window._grCrosshairMiniFootCache = { t: candle.t, niveisPrecoDesc: porPreco, compraTotal, vendaTotal };
+
+                // Bucketiza em NIVEIS_MINI faixas uniformes cobrindo candle.h
+                // até candle.l — cada faixa soma o que caiu dentro dela.
+                const hi = candle.h, lo = candle.l;
+                const span = Math.max(hi - lo, 10);
+                const tick = span / NIVEIS_MINI;
+                const buckets = [];
+                for (let i = 0; i < NIVEIS_MINI; i++) {
+                    const bucketHi = hi - i * tick;
+                    const bucketLo = hi - (i + 1) * tick;
+                    buckets.push({ p: (bucketHi + bucketLo) / 2, c: 0, v: 0, total: 0 });
+                }
+                todosNiveis.forEach(n => {
+                    let idx = Math.floor((hi - n.p) / tick);
+                    idx = Math.max(0, Math.min(NIVEIS_MINI - 1, idx));
+                    buckets[idx].c += n.c;
+                    buckets[idx].v += n.v;
+                });
+                buckets.forEach(b => { b.total = b.c + b.v; });
+
+                window._grCrosshairMiniFootCache = { t: candle.t, niveisPrecoDesc: buckets, compraTotal, vendaTotal };
             }
             niveisPrecoDesc = window._grCrosshairMiniFootCache.niveisPrecoDesc;
             footAgregado = window._grCrosshairMiniFootCache;
@@ -7644,7 +7668,7 @@ function grDrawChartWithCrosshair(yInterno) {
 
             // Posição Y (interpolada) da abertura e do fechamento dentro da
             // régua — mesmo preço mais alto (topo) até mais baixo (fundo).
-            const topoP = niveisPrecoDesc[0].p, fundoP = niveisPrecoDesc[nRows - 1].p;
+            const topoP = candle.h, fundoP = candle.l; // range real do candle, não o centro das faixas
             const spanP = (topoP - fundoP) || 1;
             const yParaPreco = (p) => miniTop + ((topoP - p) / spanP) * (miniBottom - miniTop);
             const yAbert = Math.max(miniTop, Math.min(miniBottom, yParaPreco(candle.o)));
