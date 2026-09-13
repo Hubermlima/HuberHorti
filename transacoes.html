@@ -7523,16 +7523,67 @@ function grDrawChartWithCrosshair(yInterno) {
 
         const temBotaoFootprint = _grFootprintAtivo && _grFootprintBins;
 
-        // Mini-footprint (ladder compacta) — número de níveis VARIA com o
-        // tamanho do candle (1 nível por $10, a granularidade real do dado),
-        // entre um piso de 5 (candle minúsculo ainda mostra algo) e um teto
-        // de 50 (candle gigante não vira uma régua absurda). A altura de
-        // linha continua adaptativa (grVwapRowH mais abaixo) — é ela que
-        // garante nunca estourar a altura da tela, não importa quantos
-        // níveis saiam daqui. Preparação pro dia de migrar isso pro price
-        // action no lugar do candle normal.
-        // Compra à esquerda, venda à direita, número do preço (centro da
-        // faixa) centralizado na reta vertical.
+        // ── Layout da caixa primeiro (não depende de quantos níveis vão
+        // existir) — preciso saber quanto espaço SOBRA pra régua antes de
+        // decidir quantos níveis cabem nela, senão vira o problema de
+        // circular dependência que gerou o bug anterior (altura sempre igual
+        // porque o número de níveis batia sempre no teto).
+        const linhas = [
+            { label: 'Abert', val: fmtN(candle.o) },
+            { label: 'Max',   val: fmtN(candle.h) },
+            { label: 'Min',   val: fmtN(candle.l) },
+            { label: 'Fech',  val: fmtN(candle.c) },
+            // Delta/Compradores/Vendedores/Total saíram daqui — agora aparecem
+            // no rodapé da mini-régua (igual a referência de imagem), não
+            // repetidos aqui em cima também.
+            ...(!temBotaoFootprint && buyVol != null ? [
+                { label: sellPct, val: fmtBtc(sellVol), color: '#EF5350' },
+                { label: buyPct,  val: fmtBtc(buyVol),  color: '#26A69A' },
+            ] : []),
+        ];
+        const boxPad = 10, lineH = 18;
+        const dateLineH = 16; // altura extra para a data no topo
+        const btnH = temBotaoFootprint ? 26 : 0;
+        const btnHAncorar = temBotaoFootprint ? 26 : 0; // Ancorar só existe com footprint ligado — é parte do framework dele agora
+        const btnHValueArea = temBotaoFootprint ? 26 : 0; // Ancorar Value Area — mesma condição
+        const rodapeH = temBotaoFootprint ? 26 : 0; // rodapé Delta/Total, igual a referência de imagem
+        // colLabel dinâmico: rótulos como "Compradores"/"Vendedores" são bem
+        // mais largos que "Abert"/"Max" — largura fixa de 44px cortava/
+        // sobrepunha o texto. Mede o maior rótulo real da janela.
+        ctx.font = 'bold 11px -apple-system';
+        const maiorLabelW = Math.max(...linhas.map(l => ctx.measureText(l.label).width));
+        const colLabel = Math.max(44, Math.ceil(maiorLabelW) + 6), colVal = 80;
+        // Largura mínima pra régua da mini-ladder caber: barra de cada lado +
+        // vão estreito até a reta central.
+        const MINI_LINHA_GAP = 3, MINI_BAR_MAX_W = 32; // o mais fino possível, sem perder a barra em si
+        const miniW = MINI_BAR_MAX_W * 2 + MINI_LINHA_GAP * 2;
+        const boxW = Math.max(colLabel + colVal + boxPad, miniW + boxPad);
+        let bx = _grCrosshairX + 10;
+        if (bx + boxW > W - _grPAD.right) bx = _grCrosshairX - boxW - 10;
+        const by = _grPAD.top + 10;
+
+        const partesFixasH = linhas.length * lineH + boxPad + dateLineH + btnH + btnHAncorar + btnHValueArea + rodapeH;
+        const maxBoxH = H - by - 10; // não passa da borda inferior da tela
+        const alturaDisponivelMini = Math.max(0, maxBoxH - partesFixasH);
+
+        // ── Número de níveis: TENTA tick fino ($10, a granularidade real)
+        // primeiro, com linha FIXA de 9px (legível). Só aumenta o tick
+        // (menos níveis, cada um mais grosso) se isso não couber na altura
+        // disponível — nunca o contrário (não encolhe a linha primeiro).
+        // É isso que faz candle grande realmente parecer maior na tela, e
+        // candle pequeno parecer menor, em vez de tudo convergir pro mesmo
+        // tamanho.
+        const ROW_H_FIXA = 9;
+        const hi0 = candle.h, lo0 = candle.l;
+        const span0 = Math.max(hi0 - lo0, 10);
+        const maxNiveisCabendo = Math.max(3, Math.floor(alturaDisponivelMini / ROW_H_FIXA));
+        let nivelCountAlvo = Math.max(1, Math.round(span0 / 10)); // tick fino padrão: 1 nível por $10
+        nivelCountAlvo = Math.min(nivelCountAlvo, 50); // teto de sanidade mesmo antes de checar altura
+        if (nivelCountAlvo > maxNiveisCabendo) nivelCountAlvo = maxNiveisCabendo; // só agora engrossa o tick, se precisar
+
+        // Mini-footprint (ladder compacta) — número de níveis e tick calculados
+        // acima, ANTES do dado bruto. Compra à esquerda, venda à direita,
+        // número do preço (centro da faixa) centralizado na reta vertical.
         // Cache por candle.t: o crosshair redesenha a cada frame de arraste,
         // e varrer o histórico bruto toda vez seria pesado — só recalcula
         // quando o dedo troca de CANDLE, não a cada pixel.
@@ -7556,19 +7607,16 @@ function grDrawChartWithCrosshair(yInterno) {
                 const compraTotal = todosNiveis.reduce((s, n) => s + n.c, 0);
                 const vendaTotal = todosNiveis.reduce((s, n) => s + n.v, 0);
 
-                // Número de níveis dinâmico: 1 por $10 de range, entre 5 e 50.
-                const hi = candle.h, lo = candle.l;
-                const span = Math.max(hi - lo, 10);
-                const nivelCount = Math.max(5, Math.min(50, Math.round(span / 10)));
-                const tick = span / nivelCount;
+                const nivelCount = nivelCountAlvo;
+                const tick = span0 / nivelCount;
                 const buckets = [];
                 for (let i = 0; i < nivelCount; i++) {
-                    const bucketHi = hi - i * tick;
-                    const bucketLo = hi - (i + 1) * tick;
+                    const bucketHi = hi0 - i * tick;
+                    const bucketLo = hi0 - (i + 1) * tick;
                     buckets.push({ p: (bucketHi + bucketLo) / 2, c: 0, v: 0, total: 0 });
                 }
                 todosNiveis.forEach(n => {
-                    let idx = Math.floor((hi - n.p) / tick);
+                    let idx = Math.floor((hi0 - n.p) / tick);
                     idx = Math.max(0, Math.min(nivelCount - 1, idx));
                     buckets[idx].c += n.c;
                     buckets[idx].v += n.v;
@@ -7581,53 +7629,14 @@ function grDrawChartWithCrosshair(yInterno) {
             footAgregado = window._grCrosshairMiniFootCache;
         }
 
-        const linhas = [
-            { label: 'Abert', val: fmtN(candle.o) },
-            { label: 'Max',   val: fmtN(candle.h) },
-            { label: 'Min',   val: fmtN(candle.l) },
-            { label: 'Fech',  val: fmtN(candle.c) },
-            // Delta/Compradores/Vendedores/Total saíram daqui — agora aparecem
-            // no rodapé da mini-régua (igual a referência de imagem), não
-            // repetidos aqui em cima também.
-            ...(!footAgregado && buyVol != null ? [
-                { label: sellPct, val: fmtBtc(sellVol), color: '#EF5350' },
-                { label: buyPct,  val: fmtBtc(buyVol),  color: '#26A69A' },
-            ] : []),
-        ];
-        const boxPad = 10, lineH = 18;
-        const dateLineH = 16; // altura extra para a data no topo
-        const btnH = temBotaoFootprint ? 26 : 0;
-        const btnHAncorar = temBotaoFootprint ? 26 : 0; // Ancorar só existe com footprint ligado — é parte do framework dele agora
-        const btnHValueArea = temBotaoFootprint ? 26 : 0; // Ancorar Value Area — mesma condição
-        // colLabel dinâmico: rótulos como "Compradores"/"Vendedores" são bem
-        // mais largos que "Abert"/"Max" — largura fixa de 44px cortava/
-        // sobrepunha o texto. Mede o maior rótulo real da janela.
-        ctx.font = 'bold 11px -apple-system';
-        const maiorLabelW = Math.max(...linhas.map(l => ctx.measureText(l.label).width));
-        const colLabel = Math.max(44, Math.ceil(maiorLabelW) + 6), colVal = 80;
-        // Largura mínima pra régua da mini-ladder caber: barra de cada lado +
-        // coluna central estreita só pro número do preço.
-        const MINI_LINHA_GAP = 3, MINI_BAR_MAX_W = 32; // o mais fino possível, sem perder a barra em si
-        const miniW = MINI_BAR_MAX_W * 2 + MINI_LINHA_GAP * 2;
-        const boxW = Math.max(colLabel + colVal + boxPad, miniW + boxPad);
-        let bx = _grCrosshairX + 10;
-        if (bx + boxW > W - _grPAD.right) bx = _grCrosshairX - boxW - 10;
-        const by = _grPAD.top + 10;
-
-        // Altura da mini-régua é ADAPTATIVA, não fixa em 9px por linha — a
-        // caixa inteira nunca pode passar da altura visível da tela. Calcula
-        // primeiro quanto sobra depois de tudo mais (data, Abert/Max/Min/Fech,
-        // botões), e divide isso pelo número de níveis — quanto mais nível,
-        // mais fina cada linha fica, em vez de a caixa crescer sem limite.
-        // Rodapé Delta/Total (igual a referência de imagem) — só existe
-        // quando tem footAgregado (footprint com dado desse candle).
-        const rodapeH = footAgregado ? 26 : 0;
-        const partesFixasH = linhas.length * lineH + boxPad + dateLineH + btnH + btnHAncorar + btnHValueArea + rodapeH;
-        const maxBoxH = H - by - 10; // não passa da borda inferior da tela
-        const alturaDisponivelMini = Math.max(0, maxBoxH - partesFixasH);
+        // Linha fica em 9px sempre que o número de níveis escolhido já coube
+        // no cálculo acima (é o caso normal); só encolhe mais que isso no
+        // caso extremo de a caixa ter espaço quase nenhum sobrando.
         const miniRowH = niveisPrecoDesc.length > 0
-            ? Math.max(0.4, Math.min(9, alturaDisponivelMini / niveisPrecoDesc.length))
-            : 9;
+            ? (niveisPrecoDesc.length * ROW_H_FIXA <= alturaDisponivelMini
+                ? ROW_H_FIXA
+                : Math.max(0.4, alturaDisponivelMini / niveisPrecoDesc.length))
+            : ROW_H_FIXA;
         const miniFootH = niveisPrecoDesc.length > 0 ? (niveisPrecoDesc.length * miniRowH) : 0;
         const boxH = partesFixasH + miniFootH;
 
