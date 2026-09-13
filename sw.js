@@ -54,7 +54,7 @@ self.addEventListener('push', e => {
       clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
         for (const client of list) {
           if (client.url.includes('pedidos_entregas')) {
-            client.postMessage({ type: 'PUSH_RECEBIDO' });
+            client.postMessage({ type: 'PUSH_RECEBIDO', pedido_venda_id: data.pedido_venda_id || null });
           }
         }
       })
