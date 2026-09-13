@@ -480,11 +480,17 @@ function iniciarPolling() {
     if (_isAdmin) return;
         navigator.serviceWorker.addEventListener('message', function(e) {
                 if (e.data && e.data.type === 'PUSH_RECEBIDO') {
-            mostrarStatusAtualizado();
+            const pushPedidoId = e.data.pedido_venda_id;
             const modalAberto = document.getElementById('modal').classList.contains('active');
-            if (modalAberto && _pedidoAberto) {
+            // Se o push não informa o pedido (compatibilidade) ou é o mesmo pedido aberto, atualiza o modal.
+            // Se for de outro pedido, ignora silenciosamente para não sobrescrever edições em andamento.
+            const ehPedidoAberto = modalAberto && _pedidoAberto &&
+                (pushPedidoId == null || String(pushPedidoId) === String(_pedidoAberto.id));
+            if (ehPedidoAberto) {
+                mostrarStatusAtualizado();
                 refreshSilencioso();
-            } else {
+            } else if (!modalAberto) {
+                mostrarStatusAtualizado();
                 carregarApp();
             }
         }
@@ -626,9 +632,9 @@ async function abrirPedido(i) {
 
               <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
             </button>
-            <input class="campo ${ok} qtd-campo" type="tel" inputmode="decimal" value="${qtdVal}" data-last-valid="${qtdVal}" placeholder="0,00" oninput="mascaraQtd(this)" ${readonlyAttr}
+            <input class="campo ${ok} qtd-campo" type="tel" inputmode="decimal" value="${qtdVal}" data-last-valid="${qtdVal}" data-orig-qtd="${qtdVal}" placeholder="0,00" oninput="mascaraQtd(this)" ${readonlyAttr}
 style="${readonlyAttr ? 'color:#8E8E93;background:#F9F9F9;' : ''}">
-            <input class="campo ${ok} unid-campo" type="text" value="${unidVal}" placeholder="un" ${readonlyAttr} style="${readonlyAttr ? 'color:#8E8E93;background:#F9F9F9;' : ''}">
+            <input class="campo ${ok} unid-campo" type="text" value="${unidVal}" data-orig-unid="${unidVal}" placeholder="un" ${readonlyAttr} style="${readonlyAttr ? 'color:#8E8E93;background:#F9F9F9;' : ''}">
         </div>`;
 
     }).join('');
@@ -714,34 +720,70 @@ async function fecharOuSalvar() {
 async function salvar() {
     const p = _pedidoAberto;
 
-
     const updates = [];
-        document.querySelectorAll('#modal-body .lista-row').forEach(row => {
+    const naoConfirmados = [];
+    let temInvalido = false;
+
+    document.querySelectorAll('#modal-body .lista-row').forEach(row => {
         const iid = row.dataset.itemId;
+        const produtoId = row.dataset.produtoId;
         const checkBtn = row.querySelector('.check-btn');
-        if (!checkBtn || !checkBtn.classList.contains('marcado')) return;
         const qtdInput = row.querySelector('.qtd-campo');
         const unidInput = row.querySelector('.unid-campo');
-        if (qtdInput.readOnly) return;
- // só atualiza campos editáveis
-                const qtd = parseFloat(qtdInput.value.replace(/\./g, '').replace(',', '.')) || 0;
+        if (qtdInput.readOnly) return; // só atualiza campos editáveis
+
+        const marcado = checkBtn && checkBtn.classList.contains('marcado');
+
+        if (!marcado) {
+            // Item foi editado mas o operador não marcou o check — não vai ser salvo.
+            // Avisamos em vez de descartar em silêncio.
+            const qtdMudou = qtdInput.value !== qtdInput.dataset.origQtd;
+            const unidMudou = unidInput.value !== unidInput.dataset.origUnid;
+            if (qtdMudou || unidMudou) {
+                const prod = _todosProdutos.find(pr => pr.id === produtoId);
+                naoConfirmados.push(prod ? prod.nome : produtoId);
+            }
+            return;
+        }
+
+        const qtd = parseFloat(qtdInput.value.replace(/\./g, '').replace(',', '.')) || 0;
         const unid = unidInput.value.trim();
         if (!qtd || qtd <= 0) {
             qtdInput.style.borderColor = '#EF4444';
+            temInvalido = true;
             return;
         }
         qtdInput.style.borderColor = '';
         updates.push({ id: iid, quant_despacho: qtd, unid_despacho: unid });
-
     });
 
-        for (const u of updates) {
-        const payload = { quant_despacho: u.quant_despacho, unid_despacho: u.unid_despacho };
-        if (!_isAdmin) payload.operador_confirmou = true;
-        await window.db.from('itens_pedidos_vendas').update(payload).eq('id', u.id);
+    if (temInvalido) {
+        alert('Existem itens marcados com quantidade inválida (em vermelho). Corrija antes de salvar.');
+        return; // não fecha o modal
     }
 
-        if (!_isAdmin && updates.length > 0) {
+    if (naoConfirmados.length > 0) {
+        const continuar = confirm(
+            'Você alterou a quantidade/unidade de: ' + naoConfirmados.join(', ') +
+            '. Como o item não está marcado (✓), essa alteração NÃO será salva. Deseja fechar mesmo assim?'
+        );
+        if (!continuar) return; // não fecha o modal — dá chance de marcar o check
+    }
+
+    const falhas = [];
+    for (const u of updates) {
+        const payload = { quant_despacho: u.quant_despacho, unid_despacho: u.unid_despacho };
+        if (!_isAdmin) payload.operador_confirmou = true;
+        const { error } = await window.db.from('itens_pedidos_vendas').update(payload).eq('id', u.id);
+        if (error) falhas.push(u.id);
+    }
+
+    if (falhas.length > 0) {
+        alert('Não foi possível salvar ' + falhas.length + ' item(ns). Verifique sua conexão e tente novamente.');
+        return; // não fecha o modal — evita a falsa sensação de que salvou tudo
+    }
+
+    if (!_isAdmin && updates.length > 0) {
         _pedidosConfirmados.add(p.id);
         // Remove pedido confirmado da lista de pendentes
         _filtrados = _filtrados.filter(f => f.id !== p.id);
