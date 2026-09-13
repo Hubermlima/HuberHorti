@@ -3609,6 +3609,106 @@ function grToggleBarrasPriceAction() {
     grDrawChart();
 }
 
+// ── Mini-régua de footprint no lugar do candle normal, direto no price
+// action (era só no preview do crosshair). Ativa sozinha assim que o
+// footprint (FX) tá ligado — sem toggle separado, já que footprint ligado já
+// é o sinal de que o usuário quer ver esse nível de detalhe. Reduz o zoom
+// pra ~30px por candle (a largura que a régua precisa).
+// Mesmo algoritmo de níveis do preview do crosshair (tick fino primeiro,
+// só engrossa se não couber na altura disponível com linha de 7px) — mas
+// com cache em MAPA (não 1 slot só), porque aqui várias réguas aparecem na
+// tela ao mesmo tempo, uma por candle visível.
+window._grMiniLadderCache = window._grMiniLadderCache || new Map();
+function grCalcularMiniLadder(candle, alturaDisponivelPx, rowHFixa) {
+    const NIVEIS_MIN = 2, NIVEIS_MAX = 5;
+    const hi = candle.h, lo = candle.l;
+    const span = Math.max(hi - lo, 10);
+    const maxNiveisCabendo = Math.max(NIVEIS_MIN, Math.floor(alturaDisponivelPx / rowHFixa));
+    let nivelCount = Math.max(NIVEIS_MIN, Math.round(span / 10));
+    nivelCount = Math.min(nivelCount, NIVEIS_MAX);
+    if (nivelCount > maxNiveisCabendo) nivelCount = maxNiveisCabendo;
+
+    const cacheKey = candle.t + '_' + nivelCount;
+    let cached = window._grMiniLadderCache.get(cacheKey);
+    if (!cached) {
+        const todos = grFootprintTodosOsCandlesBrutos();
+        const msPorCandle = grFootprintMsPorCandle();
+        const de = candle.t, ate = candle.t + msPorCandle;
+        const mapa = new Map();
+        for (const c of todos) {
+            if (c.ts < de || c.ts >= ate) continue;
+            (c.niveis || []).forEach(n => {
+                if (!mapa.has(n.p)) mapa.set(n.p, { c: 0, v: 0 });
+                const acc = mapa.get(n.p);
+                acc.c += n.c; acc.v += n.v;
+            });
+        }
+        const todosNiveis = Array.from(mapa.entries()).map(([p, v]) => ({ p, c: v.c, v: v.v }));
+        const tick = span / nivelCount;
+        const buckets = [];
+        for (let i = 0; i < nivelCount; i++) {
+            const bucketHi = hi - i * tick;
+            const bucketLo = hi - (i + 1) * tick;
+            buckets.push({ p: (bucketHi + bucketLo) / 2, c: 0, v: 0, total: 0 });
+        }
+        todosNiveis.forEach(n => {
+            let idx = Math.floor((hi - n.p) / tick);
+            idx = Math.max(0, Math.min(nivelCount - 1, idx));
+            buckets[idx].c += n.c;
+            buckets[idx].v += n.v;
+        });
+        buckets.forEach(b => { b.total = b.c + b.v; });
+        cached = { niveisPrecoDesc: buckets };
+        window._grMiniLadderCache.set(cacheKey, cached);
+        if (window._grMiniLadderCache.size > 500) {
+            window._grMiniLadderCache.delete(window._grMiniLadderCache.keys().next().value);
+        }
+    }
+    const rowH = (nivelCount * rowHFixa <= alturaDisponivelPx) ? rowHFixa : Math.max(0.4, alturaDisponivelPx / nivelCount);
+    return { niveisPrecoDesc: cached.niveisPrecoDesc, rowH };
+}
+
+// Desenha a mini-régua no lugar do candle normal, centralizada em xCenter,
+// com a mesma largura cW que o candle já ocuparia. Retorna false se não tinha
+// dado de footprint pra esse candle (aí quem chamou deve desenhar o candle
+// normal como fallback).
+function grDesenharMiniLadderPA(ctx, xCenter, cW, candle, toY) {
+    const yTop = toY(candle.h), yBottom = toY(candle.l);
+    const alturaPx = Math.max(2, yBottom - yTop);
+    const ladder = grCalcularMiniLadder(candle, alturaPx, 7);
+    const niveis = ladder.niveisPrecoDesc;
+    if (!niveis || niveis.length === 0) return false;
+
+    const nRows = niveis.length, rowH = ladder.rowH;
+    const miniTop = yTop, miniBottom = yTop + nRows * rowH;
+    const maxTotal = Math.max(...niveis.map(n => n.total), 1);
+    const barMaxW = Math.max(1.5, cW / 2 - 1.5);
+    const gap = 1;
+
+    const span = Math.max(candle.h - candle.l, 10);
+    const yParaPreco = (p) => miniTop + ((candle.h - p) / span) * (miniBottom - miniTop);
+    const yAb = Math.max(miniTop, Math.min(miniBottom, yParaPreco(candle.o)));
+    const yFe = Math.max(miniTop, Math.min(miniBottom, yParaPreco(candle.c)));
+    const corCorpo = candle.c >= candle.o ? '#26A69A' : '#EF5350';
+
+    niveis.forEach((n, i) => {
+        const ry = miniTop + i * rowH;
+        const pad = Math.min(0.5, rowH * 0.15);
+        const bC = Math.max(0.5, (n.c / maxTotal) * barMaxW);
+        const bV = Math.max(0.5, (n.v / maxTotal) * barMaxW);
+        if (n.c > 0) { ctx.fillStyle = 'rgba(38,166,154,0.85)'; ctx.fillRect(xCenter - gap - bC, ry + pad, bC, Math.max(0.5, rowH - pad * 2)); }
+        if (n.v > 0) { ctx.fillStyle = 'rgba(239,83,80,0.85)'; ctx.fillRect(xCenter + gap, ry + pad, bV, Math.max(0.5, rowH - pad * 2)); }
+    });
+
+    ctx.strokeStyle = '#8E8E93';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(xCenter, miniTop); ctx.lineTo(xCenter, miniBottom); ctx.stroke();
+    ctx.strokeStyle = corCorpo;
+    ctx.lineWidth = Math.max(1.5, cW * 0.2);
+    ctx.beginPath(); ctx.moveTo(xCenter, Math.min(yAb, yFe)); ctx.lineTo(xCenter, Math.max(yAb, yFe)); ctx.stroke();
+    return true;
+}
+
 // ── VWAP Ancorado — MÚLTIPLAS âncoras, persistidas no localStorage (chave
 // escopada por ativo+timeframe). Cada âncora guarda o TIMESTAMP do candle
 // (não o índice — o índice muda quando a lista de candles recarrega, o
@@ -4055,9 +4155,18 @@ async function grRenderChart() {
 
         // Janela visível com espaço vazio à direita
         const total = _grAllCandles.length;
-        const visible = Math.min(_grZoom, total);
+        // Modo experimental "mini-régua no price action": quando ligado (e
+        // footprint ativo), reduz o zoom pra caber ~30px por candle — é a
+        // largura que a mini-régua precisa. Todo o resto (VAH/VAL/POC, ZII,
+        // VWAP, absorção) usa esse mesmo `visible`/`totalSlots` pra se
+        // posicionar, então se realinha sozinho, sem precisar mexer neles.
+        const chartWAprox = W - _grPAD.left - _grPAD.right;
+        const zoomEfetivo = _grFootprintAtivo
+            ? Math.max(3, Math.floor(chartWAprox / 30))
+            : _grZoom;
+        const visible = Math.min(zoomEfetivo, total);
         // emptyRight: slots vazios à direita — permite arrastar além do último candle
-        const extraRight = Math.floor(_grZoom * 0.15);
+        const extraRight = Math.floor(zoomEfetivo * 0.15);
 
 
         const maxOff = total + extraRight - visible;
@@ -4881,6 +4990,13 @@ if (_grTipoGrafico === 'linha') {
     candles.forEach((c, i) => {
         const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
         const isUp = c.c >= c.o;
+
+        // EXPERIMENTAL: mini-régua de footprint no lugar do candle normal.
+        // Se não tiver dado de footprint pra esse candle específico, cai no
+        // desenho normal como fallback (não deixa o candle sumir da tela).
+        if (_grFootprintAtivo) {
+            if (grDesenharMiniLadderPA(ctx, x, cW, c, toY)) return;
+        }
 
         // Divergência preço x delta — funciona em qualquer tema, sobrepõe o
         // esquema normal (corpo E borda ficam na mesma cor única quando diverge,
