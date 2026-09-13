@@ -3759,6 +3759,16 @@ try {
 let _grOffset = 999999;
 let _grZoom = 40;
 
+// ── Zoom manual do eixo Y (estilo TradingView) — arrastar verticalmente na
+// coluna de preço (à esquerda, onde os números aparecem) estica/comprime o
+// range de preço. _grYScaleManual multiplica o range calculado automaticamente
+// (1 = normal, >1 = mais esticado/zoom out de preço, <1 = mais comprimido).
+let _grYScaleManual = 1;
+let _grYAxisDragging = false;
+let _grYAxisDragStartY = 0;
+let _grYAxisScaleInicio = 1;
+let _grYAxisLastTapTime = 0;
+
 // ── Fonte ÚNICA de verdade pro zoom efetivo (quantos candles cabem na tela).
 // Antes essa conta existia duplicada em 4 lugares diferentes (grRenderChart,
 // grDrawChart, grDrawChartWithCrosshair x2) — cada função com sua própria
@@ -4327,6 +4337,16 @@ function grDrawCandles(candles, emptyRight) {
             if (_grPm      > 0 && _grPm      > minP - rangeVis && _grPm      < maxP + rangeVis) { minP = Math.min(minP, _grPm      * 0.999); maxP = Math.max(maxP, _grPm      * 1.001); }
         }
 
+
+        // Zoom manual do eixo Y — aplica por ÚLTIMO, depois de toda a lógica
+        // automática (candles visíveis + stop/alvo/pm + padding), esticando
+        // ou comprimindo em torno do centro do range já calculado.
+        if (_grYScaleManual !== 1) {
+            const centroP = (minP + maxP) / 2;
+            const metadeRange = (maxP - minP) / 2 * _grYScaleManual;
+            minP = centroP - metadeRange;
+            maxP = centroP + metadeRange;
+        }
 
         // Salva escala para drag de linhas
         _grMinP = minP; _grMaxP = maxP; _grChartH = chartH;
@@ -7120,6 +7140,19 @@ function grInitTouch() {
             }
             const yInterno = toCanvasY(e.touches[0].clientY);
             const xInterno = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (canvas.width / canvas.getBoundingClientRect().width);
+
+            // Arrasto manual do eixo Y (estilo TradingView) — toque na coluna
+            // de preço (onde os números aparecem), à esquerda. Prioridade
+            // máxima: checa ANTES de qualquer outro alvo (handle C, régua,
+            // linhas de drag), porque essa faixa é estreita e não pode
+            // competir com nada que já exista na área do gráfico.
+            if (window._grPADLeft !== undefined && xInterno < window._grPADLeft) {
+                _grYAxisDragging = true;
+                _grYAxisDragStartY = e.touches[0].clientY;
+                _grYAxisScaleInicio = _grYScaleManual;
+                e.preventDefault();
+                return;
+            }
             // Toque no handle C (cotação)
             if (window._cotHandleY !== undefined) {
                 const cTocado = Math.abs(yInterno - window._cotHandleY) < 35
@@ -7204,6 +7237,17 @@ function grInitTouch() {
         if (e.touches.length === 1) {
             _liveTouchX = e.touches[0].clientX;
             _liveTouchY = e.touches[0].clientY;
+            if (_grYAxisDragging) {
+                const dy = e.touches[0].clientY - _grYAxisDragStartY;
+                // Arrasta pra BAIXO = estica o range (zoom out de preço);
+                // pra CIMA = comprime (zoom in). Exponencial pra ficar suave
+                // em arrastos pequenos e mais forte em arrastos grandes.
+                const fator = Math.exp(dy / 200);
+                _grYScaleManual = Math.max(0.2, Math.min(5, _grYAxisScaleInicio * fator));
+                grDrawChart();
+                e.preventDefault();
+                return;
+            }
             if (_medidaDrawing && _medidaAtual) {
                 const xc = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (canvas.width / canvas.getBoundingClientRect().width);
                 const yc = toCanvasY(e.touches[0].clientY);
@@ -7379,6 +7423,21 @@ function grInitTouch() {
 
     canvas.addEventListener('touchend', e => {
     isDragging = false;
+    if (_grYAxisDragging) {
+        // Se o fator não mudou de verdade, foi um toque rápido, não arrasto
+        // — checa duplo-toque nessa faixa pra resetar o zoom manual.
+        const moveu = Math.abs(_grYAxisScaleInicio - _grYScaleManual) > 0.001;
+        _grYAxisDragging = false;
+        if (!moveu) {
+            const agora = Date.now();
+            if (agora - _grYAxisLastTapTime < 350) {
+                _grYScaleManual = 1;
+                grDrawChart();
+            }
+            _grYAxisLastTapTime = agora;
+        }
+        return;
+    }
     if (_medidaDrawing) {
         _medidaDrawing = false;
         grDrawChart(); // mostra o resultado final fixo por um instante
