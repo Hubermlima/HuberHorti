@@ -3609,139 +3609,6 @@ function grToggleBarrasPriceAction() {
     grDrawChart();
 }
 
-// ── Mini-régua de footprint no lugar do candle normal, direto no price
-// action (era só no preview do crosshair). Ativa sozinha assim que o
-// footprint (FX) tá ligado — sem toggle separado, já que footprint ligado já
-// é o sinal de que o usuário quer ver esse nível de detalhe. Reduz o zoom
-// pra ~30px por candle (a largura que a régua precisa).
-// Mesmo algoritmo de níveis do preview do crosshair (tick fino primeiro,
-// só engrossa se não couber na altura disponível com linha de 7px) — mas
-// com cache em MAPA (não 1 slot só), porque aqui várias réguas aparecem na
-// tela ao mesmo tempo, uma por candle visível.
-// DESATIVADO TEMPORARIAMENTE (2026-09) — a mini-régua substituindo o candle
-// no price action ficou com renderização inconsistente entre candles
-// (algumas grossas/em bloco, outras finas/tracejadas) e não consegui
-// confirmar a correção sem ver a tela renderizada de verdade. Código
-// mantido intacto abaixo, só não é mais chamado — pra reativar, troca essa
-// constante pra false (ou revisita com prints de 1-2 candles específicos,
-// comparando número a número com o que o código deveria produzir).
-const _grMiniLadderPADesativado = true;
-window._grMiniLadderCache = window._grMiniLadderCache || new Map();
-function grCalcularMiniLadder(candle, alturaDisponivelPx, rowHFixa) {
-    // NIVEIS_MAX alto de propósito — quem decide quantas linhas cabem é a
-    // altura REAL do candle na escala do eixo Y principal (alturaDisponivelPx),
-    // não um teto fixo baixo.
-    const NIVEIS_MIN = 2, NIVEIS_MAX = 20;
-    // Banda de altura de linha aceitável — é isso que garante consistência
-    // visual ENTRE candles diferentes. Sem essa banda, um candle com range
-    // em dólar pequeno ganhava poucos níveis (linha grossa, "em blocos") e
-    // um candle com range grande ganhava até 20 níveis finos ("tracejado"),
-    // mesmo lado a lado na tela — os candles ficavam "disformes" entre si.
-    const ROW_H_MIN = 4, ROW_H_MAX = 13;
-    const hi = candle.h, lo = candle.l;
-    const span = Math.max(hi - lo, 10);
-    // Não faz sentido ter mais níveis de preço do que buckets de $10 no range do candle
-    const bucketsDisponiveis = Math.max(NIVEIS_MIN, Math.round(span / 10));
-    // Primeira estimativa: quantas linhas de ~rowHFixa cabem na altura real do candle
-    let nivelCount = Math.max(NIVEIS_MIN, Math.min(Math.round(alturaDisponivelPx / rowHFixa), bucketsDisponiveis, NIVEIS_MAX));
-    // Corrige pra manter a altura de linha dentro da banda aceitável —
-    // prioriza consistência visual sobre "preencher tudo certinho".
-    let rowH = alturaDisponivelPx / nivelCount;
-    if (rowH < ROW_H_MIN) {
-        nivelCount = Math.max(NIVEIS_MIN, Math.floor(alturaDisponivelPx / ROW_H_MIN));
-        rowH = alturaDisponivelPx / nivelCount;
-    } else if (rowH > ROW_H_MAX) {
-        // Cap por bucketsDisponiveis aqui é essencial — sem ele, eu inventava
-        // mais níveis do que existem buckets de $10 reais no range do candle
-        // (resolução falsa, mais fina que o próprio dado), e isso que gerava
-        // a inconsistência "disforme" entre candles.
-        nivelCount = Math.min(bucketsDisponiveis, Math.max(NIVEIS_MIN, Math.ceil(alturaDisponivelPx / ROW_H_MAX)));
-        rowH = alturaDisponivelPx / nivelCount;
-    }
-
-    const cacheKey = candle.t + '_' + nivelCount;
-    let cached = window._grMiniLadderCache.get(cacheKey);
-    if (!cached) {
-        const todos = grFootprintTodosOsCandlesBrutos();
-        const msPorCandle = grFootprintMsPorCandle();
-        const de = candle.t, ate = candle.t + msPorCandle;
-        const mapa = new Map();
-        for (const c of todos) {
-            if (c.ts < de || c.ts >= ate) continue;
-            (c.niveis || []).forEach(n => {
-                if (!mapa.has(n.p)) mapa.set(n.p, { c: 0, v: 0 });
-                const acc = mapa.get(n.p);
-                acc.c += n.c; acc.v += n.v;
-            });
-        }
-        const todosNiveis = Array.from(mapa.entries()).map(([p, v]) => ({ p, c: v.c, v: v.v }));
-        const tick = span / nivelCount;
-        const buckets = [];
-        for (let i = 0; i < nivelCount; i++) {
-            const bucketHi = hi - i * tick;
-            const bucketLo = hi - (i + 1) * tick;
-            buckets.push({ p: (bucketHi + bucketLo) / 2, c: 0, v: 0, total: 0 });
-        }
-        todosNiveis.forEach(n => {
-            let idx = Math.floor((hi - n.p) / tick);
-            idx = Math.max(0, Math.min(nivelCount - 1, idx));
-            buckets[idx].c += n.c;
-            buckets[idx].v += n.v;
-        });
-        buckets.forEach(b => { b.total = b.c + b.v; });
-        cached = { niveisPrecoDesc: buckets };
-        window._grMiniLadderCache.set(cacheKey, cached);
-        if (window._grMiniLadderCache.size > 500) {
-            window._grMiniLadderCache.delete(window._grMiniLadderCache.keys().next().value);
-        }
-    }
-    return { niveisPrecoDesc: cached.niveisPrecoDesc, rowH };
-}
-
-// Desenha a mini-régua no lugar do candle normal, centralizada em xCenter,
-// com a mesma largura cW que o candle já ocuparia. Retorna false se não tinha
-// dado de footprint pra esse candle (aí quem chamou deve desenhar o candle
-// normal como fallback).
-function grDesenharMiniLadderPA(ctx, xCenter, cW, candle, toY) {
-    const yTop = toY(candle.h), yBottom = toY(candle.l);
-    const alturaPx = Math.max(2, yBottom - yTop);
-    const ladder = grCalcularMiniLadder(candle, alturaPx, 7);
-    const niveis = ladder.niveisPrecoDesc;
-    if (!niveis || niveis.length === 0) return false;
-
-    const nRows = niveis.length, rowH = ladder.rowH;
-    const miniTop = yTop, miniBottom = yTop + nRows * rowH;
-    const maxTotal = Math.max(...niveis.map(n => n.total), 1);
-    const barMaxW = Math.max(1.5, cW / 2 - 3); // reduzido um pouco pra caber o gap maior
-    const gap = 2.5; // era 1 — muito colado na reta, quase ilegível
-
-    const span = Math.max(candle.h - candle.l, 10);
-    const yParaPreco = (p) => miniTop + ((candle.h - p) / span) * (miniBottom - miniTop);
-    const yAb = Math.max(miniTop, Math.min(miniBottom, yParaPreco(candle.o)));
-    const yFe = Math.max(miniTop, Math.min(miniBottom, yParaPreco(candle.c)));
-    const corCorpo = candle.c >= candle.o ? '#26A69A' : '#EF5350';
-
-    niveis.forEach((n, i) => {
-        const ry = miniTop + i * rowH;
-        // Padding entre linhas — antes era rowH*0.15 (quase nada, linhas
-        // grudadas viravam um bloco sólido). Mínimo de 1px garante uma
-        // fresta visível mesmo quando rowH é pequeno.
-        const pad = Math.max(1, Math.min(1.5, rowH * 0.15));
-        const bC = Math.max(0.5, (n.c / maxTotal) * barMaxW);
-        const bV = Math.max(0.5, (n.v / maxTotal) * barMaxW);
-        if (n.c > 0) { ctx.fillStyle = 'rgba(38,166,154,0.85)'; ctx.fillRect(xCenter - gap - bC, ry + pad, bC, Math.max(0.5, rowH - pad * 2)); }
-        if (n.v > 0) { ctx.fillStyle = 'rgba(239,83,80,0.85)'; ctx.fillRect(xCenter + gap, ry + pad, bV, Math.max(0.5, rowH - pad * 2)); }
-    });
-
-    ctx.strokeStyle = '#8E8E93';
-    ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(xCenter, miniTop); ctx.lineTo(xCenter, miniBottom); ctx.stroke();
-    ctx.strokeStyle = corCorpo;
-    ctx.lineWidth = Math.max(1.5, cW * 0.2);
-    ctx.beginPath(); ctx.moveTo(xCenter, Math.min(yAb, yFe)); ctx.lineTo(xCenter, Math.max(yAb, yFe)); ctx.stroke();
-    return true;
-}
-
 // ── VWAP Ancorado — MÚLTIPLAS âncoras, persistidas no localStorage (chave
 // escopada por ativo+timeframe). Cada âncora guarda o TIMESTAMP do candle
 // (não o índice — o índice muda quando a lista de candles recarrega, o
@@ -3891,6 +3758,125 @@ try {
 
 let _grOffset = 999999;
 let _grZoom = 40;
+
+// ── Fonte ÚNICA de verdade pro zoom efetivo (quantos candles cabem na tela).
+// Antes essa conta existia duplicada em 4 lugares diferentes (grRenderChart,
+// grDrawChart, grDrawChartWithCrosshair x2) — cada função com sua própria
+// cópia, e só ALGUMAS delas recebiam o ajuste do footprint. Isso causou o
+// bug de "footprint liga mas a tela continua com zoom de 40" da rodada
+// anterior. Agora TODA função de desenho chama isso aqui, sem exceção.
+function grComputarZoomEfetivo() {
+    if (!_grFootprintAtivo) return _grZoom;
+    const canvas = document.getElementById('gr-chart-canvas');
+    const chartWAprox = (canvas?.width || 800) - _grPAD.left - _grPAD.right;
+    return Math.max(3, Math.floor(chartWAprox / 18)); // ~18px por candle — largura mínima da mini-régua
+}
+
+// ── Mini-régua de footprint no lugar do candle normal, direto no price
+// action. Ativa sozinha assim que o footprint (FX) tá ligado.
+window._grMiniLadderCache = window._grMiniLadderCache || new Map();
+function grCalcularMiniLadder(candle, alturaDisponivelPx, rowHFixa) {
+    const NIVEIS_MIN = 2, NIVEIS_MAX = 20;
+    // Banda de altura de linha aceitável — garante consistência visual ENTRE
+    // candles diferentes (sem isso, candle com pouco range em dólar ganhava
+    // linha grossa/em bloco, e candle com range grande ganhava linha fina/
+    // tracejada — mesmo lado a lado na tela).
+    const ROW_H_MIN = 4, ROW_H_MAX = 13;
+    const hi = candle.h, lo = candle.l;
+    const span = Math.max(hi - lo, 10);
+    // Não faz sentido ter mais níveis de preço do que buckets de $10 reais no range do candle
+    const bucketsDisponiveis = Math.max(NIVEIS_MIN, Math.round(span / 10));
+    let nivelCount = Math.max(NIVEIS_MIN, Math.min(Math.round(alturaDisponivelPx / rowHFixa), bucketsDisponiveis, NIVEIS_MAX));
+    let rowH = alturaDisponivelPx / nivelCount;
+    if (rowH < ROW_H_MIN) {
+        nivelCount = Math.max(NIVEIS_MIN, Math.floor(alturaDisponivelPx / ROW_H_MIN));
+        rowH = alturaDisponivelPx / nivelCount;
+    } else if (rowH > ROW_H_MAX) {
+        // Cap por bucketsDisponiveis aqui é essencial — sem ele, inventaria
+        // mais níveis do que existem buckets de $10 reais (resolução falsa).
+        nivelCount = Math.min(bucketsDisponiveis, Math.max(NIVEIS_MIN, Math.ceil(alturaDisponivelPx / ROW_H_MAX)));
+        rowH = alturaDisponivelPx / nivelCount;
+    }
+
+    const cacheKey = candle.t + '_' + nivelCount;
+    let cached = window._grMiniLadderCache.get(cacheKey);
+    if (!cached) {
+        const todos = grFootprintTodosOsCandlesBrutos();
+        const msPorCandle = grFootprintMsPorCandle();
+        const de = candle.t, ate = candle.t + msPorCandle;
+        const mapa = new Map();
+        for (const c of todos) {
+            if (c.ts < de || c.ts >= ate) continue;
+            (c.niveis || []).forEach(n => {
+                if (!mapa.has(n.p)) mapa.set(n.p, { c: 0, v: 0 });
+                const acc = mapa.get(n.p);
+                acc.c += n.c; acc.v += n.v;
+            });
+        }
+        const todosNiveis = Array.from(mapa.entries()).map(([p, v]) => ({ p, c: v.c, v: v.v }));
+        const tick = span / nivelCount;
+        const buckets = [];
+        for (let i = 0; i < nivelCount; i++) {
+            const bucketHi = hi - i * tick;
+            const bucketLo = hi - (i + 1) * tick;
+            buckets.push({ p: (bucketHi + bucketLo) / 2, c: 0, v: 0, total: 0 });
+        }
+        todosNiveis.forEach(n => {
+            let idx = Math.floor((hi - n.p) / tick);
+            idx = Math.max(0, Math.min(nivelCount - 1, idx));
+            buckets[idx].c += n.c;
+            buckets[idx].v += n.v;
+        });
+        buckets.forEach(b => { b.total = b.c + b.v; });
+        cached = { niveisPrecoDesc: buckets };
+        window._grMiniLadderCache.set(cacheKey, cached);
+        if (window._grMiniLadderCache.size > 500) {
+            window._grMiniLadderCache.delete(window._grMiniLadderCache.keys().next().value);
+        }
+    }
+    return { niveisPrecoDesc: cached.niveisPrecoDesc, rowH };
+}
+
+// Desenha a mini-régua no lugar do candle normal, centralizada em xCenter,
+// com a mesma largura cW que o candle já ocuparia. Retorna false se não tinha
+// dado de footprint pra esse candle (aí quem chamou deve desenhar o candle
+// normal como fallback).
+function grDesenharMiniLadderPA(ctx, xCenter, cW, candle, toY) {
+    const yTop = toY(candle.h), yBottom = toY(candle.l);
+    const alturaPx = Math.max(2, yBottom - yTop);
+    const ladder = grCalcularMiniLadder(candle, alturaPx, 7);
+    const niveis = ladder.niveisPrecoDesc;
+    if (!niveis || niveis.length === 0) return false;
+
+    const nRows = niveis.length, rowH = ladder.rowH;
+    const miniTop = yTop, miniBottom = yTop + nRows * rowH;
+    const maxTotal = Math.max(...niveis.map(n => n.total), 1);
+    const barMaxW = Math.max(1.5, cW / 2 - 3);
+    const gap = 2.5;
+
+    const span = Math.max(candle.h - candle.l, 10);
+    const yParaPreco = (p) => miniTop + ((candle.h - p) / span) * (miniBottom - miniTop);
+    const yAb = Math.max(miniTop, Math.min(miniBottom, yParaPreco(candle.o)));
+    const yFe = Math.max(miniTop, Math.min(miniBottom, yParaPreco(candle.c)));
+    const corCorpo = candle.c >= candle.o ? '#26A69A' : '#EF5350';
+
+    niveis.forEach((n, i) => {
+        const ry = miniTop + i * rowH;
+        const pad = Math.max(1, Math.min(1.5, rowH * 0.15));
+        const bC = Math.max(0.5, (n.c / maxTotal) * barMaxW);
+        const bV = Math.max(0.5, (n.v / maxTotal) * barMaxW);
+        if (n.c > 0) { ctx.fillStyle = 'rgba(38,166,154,0.85)'; ctx.fillRect(xCenter - gap - bC, ry + pad, bC, Math.max(0.5, rowH - pad * 2)); }
+        if (n.v > 0) { ctx.fillStyle = 'rgba(239,83,80,0.85)'; ctx.fillRect(xCenter + gap, ry + pad, bV, Math.max(0.5, rowH - pad * 2)); }
+    });
+
+    ctx.strokeStyle = '#8E8E93';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(xCenter, miniTop); ctx.lineTo(xCenter, miniBottom); ctx.stroke();
+    ctx.strokeStyle = corCorpo;
+    ctx.lineWidth = Math.max(1.5, cW * 0.2);
+    ctx.beginPath(); ctx.moveTo(xCenter, Math.min(yAb, yFe)); ctx.lineTo(xCenter, Math.max(yAb, yFe)); ctx.stroke();
+    return true;
+}
 let _grDrone = false;
 let _grDroneRange = null;
 
@@ -4188,23 +4174,10 @@ async function grRenderChart() {
 
         // Janela visível com espaço vazio à direita
         const total = _grAllCandles.length;
-        // Modo experimental "mini-régua no price action": quando ligado (e
-        // footprint ativo), reduz o zoom pra caber ~18px por candle — o
-        // mínimo que a mini-régua ainda consegue desenhar legível (compra +
-        // venda lado a lado). Era 30px, o que forçava só ~10 candles na tela
-        // (vs. ~40+ do modo normal) — candle gigante, dominando o eixo Y
-        // sozinho, parecendo "colado na tela". 18px quase dobra a
-        // quantidade visível mantendo a régua legível.
-        // Todo o resto (VAH/VAL/POC, ZII, VWAP, absorção) usa esse mesmo
-        // `visible`/`totalSlots` pra se posicionar, então se realinha
-        // sozinho, sem precisar mexer neles.
-        const chartWAprox = (document.getElementById('gr-chart-canvas')?.width || 800) - _grPAD.left - _grPAD.right;
-        const zoomEfetivo = (_grFootprintAtivo && !_grMiniLadderPADesativado)
-            ? Math.max(3, Math.floor(chartWAprox / 18))
-            : _grZoom;
-        const visible = Math.min(zoomEfetivo, total);
+        const zoomEfetivo0 = grComputarZoomEfetivo();
+        const visible = Math.min(zoomEfetivo0, total);
         // emptyRight: slots vazios à direita — permite arrastar além do último candle
-        const extraRight = Math.floor(zoomEfetivo * 0.15);
+        const extraRight = Math.floor(zoomEfetivo0 * 0.15);
 
 
         const maxOff = total + extraRight - visible;
@@ -4331,13 +4304,11 @@ function grDrawCandles(candles, emptyRight) {
         // Recalcula chartW com PAD.left atualizado
         chartW = W - PAD.left - PAD.right; // recalcula com PAD.left atualizado
 
-        // Inclui linhas de entrada/stop/alvo no range — só se estiverem dentro do
-        // range visível (±10%), senão um stop distante (ex.: camada de stop longe
-        // do preço atual) espreme os candles esticando o eixo Y até lá.
-        if (_grEntrada > 0 && _grEntrada > minP - rangeVis && _grEntrada < maxP + rangeVis) { minP = Math.min(minP, _grEntrada * 0.999); maxP = Math.max(maxP, _grEntrada * 1.001); }
-        if (_grStop    > 0 && _grStop    > minP - rangeVis && _grStop    < maxP + rangeVis) { minP = Math.min(minP, _grStop    * 0.999); maxP = Math.max(maxP, _grStop    * 1.001); }
-        if (_grAlvo    > 0 && _grAlvo    > minP - rangeVis && _grAlvo    < maxP + rangeVis) { minP = Math.min(minP, _grAlvo    * 0.999); maxP = Math.max(maxP, _grAlvo    * 1.001); }
-        if (_grPm      > 0 && _grPm      > minP - rangeVis && _grPm      < maxP + rangeVis) { minP = Math.min(minP, _grPm      * 0.999); maxP = Math.max(maxP, _grPm      * 1.001); }
+        // Inclui linhas de entrada/stop/alvo no range
+                if (_grEntrada > 0) { minP = Math.min(minP, _grEntrada * 0.999); maxP = Math.max(maxP, _grEntrada * 1.001); }
+        if (_grStop    > 0) { minP = Math.min(minP, _grStop    * 0.999); maxP = Math.max(maxP, _grStop    * 1.001); }
+        if (_grAlvo    > 0) { minP = Math.min(minP, _grAlvo    * 0.999); maxP = Math.max(maxP, _grAlvo    * 1.001); }
+        if (_grPm      > 0) { minP = Math.min(minP, _grPm      * 0.999); maxP = Math.max(maxP, _grPm      * 1.001); }
 
 
         // Salva escala para drag de linhas
@@ -5031,10 +5002,10 @@ if (_grTipoGrafico === 'linha') {
         const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
         const isUp = c.c >= c.o;
 
-        // EXPERIMENTAL: mini-régua de footprint no lugar do candle normal.
-        // Se não tiver dado de footprint pra esse candle específico, cai no
-        // desenho normal como fallback (não deixa o candle sumir da tela).
-        if (_grFootprintAtivo && !_grMiniLadderPADesativado) {
+        // Mini-régua de footprint no lugar do candle normal — cai no
+        // desenho normal como fallback se não tiver dado de footprint pra
+        // esse candle específico.
+        if (_grFootprintAtivo) {
             if (grDesenharMiniLadderPA(ctx, x, cW, c, toY)) return;
         }
 
@@ -7545,15 +7516,9 @@ function grDrawChart() {
     }
     const total = _grAllCandles.length;
     if (total === 0) return;
-    // Mesmo ajuste de zoom da mini-régua (grRenderChart já tinha isso, mas
-    // essa função (grDrawChart) é a que roda de verdade a cada redesenho —
-    // era aqui que faltava, por isso a mini-régua nunca aparecia de fato.
-    const chartWAproxDC = (document.getElementById('gr-chart-canvas')?.width || 800) - _grPAD.left - _grPAD.right;
-    const zoomEfetivoDC = (_grFootprintAtivo && !_grMiniLadderPADesativado)
-        ? Math.max(3, Math.floor(chartWAproxDC / 30))
-        : _grZoom;
-    const visible = Math.min(zoomEfetivoDC, total);
-    const maxOff = total + Math.floor(zoomEfetivoDC * 0.5);
+    const zoomEfetivo1 = grComputarZoomEfetivo();
+    const visible = Math.min(zoomEfetivo1, total);
+    const maxOff = total + Math.floor(zoomEfetivo1 * 0.5);
 
     const startIdx = Math.max(0, Math.min(maxOff, _grOffset));
     const candles = _grAllCandles.slice(startIdx, startIdx + visible);
@@ -7572,12 +7537,9 @@ function grDrawChartWithCrosshair(yInterno) {
     {
         const t = _grAllCandles.length;
         if (t > 0) {
-            const chartWAproxCH = (document.getElementById('gr-chart-canvas')?.width || 800) - _grPAD.left - _grPAD.right;
-            const zoomEfetivoCH = (_grFootprintAtivo && !_grMiniLadderPADesativado)
-                ? Math.max(3, Math.floor(chartWAproxCH / 30))
-                : _grZoom;
-            const v = Math.min(zoomEfetivoCH, t);
-            const mo = t + Math.floor(zoomEfetivoCH * 0.5);
+            const zoomEfetivo2 = grComputarZoomEfetivo();
+            const v = Math.min(zoomEfetivo2, t);
+            const mo = t + Math.floor(zoomEfetivo2 * 0.5);
             const si = Math.max(0, Math.min(mo, _grOffset));
             const cc = _grAllCandles.slice(si, si + v);
             if (cc.length > 0) grDrawCandles(cc, Math.max(0, v - cc.length));
@@ -7642,13 +7604,10 @@ function grDrawChartWithCrosshair(yInterno) {
 
         // Pílula temporal no eixo X (rodapé da linha vertical)
     const total = _grAllCandles.length;
-    const chartWAproxPill = (document.getElementById('gr-chart-canvas')?.width || 800) - _grPAD.left - _grPAD.right;
-    const zoomEfetivoPill = (_grFootprintAtivo && !_grMiniLadderPADesativado)
-        ? Math.max(3, Math.floor(chartWAproxPill / 30))
-        : _grZoom;
-    const visible = Math.min(zoomEfetivoPill, total);
+    const zoomEfetivo3 = grComputarZoomEfetivo();
+    const visible = Math.min(zoomEfetivo3, total);
     // startIdx idêntico ao grDrawChart para sincronizar com scroll
-    const maxOff2 = total + Math.floor(zoomEfetivoPill * 0.5);
+    const maxOff2 = total + Math.floor(zoomEfetivo3 * 0.5);
     const startIdx = Math.max(0, Math.min(maxOff2, _grOffset));
     const chartW2 = W - _grPAD.left - _grPAD.right;
     const cc2 = _grAllCandles.slice(startIdx, startIdx + visible);
@@ -15024,9 +14983,8 @@ async function grFootprintAtivar() {
         grFootprintRecalcularZonasExistentes(); // já entra com o delta somando o histórico todo, não só o candle que originou
 
         // Redesenha o gráfico PRINCIPAL agora que o footprint terminou de
-        // carregar — sem isso, o candle normal (zoom de 40, sem mini-régua)
-        // ficava "congelado" de antes do footprint ativar, e só se corrigia
-        // se o usuário mexesse no gráfico por outro motivo depois.
+        // carregar — sem isso, o candle normal (zoom antigo, sem mini-régua)
+        // ficava "congelado" de antes do footprint ativar.
         grDrawChart();
 
         // Auto-refresh: o worker roda ao vivo, minuto a minuto — sem isso, o
