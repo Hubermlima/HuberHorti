@@ -7607,8 +7607,8 @@ function grDrawChartWithCrosshair(yInterno) {
         const colLabel = Math.max(44, Math.ceil(maiorLabelW) + 6), colVal = 80;
         // Largura mínima pra régua da mini-ladder caber: barra de cada lado +
         // coluna central estreita só pro número do preço.
-        const MINI_PRECO_COL_W = 32, MINI_BAR_MAX_W = 46;
-        const miniW = MINI_BAR_MAX_W * 2 + MINI_PRECO_COL_W;
+        const MINI_LINHA_GAP = 3, MINI_BAR_MAX_W = 58; // sem coluna de preço central — bar chega quase na reta
+        const miniW = MINI_BAR_MAX_W * 2 + MINI_LINHA_GAP * 2;
         const boxW = Math.max(colLabel + colVal + boxPad, miniW + boxPad);
         let bx = _grCrosshairX + 10;
         if (bx + boxW > W - _grPAD.right) bx = _grCrosshairX - boxW - 10;
@@ -7676,33 +7676,36 @@ function grDrawChartWithCrosshair(yInterno) {
             const corCorpo = candle.c >= candle.o ? '#26A69A' : '#EF5350';
 
             // Abaixo de ~5px de linha não dá mais pra escrever o número
-            // legível — nesse caso só desenha as barras, sem texto, em vez
-            // de sobrepor letras ilegíveis umas nas outras.
+            // legível — nesse caso só desenha as barras, sem texto.
             const mostrarTexto = miniRowH >= 5;
+            // Sem numeração de preço nenhuma (nem na régua nem sobre a reta —
+            // o candle em si já é representado pela reta vertical). O valor
+            // que aparece é o VOLUME de cada barra, compacto tipo "1.36K"
+            // quando passa de mil, senão no formato BTC normal do app.
+            const fmtMiniVol = (v) => v >= 1000 ? (v / 1000).toFixed(2) + 'K' : fmtBtc2(v);
 
-            // ORDEM IMPORTA: barras primeiro, DEPOIS a reta (senão o fundo
-            // opaco do número de cada linha, desenhado por cima, apagava a
-            // reta inteira — era o bug reportado). Números por último, ainda
-            // por cima da reta, com o fundo opaco só ali onde tem texto.
             niveisPrecoDesc.forEach((n, i) => {
                 const ry = miniTop + i * miniRowH;
                 const barCompraW = Math.max(1, (n.c / maxTotal) * MINI_BAR_MAX_W);
                 const barVendaW  = Math.max(1, (n.v / maxTotal) * MINI_BAR_MAX_W);
                 const barPad = Math.min(1, miniRowH * 0.15);
-                // Compra: barra saindo do centro pra ESQUERDA
+                const barH = Math.max(1, miniRowH - barPad * 2);
+                // Compra: barra saindo de perto da reta pra ESQUERDA
                 if (n.c > 0) {
-                    ctx.fillStyle = 'rgba(38,166,154,0.75)';
-                    ctx.fillRect(centroX - MINI_PRECO_COL_W / 2 - barCompraW, ry + barPad, barCompraW, Math.max(1, miniRowH - barPad * 2));
+                    ctx.fillStyle = 'rgba(38,166,154,0.85)';
+                    ctx.fillRect(centroX - MINI_LINHA_GAP - barCompraW, ry + barPad, barCompraW, barH);
                 }
-                // Venda: barra saindo do centro pra DIREITA
+                // Venda: barra saindo de perto da reta pra DIREITA
                 if (n.v > 0) {
-                    ctx.fillStyle = 'rgba(239,83,80,0.75)';
-                    ctx.fillRect(centroX + MINI_PRECO_COL_W / 2, ry + barPad, barVendaW, Math.max(1, miniRowH - barPad * 2));
+                    ctx.fillStyle = 'rgba(239,83,80,0.85)';
+                    ctx.fillRect(centroX + MINI_LINHA_GAP, ry + barPad, barVendaW, barH);
                 }
             });
 
-            // Reta preta (topo a fundo da régua) — por cima das barras
-            ctx.strokeStyle = _grTemaClaro ? '#8E8E93' : '#8E8E93';
+            // Reta preta (topo a fundo da régua) — por cima das barras, mas
+            // como o texto agora fica DENTRO das barras (nunca em cima da
+            // reta), não tem mais risco de um apagar o outro.
+            ctx.strokeStyle = '#8E8E93';
             ctx.lineWidth = 1.5;
             ctx.beginPath(); ctx.moveTo(centroX, miniTop); ctx.lineTo(centroX, miniBottom); ctx.stroke();
             // Trecho abertura↔fechamento, colorido por cima
@@ -7710,22 +7713,30 @@ function grDrawChartWithCrosshair(yInterno) {
             ctx.lineWidth = 2.5;
             ctx.beginPath(); ctx.moveTo(centroX, Math.min(yAbert, yFech)); ctx.lineTo(centroX, Math.max(yAbert, yFech)); ctx.stroke();
 
-            // Números por último, por cima da reta — o fundo opaco cobre só
-            // a ALTURA DO TEXTO (não a linha da faixa inteira), senão apagava
-            // a reta em toda a extensão de novo, só que depois de desenhada.
+            // Valor de volume dentro de cada barra — só se ela for larga o
+            // bastante pra caber o texto, senão pula só aquela (a barra em
+            // si continua aparecendo, só sem o número sobreposto).
             if (mostrarTexto) {
-                const textoH = Math.min(8, miniRowH);
+                ctx.font = '6.5px -apple-system';
+                ctx.textAlign = 'center';
+                ctx.fillStyle = '#FFFFFF';
                 niveisPrecoDesc.forEach((n, i) => {
                     const ry = miniTop + i * miniRowH;
                     const rowMeioY = ry + miniRowH / 2;
-                    const txt = fmtN(n.p);
-                    ctx.font = '6.5px -apple-system';
-                    const tw = ctx.measureText(txt).width;
-                    ctx.fillStyle = `rgba(${bgRGB},1)`;
-                    ctx.fillRect(centroX - tw / 2 - 1, rowMeioY - textoH / 2, tw + 2, textoH);
-                    ctx.fillStyle = _grTemaClaro ? '#1C1C1E' : '#FFFFFF';
-                    ctx.textAlign = 'center';
-                    ctx.fillText(txt, centroX, rowMeioY + 2);
+                    const barCompraW = Math.max(1, (n.c / maxTotal) * MINI_BAR_MAX_W);
+                    const barVendaW  = Math.max(1, (n.v / maxTotal) * MINI_BAR_MAX_W);
+                    if (n.c > 0) {
+                        const txt = fmtMiniVol(n.c);
+                        if (ctx.measureText(txt).width + 4 <= barCompraW) {
+                            ctx.fillText(txt, centroX - MINI_LINHA_GAP - barCompraW / 2, rowMeioY + 2);
+                        }
+                    }
+                    if (n.v > 0) {
+                        const txt = fmtMiniVol(n.v);
+                        if (ctx.measureText(txt).width + 4 <= barVendaW) {
+                            ctx.fillText(txt, centroX + MINI_LINHA_GAP + barVendaW / 2, rowMeioY + 2);
+                        }
+                    }
                 });
             }
         }
