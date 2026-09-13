@@ -7529,7 +7529,6 @@ function grDrawChartWithCrosshair(yInterno) {
         // Cache por candle.t: o crosshair redesenha a cada frame de arraste,
         // e varrer o histórico bruto toda vez seria pesado — só recalcula
         // quando o dedo troca de CANDLE, não a cada pixel.
-        const MINI_FOOT_ROW_H = 9; // bem compacto — sem delta/checkbox, cabe mais nível
         let niveisPrecoDesc = [];
         let footAgregado = null;
         if (temBotaoFootprint) {
@@ -7571,14 +7570,11 @@ function grDrawChartWithCrosshair(yInterno) {
                 { label: buyPct,  val: fmtBtc(buyVol),  color: '#26A69A' },
             ] : [])),
         ];
-        const miniFootH = niveisPrecoDesc.length > 0 ? (niveisPrecoDesc.length * MINI_FOOT_ROW_H + 8) : 0;
-
         const boxPad = 10, lineH = 18;
         const dateLineH = 16; // altura extra para a data no topo
         const btnH = temBotaoFootprint ? 26 : 0;
         const btnHAncorar = temBotaoFootprint ? 26 : 0; // Ancorar só existe com footprint ligado — é parte do framework dele agora
         const btnHValueArea = temBotaoFootprint ? 26 : 0; // Ancorar Value Area — mesma condição
-        const boxH = linhas.length * lineH + boxPad + dateLineH + miniFootH + btnH + btnHAncorar + btnHValueArea;
         // colLabel dinâmico: rótulos como "Compradores"/"Vendedores" são bem
         // mais largos que "Abert"/"Max" — largura fixa de 44px cortava/
         // sobrepunha o texto. Mede o maior rótulo real da janela.
@@ -7593,6 +7589,20 @@ function grDrawChartWithCrosshair(yInterno) {
         let bx = _grCrosshairX + 10;
         if (bx + boxW > W - _grPAD.right) bx = _grCrosshairX - boxW - 10;
         const by = _grPAD.top + 10;
+
+        // Altura da mini-régua é ADAPTATIVA, não fixa em 9px por linha — a
+        // caixa inteira nunca pode passar da altura visível da tela. Calcula
+        // primeiro quanto sobra depois de tudo mais (data, Abert/Max/Min/Fech,
+        // botões), e divide isso pelo número de níveis — quanto mais nível,
+        // mais fina cada linha fica, em vez de a caixa crescer sem limite.
+        const partesFixasH = linhas.length * lineH + boxPad + dateLineH + btnH + btnHAncorar + btnHValueArea;
+        const maxBoxH = H - by - 10; // não passa da borda inferior da tela
+        const alturaDisponivelMini = Math.max(0, maxBoxH - partesFixasH);
+        const miniRowH = niveisPrecoDesc.length > 0
+            ? Math.max(0.4, Math.min(9, alturaDisponivelMini / niveisPrecoDesc.length))
+            : 9;
+        const miniFootH = niveisPrecoDesc.length > 0 ? (niveisPrecoDesc.length * miniRowH) : 0;
+        const boxH = partesFixasH + miniFootH;
 
         // Fundo totalmente opaco — sem degradê de transparência na coluna
         // de rótulos, que atrapalhava a leitura sobre o gráfico atrás.
@@ -7630,7 +7640,7 @@ function grDrawChartWithCrosshair(yInterno) {
             const centroX = bx + boxW / 2;
             const maxTotal = Math.max(...niveisPrecoDesc.map(n => n.total), 1);
             const nRows = niveisPrecoDesc.length;
-            const miniBottom = miniTop + nRows * MINI_FOOT_ROW_H;
+            const miniBottom = miniTop + nRows * miniRowH;
 
             // Posição Y (interpolada) da abertura e do fechamento dentro da
             // régua — mesmo preço mais alto (topo) até mais baixo (fundo).
@@ -7651,31 +7661,40 @@ function grDrawChartWithCrosshair(yInterno) {
             ctx.lineWidth = 2.5;
             ctx.beginPath(); ctx.moveTo(centroX, Math.min(yAbert, yFech)); ctx.lineTo(centroX, Math.max(yAbert, yFech)); ctx.stroke();
 
+            // Abaixo de ~5px de linha não dá mais pra escrever o número
+            // legível — nesse caso só desenha as barras, sem texto, em vez
+            // de sobrepor letras ilegíveis umas nas outras.
+            const mostrarTexto = miniRowH >= 5;
+
             niveisPrecoDesc.forEach((n, i) => {
-                const ry = miniTop + i * MINI_FOOT_ROW_H;
-                const rowMeioY = ry + MINI_FOOT_ROW_H / 2;
+                const ry = miniTop + i * miniRowH;
+                const rowMeioY = ry + miniRowH / 2;
                 const barCompraW = Math.max(1, (n.c / maxTotal) * MINI_BAR_MAX_W);
                 const barVendaW  = Math.max(1, (n.v / maxTotal) * MINI_BAR_MAX_W);
+                const barPad = Math.min(1, miniRowH * 0.15);
                 // Compra: barra saindo do centro pra ESQUERDA
                 if (n.c > 0) {
                     ctx.fillStyle = 'rgba(38,166,154,0.75)';
-                    ctx.fillRect(centroX - MINI_PRECO_COL_W / 2 - barCompraW, ry + 1, barCompraW, MINI_FOOT_ROW_H - 2);
+                    ctx.fillRect(centroX - MINI_PRECO_COL_W / 2 - barCompraW, ry + barPad, barCompraW, Math.max(1, miniRowH - barPad * 2));
                 }
                 // Venda: barra saindo do centro pra DIREITA
                 if (n.v > 0) {
                     ctx.fillStyle = 'rgba(239,83,80,0.75)';
-                    ctx.fillRect(centroX + MINI_PRECO_COL_W / 2, ry + 1, barVendaW, MINI_FOOT_ROW_H - 2);
+                    ctx.fillRect(centroX + MINI_PRECO_COL_W / 2, ry + barPad, barVendaW, Math.max(1, miniRowH - barPad * 2));
                 }
                 // Número do preço — centralizado bem em cima da reta central,
-                // com um fundo opaco atrás pra não ficar ilegível cruzando a linha.
-                const txt = fmtN(n.p);
-                ctx.font = '6.5px -apple-system';
-                const tw = ctx.measureText(txt).width;
-                ctx.fillStyle = `rgba(${bgRGB},1)`;
-                ctx.fillRect(centroX - tw / 2 - 1, ry, tw + 2, MINI_FOOT_ROW_H);
-                ctx.fillStyle = _grTemaClaro ? '#1C1C1E' : '#FFFFFF';
-                ctx.textAlign = 'center';
-                ctx.fillText(txt, centroX, rowMeioY + 2);
+                // com um fundo opaco atrás pra não ficar ilegível cruzando a
+                // linha. Some sozinho se a linha ficar fina demais pra caber.
+                if (mostrarTexto) {
+                    const txt = fmtN(n.p);
+                    ctx.font = '6.5px -apple-system';
+                    const tw = ctx.measureText(txt).width;
+                    ctx.fillStyle = `rgba(${bgRGB},1)`;
+                    ctx.fillRect(centroX - tw / 2 - 1, ry, tw + 2, miniRowH);
+                    ctx.fillStyle = _grTemaClaro ? '#1C1C1E' : '#FFFFFF';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(txt, centroX, rowMeioY + 2);
+                }
             });
             ctx.restore();
         }
