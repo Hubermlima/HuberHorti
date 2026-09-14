@@ -5751,30 +5751,39 @@ const aBX = 3, aBY = yR2 - aBH / 2;
 
         // Retângulo cinza da ferramenta "Marcar Faixa" — fica na tela até
         // uma nova faixa ser confirmada (2º toque do botão no crosshair).
-        // Preço → tela via toY(), largura sempre o gráfico inteiro (é uma
-        // faixa de preço, não presa a candle nenhum).
+        // Preço → tela via toY(), tempo (ts dos 2 candles marcados) → tela
+        // via mesmo esquema de slot usado pelas zonas Stop/PM (ts→índice
+        // via grVwapIdxPorTs, índice→x). É um quadrado de verdade agora:
+        // preço × tempo, não mais uma faixa horizontal infinita.
         if (_grFootprintAtivo && _grFaixaMarcada) {
-            const yTopoFx = toY(_grFaixaMarcada.precoAlto);
-            const yBaseFx = toY(_grFaixaMarcada.precoBaixo);
-            ctx.fillStyle = 'rgba(120,120,130,0.28)';
-            ctx.fillRect(PAD.left, yTopoFx, chartW, yBaseFx - yTopoFx);
-            ctx.strokeStyle = 'rgba(120,120,130,0.6)';
-            ctx.lineWidth = 1;
-            ctx.strokeRect(PAD.left, yTopoFx, chartW, yBaseFx - yTopoFx);
+            const startIdxFx = Math.max(0, Math.min(_grAllCandles.length - candles.length, _grOffset === 999999 ? _grAllCandles.length - candles.length : _grOffset));
+            const idxBaixoAbs = grVwapIdxPorTs(_grFaixaMarcada.tsBaixo);
+            const idxAltoAbs = grVwapIdxPorTs(_grFaixaMarcada.tsAlto);
+            if (idxBaixoAbs >= 0 && idxAltoAbs >= 0) {
+                const xEsq = PAD.left + ((idxBaixoAbs - startIdxFx) / totalSlots) * chartW;
+                const xDir = PAD.left + ((idxAltoAbs - startIdxFx) / totalSlots) * chartW + cW;
+                const yTopoFx = toY(_grFaixaMarcada.precoAlto);
+                const yBaseFx = toY(_grFaixaMarcada.precoBaixo);
+                ctx.fillStyle = 'rgba(120,120,130,0.28)';
+                ctx.fillRect(xEsq, yTopoFx, xDir - xEsq, yBaseFx - yTopoFx);
+                ctx.strokeStyle = 'rgba(120,120,130,0.6)';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(xEsq, yTopoFx, xDir - xEsq, yBaseFx - yTopoFx);
 
-            const dFx = _grFaixaMarcada.delta;
-            const txtFx = (dFx >= 0 ? '+' : '') + fmtBtc2(dFx) + ' BTC';
-            ctx.font = 'bold 11px -apple-system';
-            ctx.textAlign = 'center';
-            const yMeioFx = (yTopoFx + yBaseFx) / 2;
-            const xMeioFx = PAD.left + chartW / 2;
-            // Fundo escuro atrás do texto — legível em cima do cinza
-            // translúcido, não importa o que tiver desenhado embaixo.
-            const wTxtFx = ctx.measureText(txtFx).width + 12;
-            ctx.fillStyle = 'rgba(30,30,35,0.75)';
-            ctx.beginPath(); ctx.roundRect(xMeioFx - wTxtFx / 2, yMeioFx - 10, wTxtFx, 20, 4); ctx.fill();
-            ctx.fillStyle = dFx >= 0 ? '#26A69A' : '#EF5350';
-            ctx.fillText(txtFx, xMeioFx, yMeioFx + 4);
+                const dFx = _grFaixaMarcada.delta;
+                const txtFx = (dFx >= 0 ? '+' : '') + fmtBtc2(dFx) + ' BTC';
+                ctx.font = 'bold 11px -apple-system';
+                ctx.textAlign = 'center';
+                const yMeioFx = (yTopoFx + yBaseFx) / 2;
+                const xMeioFx = (xEsq + xDir) / 2;
+                // Fundo escuro atrás do texto — legível em cima do cinza
+                // translúcido, não importa o que tiver desenhado embaixo.
+                const wTxtFx = ctx.measureText(txtFx).width + 12;
+                ctx.fillStyle = 'rgba(30,30,35,0.75)';
+                ctx.beginPath(); ctx.roundRect(xMeioFx - wTxtFx / 2, yMeioFx - 10, wTxtFx, 20, 4); ctx.fill();
+                ctx.fillStyle = dFx >= 0 ? '#26A69A' : '#EF5350';
+                ctx.fillText(txtFx, xMeioFx, yMeioFx + 4);
+            }
         }
 
         // Linha de preço atual — cor dinâmica pelo último candle
@@ -7149,14 +7158,18 @@ function grInitTouch() {
                 const tf2 = window._grCrosshairFaixaBtnArea;
                 if (ex2 >= tf2.x && ex2 <= tf2.x + tf2.w && ey2 >= tf2.y && ey2 <= tf2.y + tf2.h) {
                     const precoTocado = window._grCrosshairPrecoAtual;
-                    if (precoTocado > 0) {
+                    const tsTocado = window._grCrosshairCandleAtual ? window._grCrosshairCandleAtual.t : null;
+                    if (precoTocado > 0 && tsTocado != null) {
                         if (_grFaixaP1 == null) {
-                            _grFaixaP1 = precoTocado;
+                            _grFaixaP1 = { preco: precoTocado, ts: tsTocado };
                         } else {
-                            const precoBaixo = Math.min(_grFaixaP1, precoTocado);
-                            const precoAlto = Math.max(_grFaixaP1, precoTocado);
-                            const r = grDeltaFaixaPreco(precoBaixo, precoAlto);
-                            if (r) _grFaixaMarcada = { precoBaixo, precoAlto, delta: r.delta, compra: r.compra, venda: r.venda };
+                            const precoBaixo = Math.min(_grFaixaP1.preco, precoTocado);
+                            const precoAlto = Math.max(_grFaixaP1.preco, precoTocado);
+                            const tsBaixo = Math.min(_grFaixaP1.ts, tsTocado);
+                            const tsAlto = Math.max(_grFaixaP1.ts, tsTocado);
+                            const tsFimExclusive = tsAlto + grFootprintMsPorCandle(); // inclui o candle mais recente inteiro
+                            const r = grDeltaFaixaPrecoTempo(precoBaixo, precoAlto, tsBaixo, tsFimExclusive);
+                            if (r) _grFaixaMarcada = { precoBaixo, precoAlto, tsBaixo, tsAlto, delta: r.delta, compra: r.compra, venda: r.venda };
                             _grFaixaP1 = null;
                         }
                     }
@@ -7817,12 +7830,30 @@ function grDeltaFaixaPreco(precoBaixo, precoAlto) {
     return { compra, venda, delta: compra - venda };
 }
 
+// Mesma ideia, mas também limitada por tempo — só soma os candles brutos
+// (1min) entre tsInicio e tsFimExclusive, em vez da janela "Dias: X"
+// inteira. Isso é o "quadrado" (faixa de preço × faixa de tempo) em vez da
+// faixa horizontal infinita. tsFimExclusive precisa já incluir a duração do
+// último candle do TF atual (fim real da faixa, não só o open dele).
+function grDeltaFaixaPrecoTempo(precoBaixo, precoAlto, tsInicio, tsFimExclusive) {
+    const todos = grFootprintTodosOsCandlesBrutos();
+    if (!todos) return null;
+    let compra = 0, venda = 0;
+    for (const c of todos) {
+        if (c.ts < tsInicio || c.ts >= tsFimExclusive) continue;
+        (c.niveis || []).forEach(n => {
+            if (n.p >= precoBaixo && n.p <= precoAlto) { compra += n.c; venda += n.v; }
+        });
+    }
+    return { compra, venda, delta: compra - venda };
+}
+
 // ── Ferramenta "Marcar Faixa" — 2 cliques no botão do crosshair marcam um
 // preço inicial e um preço final no eixo Y; ao confirmar o 2º ponto, calcula
 // o delta de todo o intervalo e desenha um retângulo cinza persistente com
 // o resultado dentro, até uma nova faixa ser marcada (substitui a anterior).
-let _grFaixaP1 = null;       // preço do 1º ponto, enquanto aguarda o 2º
-let _grFaixaMarcada = null;  // { precoBaixo, precoAlto, delta, compra, venda } — resultado atual, ou null
+let _grFaixaP1 = null;       // { preco, ts } do 1º ponto, enquanto aguarda o 2º
+let _grFaixaMarcada = null;  // { precoBaixo, precoAlto, tsBaixo, tsAlto, delta, compra, venda } — resultado atual (quadrado), ou null
 
 function grCrosshairZonaDelta(preco, pctZona) {
     const mapaBase = grFootprintObterMapaBaseValueArea();
