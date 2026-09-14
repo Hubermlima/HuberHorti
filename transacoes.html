@@ -3940,9 +3940,24 @@ function grDesenharMiniLadderPA(ctx, xCenter, cW, candle, toY, yMinBound, yMaxBo
     ctx.strokeStyle = '#8E8E93';
     ctx.lineWidth = 1.5; // espessura única — a mesma do pavio, só muda a cor
     ctx.beginPath(); ctx.moveTo(xCenter, miniTop); ctx.lineTo(xCenter, miniBottom); ctx.stroke();
-    ctx.strokeStyle = corCorpo;
-    ctx.lineWidth = 1.5; // idêntica à de cima — só a cor identifica abertura↔fechamento
-    ctx.beginPath(); ctx.moveTo(xCenter, Math.min(yAb, yFe)); ctx.lineTo(xCenter, Math.max(yAb, yFe)); ctx.stroke();
+
+    // Corpo: conforme o candle cresce (mais largura disponível), fica mais
+    // definido — não é mais só uma linha, vira um retângulo (moldura, sem
+    // preencher, pra não esconder as barras do histograma por baixo). Candle
+    // pequeno continua só com a linha (não cabe moldura sem virar poluição).
+    const LARGURA_CORPO_DEFINIDO = 16;
+    const bodyTop = Math.min(yAb, yFe);
+    const bodyH = Math.max(1, Math.max(yAb, yFe) - bodyTop);
+    if (cW >= LARGURA_CORPO_DEFINIDO) {
+        const bodyW = Math.min(cW * 0.6, espacamentoCentro - 4); // nunca invade o candle vizinho
+        ctx.strokeStyle = corCorpo;
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(xCenter - bodyW / 2, bodyTop, bodyW, bodyH);
+    } else {
+        ctx.strokeStyle = corCorpo;
+        ctx.lineWidth = 1.5; // idêntica à de cima — só a cor identifica abertura↔fechamento
+        ctx.beginPath(); ctx.moveTo(xCenter, bodyTop); ctx.lineTo(xCenter, bodyTop + bodyH); ctx.stroke();
+    }
 
     // Rodapé Delta/Total — logo abaixo da régua, mesmo formato compacto.
     const compraTotal = niveis.reduce((s, n) => s + n.c, 0);
@@ -6938,15 +6953,6 @@ function grInitTouch() {
     let lastTouchDistX = 0;
     let lastTouchDistY = 0;
     let isDragging = false;
-    // Trava de eixo da pinça — decide UMA VEZ por gesto (assim que o dedo se
-    // move o suficiente) se é horizontal ou vertical, e trava nesse eixo até
-    // soltar os dedos. O outro eixo fica 100% congelado durante esse gesto —
-    // não é mais "amortecido", é zero, sem exceção. Isso substitui a
-    // tentativa anterior (limiar de distância mínima), que reduzia o
-    // vazamento mas não eliminava.
-    let _grPincaEixoTravado = null; // null | 'x' | 'y'
-    let _grPincaDistXInicio = 0;
-    let _grPincaDistYInicio = 0;
 
     function toCanvasY(clientY) {
         const rect = canvas.getBoundingClientRect();
@@ -7271,11 +7277,6 @@ function grInitTouch() {
             );
             lastTouchDistX = Math.abs(e.touches[0].clientX - e.touches[1].clientX);
             lastTouchDistY = Math.abs(e.touches[0].clientY - e.touches[1].clientY);
-            // Novo gesto de pinça começando — destrava o eixo, será decidido
-            // de novo no primeiro movimento significativo.
-            _grPincaEixoTravado = null;
-            _grPincaDistXInicio = lastTouchDistX;
-            _grPincaDistYInicio = lastTouchDistY;
         }
         e.preventDefault();
     }, { passive: false });
@@ -7460,37 +7461,27 @@ function grInitTouch() {
                 }
             }
         } else if (e.touches.length === 2) {
-            const distX = Math.abs(e.touches[0].clientX - e.touches[1].clientX);
-            const distY = Math.abs(e.touches[0].clientY - e.touches[1].clientY);
-            const AMORTECIMENTO_PINCA = 0.35;
-            const LIMIAR_DECISAO = 15; // px de variação desde o início do gesto
-                                        // pra decidir qual eixo foi "puxado" primeiro
-
-            // Decide o eixo UMA VEZ por gesto inteiro (não a cada frame) — assim
-            // que o movimento desde o início da pinça passa do limiar em X ou Y,
-            // trava nesse eixo até soltar os dedos. O outro eixo fica 100%
-            // congelado (nem amortecido — zero) pelo resto do gesto. Antes só
-            // existia um limiar de "distância mínima" por frame, que reduzia o
-            // vazamento mas não eliminava (a pinça horizontal ainda mexia bastante
-            // no zoom vertical, confirmado no debug: pxPerDollar mudou 13x numa
-            // pinça que devia ser só horizontal).
-            if (_grPincaEixoTravado === null) {
-                const deltaX = Math.abs(distX - _grPincaDistXInicio);
-                const deltaY = Math.abs(distY - _grPincaDistYInicio);
-                if (deltaX > LIMIAR_DECISAO || deltaY > LIMIAR_DECISAO) {
-                    _grPincaEixoTravado = deltaX >= deltaY ? 'x' : 'y';
+            const dist = Math.hypot(
+                e.touches[0].clientX - e.touches[1].clientX,
+                e.touches[0].clientY - e.touches[1].clientY
+            );
+            // Pinça DIAGONAL — largura e altura crescem/encolhem JUNTAS, na
+            // mesma proporção, com um gesto só (qualquer direção). Substitui
+            // a trava por eixo (X só largura, Y só altura) que a gente tinha
+            // construído antes — aquilo dava controle independente dos dois
+            // eixos, mas o usuário quer o componente crescendo como um todo
+            // (zoom de foto), não esticando só um lado.
+            const AMORTECIMENTO_PINCA = 0.5;
+            if (lastTouchDist > 0 && dist > 0) {
+                const ratio = 1 + (dist / lastTouchDist - 1) * AMORTECIMENTO_PINCA; // >1 = dedos se afastando = quer tudo maior
+                _grZoom = Math.max(4, Math.min(500, Math.round(_grZoom / ratio))); // menos candles = cada um mais largo
+                if (_grYAxisPxPerDollar) {
+                    _grYAxisPxPerDollar = Math.max(0.01, Math.min(20, _grYAxisPxPerDollar * ratio)); // mais px/dólar = cada um mais alto
                 }
             }
-
-            if (_grPincaEixoTravado === 'x' && lastTouchDistX > 0 && distX > 0) {
-                const ratioX = 1 + (lastTouchDistX / distX - 1) * AMORTECIMENTO_PINCA;
-                _grZoom = Math.max(4, Math.min(500, Math.round(_grZoom * ratioX)));
-            } else if (_grPincaEixoTravado === 'y' && lastTouchDistY > 0 && distY > 0 && _grYAxisPxPerDollar) {
-                const ratioY = 1 + (distY / lastTouchDistY - 1) * AMORTECIMENTO_PINCA;
-                _grYAxisPxPerDollar = Math.max(0.01, Math.min(20, _grYAxisPxPerDollar * ratioY));
-            }
-            lastTouchDistX = distX;
-            lastTouchDistY = distY;
+            lastTouchDist = dist;
+            lastTouchDistX = Math.abs(e.touches[0].clientX - e.touches[1].clientX);
+            lastTouchDistY = Math.abs(e.touches[0].clientY - e.touches[1].clientY);
             window._grManualPanTs = Date.now();
             grDrawChart();
         }
