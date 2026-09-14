@@ -5749,6 +5749,34 @@ const aBX = 3, aBY = yR2 - aBH / 2;
             ctx.fillText(pmTxt, bX + bW - 4, bY + bH - 3);
         }
 
+        // Retângulo cinza da ferramenta "Marcar Faixa" — fica na tela até
+        // uma nova faixa ser confirmada (2º toque do botão no crosshair).
+        // Preço → tela via toY(), largura sempre o gráfico inteiro (é uma
+        // faixa de preço, não presa a candle nenhum).
+        if (_grFootprintAtivo && _grFaixaMarcada) {
+            const yTopoFx = toY(_grFaixaMarcada.precoAlto);
+            const yBaseFx = toY(_grFaixaMarcada.precoBaixo);
+            ctx.fillStyle = 'rgba(120,120,130,0.28)';
+            ctx.fillRect(PAD.left, yTopoFx, chartW, yBaseFx - yTopoFx);
+            ctx.strokeStyle = 'rgba(120,120,130,0.6)';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(PAD.left, yTopoFx, chartW, yBaseFx - yTopoFx);
+
+            const dFx = _grFaixaMarcada.delta;
+            const txtFx = (dFx >= 0 ? '+' : '') + fmtBtc2(dFx) + ' BTC';
+            ctx.font = 'bold 11px -apple-system';
+            ctx.textAlign = 'center';
+            const yMeioFx = (yTopoFx + yBaseFx) / 2;
+            const xMeioFx = PAD.left + chartW / 2;
+            // Fundo escuro atrás do texto — legível em cima do cinza
+            // translúcido, não importa o que tiver desenhado embaixo.
+            const wTxtFx = ctx.measureText(txtFx).width + 12;
+            ctx.fillStyle = 'rgba(30,30,35,0.75)';
+            ctx.beginPath(); ctx.roundRect(xMeioFx - wTxtFx / 2, yMeioFx - 10, wTxtFx, 20, 4); ctx.fill();
+            ctx.fillStyle = dFx >= 0 ? '#26A69A' : '#EF5350';
+            ctx.fillText(txtFx, xMeioFx, yMeioFx + 4);
+        }
+
         // Linha de preço atual — cor dinâmica pelo último candle
         if (_precoAtual > 0) {
             const lastCandle = _grAllCandles[_grAllCandles.length - 1];
@@ -7114,6 +7142,30 @@ function grInitTouch() {
                     return;
                 }
             }
+            // Toque no botão "Marcar Ponto 1/2" — alterna entre salvar o
+            // primeiro preço e, no segundo toque, calcular o delta do
+            // intervalo inteiro e desenhar o retângulo cinza persistente.
+            if (window._longPressActive && window._grCrosshairFaixaBtnArea) {
+                const tf2 = window._grCrosshairFaixaBtnArea;
+                if (ex2 >= tf2.x && ex2 <= tf2.x + tf2.w && ey2 >= tf2.y && ey2 <= tf2.y + tf2.h) {
+                    const precoTocado = window._grCrosshairPrecoAtual;
+                    if (precoTocado > 0) {
+                        if (_grFaixaP1 == null) {
+                            _grFaixaP1 = precoTocado;
+                        } else {
+                            const precoBaixo = Math.min(_grFaixaP1, precoTocado);
+                            const precoAlto = Math.max(_grFaixaP1, precoTocado);
+                            const r = grDeltaFaixaPreco(precoBaixo, precoAlto);
+                            if (r) _grFaixaMarcada = { precoBaixo, precoAlto, delta: r.delta, compra: r.compra, venda: r.venda };
+                            _grFaixaP1 = null;
+                        }
+                    }
+                    window._longPressActive = false;
+                    clearTimeout(_longPressTimer);
+                    e.preventDefault();
+                    return;
+                }
+            }
             // Toque simples fecha o crosshair se estava ativo
             if (window._longPressActive) {
                 window._longPressActive = false;
@@ -7752,6 +7804,26 @@ function grDrawChart() {
 // mantém (grFootprintObterMapaBaseValueArea) — sem re-varrer o histórico
 // bruto a cada frame de arraste. Cacheado por "bucket" de preço ($20) pra
 // não recalcular a cada pixel, só quando o dedo realmente muda de faixa.
+// ── Delta de faixa de preço, versão genérica (recebe os dois limites
+// prontos) — usada tanto pelo Δ ±% do crosshair quanto pela ferramenta de
+// marcar faixa com 2 pontos. Mesmos bins do Value Area (janela "Dias: X").
+function grDeltaFaixaPreco(precoBaixo, precoAlto) {
+    const mapaBase = grFootprintObterMapaBaseValueArea();
+    if (!mapaBase) return null;
+    let compra = 0, venda = 0;
+    mapaBase.forEach((v, p) => {
+        if (p >= precoBaixo && p <= precoAlto) { compra += v.c; venda += v.v; }
+    });
+    return { compra, venda, delta: compra - venda };
+}
+
+// ── Ferramenta "Marcar Faixa" — 2 cliques no botão do crosshair marcam um
+// preço inicial e um preço final no eixo Y; ao confirmar o 2º ponto, calcula
+// o delta de todo o intervalo e desenha um retângulo cinza persistente com
+// o resultado dentro, até uma nova faixa ser marcada (substitui a anterior).
+let _grFaixaP1 = null;       // preço do 1º ponto, enquanto aguarda o 2º
+let _grFaixaMarcada = null;  // { precoBaixo, precoAlto, delta, compra, venda } — resultado atual, ou null
+
 function grCrosshairZonaDelta(preco, pctZona) {
     const mapaBase = grFootprintObterMapaBaseValueArea();
     if (!mapaBase) return null;
@@ -7760,11 +7832,8 @@ function grCrosshairZonaDelta(preco, pctZona) {
     if (cache && cache.bucket === bucket && cache.mapaBase === mapaBase) return cache;
     const precoBaixo = preco * (1 - pctZona / 100);
     const precoAlto  = preco * (1 + pctZona / 100);
-    let compra = 0, venda = 0;
-    mapaBase.forEach((v, p) => {
-        if (p >= precoBaixo && p <= precoAlto) { compra += v.c; venda += v.v; }
-    });
-    const resultado = { bucket, mapaBase, compra, venda, delta: compra - venda, precoBaixo, precoAlto };
+    const r = grDeltaFaixaPreco(precoBaixo, precoAlto);
+    const resultado = { bucket, mapaBase, compra: r.compra, venda: r.venda, delta: r.delta, precoBaixo, precoAlto };
     window._grCrosshairZonaCache = resultado;
     return resultado;
 }
@@ -7794,6 +7863,7 @@ function grDrawChartWithCrosshair(yInterno) {
     ctx.clearRect(0, 0, W, H);
     const preco = grToPrice(yInterno);
     if (!preco || preco <= 0) return;
+    window._grCrosshairPrecoAtual = preco;
 
     const corCrosshair = _grTemaClaro ? 'rgba(70,70,70,0.55)' : 'rgba(255,255,255,0.5)';
     ctx.strokeStyle = corCrosshair;
@@ -7921,6 +7991,7 @@ function grDrawChartWithCrosshair(yInterno) {
         const btnH = temBotaoFootprint ? 26 : 0;
         const btnHAncorar = temBotaoFootprint ? 26 : 0; // Ancorar só existe com footprint ligado — é parte do framework dele agora
         const btnHValueArea = temBotaoFootprint ? 26 : 0; // Ancorar Value Area — mesma condição
+        const btnHFaixa = temBotaoFootprint ? 26 : 0; // "Marcar Ponto 1/2" — mesma condição dos outros
         const rodapeH = temBotaoFootprint ? 26 : 0; // rodapé Delta/Total, igual a referência de imagem
         // colLabel dinâmico: rótulos como "Compradores"/"Vendedores" são bem
         // mais largos que "Abert"/"Max" — largura fixa de 44px cortava/
@@ -7937,7 +8008,7 @@ function grDrawChartWithCrosshair(yInterno) {
         if (bx + boxW > W - _grPAD.right) bx = _grCrosshairX - boxW - 10;
         const by = _grPAD.top + 10;
 
-        const partesFixasH = linhas.length * lineH + boxPad + dateLineH + btnH + btnHAncorar + btnHValueArea + rodapeH;
+        const partesFixasH = linhas.length * lineH + boxPad + dateLineH + btnH + btnHAncorar + btnHValueArea + btnHFaixa + rodapeH;
         const maxBoxH = H - by - 10; // não passa da borda inferior da tela
         const alturaDisponivelMini = Math.max(0, maxBoxH - partesFixasH);
 
@@ -8153,7 +8224,7 @@ function grDrawChartWithCrosshair(yInterno) {
         // crosshair, sem precisar fechar e tocar no candle de novo. Fundo
         // cinza padrão + label escuro, com ícone Heroicon (chart-bar).
         if (temBotaoFootprint) {
-            const btnY = by + boxH - btnH - btnHAncorar - btnHValueArea - 4;
+            const btnY = by + boxH - btnH - btnHAncorar - btnHValueArea - btnHFaixa - 4;
             const btnRect = { x: bx + 4, y: btnY, w: boxW - 8, h: btnH - 4 };
             ctx.fillStyle = '#D1D1D6';
             ctx.beginPath(); ctx.roundRect(btnRect.x, btnRect.y, btnRect.w, btnRect.h, 6); ctx.fill();
@@ -8179,7 +8250,7 @@ function grDrawChartWithCrosshair(yInterno) {
             const tsCandleCrosshair = _grAllCandles[idxCandleCrosshair] ? _grAllCandles[idxCandleCrosshair].t : null;
             const jaEAncora = _grVwapAncoras.some(a => a.ts === tsCandleCrosshair);
             const tipoPreview = jaEAncora ? null : grVwapClassificarTipo(idxCandleCrosshair);
-            const btnAncY = by + boxH - btnHAncorar - btnHValueArea - 4;
+            const btnAncY = by + boxH - btnHAncorar - btnHValueArea - btnHFaixa - 4;
             const btnAncRect = { x: bx + 4, y: btnAncY, w: boxW - 8, h: btnHAncorar - 4 };
             ctx.fillStyle = '#D1D1D6';
             ctx.beginPath(); ctx.roundRect(btnAncRect.x, btnAncRect.y, btnAncRect.w, btnAncRect.h, 6); ctx.fill();
@@ -8203,7 +8274,7 @@ function grDrawChartWithCrosshair(yInterno) {
         if (temBotaoFootprint) {
             const tsCandleCrosshairVA = _grAllCandles[idxCandleCrosshair] ? _grAllCandles[idxCandleCrosshair].t : null;
             const jaEAncoraVA = _grValueAreaAncoraTs != null && _grValueAreaAncoraTs === tsCandleCrosshairVA;
-            const btnVaY = by + boxH - btnHValueArea - 4;
+            const btnVaY = by + boxH - btnHValueArea - btnHFaixa - 4;
             const btnVaRect = { x: bx + 4, y: btnVaY, w: boxW - 8, h: btnHValueArea - 4 };
             ctx.fillStyle = '#D1D1D6';
             ctx.beginPath(); ctx.roundRect(btnVaRect.x, btnVaRect.y, btnVaRect.w, btnVaRect.h, 6); ctx.fill();
@@ -8218,6 +8289,27 @@ function grDrawChartWithCrosshair(yInterno) {
             window._grCrosshairValueAreaIdx = idxCandleCrosshair;
         } else {
             window._grCrosshairValueAreaBtnArea = null;
+        }
+
+        // Botão "Marcar Ponto 1/2" — ferramenta de faixa manual. Um botão só
+        // que alterna: 1º toque salva o preço atual do crosshair como ponto
+        // 1, 2º toque salva o ponto 2, calcula o delta do intervalo inteiro
+        // e desenha o retângulo cinza persistente (grDrawChart principal).
+        if (temBotaoFootprint) {
+            const btnFaixaY = by + boxH - btnHFaixa - 4;
+            const btnFaixaRect = { x: bx + 4, y: btnFaixaY, w: boxW - 8, h: btnHFaixa - 4 };
+            ctx.fillStyle = '#D1D1D6';
+            ctx.beginPath(); ctx.roundRect(btnFaixaRect.x, btnFaixaRect.y, btnFaixaRect.w, btnFaixaRect.h, 6); ctx.fill();
+            const txtFaixa = _grFaixaP1 == null ? 'Marcar Ponto 1' : 'Marcar Ponto 2';
+            const iconCx4 = btnFaixaRect.x + 12;
+            grDesenharIconeHeroicon(ctx, HEROICON_BOOKMARK, iconCx4, btnFaixaY + btnFaixaRect.h / 2, 13, '#1C1C1E');
+            ctx.font = 'bold 11px -apple-system';
+            ctx.textAlign = 'left';
+            ctx.fillStyle = '#1C1C1E';
+            ctx.fillText(txtFaixa, btnFaixaRect.x + 22, btnFaixaY + btnFaixaRect.h / 2 + 4);
+            window._grCrosshairFaixaBtnArea = btnFaixaRect;
+        } else {
+            window._grCrosshairFaixaBtnArea = null;
         }
 
 
