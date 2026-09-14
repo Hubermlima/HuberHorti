@@ -3758,6 +3758,12 @@ try {
 
 let _grOffset = 999999;
 let _grZoom = 15; // era 40 — agora entra já com a proporção que o usuário confirmou boa (candle mais largo/alto por padrão)
+// Acumulador contínuo (decimal) do zoom — usado SÓ dentro de um gesto de
+// pinça. Sem isso, cada frame arredondava _grZoom pra inteiro na hora, e em
+// zoom baixo (ex: 5) a fração de um movimento pequeno de dedo se perdia
+// todo frame (Math.round(5/0.99) ainda dá 5) — a pinça parecia travada,
+// mesmo com dist mudando de verdade entre os prints.
+let _grZoomAcumulado = _grZoom;
 
 // ── Eixo Y FIXO — tick constante (dólares por pixel), não recalcula mais
 // sozinho a cada candle visível/scroll. Calibra uma vez a partir do último
@@ -7297,6 +7303,10 @@ function grInitTouch() {
             );
             lastTouchDistX = Math.abs(e.touches[0].clientX - e.touches[1].clientX);
             lastTouchDistY = Math.abs(e.touches[0].clientY - e.touches[1].clientY);
+            // Novo gesto de pinça — resincroniza o acumulador com o zoom
+            // atual, pra não carregar deriva de qualquer mudança de zoom que
+            // tenha acontecido fora da pinça entre um gesto e outro.
+            _grZoomAcumulado = _grZoom;
         }
         e.preventDefault();
     }, { passive: false });
@@ -7496,10 +7506,13 @@ function grInitTouch() {
             if (lastTouchDist > 0 && dist > 0) {
                 const ratio = 1 + (dist / lastTouchDist - 1) * AMORTECIMENTO_PINCA; // >1 = dedos se afastando = quer tudo maior
                 const zoomAntes = _grZoom;
-                _grZoom = Math.max(4, Math.min(500, Math.round(_grZoom / ratio))); // menos candles = cada um mais largo
+                // Acumula no valor CONTÍNUO (decimal), nunca no já-arredondado —
+                // é isso que impede a fração de se perder frame a frame.
+                _grZoomAcumulado = Math.max(4, Math.min(500, _grZoomAcumulado / ratio));
+                _grZoom = Math.round(_grZoomAcumulado); // só arredonda aqui, na hora de usar
                 grAtualizarPxPerDollar(); // altura recalculada do zero, nunca acumulada
                 // DEBUG TEMPORÁRIO — investigando trava da pinça
-                window._grDebugPinca = `dist:${dist.toFixed(0)} last:${lastTouchDist.toFixed(0)} ratio:${ratio.toFixed(3)} zAntes:${zoomAntes} zDepois:${_grZoom}`;
+                window._grDebugPinca = `dist:${dist.toFixed(0)} last:${lastTouchDist.toFixed(0)} ratio:${ratio.toFixed(3)} zAcum:${_grZoomAcumulado.toFixed(2)} zAntes:${zoomAntes} zDepois:${_grZoom}`;
             }
             lastTouchDist = dist;
             lastTouchDistX = Math.abs(e.touches[0].clientX - e.touches[1].clientX);
