@@ -3781,21 +3781,12 @@ function grCalibrarEixoYFixo(chartH) {
 }
 
 // ── Fonte ÚNICA de verdade pro zoom efetivo (quantos candles cabem na tela).
-// Antes essa conta existia duplicada em 4 lugares diferentes (grRenderChart,
-// grDrawChart, grDrawChartWithCrosshair x2) — cada função com sua própria
-// cópia, e só ALGUMAS delas recebiam o ajuste do footprint. Isso causou o
-// bug de "footprint liga mas a tela continua com zoom de 40" da rodada
-// anterior. Agora TODA função de desenho chama isso aqui, sem exceção.
+// Antes essa conta existia duplicada em 4 lugares diferentes, e o footprint
+// tinha regras próprias (teto de conforto) que travavam a pinça horizontal —
+// contradizia a ideia de controle 100% manual. Agora é sempre _grZoom puro,
+// sem exceção nenhuma pro footprint.
 function grComputarZoomEfetivo() {
-    if (!_grFootprintAtivo) return _grZoom;
-    const canvas = document.getElementById('gr-chart-canvas');
-    const chartWAprox = (canvas?.width || 800) - _grPAD.left - _grPAD.right;
-    // Teto de "conforto": não deixa a mini-régua ficar menor que ~18px (ilegível)
-    // quando o usuário dá zoom OUT. Mas se ele der zoom IN (pinça, _grZoom menor
-    // que esse teto), agora respeita — antes esse min/floor ignorava _grZoom por
-    // completo e a pinça não tinha efeito nenhum na tela com footprint ligado.
-    const maxCandlesConfortavel = Math.max(3, Math.floor(chartWAprox / 24)); // era /18 — candle mais largo por padrão, sobra mais espaço pro footprint sem precisar zoom
-    return Math.max(3, Math.min(_grZoom, maxCandlesConfortavel));
+    return _grZoom;
 }
 
 // ── Mini-régua de footprint no lugar do candle normal, direto no price
@@ -3873,7 +3864,7 @@ function grCalcularMiniLadder(candle, alturaDisponivelPx, rowHFixa, cW) {
 // com a mesma largura cW que o candle já ocuparia. Retorna false se não tinha
 // dado de footprint pra esse candle (aí quem chamou deve desenhar o candle
 // normal como fallback).
-function grDesenharMiniLadderPA(ctx, xCenter, cW, candle, toY, yMinBound, yMaxBound) {
+function grDesenharMiniLadderPA(ctx, xCenter, cW, candle, toY, yMinBound, yMaxBound, ehUltimoCandle) {
     // Trava dentro da área real do gráfico — um candle com dado incompleto/
     // ruim (h ou l fora do normal, ex: candle do minuto ainda sendo formado)
     // não pode fazer a régua "explodir" pra fora da tela (era a causa da
@@ -3881,6 +3872,19 @@ function grDesenharMiniLadderPA(ctx, xCenter, cW, candle, toY, yMinBound, yMaxBo
     let yTop = Math.max(yMinBound, Math.min(yMaxBound, toY(candle.h)));
     let yBottom = Math.max(yMinBound, Math.min(yMaxBound, toY(candle.l)));
     if (yTop > yBottom) { const tmp = yTop; yTop = yBottom; yBottom = tmp; }
+
+    // O ÚLTIMO candle (ainda se formando) tem folga à direita (espaço vazio
+    // reservado pros próximos candles) — usa isso pra deslocar a régua um
+    // pouco pra esquerda e abrir espaço pra desenhar um candle TRADICIONAL
+    // (pavio + corpo retângulo) do lado, já que só ele tem largura de sobra
+    // pros dois formatos coexistirem sem se atropelar.
+    let xTradicional = null;
+    if (ehUltimoCandle) {
+        const deslocamento = cW * 0.65;
+        xTradicional = xCenter + deslocamento;
+        xCenter = xCenter - deslocamento;
+    }
+
     const alturaPx = Math.max(2, yBottom - yTop);
     const ladder = grCalcularMiniLadder(candle, alturaPx, 7, cW);
     const niveis = ladder.niveisPrecoDesc;
@@ -3958,6 +3962,23 @@ function grDesenharMiniLadderPA(ctx, xCenter, cW, candle, toY, yMinBound, yMaxBo
         ctx.fillText((deltaVal >= 0 ? '+' : '') + fmtMiniVol(deltaVal), xCenter, miniBottom + 9);
         ctx.fillStyle = '#8E8E93';
         ctx.fillText(fmtMiniVol(totalVal), xCenter, miniBottom + 18);
+    }
+
+    // Candle TRADICIONAL do último (em formação) — pavio completo + corpo
+    // retângulo de verdade, ao lado da régua (não substitui, complementa).
+    if (ehUltimoCandle && xTradicional != null) {
+        ctx.strokeStyle = '#8E8E93';
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(xTradicional, yTop); ctx.lineTo(xTradicional, yBottom); ctx.stroke();
+
+        const bodyTop = Math.min(yAb, yFe);
+        const bodyH = Math.max(1, Math.max(yAb, yFe) - bodyTop);
+        const bodyW = Math.max(3, cW * 0.55);
+        ctx.fillStyle = corCorpo;
+        ctx.fillRect(xTradicional - bodyW / 2, bodyTop, bodyW, bodyH);
+        ctx.strokeStyle = corCorpo;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(xTradicional - bodyW / 2, bodyTop, bodyW, bodyH);
     }
     return true;
 }
@@ -5072,7 +5093,8 @@ if (_grTipoGrafico === 'linha') {
         // desenho normal como fallback se não tiver dado de footprint pra
         // esse candle específico.
         if (_grFootprintAtivo) {
-            if (grDesenharMiniLadderPA(ctx, x, cW, c, toY, PAD.top, PAD.top + chartH)) return;
+            const ehUltimoCandle = _grAllCandles.length > 0 && c === _grAllCandles[_grAllCandles.length - 1];
+            if (grDesenharMiniLadderPA(ctx, x, cW, c, toY, PAD.top, PAD.top + chartH, ehUltimoCandle)) return;
         }
 
         // Divergência preço x delta — funciona em qualquer tema, sobrepõe o
@@ -7408,7 +7430,7 @@ function grInitTouch() {
                 if ((dxAbs > 8 || dyAbsCancel > 8) && !window._longPressActive) { clearTimeout(_longPressTimer); }
 
                 const dx = e.touches[0].clientX - touchStartX;
-                const AMORTECIMENTO_PAN = 0.35;
+                const AMORTECIMENTO_PAN = 0.27;
                                                  // pequeno movimento pulava candle(s) de vez, parecia abrupto
                 const candlesPerPx = (_grZoom / canvas.width) * AMORTECIMENTO_PAN;
                 const delta = Math.round(dx * candlesPerPx);
