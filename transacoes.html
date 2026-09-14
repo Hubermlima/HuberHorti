@@ -7699,6 +7699,29 @@ function grDrawChart() {
     if (crosshairCanvasFechar) crosshairCanvasFechar.getContext('2d').clearRect(0, 0, crosshairCanvasFechar.width, crosshairCanvasFechar.height);
 }
 
+// ── Delta de faixa de preço no crosshair — soma compra/venda de todos os
+// níveis dentro de ±pctZona% do preço apontado pelo crosshair (eixo Y),
+// usando os MESMOS bins agregados da janela "Dias: X" que o Value Area já
+// mantém (grFootprintObterMapaBaseValueArea) — sem re-varrer o histórico
+// bruto a cada frame de arraste. Cacheado por "bucket" de preço ($20) pra
+// não recalcular a cada pixel, só quando o dedo realmente muda de faixa.
+function grCrosshairZonaDelta(preco, pctZona) {
+    const mapaBase = grFootprintObterMapaBaseValueArea();
+    if (!mapaBase) return null;
+    const bucket = Math.round(preco / 20);
+    const cache = window._grCrosshairZonaCache;
+    if (cache && cache.bucket === bucket && cache.mapaBase === mapaBase) return cache;
+    const precoBaixo = preco * (1 - pctZona / 100);
+    const precoAlto  = preco * (1 + pctZona / 100);
+    let compra = 0, venda = 0;
+    mapaBase.forEach((v, p) => {
+        if (p >= precoBaixo && p <= precoAlto) { compra += v.c; venda += v.v; }
+    });
+    const resultado = { bucket, mapaBase, compra, venda, delta: compra - venda, precoBaixo, precoAlto };
+    window._grCrosshairZonaCache = resultado;
+    return resultado;
+}
+
 function grDrawChartWithCrosshair(yInterno) {
     // Desenha o gráfico sem recursão
     {
@@ -7820,6 +7843,12 @@ function grDrawChartWithCrosshair(yInterno) {
 
         const temBotaoFootprint = _grFootprintAtivo && _grFootprintBins;
 
+        // Faixa de preço ao redor do crosshair (Y) — ±0.15% pra cima e pra
+        // baixo do preço apontado, mesmo espírito de uma mini-zona ZII sob
+        // o dedo. Percentual fixo por enquanto; dá pra virar ajustável depois.
+        const PCT_ZONA_CROSSHAIR = 0.15;
+        const zonaCrosshair = temBotaoFootprint ? grCrosshairZonaDelta(preco, PCT_ZONA_CROSSHAIR) : null;
+
         // ── Layout da caixa primeiro (não depende de quantos níveis vão
         // existir) — preciso saber quanto espaço SOBRA pra régua antes de
         // decidir quantos níveis cabem nela, senão vira o problema de
@@ -7836,6 +7865,9 @@ function grDrawChartWithCrosshair(yInterno) {
             ...(!temBotaoFootprint && buyVol != null ? [
                 { label: sellPct, val: fmtBtc(sellVol), color: '#EF5350' },
                 { label: buyPct,  val: fmtBtc(buyVol),  color: '#26A69A' },
+            ] : []),
+            ...(zonaCrosshair ? [
+                { label: `Δ ±${PCT_ZONA_CROSSHAIR}%`, val: (zonaCrosshair.delta >= 0 ? '+' : '') + fmtBtc2(zonaCrosshair.delta), color: zonaCrosshair.delta >= 0 ? '#26A69A' : '#EF5350' },
             ] : []),
         ];
         const boxPad = 10, lineH = 18;
