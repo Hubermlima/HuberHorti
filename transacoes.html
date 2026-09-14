@@ -3774,6 +3774,13 @@ let _grZoomAcumulado = _grZoom;
 // lugares seguem ele.
 const PCT_ZONA_PRECO = 0.15;
 
+// Divergência preço x delta — candle sobe mas delta foi negativo (roxo,
+// vendedor dominou apesar do preço) ou candle cai mas delta foi positivo
+// (azul, comprador dominou apesar do preço). Pertence ao framework do
+// footprint — usado tanto no candle normal quanto na mini-régua (FX ligado).
+const CorDivergAlta = '#7B1FA2';
+const CorDivergBaixa = '#1E88E5';
+
 let _grYAxisCenter = null;      // preço no centro vertical da tela
 let _grYAxisPxPerDollar = null; // tick fixo — pixels por dólar (DERIVADO, não acumulado — ver grAtualizarPxPerDollar)
 // Referência de calibração — fixada UMA VEZ, nunca mais tocada depois. É a
@@ -3933,7 +3940,17 @@ function grDesenharMiniLadderPA(ctx, xCenter, cW, candle, toY, yMinBound, yMaxBo
     // real quase zero) e desalinhava o corpo da caixa com a linha C.
     const yAb = Math.max(miniTop, Math.min(miniBottom, toY(candle.o)));
     const yFe = Math.max(miniTop, Math.min(miniBottom, toY(candle.c)));
-    const corCorpo = candle.c >= candle.o ? '#26A69A' : '#EF5350';
+    // Delta calculado aqui em cima (não só no rodapé) porque a cor do
+    // contorno do corpo precisa dele — divergência preço x delta pertence
+    // ao framework do footprint, tem que valer aqui também, não só no
+    // candle normal.
+    const compraTotal = niveis.reduce((s, n) => s + n.c, 0);
+    const vendaTotal = niveis.reduce((s, n) => s + n.v, 0);
+    const deltaVal = compraTotal - vendaTotal;
+    const isUpMini = candle.c >= candle.o;
+    const corCorpo = isUpMini && deltaVal < 0 ? CorDivergAlta
+        : !isUpMini && deltaVal > 0 ? CorDivergBaixa
+        : (isUpMini ? '#26A69A' : '#EF5350');
 
     // Valor de volume dentro de cada barra — formato compacto ("99k" acima de
     // mil), só se a barra for larga o bastante pra caber o texto.
@@ -3992,9 +4009,8 @@ function grDesenharMiniLadderPA(ctx, xCenter, cW, candle, toY, yMinBound, yMaxBo
     }
 
     // Rodapé Delta/Total — logo abaixo da régua, mesmo formato compacto.
-    const compraTotal = niveis.reduce((s, n) => s + n.c, 0);
-    const vendaTotal = niveis.reduce((s, n) => s + n.v, 0);
-    const deltaVal = compraTotal - vendaTotal;
+    // compraTotal/vendaTotal/deltaVal já calculados lá em cima (precisavam
+    // existir antes, pra colorir o corpo pela divergência).
     const totalVal = compraTotal + vendaTotal;
     if (cW >= 14) { // rodapé só cabe legível se o candle tiver alguma largura
         const yDelta = emCima ? miniTop - 9 : miniBottom + 9;
@@ -5108,8 +5124,6 @@ if (_grTipoGrafico === 'linha') {
 } else {
     const deltaPorCandle = grObterDeltaPorCandle(candles); // null se footprint desligado — sem dado pra saber se diverge
     const pocsPorCandle = grObterPocsPorCandle(candles); // null se footprint desligado — sem dado pra marcar os PoCs
-    const CorDivergAlta = '#7B1FA2';  // roxo — candle subiu, mas delta foi negativo (vendedor dominou apesar do preço)
-    const CorDivergBaixa = '#1E88E5'; // azul — candle caiu, mas delta foi positivo (comprador dominou apesar do preço)
     const ALTURA_MIN_POC_PX = 12; // candle (H até L, na tela) menor que isso não recebe traço de PoC — vira poluição
     candles.forEach((c, i) => {
         const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
@@ -5759,13 +5773,25 @@ const aBX = 3, aBY = yR2 - aBH / 2;
             // handle C (canto direito), mesmo estilo discreto do label do
             // POC. Redesenha sozinho a cada tick, mesma lógica do crosshair
             // (grCrosshairZonaDelta), só que sempre em cima de _precoAtual.
+            // Cor segue a MESMA paleta de divergência do candle (verde/
+            // vermelho quando confirma, roxo/azul quando o delta da faixa
+            // briga contra a direção do candle que tá se formando agora) —
+            // assim dá pra ver de relance se é "normal" ou "chamando atenção",
+            // sem comparar número nenhum de cabeça.
             if (_grFootprintAtivo && _grFootprintBins && !_grMostrarBarrasPA) {
                 const zonaAoVivo = grCrosshairZonaDelta(_precoAtual, PCT_ZONA_PRECO);
                 if (zonaAoVivo) {
                     const zTxt = 'Δ ' + (zonaAoVivo.delta >= 0 ? '+' : '') + fmtBtc2(zonaAoVivo.delta);
+                    const candleSobe = lastCandle ? lastCandle.c >= lastCandle.o : true;
+                    let zCor;
+                    if (zonaAoVivo.delta >= 0) {
+                        zCor = candleSobe ? '#26A69A' : CorDivergBaixa; // comprador confirma (verde) ou não converte (azul)
+                    } else {
+                        zCor = !candleSobe ? '#EF5350' : CorDivergAlta; // vendedor confirma (vermelho) ou é absorvido (roxo)
+                    }
                     ctx.font = 'bold 9px -apple-system';
                     ctx.textAlign = 'center';
-                    ctx.fillStyle = zonaAoVivo.delta >= 0 ? '#26A69A' : '#EF5350';
+                    ctx.fillStyle = zCor;
                     ctx.fillText(zTxt, W - PAD.right - 9, yPreco - 13);
                 }
             }
