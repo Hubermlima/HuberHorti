@@ -3801,7 +3801,7 @@ function grComputarZoomEfetivo() {
 // ── Mini-régua de footprint no lugar do candle normal, direto no price
 // action. Ativa sozinha assim que o footprint (FX) tá ligado.
 window._grMiniLadderCache = window._grMiniLadderCache || new Map();
-function grCalcularMiniLadder(candle, alturaDisponivelPx, rowHFixa) {
+function grCalcularMiniLadder(candle, alturaDisponivelPx, rowHFixa, cW) {
     const NIVEIS_MIN = 2, NIVEIS_MAX = 20;
     // Banda de altura de linha aceitável — garante consistência visual ENTRE
     // candles diferentes (sem isso, candle com pouco range em dólar ganhava
@@ -3812,15 +3812,21 @@ function grCalcularMiniLadder(candle, alturaDisponivelPx, rowHFixa) {
     const span = Math.max(hi - lo, 10);
     // Não faz sentido ter mais níveis de preço do que buckets de $10 reais no range do candle
     const bucketsDisponiveis = Math.max(NIVEIS_MIN, Math.round(span / 10));
-    let nivelCount = Math.max(NIVEIS_MIN, Math.min(Math.round(alturaDisponivelPx / rowHFixa), bucketsDisponiveis, NIVEIS_MAX));
+    // Largura também limita quantos níveis fazem sentido — sem isso, a pinça
+    // vertical sozinha esticava o candle em altura só, virando "espaguete"
+    // (muitas linhas finas, mas ainda estreito). Agora pinça horizontal
+    // (mais largura por candle) TAMBÉM libera mais níveis, mantendo a
+    // proporção entre os dois eixos.
+    const nivelMaxPorLargura = Math.max(NIVEIS_MIN, Math.round((cW || 18) / 3));
+    let nivelCount = Math.max(NIVEIS_MIN, Math.min(Math.round(alturaDisponivelPx / rowHFixa), bucketsDisponiveis, NIVEIS_MAX, nivelMaxPorLargura));
     let rowH = alturaDisponivelPx / nivelCount;
     if (rowH < ROW_H_MIN) {
-        nivelCount = Math.max(NIVEIS_MIN, Math.floor(alturaDisponivelPx / ROW_H_MIN));
+        nivelCount = Math.max(NIVEIS_MIN, Math.min(Math.floor(alturaDisponivelPx / ROW_H_MIN), nivelMaxPorLargura));
         rowH = alturaDisponivelPx / nivelCount;
     } else if (rowH > ROW_H_MAX) {
         // Cap por bucketsDisponiveis aqui é essencial — sem ele, inventaria
         // mais níveis do que existem buckets de $10 reais (resolução falsa).
-        nivelCount = Math.min(bucketsDisponiveis, Math.max(NIVEIS_MIN, Math.ceil(alturaDisponivelPx / ROW_H_MAX)));
+        nivelCount = Math.min(bucketsDisponiveis, nivelMaxPorLargura, Math.max(NIVEIS_MIN, Math.ceil(alturaDisponivelPx / ROW_H_MAX)));
         rowH = alturaDisponivelPx / nivelCount;
     }
 
@@ -3876,7 +3882,7 @@ function grDesenharMiniLadderPA(ctx, xCenter, cW, candle, toY, yMinBound, yMaxBo
     let yBottom = Math.max(yMinBound, Math.min(yMaxBound, toY(candle.l)));
     if (yTop > yBottom) { const tmp = yTop; yTop = yBottom; yBottom = tmp; }
     const alturaPx = Math.max(2, yBottom - yTop);
-    const ladder = grCalcularMiniLadder(candle, alturaPx, 7);
+    const ladder = grCalcularMiniLadder(candle, alturaPx, 7, cW);
     const niveis = ladder.niveisPrecoDesc;
     if (!niveis || niveis.length === 0) return false;
 
@@ -3899,6 +3905,11 @@ function grDesenharMiniLadderPA(ctx, xCenter, cW, candle, toY, yMinBound, yMaxBo
     const yFe = Math.max(miniTop, Math.min(miniBottom, yParaPreco(candle.c)));
     const corCorpo = candle.c >= candle.o ? '#26A69A' : '#EF5350';
 
+    // Valor de volume dentro de cada barra — formato compacto ("99k" acima de
+    // mil), só se a barra for larga o bastante pra caber o texto.
+    const fmtMiniVol = (v) => v >= 1000 ? (v / 1000).toFixed(2) + 'K' : fmtBtc2(v);
+    const mostrarTexto = rowH >= 5;
+
     niveis.forEach((n, i) => {
         const ry = miniTop + i * rowH;
         const pad = Math.max(1, Math.min(1.5, rowH * 0.15));
@@ -3908,12 +3919,46 @@ function grDesenharMiniLadderPA(ctx, xCenter, cW, candle, toY, yMinBound, yMaxBo
         if (n.v > 0) { ctx.fillStyle = 'rgba(239,83,80,0.85)'; ctx.fillRect(xCenter + gap, ry + pad, bV, Math.max(0.5, rowH - pad * 2)); }
     });
 
+    if (mostrarTexto) {
+        ctx.font = '6.5px -apple-system';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#000000';
+        niveis.forEach((n, i) => {
+            const ry = miniTop + i * rowH;
+            const rowMeioY = ry + rowH / 2;
+            const bC = Math.max(0.5, (n.c / maxTotal) * barMaxW);
+            const bV = Math.max(0.5, (n.v / maxTotal) * barMaxW);
+            if (n.c > 0) {
+                const txt = fmtMiniVol(n.c);
+                if (ctx.measureText(txt).width + 3 <= bC) ctx.fillText(txt, xCenter - gap - bC / 2, rowMeioY + 2);
+            }
+            if (n.v > 0) {
+                const txt = fmtMiniVol(n.v);
+                if (ctx.measureText(txt).width + 3 <= bV) ctx.fillText(txt, xCenter + gap + bV / 2, rowMeioY + 2);
+            }
+        });
+    }
+
     ctx.strokeStyle = '#8E8E93';
     ctx.lineWidth = 1.5; // espessura única — a mesma do pavio, só muda a cor
     ctx.beginPath(); ctx.moveTo(xCenter, miniTop); ctx.lineTo(xCenter, miniBottom); ctx.stroke();
     ctx.strokeStyle = corCorpo;
     ctx.lineWidth = 1.5; // idêntica à de cima — só a cor identifica abertura↔fechamento
     ctx.beginPath(); ctx.moveTo(xCenter, Math.min(yAb, yFe)); ctx.lineTo(xCenter, Math.max(yAb, yFe)); ctx.stroke();
+
+    // Rodapé Delta/Total — logo abaixo da régua, mesmo formato compacto.
+    const compraTotal = niveis.reduce((s, n) => s + n.c, 0);
+    const vendaTotal = niveis.reduce((s, n) => s + n.v, 0);
+    const deltaVal = compraTotal - vendaTotal;
+    const totalVal = compraTotal + vendaTotal;
+    if (cW >= 14) { // rodapé só cabe legível se o candle tiver alguma largura
+        ctx.font = 'bold 7px -apple-system';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = deltaVal >= 0 ? '#26A69A' : '#EF5350';
+        ctx.fillText((deltaVal >= 0 ? '+' : '') + fmtMiniVol(deltaVal), xCenter, miniBottom + 9);
+        ctx.fillStyle = '#8E8E93';
+        ctx.fillText(fmtMiniVol(totalVal), xCenter, miniBottom + 18);
+    }
     return true;
 }
 let _grDrone = false;
@@ -7354,12 +7399,16 @@ function grInitTouch() {
 } else if (isDragging) {
 
 
-                // Cancela long press só se rolou bastante e ainda não ativou
-                                const dxAbs = Math.abs(e.touches[0].clientX - touchStartX);
-                if (dxAbs > 8 && !window._longPressActive) { clearTimeout(_longPressTimer); }
+                // Cancela long press se rolou bastante em QUALQUER direção —
+                // antes só checava horizontal (dxAbs); como agora também tem
+                // pan vertical, um arrasto puramente vertical não cancelava o
+                // timer, e o crosshair disparava no meio do scroll vertical.
+                const dxAbs = Math.abs(e.touches[0].clientX - touchStartX);
+                const dyAbsCancel = Math.abs(e.touches[0].clientY - touchStartY);
+                if ((dxAbs > 8 || dyAbsCancel > 8) && !window._longPressActive) { clearTimeout(_longPressTimer); }
 
                 const dx = e.touches[0].clientX - touchStartX;
-                const AMORTECIMENTO_PAN = 0.22; // bem mais suave — era 0.55
+                const AMORTECIMENTO_PAN = 0.35;
                                                  // pequeno movimento pulava candle(s) de vez, parecia abrupto
                 const candlesPerPx = (_grZoom / canvas.width) * AMORTECIMENTO_PAN;
                 const delta = Math.round(dx * candlesPerPx);
