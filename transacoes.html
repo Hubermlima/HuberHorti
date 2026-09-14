@@ -6938,6 +6938,15 @@ function grInitTouch() {
     let lastTouchDistX = 0;
     let lastTouchDistY = 0;
     let isDragging = false;
+    // Trava de eixo da pinça — decide UMA VEZ por gesto (assim que o dedo se
+    // move o suficiente) se é horizontal ou vertical, e trava nesse eixo até
+    // soltar os dedos. O outro eixo fica 100% congelado durante esse gesto —
+    // não é mais "amortecido", é zero, sem exceção. Isso substitui a
+    // tentativa anterior (limiar de distância mínima), que reduzia o
+    // vazamento mas não eliminava.
+    let _grPincaEixoTravado = null; // null | 'x' | 'y'
+    let _grPincaDistXInicio = 0;
+    let _grPincaDistYInicio = 0;
 
     function toCanvasY(clientY) {
         const rect = canvas.getBoundingClientRect();
@@ -7262,6 +7271,11 @@ function grInitTouch() {
             );
             lastTouchDistX = Math.abs(e.touches[0].clientX - e.touches[1].clientX);
             lastTouchDistY = Math.abs(e.touches[0].clientY - e.touches[1].clientY);
+            // Novo gesto de pinça começando — destrava o eixo, será decidido
+            // de novo no primeiro movimento significativo.
+            _grPincaEixoTravado = null;
+            _grPincaDistXInicio = lastTouchDistX;
+            _grPincaDistYInicio = lastTouchDistY;
         }
         e.preventDefault();
     }, { passive: false });
@@ -7449,20 +7463,29 @@ function grInitTouch() {
             const distX = Math.abs(e.touches[0].clientX - e.touches[1].clientX);
             const distY = Math.abs(e.touches[0].clientY - e.touches[1].clientY);
             const AMORTECIMENTO_PINCA = 0.35;
-            const DIST_MINIMA_EIXO = 25; // abaixo disso, a separação nesse eixo é
-                                          // ruído de tremor de mão, não pinça intencional
-            // Zoom horizontal — só responde se a separação em X for grande o
-            // bastante pra ser intencional (senão ignora, evita ruído).
-            if (lastTouchDistX > DIST_MINIMA_EIXO && distX > DIST_MINIMA_EIXO) {
+            const LIMIAR_DECISAO = 15; // px de variação desde o início do gesto
+                                        // pra decidir qual eixo foi "puxado" primeiro
+
+            // Decide o eixo UMA VEZ por gesto inteiro (não a cada frame) — assim
+            // que o movimento desde o início da pinça passa do limiar em X ou Y,
+            // trava nesse eixo até soltar os dedos. O outro eixo fica 100%
+            // congelado (nem amortecido — zero) pelo resto do gesto. Antes só
+            // existia um limiar de "distância mínima" por frame, que reduzia o
+            // vazamento mas não eliminava (a pinça horizontal ainda mexia bastante
+            // no zoom vertical, confirmado no debug: pxPerDollar mudou 13x numa
+            // pinça que devia ser só horizontal).
+            if (_grPincaEixoTravado === null) {
+                const deltaX = Math.abs(distX - _grPincaDistXInicio);
+                const deltaY = Math.abs(distY - _grPincaDistYInicio);
+                if (deltaX > LIMIAR_DECISAO || deltaY > LIMIAR_DECISAO) {
+                    _grPincaEixoTravado = deltaX >= deltaY ? 'x' : 'y';
+                }
+            }
+
+            if (_grPincaEixoTravado === 'x' && lastTouchDistX > 0 && distX > 0) {
                 const ratioX = 1 + (lastTouchDistX / distX - 1) * AMORTECIMENTO_PINCA;
                 _grZoom = Math.max(4, Math.min(500, Math.round(_grZoom * ratioX)));
-            }
-            // Zoom vertical — mesma proteção. Numa pinça horizontal de verdade,
-            // os dedos ficam próximos verticalmente (distY pequeno), e nesse
-            // regime até um tremor mínimo de mão virava uma razão enorme
-            // (ex: 5px→8px = +60%) e "vazava" pro eixo vertical. Ignorando
-            // qualquer distY abaixo do mínimo, isso para de acontecer.
-            if (lastTouchDistY > DIST_MINIMA_EIXO && distY > DIST_MINIMA_EIXO && _grYAxisPxPerDollar) {
+            } else if (_grPincaEixoTravado === 'y' && lastTouchDistY > 0 && distY > 0 && _grYAxisPxPerDollar) {
                 const ratioY = 1 + (distY / lastTouchDistY - 1) * AMORTECIMENTO_PINCA;
                 _grYAxisPxPerDollar = Math.max(0.01, Math.min(20, _grYAxisPxPerDollar * ratioY));
             }
