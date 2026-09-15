@@ -4588,42 +4588,50 @@ function grDrawCandles(candles, emptyRight) {
                 const deltaValidos = deltaVals.filter(v => v != null).map(Math.abs);
                 const maxAbsCvd = Math.max(...cvdValidos, 0.001);
                 const maxAbsDelta = Math.max(...deltaValidos, 0.001);
-                const zeroYpa = PAD.top + chartH / 2;
-                const escalaCvd = (chartH * 0.38) / maxAbsCvd;
-                const escalaDelta = (chartH * 0.38) / maxAbsDelta;
+                // Centraliza e escala pelo RANGE REAL dos candles visíveis (não
+                // pelo painel inteiro) — o eixo Y é fixo e às vezes sobra espaço
+                // em branco acima/abaixo dos candles; sem isso o overlay ficava
+                // "flutuando" longe do preço.
+                const yCandleHi = toY(window._grVisibleHigh);
+                const yCandleLo = toY(window._grVisibleLow);
+                const zeroYpa = (yCandleHi + yCandleLo) / 2;
+                const alturaCandlesPx = Math.max(20, Math.abs(yCandleLo - yCandleHi));
+                const escalaCvd = (alturaCandlesPx * 0.6) / maxAbsCvd;
+                const escalaDelta = (alturaCandlesPx * 0.6) / maxAbsDelta;
                 const xDoIdx = i => PAD.left + (i / totalSlots) * chartW + cW / 2;
-
-                // CVD — linha grossa de referência, cor única, suavizada (mesma
-                // técnica de curva por ponto médio usada na Absorção/CVD painel)
-                ctx.strokeStyle = '#26A69A';
-                ctx.lineWidth = 2.2;
-                ctx.lineJoin = 'round';
-                for (let i = 0; i < cvdVals.length - 1; i++) {
-                    if (cvdVals[i] == null || cvdVals[i + 1] == null) continue;
-                    const x0 = xDoIdx(i), y0 = zeroYpa - cvdVals[i] * escalaCvd;
-                    const x1 = xDoIdx(i + 1), y1 = zeroYpa - cvdVals[i + 1] * escalaCvd;
-                    const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
-                    ctx.beginPath();
-                    ctx.moveTo(x0, y0);
-                    ctx.quadraticCurveTo(x0, y0, mx, my);
-                    ctx.lineTo(x1, y1);
-                    ctx.stroke();
+                // Traça uma curva CONTÍNUA (um path só, sem reiniciar a cada
+                // segmento) passando por todos os pontos — cada ponto original
+                // vira o "puxão" da curva rumo ao ponto médio até o próximo,
+                // aí sim suaviza de verdade, sem quina em cada vértice. Corta
+                // em runs quando encontra null (fora da janela de dias).
+                function grTracarSuave(pts, cor, lw) {
+                    ctx.strokeStyle = cor;
+                    ctx.lineWidth = lw;
+                    ctx.lineJoin = 'round';
+                    ctx.lineCap = 'round';
+                    let run = [];
+                    const flush = () => {
+                        if (run.length >= 2) {
+                            ctx.beginPath();
+                            ctx.moveTo(run[0].x, run[0].y);
+                            for (let i = 1; i < run.length - 1; i++) {
+                                const mx = (run[i].x + run[i + 1].x) / 2, my = (run[i].y + run[i + 1].y) / 2;
+                                ctx.quadraticCurveTo(run[i].x, run[i].y, mx, my);
+                            }
+                            ctx.lineTo(run[run.length - 1].x, run[run.length - 1].y);
+                            ctx.stroke();
+                        }
+                        run = [];
+                    };
+                    pts.forEach(p => { if (p == null) flush(); else run.push(p); });
+                    flush();
                 }
 
-                // Delta — linha fina por cima, cor única, suavizada
-                ctx.strokeStyle = '#1565C0';
-                ctx.lineWidth = 1.2;
-                for (let i = 0; i < deltaVals.length - 1; i++) {
-                    if (deltaVals[i] == null || deltaVals[i + 1] == null) continue;
-                    const x0 = xDoIdx(i), y0 = zeroYpa - deltaVals[i] * escalaDelta;
-                    const x1 = xDoIdx(i + 1), y1 = zeroYpa - deltaVals[i + 1] * escalaDelta;
-                    const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
-                    ctx.beginPath();
-                    ctx.moveTo(x0, y0);
-                    ctx.quadraticCurveTo(x0, y0, mx, my);
-                    ctx.lineTo(x1, y1);
-                    ctx.stroke();
-                }
+                const cvdPts = cvdVals.map((v, i) => v == null ? null : { x: xDoIdx(i), y: zeroYpa - v * escalaCvd });
+                const deltaPts = deltaVals.map((v, i) => v == null ? null : { x: xDoIdx(i), y: zeroYpa - v * escalaDelta });
+
+                grTracarSuave(cvdPts, '#26A69A', 2.2);   // CVD — linha grossa de referência
+                grTracarSuave(deltaPts, '#1565C0', 1.2); // Delta — linha fina por cima
 
                 ctx.font = 'bold 10px -apple-system';
                 ctx.textAlign = 'left';
