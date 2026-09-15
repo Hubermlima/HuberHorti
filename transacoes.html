@@ -1,4 +1,4 @@
-i<!DOCTYPE html>
+<!DOCTYPE html>
 
 <html lang="pt-BR">
 <head>
@@ -4584,21 +4584,32 @@ function grDrawCandles(candles, emptyRight) {
                     deltaVals.push(idx >= 0 && idx < deltaAllPA.length ? deltaAllPA[idx] : null);
                 }
 
-                const cvdValidos = cvdVals.filter(v => v != null).map(Math.abs);
-                const deltaValidos = deltaVals.filter(v => v != null).map(Math.abs);
-                const maxAbsCvd = Math.max(...cvdValidos, 0.001);
-                const maxAbsDelta = Math.max(...deltaValidos, 0.001);
-                // Centraliza e escala pelo RANGE REAL dos candles visíveis (não
-                // pelo painel inteiro) — o eixo Y é fixo e às vezes sobra espaço
-                // em branco acima/abaixo dos candles; sem isso o overlay ficava
-                // "flutuando" longe do preço.
+                // Centraliza no meio do range REAL dos candles visíveis (não do
+                // painel inteiro) — eixo Y é fixo, sobra espaço em branco.
                 const yCandleHi = toY(window._grVisibleHigh);
                 const yCandleLo = toY(window._grVisibleLow);
                 const zeroYpa = (yCandleHi + yCandleLo) / 2;
                 const alturaCandlesPx = Math.max(20, Math.abs(yCandleLo - yCandleHi));
-                const escalaCvd = (alturaCandlesPx * 0.6) / maxAbsCvd;
-                const escalaDelta = (alturaCandlesPx * 0.6) / maxAbsDelta;
                 const xDoIdx = i => PAD.left + (i / totalSlots) * chartW + cW / 2;
+
+                // Normaliza cada série pelo PRÓPRIO range (mín↔máx) DENTRO da
+                // janela visível — não pelo valor absoluto. CVD é acumulado de
+                // vários dias, então na janela visível ele costuma variar pouco
+                // em termos relativos; escalar pelo valor absoluto (ex: ~900)
+                // grudava a linha sempre na borda. Assim as duas usam a régua
+                // inteira, sempre centralizadas nos candles.
+                function construirPontosNormalizados(vals) {
+                    const validos = vals.filter(v => v != null);
+                    if (!validos.length) return vals.map(() => null);
+                    const minV = Math.min(...validos), maxV = Math.max(...validos);
+                    const range = Math.max(maxV - minV, 0.001);
+                    const bandTop = zeroYpa - alturaCandlesPx * 0.3;
+                    const bandBottom = zeroYpa + alturaCandlesPx * 0.3;
+                    return vals.map((v, i) => v == null ? null : {
+                        x: xDoIdx(i),
+                        y: bandBottom - ((v - minV) / range) * (bandBottom - bandTop)
+                    });
+                }
                 // Traça uma curva CONTÍNUA (um path só, sem reiniciar a cada
                 // segmento) passando por todos os pontos — cada ponto original
                 // vira o "puxão" da curva rumo ao ponto médio até o próximo,
@@ -4627,8 +4638,8 @@ function grDrawCandles(candles, emptyRight) {
                     flush();
                 }
 
-                const cvdPts = cvdVals.map((v, i) => v == null ? null : { x: xDoIdx(i), y: zeroYpa - v * escalaCvd });
-                const deltaPts = deltaVals.map((v, i) => v == null ? null : { x: xDoIdx(i), y: zeroYpa - v * escalaDelta });
+                const cvdPts = construirPontosNormalizados(cvdVals);
+                const deltaPts = construirPontosNormalizados(deltaVals);
 
                 grTracarSuave(cvdPts, '#26A69A', 2.2);   // CVD — linha grossa de referência
                 grTracarSuave(deltaPts, '#1565C0', 1.2); // Delta — linha fina por cima
