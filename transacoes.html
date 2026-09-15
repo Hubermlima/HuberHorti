@@ -4590,22 +4590,30 @@ function grDrawCandles(candles, emptyRight) {
                 const alturaCandlesPx = Math.max(20, Math.abs(yCandleLo - yCandleHi));
                 const xDoIdx = i => PAD.left + (i / totalSlots) * chartW + cW / 2;
 
-                // Normaliza cada série pelo PRÓPRIO range (mín↔máx) DENTRO da
-                // janela visível — não pelo valor absoluto. CVD é acumulado de
-                // vários dias, então na janela visível ele costuma variar pouco
-                // em termos relativos; escalar pelo valor absoluto (ex: ~900)
-                // grudava a linha sempre na borda. Assim as duas usam a régua
-                // inteira, sempre centralizadas nos candles.
-                function construirPontosNormalizados(vals) {
-                    const validos = vals.filter(v => v != null);
-                    if (!validos.length) return vals.map(() => null);
+                // Normaliza cada série pelo range (mín↔máx) da JANELA DE DIAS
+                // INTEIRA — não só do que tá visível na tela. Antes eu recalculava
+                // o mín/máx a cada frame só com os candles visíveis, então a régua
+                // mudava de escala toda vez que você rolava (mesmo valor de CVD
+                // desenhado em altura diferente). Assim a régua fica fixa: rolar
+                // só desliza a linha, não redesenha a forma dela.
+                function calcularRange(valsFull) {
+                    const validos = valsFull.filter(v => v != null);
+                    if (!validos.length) return null;
                     const minV = Math.min(...validos), maxV = Math.max(...validos);
-                    const range = Math.max(maxV - minV, 0.001);
+                    return { minV, maxV: Math.max(maxV, minV + 0.001) };
+                }
+                const rangeCvd = calcularRange(cvdAllPA);
+                const rangeDelta = calcularRange(deltaAllPA);
+
+                function construirPontosNormalizados(vals, range) {
+                    if (!range) return vals.map(() => null);
+                    const { minV, maxV } = range;
+                    const rangeVal = maxV - minV;
                     const bandTop = zeroYpa - alturaCandlesPx * 0.3;
                     const bandBottom = zeroYpa + alturaCandlesPx * 0.3;
                     return vals.map((v, i) => v == null ? null : {
                         x: xDoIdx(i),
-                        y: bandBottom - ((v - minV) / range) * (bandBottom - bandTop)
+                        y: bandBottom - ((v - minV) / rangeVal) * (bandBottom - bandTop)
                     });
                 }
                 // Traça uma curva CONTÍNUA (um path só, sem reiniciar a cada
@@ -4636,8 +4644,8 @@ function grDrawCandles(candles, emptyRight) {
                     flush();
                 }
 
-                const cvdPts = construirPontosNormalizados(cvdVals);
-                const deltaPts = construirPontosNormalizados(deltaVals);
+                const cvdPts = construirPontosNormalizados(cvdVals, rangeCvd);
+                const deltaPts = construirPontosNormalizados(deltaVals, rangeDelta);
 
                 grTracarSuave(cvdPts, '#26A69A', 2.2);   // CVD — linha grossa de referência
                 grTracarSuave(deltaPts, '#1565C0', 1.2); // Delta — linha fina por cima
