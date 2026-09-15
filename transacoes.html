@@ -1261,6 +1261,8 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
 <span class="btn-sigla">MACD</span><span class="btn-nome">Convergência</span></button>
       <button class="cv-ind-btn cvd" id="cv-ind-cvd" onclick="cvToggleSubInd('cvd')">
 <span class="btn-sigla">CVD</span><span class="btn-nome">Delta Acumulado</span></button>
+      <button class="cv-ind-btn cvdpa" id="cv-ind-cvdPA" onclick="cvToggleInd('cvdPA')">
+<span class="btn-sigla">CVD+Δ</span><span class="btn-nome">CVD + Delta no Price Action</span></button>
       <button class="cv-ind-btn fib" id="cv-ind-fib" onclick="cvToggleFib()"><span class="btn-sigla">Fib</span><span class="btn-nome">Fibonacci</span></button>
       <button class="cv-ind-btn sup" id="cv-ind-sup" onclick="cvToggleNivel('sup')"><span class="btn-sigla">Sup</span><span class="btn-nome">Suporte</span></button>
       <button class="cv-ind-btn res" id="cv-ind-res" onclick="cvToggleNivel('res')"><span class="btn-sigla">Res</span><span class="btn-nome">Resistência</span></button>
@@ -4543,6 +4545,70 @@ function grDrawCandles(candles, emptyRight) {
         if (_indState.ema50 && !_indOculto.ema50)  { desenharLinha(ema50,  '#FF80AB', 1.2); const v = ema50.filter(v=>v!=null).pop(); if (v!=null) window._compValores.ema50 = { cor: '#FF80AB', valor: fmtN(v) }; }
         if (_indState.ema100 && !_indOculto.ema100) { desenharLinha(ema100, '#FFFFFF', 1.2); const v = ema100.filter(v=>v!=null).pop(); if (v!=null) window._compValores.ema100 = { cor: '#FFFFFF', valor: fmtN(v) }; }
         if (_indState.ema200 && !_indOculto.ema200) { desenharLinha(ema200, '#F5A623', 1.5); const v = ema200.filter(v=>v!=null).pop(); if (v!=null) window._compValores.ema200 = { cor: '#F5A623', valor: fmtN(v) }; }
+
+        // ── CVD + Delta sobrepostos no Price Action ─────────────────
+        // Segunda camada em cima dos candles, própria régua (não a de preço)
+        // normalizada dentro do painel — CVD (acumulado) e Delta (por candle)
+        // proporcionais entre si mesmo com escalas brutas bem diferentes.
+        // Usa exatamente o período visível na tela agora (mesmo array
+        // `candles` dos candles desenhados, respeitando timeframe/zoom
+        // atuais) — CVD reseta no primeiro candle visível, não numa janela
+        // fixa de dias (isso é o "Dias" do histograma, coisa separada).
+        if (_indState.cvdPA && !_indOculto.cvdPA) {
+            const msPorCandlePA = (_grFootprintAtivo && typeof grFootprintMsPorCandle === 'function') ? grFootprintMsPorCandle() : null;
+            if (msPorCandlePA && _grFootprintCandlesRaw && candles.length) {
+                const deltaVals = [], cvdVals = [];
+                let acumuladoPA = 0;
+                candles.forEach(c => {
+                    let dc = 0;
+                    const fim = c.t + msPorCandlePA;
+                    for (const raw of _grFootprintCandlesRaw) {
+                        if (raw.ts < c.t || raw.ts >= fim) continue;
+                        (raw.niveis || []).forEach(n => { dc += (n.c - n.v); });
+                    }
+                    deltaVals.push(dc);
+                    acumuladoPA += dc;
+                    cvdVals.push(acumuladoPA);
+                });
+
+                const maxAbsDelta = Math.max(...deltaVals.map(Math.abs), 0.001);
+                const maxAbsCvd = Math.max(...cvdVals.map(Math.abs), 0.001);
+                const zeroYpa = PAD.top + chartH / 2;
+                const escalaDelta = (chartH * 0.38) / maxAbsDelta;
+                const escalaCvd = (chartH * 0.38) / maxAbsCvd;
+                const xDoIdx = i => PAD.left + (i / totalSlots) * chartW + cW / 2;
+
+                // CVD — linha grossa de referência (a tendência do fluxo)
+                ctx.lineWidth = 2.2;
+                for (let i = 0; i < cvdVals.length - 1; i++) {
+                    ctx.strokeStyle = cvdVals[i] >= 0 ? 'rgba(38,166,154,0.9)' : 'rgba(239,83,80,0.9)';
+                    ctx.beginPath();
+                    ctx.moveTo(xDoIdx(i), zeroYpa - cvdVals[i] * escalaCvd);
+                    ctx.lineTo(xDoIdx(i + 1), zeroYpa - cvdVals[i + 1] * escalaCvd);
+                    ctx.stroke();
+                }
+
+                // Delta — linha fina por cima (o pulso candle a candle)
+                ctx.lineWidth = 1;
+                for (let i = 0; i < deltaVals.length - 1; i++) {
+                    ctx.strokeStyle = deltaVals[i] >= 0 ? 'rgba(66,165,245,0.85)' : 'rgba(255,183,77,0.85)';
+                    ctx.beginPath();
+                    ctx.moveTo(xDoIdx(i), zeroYpa - deltaVals[i] * escalaDelta);
+                    ctx.lineTo(xDoIdx(i + 1), zeroYpa - deltaVals[i + 1] * escalaDelta);
+                    ctx.stroke();
+                }
+
+                ctx.font = 'bold 10px -apple-system';
+                ctx.textAlign = 'left';
+                ctx.fillStyle = '#26A69A';
+                ctx.fillText('CVD', PAD.left + 4, PAD.top + 14);
+                ctx.fillStyle = '#42A5F5';
+                ctx.fillText('Delta', PAD.left + 32, PAD.top + 14);
+
+                window._cvdPaAtual = cvdVals[cvdVals.length - 1];
+                window._deltaPaAtual = deltaVals[deltaVals.length - 1];
+            }
+        }
 
         // ── EMA 21 Diário (MTF) ───────────────────────────────────────
         if (_indState.ema21d && !_indOculto.ema21d && _grCandlesD.length >= 21) {
@@ -8401,6 +8467,8 @@ const _indState = {
     srRes:     true,   // Zonas de resistência automáticas — idem
     chandelier: false, // Chandelier Exit
     subInd:    'vd',
+    cvdPA:     false, // CVD + Delta sobrepostos no painel de preço (segunda camada, em cima dos candles)
+
 
     fib:       false,
     trend:     false,
