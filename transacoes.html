@@ -4550,51 +4550,78 @@ function grDrawCandles(candles, emptyRight) {
         // Segunda camada em cima dos candles, própria régua (não a de preço)
         // normalizada dentro do painel — CVD (acumulado) e Delta (por candle)
         // proporcionais entre si mesmo com escalas brutas bem diferentes.
-        // Usa exatamente o período visível na tela agora (mesmo array
-        // `candles` dos candles desenhados, respeitando timeframe/zoom
-        // atuais) — CVD reseta no primeiro candle visível, não numa janela
-        // fixa de dias (isso é o "Dias" do histograma, coisa separada).
+        // Janela de acumulação = o "Dias" configurável pelo usuário no botão
+        // do histograma (_grFootprintLookbackDias) — mesma janela do painel
+        // CVD isolado. NÃO reseta ao rolar/dar zoom na tela: só quando o
+        // acumulado sai da janela de dias configurada.
         if (_indState.cvdPA && !_indOculto.cvdPA) {
             const msPorCandlePA = (_grFootprintAtivo && typeof grFootprintMsPorCandle === 'function') ? grFootprintMsPorCandle() : null;
-            if (msPorCandlePA && _grFootprintCandlesRaw && candles.length) {
-                const deltaVals = [], cvdVals = [];
+            if (msPorCandlePA && _grFootprintCandlesRaw) {
+                const janelaMsPA = (_grFootprintLookbackDias || 7) * 24 * 60 * 60 * 1000;
+                const inicioJanelaPA = Date.now() - janelaMsPA;
+
+                const cvdAllPA = new Array(_grAllCandles.length).fill(null);
+                const deltaAllPA = new Array(_grAllCandles.length).fill(null);
                 let acumuladoPA = 0;
-                candles.forEach(c => {
+                for (let i = 0; i < _grAllCandles.length; i++) {
+                    const c = _grAllCandles[i];
+                    if (c.t < inicioJanelaPA) continue; // fora da janela — ainda não começou a acumular
                     let dc = 0;
                     const fim = c.t + msPorCandlePA;
                     for (const raw of _grFootprintCandlesRaw) {
                         if (raw.ts < c.t || raw.ts >= fim) continue;
                         (raw.niveis || []).forEach(n => { dc += (n.c - n.v); });
                     }
-                    deltaVals.push(dc);
                     acumuladoPA += dc;
-                    cvdVals.push(acumuladoPA);
-                });
+                    cvdAllPA[i] = acumuladoPA;
+                    deltaAllPA[i] = dc;
+                }
 
-                const maxAbsDelta = Math.max(...deltaVals.map(Math.abs), 0.001);
-                const maxAbsCvd = Math.max(...cvdVals.map(Math.abs), 0.001);
+                const cvdVals = [], deltaVals = [];
+                for (let i = 0; i < visible; i++) {
+                    const idx = startIdx + i;
+                    cvdVals.push(idx >= 0 && idx < cvdAllPA.length ? cvdAllPA[idx] : null);
+                    deltaVals.push(idx >= 0 && idx < deltaAllPA.length ? deltaAllPA[idx] : null);
+                }
+
+                const cvdValidos = cvdVals.filter(v => v != null).map(Math.abs);
+                const deltaValidos = deltaVals.filter(v => v != null).map(Math.abs);
+                const maxAbsCvd = Math.max(...cvdValidos, 0.001);
+                const maxAbsDelta = Math.max(...deltaValidos, 0.001);
                 const zeroYpa = PAD.top + chartH / 2;
-                const escalaDelta = (chartH * 0.38) / maxAbsDelta;
                 const escalaCvd = (chartH * 0.38) / maxAbsCvd;
+                const escalaDelta = (chartH * 0.38) / maxAbsDelta;
                 const xDoIdx = i => PAD.left + (i / totalSlots) * chartW + cW / 2;
 
-                // CVD — linha grossa de referência (a tendência do fluxo)
+                // CVD — linha grossa de referência, cor única, suavizada (mesma
+                // técnica de curva por ponto médio usada na Absorção/CVD painel)
+                ctx.strokeStyle = '#26A69A';
                 ctx.lineWidth = 2.2;
+                ctx.lineJoin = 'round';
                 for (let i = 0; i < cvdVals.length - 1; i++) {
-                    ctx.strokeStyle = cvdVals[i] >= 0 ? 'rgba(38,166,154,0.9)' : 'rgba(239,83,80,0.9)';
+                    if (cvdVals[i] == null || cvdVals[i + 1] == null) continue;
+                    const x0 = xDoIdx(i), y0 = zeroYpa - cvdVals[i] * escalaCvd;
+                    const x1 = xDoIdx(i + 1), y1 = zeroYpa - cvdVals[i + 1] * escalaCvd;
+                    const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
                     ctx.beginPath();
-                    ctx.moveTo(xDoIdx(i), zeroYpa - cvdVals[i] * escalaCvd);
-                    ctx.lineTo(xDoIdx(i + 1), zeroYpa - cvdVals[i + 1] * escalaCvd);
+                    ctx.moveTo(x0, y0);
+                    ctx.quadraticCurveTo(x0, y0, mx, my);
+                    ctx.lineTo(x1, y1);
                     ctx.stroke();
                 }
 
-                // Delta — linha fina por cima (o pulso candle a candle)
-                ctx.lineWidth = 1;
+                // Delta — linha fina por cima, cor única, suavizada
+                ctx.strokeStyle = '#1565C0';
+                ctx.lineWidth = 1.2;
                 for (let i = 0; i < deltaVals.length - 1; i++) {
-                    ctx.strokeStyle = deltaVals[i] >= 0 ? 'rgba(66,165,245,0.85)' : 'rgba(255,183,77,0.85)';
+                    if (deltaVals[i] == null || deltaVals[i + 1] == null) continue;
+                    const x0 = xDoIdx(i), y0 = zeroYpa - deltaVals[i] * escalaDelta;
+                    const x1 = xDoIdx(i + 1), y1 = zeroYpa - deltaVals[i + 1] * escalaDelta;
+                    const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
                     ctx.beginPath();
-                    ctx.moveTo(xDoIdx(i), zeroYpa - deltaVals[i] * escalaDelta);
-                    ctx.lineTo(xDoIdx(i + 1), zeroYpa - deltaVals[i + 1] * escalaDelta);
+                    ctx.moveTo(x0, y0);
+                    ctx.quadraticCurveTo(x0, y0, mx, my);
+                    ctx.lineTo(x1, y1);
                     ctx.stroke();
                 }
 
@@ -4602,7 +4629,7 @@ function grDrawCandles(candles, emptyRight) {
                 ctx.textAlign = 'left';
                 ctx.fillStyle = '#26A69A';
                 ctx.fillText('CVD', PAD.left + 4, PAD.top + 14);
-                ctx.fillStyle = '#42A5F5';
+                ctx.fillStyle = '#1565C0';
                 ctx.fillText('Delta', PAD.left + 32, PAD.top + 14);
 
                 window._cvdPaAtual = cvdVals[cvdVals.length - 1];
