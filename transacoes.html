@@ -363,6 +363,7 @@ input[type=range]::-webkit-slider-runnable-track{border-radius:100px;}
 .cv-ind-btn.macd.active{color:#FF6B9D;background:linear-gradient(180deg,#2e0d1a 0%,#1e0810 100%);}
 .cv-ind-btn.vd.active{color:#FFD54F;background:linear-gradient(180deg,#2e2400 0%,#1e1800 100%);}
 .cv-ind-btn.footprint.active{color:#FFA726;background:linear-gradient(180deg,#2e2100 0%,#1e1500 100%);}
+.cv-ind-btn.absorcao.active{color:#FFC107;background:linear-gradient(180deg,#2e2400 0%,#1e1800 100%);}
 .cv-ind-btn.ichimoku.active{color:#66BB6A;background:linear-gradient(180deg,#122e15 0%,#0a1e0c 100%);}
 
 /* Submenu médias */
@@ -1285,6 +1286,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
 <span class="btn-sigla">Sto</span><span class="btn-nome">Estocástico</span></button>
       <button class="cv-ind-btn topos" id="cv-ind-topos" onclick="cvToggleSubInd('topos')">
 <span class="btn-sigla">⛰️</span><span class="btn-nome">Topos</span></button>
+      <button class="cv-ind-btn absorcao" id="cv-ind-absorcao" onclick="cvToggleSubInd('absorcao')"><span class="btn-sigla">Abs</span><span class="btn-nome">Absorção</span></button>
       <button class="cv-ind-btn liq" id="cv-ind-liq" onclick="cvToggleLiq()"><span class="btn-sigla">Liq</span><span class="btn-nome">Liquidações</span></button>
       <div style="position:relative;width:100%;">
         <div class="cv-fig-menu" id="cv-fig-menu"></div>
@@ -3548,6 +3550,45 @@ window._grCrosshairAbsCache = { t: null, acimaDaMedia: null }; // cache do vered
 // candlestick — separado da cor da borda (que é direção do preço). Varredura
 // única (dois ponteiros, candles e histórico bruto já vêm ordenados por
 // tempo), com cache pra não recalcular a cada frame sem necessidade.
+// Alturas da pilha de painéis abaixo do price action. De baixo pra cima:
+// painel inferior existente (subInd: Absorção, VD, RSI...) e, ACIMA dele, o
+// painel Delta/Total (só existe com o Fluxo ligado e o footprint carregado).
+function grAlturasPaineis(H) {
+    const sub = (_indState.subInd && !_indOculto.painel) ? Math.floor(H * 0.28) : 0;
+    const dt = (_grFootprintAtivo && _grFootprintCandlesRaw) ? Math.max(40, Math.floor(H * 0.09)) : 0;
+    return { sub, dt, total: sub + dt };
+}
+
+// Delta (compra-venda) e Total (compra+venda) por candle EXIBIDO, somando o
+// footprint bruto (R2) dentro da janela de cada candle. Mesma varredura de
+// dois ponteiros do delta por candle. Só guarda candles que têm dado.
+let _grDtPorCandleCache = { key: null, mapa: null };
+function grObterDeltaTotalPorCandle(candles) {
+    if (!_grFootprintAtivo || !_grFootprintCandlesRaw || candles.length === 0) return null;
+    const raw = _grFootprintCandlesRaw;
+    const rawUlt = raw.length ? raw[raw.length - 1].ts : 0;
+    const key = candles.length + '_' + candles[0].t + '_' + candles[candles.length - 1].t + '_' + raw.length + '_' + rawUlt;
+    if (_grDtPorCandleCache.key === key) return _grDtPorCandleCache.mapa;
+
+    const msPorCandle = grFootprintMsPorCandle();
+    const mapa = new Map();
+    let idx = 0;
+    for (let i = 0; i < candles.length; i++) {
+        const de = candles[i].t;
+        const ate = de + msPorCandle;
+        while (idx < raw.length && raw[idx].ts < de) idx++;
+        let j = idx, compra = 0, venda = 0, achou = false;
+        while (j < raw.length && raw[j].ts < ate) {
+            (raw[j].niveis || []).forEach(n => { compra += (n.c || 0); venda += (n.v || 0); });
+            achou = true;
+            j++;
+        }
+        if (achou) mapa.set(candles[i].t, { delta: compra - venda, total: compra + venda });
+    }
+    _grDtPorCandleCache = { key, mapa };
+    return mapa;
+}
+
 let _grDeltaPorCandleCache = { key: null, mapa: null };
 function grObterDeltaPorCandle(candles) {
     if (!_grFootprintAtivo || !_grFootprintCandlesRaw || candles.length === 0) return null;
@@ -4046,20 +4087,6 @@ function grDesenharMiniLadderPA(ctx, xCenter, cW, candle, toY, yMinBound, yMaxBo
         ctx.beginPath(); ctx.moveTo(xCenter, bodyTop); ctx.lineTo(xCenter, bodyTop + bodyH); ctx.stroke();
     }
 
-    // Rodapé Delta/Total — logo abaixo da régua, mesmo formato compacto.
-    // compraTotal/vendaTotal/deltaVal já calculados lá em cima (precisavam
-    // existir antes, pra colorir o corpo pela divergência).
-    const totalVal = compraTotal + vendaTotal;
-    if (cW >= 14) { // rodapé só cabe legível se o candle tiver alguma largura
-        const yDelta = emCima ? miniTop - 9 : miniBottom + 9;
-        const yTotal = emCima ? miniTop - 18 : miniBottom + 18;
-        ctx.font = 'bold 7px -apple-system';
-        ctx.textAlign = 'center';
-        ctx.fillStyle = deltaVal >= 0 ? '#26A69A' : '#EF5350';
-        ctx.fillText((deltaVal >= 0 ? '+' : '') + fmtMiniVol(deltaVal), xCenter, yDelta);
-        ctx.fillStyle = '#000000';
-        ctx.fillText(fmtMiniVol(totalVal), xCenter, yTotal);
-    }
     return true;
 }
 let _grDrone = false;
@@ -4378,7 +4405,8 @@ function grDrawCandles(candles, emptyRight) {
             ctxVA.clearRect(0, 0, W, H);
         }
         const PAD = { ..._grPAD };
-        if (_indState.subInd && !_indOculto.painel) PAD.bottom = Math.floor(H * 0.28) + _grPAD.bottom;
+        const _altPan = grAlturasPaineis(H);
+        if (_altPan.total > 0) PAD.bottom = _altPan.total + _grPAD.bottom;
 
         let chartW = W - PAD.left - PAD.right;
         const chartH = H - PAD.top - PAD.bottom;
@@ -6350,6 +6378,44 @@ if (fibsParaDesenhar.length > 0) {
         ctx.textAlign = 'right';
         ctx.fillText(window._grFonteCandles || 'Binance', W - PAD.right - 2, H - PAD.bottom + 22);
 
+        // ── Painel Delta/Total (Fluxo) — topo da pilha, ACIMA do painel inferior ──
+        if (_altPan.dt > 0) {
+            const dtH = _altPan.dt;
+            const dtY = H - _altPan.sub - dtH;
+            ctx.fillStyle = '#0E1117';
+            ctx.fillRect(0, dtY, W, dtH);
+            ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([]);
+            ctx.beginPath(); ctx.moveTo(0, dtY); ctx.lineTo(W, dtY); ctx.stroke();
+
+            const yDeltaTxt = dtY + Math.round(dtH * 0.40);
+            const yTotalTxt = dtY + Math.round(dtH * 0.80);
+            ctx.font = 'bold 9px -apple-system';
+            ctx.textAlign = 'left';
+            ctx.fillStyle = '#FFD54F'; ctx.fillText('Delta', 4, yDeltaTxt);
+            ctx.fillStyle = '#B0B3B8'; ctx.fillText('Total', 4, yTotalTxt);
+            const margemRotulo = 4 + Math.max(ctx.measureText('Delta').width, ctx.measureText('Total').width) + 4;
+
+            const dtMapa = grObterDeltaTotalPorCandle(_grAllCandles);
+            if (dtMapa) {
+                const slotW = chartW / Math.max(totalSlots, 1);
+                const larguraNum = ctx.measureText('+99,99k').width + 4;
+                const passo = Math.max(1, Math.ceil(larguraNum / slotW)); // se não cabe em todo candle, pula de N em N (sempre inclui o último)
+                ctx.textAlign = 'center';
+                for (let i = candles.length - 1; i >= 0; i -= passo) {
+                    const dt = dtMapa.get(candles[i].t);
+                    if (!dt) continue;
+                    const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
+                    if (x - larguraNum / 2 < margemRotulo) continue; // não invade os rótulos da esquerda
+                    ctx.fillStyle = dt.delta >= 0 ? '#26A69A' : '#EF5350';
+                    ctx.fillText((dt.delta >= 0 ? '+' : '') + fmtVolK(dt.delta), x, yDeltaTxt);
+                    ctx.fillStyle = '#E0E0E0';
+                    ctx.fillText(fmtVolK(dt.total), x, yTotalTxt);
+                }
+            }
+        }
+
         // ── Painel inferior RSI ou Volume ─────────────────────────────
         if (_indState.subInd && !_indOculto.painel) {
         
@@ -7987,8 +8053,9 @@ function grDrawChartWithCrosshair(yInterno) {
     // O painel (RSI/Absorção/etc) tem fundo escuro FIXO mesmo no tema claro, então
     // a linha precisa trocar pra branca só nesse trecho — usando corCrosshair (que
     // no tema claro é escura) ela some contra o fundo escuro do painel.
-    const painelAtivo = _indState.subInd && !_indOculto.painel;
-    const painelTopoY = painelAtivo ? H - (Math.floor(H * 0.28) + _grPAD.bottom) : H;
+    const _altPainel = grAlturasPaineis(H);
+    const painelAtivo = _altPainel.total > 0;
+    const painelTopoY = painelAtivo ? H - (_altPainel.total + _grPAD.bottom) : H;
 
     ctx.beginPath();
     ctx.moveTo(_grCrosshairX, _grPAD.top);
@@ -9421,6 +9488,7 @@ const _todosComponentes = [
     { key: 'topos',      label: 'Topos (Stop)',     tipo: 1 },
     { key: 'liq',        label: 'Liquidações',      tipo: 1 },
     { key: 'footprint',  label: 'Footprint',        tipo: 1 },
+    { key: 'absorcao',   label: 'Absorção',         tipo: 1 },
     { key: 'cvdPA',      label: 'CVD Acumulado',    tipo: 1 },
     { key: 'minimapa',   label: 'Mapa Geral',       tipo: 1 },
     { key: 'reguaS',     label: 'Régua S',          tipo: 2, tabela: 'trades' },
@@ -9640,6 +9708,7 @@ function cvAtivarComponente(key) {
         case 'obv':       if (_indState.subInd !== 'obv')   cvToggleSubInd('obv');   break;
         case 'stoch':     if (_indState.subInd !== 'stoch') cvToggleSubInd('stoch'); break;
         case 'topos':     if (_indState.subInd !== 'topos') cvToggleSubInd('topos'); break;
+        case 'absorcao':  if (_indState.subInd !== 'absorcao') cvToggleSubInd('absorcao'); break;
         case 'cvdPA':     if (!_indState.cvdPA)     cvToggleInd('cvdPA');    break;
     }
 }
@@ -9671,6 +9740,7 @@ function cvDesativarComponente(key) {
         case 'obv':       if (_indState.subInd === 'obv')   cvToggleSubInd('obv');   break;
         case 'stoch':     if (_indState.subInd === 'stoch') cvToggleSubInd('stoch'); break;
         case 'topos':     if (_indState.subInd === 'topos') cvToggleSubInd('topos'); break;
+        case 'absorcao':  if (_indState.subInd === 'absorcao') cvToggleSubInd('absorcao'); break;
         case 'cvdPA':     if (_indState.cvdPA)      cvToggleInd('cvdPA');    break;
     }
 }
@@ -9941,18 +10011,6 @@ function cvDesenharIndSheet(key) {
     }
 }
 
-// Liga/desliga o painel de Absorção junto com o Footprint — mesmo contexto,
-// sem precisar de botão próprio. Desliga qualquer outro subInd ativo (vd/rsi/etc).
-function cvSetPainelAbsorcao(ativar) {
-    _indOculto.painel = false;
-    _indState.subInd = ativar ? 'absorcao' : null;
-    ['vd','rsi','vol','macd','atr','obv','stoch','topos'].forEach(k => {
-        const el = document.getElementById('cv-ind-' + k);
-        if (el) el.classList.remove('active');
-    });
-    grDrawChart();
-}
-
 function cvToggleSubInd(key) {
     _indOculto.painel = false;
 
@@ -9966,6 +10024,7 @@ function cvToggleSubInd(key) {
     document.getElementById('cv-ind-obv').classList.toggle('active', _indState.subInd === 'obv');
     document.getElementById('cv-ind-stoch').classList.toggle('active', _indState.subInd === 'stoch');
     document.getElementById('cv-ind-topos').classList.toggle('active', _indState.subInd === 'topos');
+    document.getElementById('cv-ind-absorcao').classList.toggle('active', _indState.subInd === 'absorcao');
     if (document.getElementById('cv-ind-liq')) document.getElementById('cv-ind-liq').classList.remove('active');
     // Fechar menu EMA se aberto
     document.getElementById('cv-med-menu').classList.remove('active');
@@ -10060,7 +10119,7 @@ async function cvToggleLiq() {
     // Fecha painel inferior se aberto
     if (_indState.liq) {
         _indState.subInd = null;
-        document.querySelectorAll('.cv-ind-btn.rsi, .cv-ind-btn.vol, .cv-ind-btn.macd, .cv-ind-btn.atr, .cv-ind-btn.obv, .cv-ind-btn.stoch').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.cv-ind-btn.rsi, .cv-ind-btn.vol, .cv-ind-btn.macd, .cv-ind-btn.atr, .cv-ind-btn.obv, .cv-ind-btn.stoch, .cv-ind-btn.absorcao').forEach(b => b.classList.remove('active'));
     }
     if (_indState.liq && (Date.now() - _liqLastFetch > 60000 || !_liqData)) {
         await cvFetchLiquidacoes();
@@ -15400,6 +15459,8 @@ async function grFootprintAtualizarSeAtivo() {
         _grFootprintCandlesRaw.sort((a, b) => a.ts - b.ts);
 
         _grFootprintDisplayCache = null; // força o histograma principal recalcular com o dado novo
+        _grDtPorCandleCache = { key: null, mapa: null };
+        _grDeltaPorCandleCache = { key: null, mapa: null };
         // Limpa os caches da régua também — sem isso, o candle em formação
         // (o único cujo dado muda a cada 60s) ficava com o volume CONGELADO
         // do primeiro cálculo, nunca refletindo os trades novos que chegam.
@@ -15444,7 +15505,6 @@ async function grFootprintAtivar() {
         }
 
         _grFootprintAtivo = true;
-        cvSetPainelAbsorcao(true);
         _grFootprintCandlesRaw = flat;
         _grFootprintDiasCarregados = dias;
         _grFootprintUltimoRangeVisto = null;
@@ -15767,7 +15827,7 @@ function grFootprintPararOverlay() {
     if (overlay) overlay.remove();
     const btn = document.getElementById('cv-ind-footprint');
     if (btn) btn.classList.remove('active');
-    if (_indState.subInd === 'absorcao') cvSetPainelAbsorcao(false);
+    grDrawChart(); // redesenha sem o painel Delta/Total
 }
 
 // Desenha as barras na MESMA escala de preço do eixo Y principal (grLineY, que usa
