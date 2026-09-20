@@ -1556,6 +1556,10 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="3"/><line x1="12" y1="22" x2="12" y2="8"/><path d="M5 12H2a10 10 0 0 0 20 0h-3"/></svg>
       <span class="cv-menu-item-label" id="cv-menu-vp-label">Volume Profile: sem âncora</span>
     </button>
+    <button class="cv-menu-item cv-menu-subitem" onclick="cvFecharMenu();grYFatorResetar();">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="3" x2="12" y2="21"/><polyline points="8 7 12 3 16 7"/><polyline points="8 17 12 21 16 17"/></svg>
+      <span class="cv-menu-item-label" id="cv-menu-yfator-label">Escala vertical: ×1,00 (automática)</span>
+    </button>
     <button class="cv-menu-item cv-menu-subitem" onclick="cvFecharMenu();grAjustarVelocidade();">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 14l4-4"/><path d="M3.3 19a10 10 0 1 1 17.4 0"/></svg>
       <span class="cv-menu-item-label">Velocidade: scroll e zoom</span>
@@ -3077,6 +3081,9 @@ function cvSetTf(tf) {
     _grTf = tf;
     _grOffset = 999999;
     _grAllCandles = [];
+    // A escala vertical era calibrada UMA vez por sessão, no 1º timeframe aberto, e herdada por todos os outros (candles
+    // achatados nos pequenos, compridos nos grandes). Agora recalibra a cada timeframe (o fator manual vem por cima).
+    _grYAxisCenter = null; _grPxPerDollarReferencia = null; _grZoomReferencia = null;
     _wsLastDraw = Date.now();
     _cvMinimapChaveCache = ''; _cvMinimapScrollIdx = null; _cvMinimapUltimoRangeKey = null; // tf mudou → minimapa precisa remapear/recarregar
 
@@ -3787,6 +3794,25 @@ let _grYAxisPxPerDollar = null; // tick fixo — pixels por dólar (DERIVADO, n�
 let _grZoomReferencia = null;
 let _grPxPerDollarReferencia = null;
 
+// ── Escala vertical MANUAL (pinça no eixo Y). A escala automática (calibrada pelo range dos candles visíveis e amarrada ao
+// zoom horizontal) deixava os candles de tempo pequeno achatados e os de tempo grande (semanal) compridos demais. A
+// pinça de dois dedos sobre a faixa de preços (à esquerda) multiplica só a ALTURA (pixels por dólar) por um fator, sem
+// mexer na largura. O fator vale por timeframe, fica salvo no aparelho e continua valendo quando o zoom horizontal muda
+// (é multiplicado por cima da escala automática).
+let _grYFator = 1;
+function _grYFatorKey() { return 'gr_yfator_' + _grTf + (_grTf === 'custom' ? '_' + _grTfCustomUnit + _grTfCustomAmount : ''); }
+function grYFatorCarregar() {
+    let v = NaN;
+    try { v = parseFloat(localStorage.getItem(_grYFatorKey())); } catch (err) {}
+    _grYFator = (v >= 0.1 && v <= 25) ? v : 1;
+    if (typeof grAmbienteAtualizarRotulos === 'function') grAmbienteAtualizarRotulos();
+}
+function grYFatorSalvar() {
+    try { localStorage.setItem(_grYFatorKey(), String(_grYFator)); } catch (err) {}
+    if (typeof grAmbienteAtualizarRotulos === 'function') grAmbienteAtualizarRotulos();
+}
+function grYFatorResetar() { _grYFator = 1; grYFatorSalvar(); grAtualizarPxPerDollar(); grDrawChart(); }
+
 function grCalibrarEixoYFixo(chartH) {
     if (_grYAxisCenter != null && _grPxPerDollarReferencia != null) return;
     const total = _grAllCandles.length;
@@ -3800,7 +3826,7 @@ function grCalibrarEixoYFixo(chartH) {
     const range = Math.max(...hs) - Math.min(...ls) || 1;
     _grZoomReferencia = _grZoom;
     _grPxPerDollarReferencia = chartH / (range * 2.6); // era 1.3 — candles bem mais baixos por padrão
-    _grYAxisPxPerDollar = _grPxPerDollarReferencia;
+    _grYAxisPxPerDollar = _grPxPerDollarReferencia * _grYFator;
 }
 
 // Recalcula pxPerDollar do ZERO a partir do zoom atual e da referência fixa —
@@ -3809,7 +3835,7 @@ function grCalibrarEixoYFixo(chartH) {
 // acúmulo de erro possível.
 function grAtualizarPxPerDollar() {
     if (_grZoomReferencia == null || _grPxPerDollarReferencia == null) return;
-    _grYAxisPxPerDollar = _grPxPerDollarReferencia * (_grZoomReferencia / Math.max(1, _grZoom));
+    _grYAxisPxPerDollar = _grPxPerDollarReferencia * (_grZoomReferencia / Math.max(1, _grZoom)) * _grYFator;
 }
 
 // ── Fonte ÚNICA de verdade pro zoom efetivo (quantos candles cabem na tela).
@@ -3905,7 +3931,7 @@ grFootprintSkinAtualizarRotulo();
 
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
-const APP_VERSAO = '20/09 15:55 · 15372 linhas';
+const APP_VERSAO = '20/09 16:33 · 15446 linhas';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) el.textContent = 'Versão ' + APP_VERSAO;
@@ -4515,6 +4541,7 @@ async function grRenderChart() {
             grValueAreaCarregarAncora();
             grFaixaCarregar(); // idem pra marcação de faixa (retângulo do Ponto 1/2)
             grVpCarregarAncora(); // idem pro Volume Profile ancorado
+            grYFatorCarregar();   // fator manual da escala vertical deste timeframe
 
             // Candles diários/semanais (EMA21D/21S e SMAs semanais) NÃO bloqueiam mais o primeiro
             // desenho: carregam em segundo plano e o gráfico redesenha quando chegam. Não dependem do
@@ -7226,6 +7253,11 @@ function grInitTouch() {
             // atual, pra não carregar deriva de qualquer mudança de zoom que
             // tenha acontecido fora da pinça entre um gesto e outro.
             _grZoomAcumulado = _grZoom;
+            // Pinça no EIXO Y: os dois dedos começam na faixa de preços (esquerda do gráfico) → só a altura muda
+            const rectP = canvas.getBoundingClientRect(), escP = grLW(canvas) / rectP.width;
+            const xa = (e.touches[0].clientX - rectP.left) * escP, xb = (e.touches[1].clientX - rectP.left) * escP;
+            const limiteEixo = (window._grPADLeft != null ? window._grPADLeft : 45) + 10;
+            window._grPincaY = (xa < limiteEixo && xb < limiteEixo) ? { lastDist: Math.abs(e.touches[0].clientY - e.touches[1].clientY) } : null;
         }
         e.preventDefault();
     }, { passive: false });
@@ -7410,6 +7442,28 @@ function grInitTouch() {
                 }
             }
         } else if (e.touches.length === 2) {
+            if (window._grPincaY) {
+                // Pinça no eixo Y: multiplica o fator da escala vertical; o preço entre os dedos fica parado; a largura não muda.
+                const distY = Math.abs(e.touches[0].clientY - e.touches[1].clientY);
+                if (window._grPincaY.lastDist > 12 && distY > 12 && _grYAxisPxPerDollar) {
+                    const ratioY = 1 + (distY / window._grPincaY.lastDist - 1) * GR_VEL_ZOOM;
+                    const rectY = canvas.getBoundingClientRect();
+                    const midY = (((e.touches[0].clientY + e.touches[1].clientY) / 2) - rectY.top) * (grLH(canvas) / rectY.height);
+                    const p0 = grToPrice(midY);
+                    const novoFator = Math.max(0.1, Math.min(25, _grYFator * ratioY));
+                    if (novoFator !== _grYFator && p0 > 0) {
+                        _grYFator = novoFator;
+                        grAtualizarPxPerDollar();
+                        // recentra pra o preço p0 continuar exatamente na mesma altura da tela
+                        _grYAxisCenter = p0 + _grChartH / (2 * _grYAxisPxPerDollar) - (_grPAD.top + _grChartH - midY) / _grYAxisPxPerDollar;
+                    }
+                }
+                window._grPincaY.lastDist = distY;
+                window._grManualPanTs = Date.now();
+                grAgendarDesenho();
+                e.preventDefault();
+                return;
+            }
             const dist = Math.hypot(
                 e.touches[0].clientX - e.touches[1].clientX,
                 e.touches[0].clientY - e.touches[1].clientY
@@ -7465,6 +7519,7 @@ function grInitTouch() {
     let _lastTapTarget = null;
 
     canvas.addEventListener('touchend', e => {
+    if (window._grPincaY && e.touches.length < 2) { window._grPincaY = null; grYFatorSalvar(); } // fim da pinça no eixo Y: guarda o fator
     isDragging = false;
     if (_medidaDrawing) {
         _medidaDrawing = false;
@@ -7704,6 +7759,15 @@ function grCrosshairZonaDeltaPreco(preco, pctZona) {
     const vp = _grVpAncoraTs != null ? grVpObterMapa() : null;
     const mapa = (vp && vp.mapa.size > 0) ? vp.mapa : (_grFootprintBins ? _grFootprintBins.mapaBase : null);
     if (!mapa) return null;
+    // Volume Profile em modo ATR: o delta é o da LINHA AGREGADA inteira em que o preço está (a mesma barra do perfil,
+    // com os sub-níveis de $10 já somados), e não o de uma zona de ±0,15% — assim não é preciso somar os sub-níveis na mão.
+    if (vp && vp.mapa.size > 0 && GR_VP_LINHAS_MODO === 'atr' && _grMaxP > _grMinP) {
+        const tick = grVpTick(_grChartH / (_grMaxP - _grMinP));
+        const centro = Math.round(preco / tick) * tick;
+        const linha = grVpAgrupar(vp, tick).mapa.get(centro);
+        const compra = linha ? linha.c : 0, venda = linha ? linha.v : 0;
+        return { compra, venda, delta: compra - venda, temVolume: (compra + venda) > 0, precoBaixo: centro - tick / 2, precoAlto: centro + tick / 2, agregado: true, centro, tick };
+    }
     const bucket = Math.round(preco / 20);
     const cache = window._grCrosshairZonaPrecoCache;
     if (cache && cache.bucket === bucket && cache.mapa === mapa) return cache;
@@ -7852,7 +7916,7 @@ function grDrawChartWithCrosshair(yInterno) {
         // Linhas sempre visíveis
         const linhas = [];
         if (zonaCrosshair) {
-            linhas.push({ label: `ΔV Zona ${fmtN(preco)}`, val: zonaCrosshair.temVolume ? (zonaCrosshair.delta >= 0 ? '+' : '') + fmtBtc2(zonaCrosshair.delta) : '—', color: !zonaCrosshair.temVolume ? '#8E8E93' : (zonaCrosshair.delta >= 0 ? '#26A69A' : '#EF5350') });
+            linhas.push({ label: zonaCrosshair.agregado ? `ΔV Nível ${fmtN(zonaCrosshair.centro)}` : `ΔV Zona ${fmtN(preco)}`, val: zonaCrosshair.temVolume ? (zonaCrosshair.delta >= 0 ? '+' : '') + fmtBtc2(zonaCrosshair.delta) : '—', color: !zonaCrosshair.temVolume ? '#8E8E93' : (zonaCrosshair.delta >= 0 ? '#26A69A' : '#EF5350') });
         }
         // Linhas atrás do "Ver OHLC"
         const dtMapaJanela = _grFootprintAtivo ? grObterDeltaTotalPorCandle(_grAllCandles) : null;
@@ -9015,7 +9079,7 @@ function cvDesativarComponente(key) {
         case 'mm3s':      if (_indState.mm3s)      cvToggleMed('mm3s');      break;
         case 'chandelier': if (_indState.chandelier) cvToggleChandelier();   break;
         case 'bollinger': if (_indState.bollinger) cvToggleBol();            break;
-        case 'footprint': if (_grFootprintAtivo)   cvToggleFootprint();      break;
+        case 'footprint': if (_grFootprintAtivo && _grVpAncoraTs == null) cvToggleFootprint(); break; // com Volume Profile ancorado o Fluxo fica ligado
         case 'minimapa':  if (_cvMinimapAtivo)     cvToggleMinimapa();       break;
         case 'rsiLevels': if (_indState.rsiLevels)  cvToggleInd('rsiLevels'); break;
         case 'vol':       if (_indState.subInd === 'vol')   cvToggleSubInd('vol');   break;
@@ -13303,6 +13367,13 @@ function grVpCarregarAncora() {
     _grVpMapaCache = null; _grVpDadosChave = null;
     grAmbienteAtualizarRotulos();
     if (_grVpAncoraTs != null && _grFootprintAtivo) grVpGarantirDados();
+    // O perfil precisa dos dados do Fluxo, e o Fluxo volta DESLIGADO a cada recarga (a menos que seja "Fixo"): com uma âncora
+    // salva, liga o Fluxo sozinho — o perfil volta exatamente como você deixou.
+    if (_grVpAncoraTs != null && !_grFootprintAtivo && !window._grVpLigandoFluxo) {
+        window._grVpLigandoFluxo = true;
+        try { cvToggleFootprint(); } catch (err) {}
+        setTimeout(() => { window._grVpLigandoFluxo = false; }, 4000);
+    }
 }
 // Botão "Ancorar Volume Profile" da janela do crosshair. Toggle: tocar no MESMO candle já ancorado remove; tocar em
 // outro candle substitui (um perfil só).
@@ -13426,6 +13497,7 @@ function grAmbienteAtualizarRotulos() {
     set('cv-menu-fplinhas-label', 'Footprint: linhas ' + (FOOTPRINT_LINHAS_MODO === 'atr' ? 'ATR' : 'Auto (mais níveis)'));
     set('cv-menu-vplinhas-label', 'Volume Profile: linhas ' + (GR_VP_LINHAS_MODO === 'atr' ? 'ATR' : 'Auto (mais níveis)'));
     set('cv-menu-vpcomp-label', 'Volume Profile: comprimento das barras (' + Math.round(GR_VP_COMPRIMENTO_PCT) + '%)');
+    set('cv-menu-yfator-label', 'Escala vertical: ×' + _grYFator.toFixed(2).replace('.', ',') + (_grYFator === 1 ? ' (automática)' : ' — tocar para resetar'));
     set('cv-menu-vp-label', _grVpAncoraTs == null ? 'Volume Profile: sem âncora'
         : 'Remover Volume Profile (⚓ ' + grVpRotuloData(_grVpAncoraTs) + ')');
 }
@@ -13465,7 +13537,9 @@ function grFootprintDesenharOverlay() {
     const ctx = grPrepararCtx(overlay);
     ctx.clearRect(0, 0, W, H);
     // "Visível" desmarcado no gerenciador, botão "Barras" desligado ou sem âncora: continua calculando por baixo, só some.
-    if (_indOculto.footprint || !_grMostrarBarrasPA || _grVpAncoraTs == null) return;
+    // (não depende mais de _indOculto.footprint: essa trava vem de fábrica LIGADA — "histograma escondido por padrão", do
+    // histograma antigo à direita — e escondia o perfil a cada recarga. Vale só o botão "Barras" (salvo) e ter âncora.)
+    if (!_grMostrarBarrasPA || _grVpAncoraTs == null) return;
     if (typeof _grMinP === 'undefined' || typeof _grPAD === 'undefined' || !window._grChartW) return;
     if (_grMaxP === _grMinP) return; // gráfico ainda não renderizou escala válida
 
