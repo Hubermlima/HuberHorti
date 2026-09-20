@@ -3593,14 +3593,11 @@ function grComputarZoomEfetivo() {
     return _grZoom;
 }
 
-// ── Mini-régua de footprint no lugar do candle normal, direto no price
-// action. Ativa sozinha assim que o footprint (FX) tá ligado.
-window._grMiniLadderCache = window._grMiniLadderCache || new Map();
 // ── Tick de agrupamento do footprint, igual a fórmula nativa da
 // TradingView: tick = 0.2 × ATR(14) do timeframe atual. Substitui os
 // vários jeitos de calcular tick que existiam espalhados no código (cada
 // um inventando um valor diferente) por UM só, usado em todo lugar —
-// mini-régua, popup do crosshair, modal "Ver Footprint" e backfill avulso.
+// popup do crosshair e modal "Ver Footprint".
 // ATR calculado sobre os candles do timeframe ATUAL (_grAllCandles),
 // exatamente como a TradingView recalcula ao trocar de símbolo/TF.
 function grCalcularTickATR(periodo = 14) {
@@ -3621,174 +3618,203 @@ function grCalcularTickATR(periodo = 14) {
     return Math.max(1, Math.round(tickBruto / 5) * 5); // arredonda pra um valor "redondo", nunca zero
 }
 
-function grCalcularMiniLadder(candle, alturaDisponivelPx, rowHFixa, cW) {
-    const NIVEIS_MIN = 2, NIVEIS_MAX = 20;
-    // Banda de altura de linha aceitável — garante consistência visual ENTRE
-    // candles diferentes (sem isso, candle com pouco range em dólar ganhava
-    // linha grossa/em bloco, e candle com range grande ganhava linha fina/
-    // tracejada — mesmo lado a lado na tela).
-    const ROW_H_MIN = 4, ROW_H_MAX = 13;
-    const hi = candle.h, lo = candle.l;
-    const span = Math.max(hi - lo, 10);
-    const tickATR = grCalcularTickATR();
-    // Número de níveis agora é CONSEQUÊNCIA do tick fixo (candle com range
-    // maior naturalmente ganha mais linhas) — não mais um alvo escolhido
-    // primeiro. bucketsDisponiveis vira "quantos ticks ATR reais cabem
-    // nesse candle", mesma função de sempre (nunca inventa resolução falsa).
-    const bucketsDisponiveis = Math.max(NIVEIS_MIN, Math.round(span / tickATR));
-    let nivelCount = Math.max(NIVEIS_MIN, Math.min(Math.round(alturaDisponivelPx / rowHFixa), bucketsDisponiveis, NIVEIS_MAX));
-    let rowH = alturaDisponivelPx / nivelCount;
-    if (rowH < ROW_H_MIN) {
-        nivelCount = Math.max(NIVEIS_MIN, Math.floor(alturaDisponivelPx / ROW_H_MIN));
-        rowH = alturaDisponivelPx / nivelCount;
-    } else if (rowH > ROW_H_MAX) {
-        nivelCount = Math.min(bucketsDisponiveis, Math.max(NIVEIS_MIN, Math.ceil(alturaDisponivelPx / ROW_H_MAX)));
-        rowH = alturaDisponivelPx / nivelCount;
-    }
+// ── Footprint em CLUSTERS (estilo "Volume Clusters") direto no price action ──
+// Grade de preço ÚNICA pra todos os candles: as linhas alinham de um candle pro outro.
+// Cada linha é uma célula "bid x ask":
+//   bid = volume vendido a mercado (vendas agressivas batendo no bid)  → campo v dos dados
+//   ask = volume comprado a mercado (compras agressivas no ask)        → campo c dos dados
+// Cor: o lado dominante decide o matiz (bid > ask = vermelho, senão verde) e a SOMA bid+ask
+// decide a intensidade. A linha de maior soma do candle (POC) leva borda escura.
+// Número em azul negrito = desequilíbrio diagonal (ask contra o bid da linha de baixo; bid contra
+// o ask da linha de cima; as linhas extremas do candle não servem de parceiras).
+// O candle vira uma linha fina à esquerda do cluster, indo da abertura ao fechamento.
+window._grClusterCache = window._grClusterCache || new Map();
+const FOOTPRINT_IMBALANCE_RATIO = 3;        // desequilíbrio diagonal: 300%
+const FOOTPRINT_CLUSTER_CW_MIN = 5;         // candle mais estreito que isso volta pro candle normal
+const FOOTPRINT_TEXTO_CW_MIN = 20;          // largura mínima do candle pra tentar escrever "bid x ask"
+const FOOTPRINT_LINHA_MIN_PX = 9;           // altura mínima da linha quando há texto
+const FOOTPRINT_LINHA_MIN_PX_SEM_TEXTO = 5; // idem, só com cor (mapa de calor)
+const FOOTPRINT_COR_VERDE    = { base: [227, 241, 227], forte: [78, 159, 85] };
+const FOOTPRINT_COR_VERMELHO = { base: [252, 228, 228], forte: [232, 72, 63] };
 
-    const cacheKey = candle.t + '_' + nivelCount;
-    let cached = window._grMiniLadderCache.get(cacheKey);
-    if (!cached) {
-        const todos = grFootprintTodosOsCandlesBrutos();
-        const msPorCandle = grFootprintMsPorCandle();
-        const de = candle.t, ate = candle.t + msPorCandle;
-        const mapa = new Map();
-        for (const c of todos) {
-            if (c.ts < de || c.ts >= ate) continue;
-            (c.niveis || []).forEach(n => {
-                if (!mapa.has(n.p)) mapa.set(n.p, { c: 0, v: 0 });
-                const acc = mapa.get(n.p);
-                acc.c += n.c; acc.v += n.v;
-            });
-        }
-        const todosNiveis = Array.from(mapa.entries()).map(([p, v]) => ({ p, c: v.c, v: v.v }));
-        const tick = span / nivelCount;
-        const buckets = [];
-        for (let i = 0; i < nivelCount; i++) {
-            const bucketHi = hi - i * tick;
-            const bucketLo = hi - (i + 1) * tick;
-            buckets.push({ p: (bucketHi + bucketLo) / 2, c: 0, v: 0, total: 0 });
-        }
-        todosNiveis.forEach(n => {
-            let idx = Math.floor((hi - n.p) / tick);
-            idx = Math.max(0, Math.min(nivelCount - 1, idx));
-            buckets[idx].c += n.c;
-            buckets[idx].v += n.v;
-        });
-        buckets.forEach(b => { b.total = b.c + b.v; });
-        cached = { niveisPrecoDesc: buckets };
-        window._grMiniLadderCache.set(cacheKey, cached);
-        if (window._grMiniLadderCache.size > 500) {
-            window._grMiniLadderCache.delete(window._grMiniLadderCache.keys().next().value);
-        }
-    }
-    return { niveisPrecoDesc: cached.niveisPrecoDesc, rowH };
+// Altura de linha (em USD) = menor passo "redondo" (múltiplo de 10, a resolução dos dados)
+// que ainda deixa a linha com a altura mínima em pixels.
+function grFootprintTickDaGrade(pxPorUsd, minLinhaPx) {
+    const usdMin = minLinhaPx / Math.max(pxPorUsd, 1e-9);
+    const passos = [10, 20, 30, 40, 50, 60, 80, 100, 120, 150, 200, 250, 300, 400, 500, 600, 800, 1000, 1500, 2000, 2500, 3000, 4000, 5000, 10000];
+    for (const p of passos) if (p >= usdMin) return p;
+    return passos[passos.length - 1];
 }
 
-// Desenha a mini-régua no lugar do candle normal, centralizada em xCenter,
-// com a mesma largura cW que o candle já ocuparia. Retorna false se não tinha
-// dado de footprint pra esse candle (aí quem chamou deve desenhar o candle
-// normal como fallback).
-function grDesenharMiniLadderPA(ctx, xCenter, cW, candle, toY, yMinBound, yMaxBound, emCima = false) {
-    // Trava dentro da área real do gráfico — um candle com dado incompleto/
-    // ruim (h ou l fora do normal, ex: candle do minuto ainda sendo formado)
-    // não pode fazer a régua "explodir" pra fora da tela (era a causa da
-    // "espaguetificação": uma linha gigante, muito mais alta que as outras).
-    let yTop = Math.max(yMinBound, Math.min(yMaxBound, toY(candle.h)));
-    let yBottom = Math.max(yMinBound, Math.min(yMaxBound, toY(candle.l)));
-    if (yTop > yBottom) { const tmp = yTop; yTop = yBottom; yBottom = tmp; }
-    const alturaPx = Math.max(2, yBottom - yTop);
-    const ladder = grCalcularMiniLadder(candle, alturaPx, 7, cW);
-    const niveis = ladder.niveisPrecoDesc;
-    if (!niveis || niveis.length === 0) return false;
+// Linhas de um candle na grade de "tick" USD (do preço mais alto pro mais baixo), com POC,
+// delta e desequilíbrios. Cacheado por candle+tick; null se não há dado de footprint.
+function grFootprintClusterDoCandle(candle, tick, getTodos) {
+    const chave = candle.t + '_' + tick;
+    let cl = window._grClusterCache.get(chave);
+    if (cl !== undefined) return cl || null;
 
-    const nRows = niveis.length, rowH = ladder.rowH;
-    const miniTop = yTop, miniBottom = yTop + nRows * rowH;
-    const maxTotal = Math.max(...niveis.map(n => n.total), 1);
-    const gap = 1.5;
-    // Teto rígido: a barra nunca pode passar da metade do espaço até o candle
-    // vizinho (senão invade o footprint dele — era o bug do print). Deixa
-    // ainda uma folga mínima de cada lado pra sobrar respiro visível entre
-    // os dois footprints, não só encostar.
-    const espacamentoCentro = cW + 1; // distância aprox. entre centros de candles vizinhos (mesma fórmula do cW global)
-    const folgaMinima = 1; // era 2.5 — o menor respiro estético possível, maximiza a largura sem depender de zoom
-    const barMaxWTeto = Math.max(1.5, espacamentoCentro / 2 - gap - folgaMinima);
-    const barMaxW = Math.min(Math.max(1.5, (cW - 1.5) * 0.82), barMaxWTeto);
+    const de = candle.t, ate = candle.t + grFootprintMsPorCandle();
+    const meio = tick / 2;
+    const mapa = new Map();
+    let kMin = Infinity, kMax = -Infinity;
+    const todos = getTodos();
+    for (let m = 0; m < todos.length; m++) {
+        const minuto = todos[m];
+        if (minuto.ts < de || minuto.ts >= ate) continue;
+        const niveis = minuto.niveis || [];
+        for (let j = 0; j < niveis.length; j++) {
+            const nv = niveis[j];
+            const k = Math.floor((nv.p + meio) / tick);
+            let a = mapa.get(k);
+            if (!a) { a = { bid: 0, ask: 0 }; mapa.set(k, a); if (k < kMin) kMin = k; if (k > kMax) kMax = k; }
+            a.bid += nv.v; a.ask += nv.c;
+        }
+    }
+    if (mapa.size === 0) { window._grClusterCache.set(chave, false); return null; }
 
-    // Abertura/fechamento vêm do toY() GLOBAL (mesmo usado pela linha
-    // tracejada da cotação) — não mais de uma reinterpolação local com piso
-    // de span em $10, que descasava a escala pro candle em formação (range
-    // real quase zero) e desalinhava o corpo da caixa com a linha C.
-    const yAb = Math.max(miniTop, Math.min(miniBottom, toY(candle.o)));
-    const yFe = Math.max(miniTop, Math.min(miniBottom, toY(candle.c)));
-    // Delta calculado aqui em cima (não só no rodapé) porque a cor do
-    // contorno do corpo precisa dele — divergência preço x delta pertence
-    // ao framework do footprint, tem que valer aqui também, não só no
-    // candle normal.
-    const compraTotal = niveis.reduce((s, n) => s + n.c, 0);
-    const vendaTotal = niveis.reduce((s, n) => s + n.v, 0);
-    const deltaVal = compraTotal - vendaTotal;
-    const isUpMini = candle.c >= candle.o;
-    const corCorpo = isUpMini && deltaVal < 0 ? CorDivergAlta
-        : !isUpMini && deltaVal > 0 ? CorDivergBaixa
-        : (isUpMini ? '#26A69A' : '#EF5350');
+    const linhas = [];
+    let maxTotal = 0, pocIdx = 0, delta = 0;
+    for (let k = kMax; k >= kMin; k--) {
+        const a = mapa.get(k) || { bid: 0, ask: 0 };
+        const total = a.bid + a.ask;
+        if (total > maxTotal) { maxTotal = total; pocIdx = linhas.length; }
+        delta += a.ask - a.bid;
+        linhas.push({ p: k * tick, bid: a.bid, ask: a.ask, total, imbBid: false, imbAsk: false });
+    }
+    const n = linhas.length;
+    for (let i = 0; i < n; i++) {
+        if (i + 1 <= n - 2 && linhas[i].ask > 0 && linhas[i].ask >= FOOTPRINT_IMBALANCE_RATIO * linhas[i + 1].bid) linhas[i].imbAsk = true;
+        if (i - 1 >= 1 && linhas[i].bid > 0 && linhas[i].bid >= FOOTPRINT_IMBALANCE_RATIO * linhas[i - 1].ask) linhas[i].imbBid = true;
+    }
+    cl = { linhas, maxTotal, pocIdx, delta };
+    window._grClusterCache.set(chave, cl);
+    if (window._grClusterCache.size > 1500) window._grClusterCache.delete(window._grClusterCache.keys().next().value);
+    return cl;
+}
 
-    // Valor de volume dentro de cada barra — formato compacto ("99k" acima de
-    // mil), só se a barra for larga o bastante pra caber o texto.
-    const fmtMiniVol = (v) => fmtVolK(v);
-    const mostrarTexto = rowH >= 5;
+// Prepara tudo que é COMPARTILHADO entre os candles visíveis: a grade (tick), o maior volume de uma
+// linha (teto da escala de cor) e o formato/tamanho do texto (o mesmo pra todos os candles: primeiro
+// tenta o número mais preciso com fonte confortável; senão compacta e encolhe a fonte até 5px; senão
+// desiste do texto e fica só a cor). Chamado uma vez por desenho.
+function grFootprintPrepararClusters(ctx, candles, pxPorUsd, cW) {
+    const temTexto = cW >= FOOTPRINT_TEXTO_CW_MIN;
+    const tick = grFootprintTickDaGrade(pxPorUsd, temTexto ? FOOTPRINT_LINHA_MIN_PX : FOOTPRINT_LINHA_MIN_PX_SEM_TEXTO);
+    let todos = null;
+    const getTodos = () => todos || (todos = grFootprintTodosOsCandlesBrutos());
+    const clusters = new Map();
+    let maxTotal = 1;
+    for (const c of candles) {
+        const cl = grFootprintClusterDoCandle(c, tick, getTodos);
+        if (!cl) continue;
+        clusters.set(c.t, cl);
+        if (cl.maxTotal > maxTotal) maxTotal = cl.maxTotal;
+    }
 
-    niveis.forEach((n, i) => {
-        const ry = miniTop + i * rowH;
-        const pad = Math.max(1, Math.min(1.5, rowH * 0.15));
-        const bC = Math.max(0.5, (n.c / maxTotal) * barMaxW);
-        const bV = Math.max(0.5, (n.v / maxTotal) * barMaxW);
-        if (n.c > 0) { ctx.fillStyle = 'rgba(38,166,154,0.85)'; ctx.fillRect(xCenter - gap - bC, ry + pad, bC, Math.max(0.5, rowH - pad * 2)); }
-        if (n.v > 0) { ctx.fillStyle = 'rgba(239,83,80,0.85)'; ctx.fillRect(xCenter + gap, ry + pad, bV, Math.max(0.5, rowH - pad * 2)); }
+    let nivelTxt = -1, fs = 0;
+    const rowH = pxPorUsd * tick;
+    if (temTexto && rowH >= 8 && clusters.size > 0) {
+        const barW = cW >= 12 ? 2 : 1.5;
+        const wCel = cW - barW - 0.5;
+        const fsMax = Math.min(7.5, rowH - 3);
+        ctx.font = '10px -apple-system';
+        const larguraX = ctx.measureText(' x ').width;
+        for (let nivel = 0; nivel <= 2 && nivelTxt < 0; nivel++) {
+            let maiorLargura = 1;
+            clusters.forEach(cl => cl.linhas.forEach(ln => {
+                const w = ctx.measureText(grFmtVolCompacto(ln.bid, nivel)).width + larguraX
+                        + ctx.measureText(grFmtVolCompacto(ln.ask, nivel)).width;
+                if (w > maiorLargura) maiorLargura = w;
+            }));
+            const fsUsar = Math.min(fsMax, 10 * (wCel - 4) / maiorLargura);
+            if (fsUsar >= (nivel < 2 ? 6.5 : 5)) { nivelTxt = nivel; fs = fsUsar; }
+        }
+    }
+    return { tick, clusters, maxTotal, nivelTxt, fs };
+}
+
+// Pálido → forte conforme a soma bid+ask em relação ao maior volume visível.
+function grFootprintCorCelula(bid, ask, maxTotal) {
+    const pal = ask >= bid ? FOOTPRINT_COR_VERDE : FOOTPRINT_COR_VERMELHO;
+    const k = Math.pow(Math.min(1, (bid + ask) / maxTotal), 0.7);
+    const r = Math.round(pal.base[0] + (pal.forte[0] - pal.base[0]) * k);
+    const g = Math.round(pal.base[1] + (pal.forte[1] - pal.base[1]) * k);
+    const b = Math.round(pal.base[2] + (pal.forte[2] - pal.base[2]) * k);
+    return 'rgb(' + r + ',' + g + ',' + b + ')';
+}
+
+// Volume compacto (células do footprint e rótulos do painel Delta/Total), em 3 níveis de
+// compactação (o mais preciso que caiba): acima de 1.000 vira "1,23k"; de 10 a 999 inteiro; abaixo de 10 uma casa.
+function grFmtVolCompacto(v, nivel) {
+    if (v <= 0) return '0';
+    if (v >= 1000) {
+        if (nivel === 0) return (v / 1000).toFixed(2).replace('.', ',') + 'k';
+        if (nivel === 1) return (v / 1000).toFixed(1).replace('.', ',') + 'k';
+        return Math.round(v / 1000) + 'k';
+    }
+    if (v >= 10) return String(Math.round(v));
+    return nivel >= 2 ? String(Math.round(v)) : v.toFixed(1).replace('.', ',');
+}
+
+// Desenha o cluster de UM candle. xSlot = borda esquerda do espaço do candle, cW = largura dele.
+// Retorna false se não há footprint pra esse candle (quem chamou desenha o candle normal).
+function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax) {
+    const cl = cfg.clusters.get(candle.t);
+    if (!cl) return false;
+    const tick = cfg.tick, meio = tick / 2;
+    const barW = cW >= 12 ? 2 : 1.5;
+    const xCel = Math.round(xSlot + barW + 0.5);
+    const wCel = Math.max(1, Math.round(xSlot + cW) - xCel);
+
+    const nivelTxt = cfg.nivelTxt, fs = cfg.fs;
+    const fonteNormal = fs + 'px -apple-system', fonteNegrito = 'bold ' + fs + 'px -apple-system';
+
+    // Células
+    const geo = [];
+    cl.linhas.forEach((ln, i) => {
+        const yTop = Math.round(toY(ln.p + meio)), yBot = Math.round(toY(ln.p - meio));
+        if (yBot < yMin || yTop > yMax || ln.total <= 0) { geo.push(null); return; }
+        const y0 = Math.max(yMin, yTop), y1 = Math.min(yMax, yBot);
+        geo.push({ y0, y1 });
+        ctx.fillStyle = grFootprintCorCelula(ln.bid, ln.ask, cfg.maxTotal);
+        ctx.fillRect(xCel, y0, wCel, Math.max(1, y1 - y0));
     });
 
-    if (mostrarTexto) {
-        ctx.font = '6.5px -apple-system';
-        ctx.textAlign = 'center';
-        ctx.fillStyle = '#000000';
-        niveis.forEach((n, i) => {
-            const ry = miniTop + i * rowH;
-            const rowMeioY = ry + rowH / 2;
-            const bC = Math.max(0.5, (n.c / maxTotal) * barMaxW);
-            const bV = Math.max(0.5, (n.v / maxTotal) * barMaxW);
-            if (n.c > 0) {
-                const txt = fmtMiniVol(n.c);
-                if (ctx.measureText(txt).width + 3 <= bC) ctx.fillText(txt, xCenter - gap - bC / 2, rowMeioY + 2);
-            }
-            if (n.v > 0) {
-                const txt = fmtMiniVol(n.v);
-                if (ctx.measureText(txt).width + 3 <= bV) ctx.fillText(txt, xCenter + gap + bV / 2, rowMeioY + 2);
-            }
+    // POC do candle (linha de maior soma): borda escura
+    const gPoc = geo[cl.pocIdx];
+    if (gPoc && gPoc.y1 - gPoc.y0 > 2) {
+        ctx.strokeStyle = '#111111';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([]);
+        ctx.strokeRect(xCel + 0.75, gPoc.y0 + 0.75, wCel - 1.5, gPoc.y1 - gPoc.y0 - 1.5);
+    }
+
+    // Texto "bid x ask" (número do desequilíbrio diagonal em azul negrito)
+    if (nivelTxt >= 0) {
+        ctx.textAlign = 'left';
+        cl.linhas.forEach((ln, i) => {
+            const g = geo[i];
+            if (!g || g.y1 - g.y0 < 8) return;
+            const a = grFmtVolCompacto(ln.bid, nivelTxt), b = grFmtVolCompacto(ln.ask, nivelTxt);
+            ctx.font = ln.imbBid ? fonteNegrito : fonteNormal; const wa = ctx.measureText(a).width;
+            ctx.font = fonteNormal;                             const wx = ctx.measureText(' x ').width;
+            ctx.font = ln.imbAsk ? fonteNegrito : fonteNormal; const wb = ctx.measureText(b).width;
+            let x = xCel + (wCel - (wa + wx + wb)) / 2;
+            const y = (g.y0 + g.y1) / 2 + fs * 0.35;
+            ctx.font = ln.imbBid ? fonteNegrito : fonteNormal; ctx.fillStyle = ln.imbBid ? '#1A2BD8' : '#1B1B1B'; ctx.fillText(a, x, y); x += wa;
+            ctx.font = fonteNormal;                             ctx.fillStyle = '#1B1B1B';                          ctx.fillText(' x ', x, y); x += wx;
+            ctx.font = ln.imbAsk ? fonteNegrito : fonteNormal; ctx.fillStyle = ln.imbAsk ? '#1A2BD8' : '#1B1B1B'; ctx.fillText(b, x, y);
         });
     }
 
-    ctx.strokeStyle = '#8E8E93';
-    ctx.lineWidth = 1.5; // espessura única — a mesma do pavio, só muda a cor
-    ctx.beginPath(); ctx.moveTo(xCenter, miniTop); ctx.lineTo(xCenter, miniBottom); ctx.stroke();
-
-    // Corpo: conforme o candle cresce (mais largura disponível), fica mais
-    // definido — não é mais só uma linha, vira um retângulo (moldura, sem
-    // preencher, pra não esconder as barras do histograma por baixo). Candle
-    // pequeno continua só com a linha (não cabe moldura sem virar poluição).
-    const LARGURA_CORPO_DEFINIDO = 16;
-    const bodyTop = Math.min(yAb, yFe);
-    const bodyH = Math.max(1, Math.max(yAb, yFe) - bodyTop);
-    if (cW >= LARGURA_CORPO_DEFINIDO) {
-        const bodyW = Math.min(cW * 0.6, espacamentoCentro - 4); // nunca invade o candle vizinho
-        ctx.strokeStyle = corCorpo;
-        ctx.lineWidth = 1.5;
-        ctx.strokeRect(xCenter - bodyW / 2, bodyTop, bodyW, bodyH);
-    } else {
-        ctx.strokeStyle = corCorpo;
-        ctx.lineWidth = 1.5; // idêntica à de cima — só a cor identifica abertura↔fechamento
-        ctx.beginPath(); ctx.moveTo(xCenter, bodyTop); ctx.lineTo(xCenter, bodyTop + bodyH); ctx.stroke();
-    }
-
+    // Candle: linha fina à esquerda, da abertura ao fechamento (linhas que contêm os dois preços)
+    const kAb = Math.floor((candle.o + meio) / tick), kFe = Math.floor((candle.c + meio) / tick);
+    const yCorpoTopo = Math.max(yMin, Math.round(toY(Math.max(kAb, kFe) * tick + meio)));
+    const yCorpoBase = Math.min(yMax, Math.round(toY(Math.min(kAb, kFe) * tick - meio)));
+    const sobe = candle.c >= candle.o;
+    ctx.fillStyle = sobe && cl.delta < 0 ? CorDivergAlta
+                  : !sobe && cl.delta > 0 ? CorDivergBaixa
+                  : (sobe ? '#2E7D32' : '#D32F2F');
+    ctx.fillRect(Math.round(xSlot), yCorpoTopo, barW, Math.max(2, yCorpoBase - yCorpoTopo));
     return true;
 }
 let _grDrone = false;
@@ -4881,15 +4907,17 @@ if (_grTipoGrafico === 'linha') {
     const deltaPorCandle = grObterDeltaPorCandle(candles); // null se footprint desligado — sem dado pra saber se diverge
     const pocsPorCandle = grObterPocsPorCandle(candles); // null se footprint desligado — sem dado pra marcar os PoCs
     const ALTURA_MIN_POC_PX = 12; // candle (H até L, na tela) menor que isso não recebe traço de PoC — vira poluição
+    // Footprint em clusters: grade única + teto de volume (escala de cor) calculados 1x por desenho
+    const clustersCfg = (_grFootprintAtivo && cW >= FOOTPRINT_CLUSTER_CW_MIN)
+        ? grFootprintPrepararClusters(ctx, candles, chartH / priceRange, cW) : null;
     candles.forEach((c, i) => {
         const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
         const isUp = c.c >= c.o;
 
-        // Mini-régua de footprint no lugar do candle normal — cai no
-        // desenho normal como fallback se não tiver dado de footprint pra
-        // esse candle específico.
-        if (_grFootprintAtivo) {
-            if (grDesenharMiniLadderPA(ctx, x, cW, c, toY, PAD.top, PAD.top + chartH, i % 2 === 1)) return;
+        // Cluster de footprint no lugar do candle normal — cai no desenho
+        // normal como fallback se não tiver dado de footprint pra esse candle.
+        if (clustersCfg) {
+            if (grDesenharFootprintCluster(ctx, x - cW / 2, cW, c, clustersCfg, toY, PAD.top, PAD.top + chartH)) return;
         }
 
         // Divergência preço x delta — funciona em qualquer tema, sobrepõe o
@@ -5795,27 +5823,50 @@ if (fibsParaDesenhar.length > 0) {
 
             const yDeltaTxt = dtY + Math.round(dtH * 0.40);
             const yTotalTxt = dtY + Math.round(dtH * 0.80);
-            ctx.font = 'bold 9px -apple-system';
+            const yDeltaCentro = dtY + dtH * 0.27, yTotalCentro = dtY + dtH * 0.73; // centro de cada faixa (rótulo em pé)
+            ctx.font = 'bold 7px -apple-system';
             ctx.textAlign = 'left';
             ctx.fillStyle = '#FFD54F'; ctx.fillText('Delta', 4, yDeltaTxt);
             ctx.fillStyle = '#B0B3B8'; ctx.fillText('Total', 4, yTotalTxt);
             const margemRotulo = 4 + Math.max(ctx.measureText('Delta').width, ctx.measureText('Total').width) + 4;
 
+            // Sem sinal (+/-): a cor do delta já diz o lado. Rótulo alinhado sob cada candle: deitado
+            // se cabe no espaço do candle; senão EM PÉ (mesma posição, sem pular candle); só se nem em
+            // pé couber, pula de N em N (sempre inclui o último).
             const dtMapa = grObterDeltaTotalPorCandle(_grAllCandles);
             if (dtMapa) {
                 const slotW = chartW / Math.max(totalSlots, 1);
-                const larguraNum = ctx.measureText('+99,99k').width + 4;
-                const passo = Math.max(1, Math.ceil(larguraNum / slotW)); // se não cabe em todo candle, pula de N em N (sempre inclui o último)
-                ctx.textAlign = 'center';
+                let larguraNum = 0;
+                for (const c of candles) {
+                    const d = dtMapa.get(c.t);
+                    if (d) larguraNum = Math.max(larguraNum, ctx.measureText(grFmtVolCompacto(Math.abs(d.delta), 0)).width, ctx.measureText(grFmtVolCompacto(d.total, 0)).width);
+                }
+                larguraNum += 2;
+                const emPe = larguraNum > slotW && larguraNum <= dtH / 2 - 3 && slotW >= 7;
+                const passo = (larguraNum <= slotW || emPe) ? 1 : Math.max(1, Math.ceil(larguraNum / slotW));
                 for (let i = candles.length - 1; i >= 0; i -= passo) {
                     const dt = dtMapa.get(candles[i].t);
                     if (!dt) continue;
                     const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
-                    if (x - larguraNum / 2 < margemRotulo) continue; // não invade os rótulos da esquerda
-                    ctx.fillStyle = dt.delta >= 0 ? '#26A69A' : '#EF5350';
-                    ctx.fillText((dt.delta >= 0 ? '+' : '') + fmtVolK(dt.delta), x, yDeltaTxt);
-                    ctx.fillStyle = '#E0E0E0';
-                    ctx.fillText(fmtVolK(dt.total), x, yTotalTxt);
+                    const txtDelta = grFmtVolCompacto(Math.abs(dt.delta), 0), txtTotal = grFmtVolCompacto(dt.total, 0);
+                    const corDelta = dt.delta >= 0 ? '#26A69A' : '#EF5350';
+                    if (emPe) {
+                        if (x - 4 < margemRotulo) continue;
+                        ctx.save();
+                        ctx.textAlign = 'center';
+                        ctx.fillStyle = corDelta;
+                        ctx.translate(x + 2.5, yDeltaCentro); ctx.rotate(-Math.PI / 2); ctx.fillText(txtDelta, 0, 0);
+                        ctx.restore(); ctx.save();
+                        ctx.textAlign = 'center';
+                        ctx.fillStyle = '#E0E0E0';
+                        ctx.translate(x + 2.5, yTotalCentro); ctx.rotate(-Math.PI / 2); ctx.fillText(txtTotal, 0, 0);
+                        ctx.restore();
+                    } else {
+                        if (x - larguraNum / 2 < margemRotulo) continue; // não invade os rótulos da esquerda
+                        ctx.textAlign = 'center';
+                        ctx.fillStyle = corDelta; ctx.fillText(txtDelta, x, yDeltaTxt);
+                        ctx.fillStyle = '#E0E0E0'; ctx.fillText(txtTotal, x, yTotalTxt);
+                    }
                 }
             }
         }
@@ -12609,7 +12660,7 @@ async function grFootprintAtualizarSeAtivo() {
         // Limpa os caches da régua também — sem isso, o candle em formação
         // (o único cujo dado muda a cada 60s) ficava com o volume CONGELADO
         // do primeiro cálculo, nunca refletindo os trades novos que chegam.
-        window._grMiniLadderCache = new Map();
+        window._grClusterCache = new Map();
         window._grCrosshairMiniFootCache = { t: null, niveisPrecoDesc: [] };
         grFootprintRecalcularZonasExistentes(); // zonas já marcadas podem trocar de cor com dado novo
         _grFootprintUltimoRefreshModal = 0;
@@ -12669,7 +12720,7 @@ async function grFootprintAtivar() {
         // cache pode ter guardado candles com volume ZERO (dado ainda não
         // tinha chegado). Sem limpar, esse zero fica preso pra sempre, nunca
         // recalcula, mesmo com o dado real já disponível.
-        window._grMiniLadderCache = new Map();
+        window._grClusterCache = new Map();
         window._grCrosshairMiniFootCache = { t: null, niveisPrecoDesc: [] };
 
         // Redesenha o gráfico PRINCIPAL agora que o footprint terminou de
@@ -13332,6 +13383,7 @@ async function grFootprintCarregarDiaDoR2(candle) {
         const candlesDoDia = Object.values(dados.candles || {});
         if (candlesDoDia.length > 0) {
             _grFootprintDiasAvulsos.set(dia, candlesDoDia.map(c => ({ ts: c.ts, niveis: c.niveis })));
+            window._grClusterCache = new Map(); // candles desse dia estavam marcados "sem dado"
             grFootprintAbrirCandleModal(candle); // tenta de novo, agora já com o dado em mãos
             return;
         }
