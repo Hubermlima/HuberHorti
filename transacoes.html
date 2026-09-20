@@ -3633,6 +3633,7 @@ function grCalcularTickATR(periodo = 14) {
 // O candle vira uma linha fina à esquerda do cluster, indo da abertura ao fechamento.
 window._grClusterCache = window._grClusterCache || new Map();
 const FOOTPRINT_IMBALANCE_RATIO = 3;        // desequilíbrio diagonal: 300%
+const FOOTPRINT_NIVEIS_MAX = 8;             // teto de linhas por candle (o mesmo do popup do crosshair)
 const FOOTPRINT_CLUSTER_CW_MIN = 5;         // candle mais estreito que isso volta pro candle normal
 const FOOTPRINT_TEXTO_CW_MIN = 20;          // largura mínima do candle pra tentar escrever "bid x ask"
 const FOOTPRINT_COR_VERDE    = { base: [227, 241, 227], forte: [78, 159, 85] };
@@ -3662,6 +3663,7 @@ grFootprintSkinAtualizarRotulo();
 // grCalcularTickATR), arredondado pra múltiplo de 10 (resolução dos dados no R2). É SEMPRE o ATR:
 // ele filtra e aglutina os níveis (poucas células por candle) e não muda com o zoom. Pra refinar um
 // nível, desce um timeframe (o ATR menor gera linhas menores). Linha baixa demais só perde o texto.
+// Candle muito alto ganha ainda o teto FOOTPRINT_NIVEIS_MAX (ver grFootprintClusterDoCandle).
 function grFootprintTickDaGrade() {
     return Math.max(10, Math.round(grCalcularTickATR() / 10) * 10);
 }
@@ -3692,21 +3694,30 @@ function grFootprintClusterDoCandle(candle, tick, getTodos) {
     }
     if (mapa.size === 0) { window._grClusterCache.set(chave, false); return null; }
 
+    // Teto de linhas por candle (o mesmo do popup do crosshair): candle muito mais alto que o ATR junta
+    // `agrup` linhas vizinhas da grade em uma (agrup inteiro), então as bordas continuam alinhadas à grade
+    // dos outros candles. Candle normal (até FOOTPRINT_NIVEIS_MAX linhas) fica no tick do ATR (agrup = 1).
+    let agrup = 1;
+    while (Math.floor(kMax / agrup) - Math.floor(kMin / agrup) + 1 > FOOTPRINT_NIVEIS_MAX) agrup++;
     const linhas = [];
     let maxTotal = 0, pocIdx = 0, delta = 0;
-    for (let k = kMax; k >= kMin; k--) {
-        const a = mapa.get(k) || { bid: 0, ask: 0 };
-        const total = a.bid + a.ask;
+    for (let kc = Math.floor(kMax / agrup); kc >= Math.floor(kMin / agrup); kc--) {
+        let bid = 0, ask = 0;
+        for (let kb = kc * agrup; kb < kc * agrup + agrup; kb++) {
+            const a = mapa.get(kb);
+            if (a) { bid += a.bid; ask += a.ask; }
+        }
+        const total = bid + ask;
         if (total > maxTotal) { maxTotal = total; pocIdx = linhas.length; }
-        delta += a.ask - a.bid;
-        linhas.push({ p: k * tick, bid: a.bid, ask: a.ask, total, imbBid: false, imbAsk: false });
+        delta += ask - bid;
+        linhas.push({ p: (kc * agrup + (agrup - 1) / 2) * tick, meio: agrup * tick / 2, bid, ask, total, imbBid: false, imbAsk: false });
     }
     const n = linhas.length;
     for (let i = 0; i < n; i++) {
         if (i + 1 <= n - 2 && linhas[i].ask > 0 && linhas[i].ask >= FOOTPRINT_IMBALANCE_RATIO * linhas[i + 1].bid) linhas[i].imbAsk = true;
         if (i - 1 >= 1 && linhas[i].bid > 0 && linhas[i].bid >= FOOTPRINT_IMBALANCE_RATIO * linhas[i - 1].ask) linhas[i].imbBid = true;
     }
-    cl = { linhas, maxTotal, pocIdx, delta };
+    cl = { linhas, maxTotal, pocIdx, delta, agrup };
     window._grClusterCache.set(chave, cl);
     if (window._grClusterCache.size > 1500) window._grClusterCache.delete(window._grClusterCache.keys().next().value);
     return cl;
@@ -3804,7 +3815,7 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
     // Células
     const geo = [];
     cl.linhas.forEach((ln, i) => {
-        const yTop = Math.round(toY(ln.p + meio)), yBot = Math.round(toY(ln.p - meio));
+        const yTop = Math.round(toY(ln.p + ln.meio)), yBot = Math.round(toY(ln.p - ln.meio));
         if (yBot < yMin || yTop > yMax || ln.total <= 0) { geo.push(null); return; }
         const y0 = Math.max(yMin, yTop), y1 = Math.min(yMax, yBot);
         geo.push({ y0, y1 });
@@ -3855,9 +3866,9 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
     }
 
     // Candle: linha fina à esquerda, da abertura ao fechamento (linhas que contêm os dois preços)
-    const kAb = Math.floor((candle.o + meio) / tick), kFe = Math.floor((candle.c + meio) / tick);
-    const yCorpoTopo = Math.max(yMin, Math.round(toY(Math.max(kAb, kFe) * tick + meio)));
-    const yCorpoBase = Math.min(yMax, Math.round(toY(Math.min(kAb, kFe) * tick - meio)));
+    const kcAb = Math.floor(Math.floor((candle.o + meio) / tick) / cl.agrup), kcFe = Math.floor(Math.floor((candle.c + meio) / tick) / cl.agrup);
+    const yCorpoTopo = Math.max(yMin, Math.round(toY((Math.max(kcAb, kcFe) * cl.agrup + cl.agrup) * tick - meio)));
+    const yCorpoBase = Math.min(yMax, Math.round(toY(Math.min(kcAb, kcFe) * cl.agrup * tick - meio)));
     const sobe = candle.c >= candle.o;
     ctx.fillStyle = sobe && cl.delta < 0 ? CorDivergAlta
                   : !sobe && cl.delta > 0 ? CorDivergBaixa
@@ -7404,7 +7415,7 @@ function grDrawChartWithCrosshair(yInterno) {
         // candle pequeno parecer menor, em vez de tudo convergir pro mesmo
         // tamanho.
         const ROW_H_FIXA = 11;
-        const NIVEIS_MIN = 2, NIVEIS_MAX = 8; // aglutina mais níveis (barra mais grossa) pra abrir espaço pro número de volume dentro dela
+        const NIVEIS_MIN = 2, NIVEIS_MAX = FOOTPRINT_NIVEIS_MAX; // aglutina mais níveis (barra mais grossa) pra abrir espaço pro número de volume dentro dela; mesmo teto do footprint principal
         const hi0 = candle.h, lo0 = candle.l;
         const span0 = Math.max(hi0 - lo0, 10);
         const maxNiveisCabendo = Math.max(NIVEIS_MIN, Math.floor(alturaDisponivelMini / ROW_H_FIXA));
