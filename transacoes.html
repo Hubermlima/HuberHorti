@@ -810,7 +810,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <div style="padding:10px 16px 16px;">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:6px;">
           <span style="font-size:13px;font-weight:700;color:#1C1C1E;">Retornos mensais (%)</span>
-          <span style="font-size:10px;color:#8E8E93;">Binance · desde 2017</span>
+          <span style="font-size:10px;color:#8E8E93;">Binance Futures · desde 2019</span>
         </div>
         <div id="od-saz-loading" style="padding:24px 0;text-align:center;color:#8E8E93;font-size:13px;">Carregando…</div>
         <div id="od-saz-wrap" style="display:none;overflow-x:auto;-webkit-overflow-scrolling:touch;">
@@ -1779,7 +1779,18 @@ const fmtUSD = v => parseFloat(v||0).toLocaleString('en-US',{minimumFractionDigi
 const fmtN   = v => parseFloat(v||0).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0});
 // Quantidade de BTC no padrão brasileiro (vírgula decimal, ponto de milhar), sempre 2 casas —
 // evita a ambiguidade de "44.470" parecendo "44 mil" quando na verdade é 44,47 BTC.
-const fmtBtc2 = v => parseFloat(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtBtcBR = v => parseFloat(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// Volume/delta/CVD compacto no padrão 99,99k (vírgula decimal, 2 casas). Abaixo de 1.000
+// mostra o número normal com 2 casas; a partir de 1 milhão vira 1,23M. Mantém o sinal se negativo.
+const fmtVolK = v => {
+    const n = parseFloat(v || 0);
+    const a = Math.abs(n);
+    const sn = n < 0 ? '-' : '';
+    if (Math.round(a / 10) / 100 >= 1000) return sn + (a / 1e6).toFixed(2).replace('.', ',') + 'M';
+    if (Math.round(a * 100) / 100 >= 1000) return sn + (a / 1000).toFixed(2).replace('.', ',') + 'k';
+    return fmtBtcBR(n);
+};
+const fmtBtc2 = fmtVolK; // todos os usos de fmtBtc2 são volume/delta/CVD do footprint
 const fmtQtd = v => parseFloat(v||0).toLocaleString('pt-BR',{minimumFractionDigits:8,maximumFractionDigits:8});
 const fmtMoney = (v, prefix) => (v >= 0 ? '+' : '') + (prefix||'') + Math.abs(v).toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
 
@@ -2869,7 +2880,7 @@ async function cvAtualizarPrecoRealTime() {
     try {
         const symbol = (_ticker || 'BTC/USD').replace('/', '').toLowerCase();
         const binSym = (symbol.replace('btcusd','BTCUSDT').replace('ethusd','ETHUSDT').toUpperCase().replace('USD','USDT').replace('USDTT','USDT'));
-        const res = await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${binSym}`);
+        const res = await fetch(`https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=${binSym}`);
         const data = await res.json();
         if (!data || !data.lastPrice) return;
 
@@ -3031,7 +3042,7 @@ function cvIniciarRealTime() {
     if (window._cvWs) { try { window._cvWs.close(); } catch(e) {} }
     const symbol = (_ticker || 'BTC/USD').replace('/', '').toLowerCase();
     const binSym = symbol.replace('btcusd','btcusdt').replace('ethusd','ethusdt').replace('usd','usdt').replace('usdtt','usdt');
-    const ws = new WebSocket('wss://stream.binance.com:9443/ws/' + binSym + '@aggTrade');
+    const ws = new WebSocket('wss://fstream.binance.com/ws/' + binSym + '@aggTrade');
     window._cvWs = ws;
 
     ws.onmessage = function(e) {
@@ -3042,12 +3053,6 @@ function cvIniciarRealTime() {
             const precoAntes = _precoAtual;
             _precoAtual = novoPreco;
             grFootprintAtualizarLinhaPrecoAtual();
-
-            // Acumula esse trade no minuto em formação do footprint (mesmo tick $10
-            // do worker) — é isso que alimenta ladder/histograma ao vivo, minuto a
-            // minuto, sem esperar o worker/R2 fechar o dia.
-            const qtd = parseFloat(d.q);
-            if (qtd > 0) grFootprintAcumularTradeLive(novoPreco, qtd, d.m === true);
 
             // Detecção de cruzamento alvo/stop
             if (precoAntes > 0 && window._cvTradeCache) {
@@ -3168,7 +3173,7 @@ function cvIniciarRealTime() {
     if (window._cvVarInterval) clearInterval(window._cvVarInterval);
     window._cvVarInterval = setInterval(async function() {
         try {
-            const res = await fetch('https://api.binance.com/api/v3/ticker/24hr?symbol=' + binSym.toUpperCase());
+            const res = await fetch('https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=' + binSym.toUpperCase());
             const data = await res.json();
             if (!data || !data.openPrice) return;
             const novaVar = ((_precoAtual - parseFloat(data.openPrice)) / parseFloat(data.openPrice)) * 100;
@@ -3987,7 +3992,7 @@ function grDesenharMiniLadderPA(ctx, xCenter, cW, candle, toY, yMinBound, yMaxBo
 
     // Valor de volume dentro de cada barra — formato compacto ("99k" acima de
     // mil), só se a barra for larga o bastante pra caber o texto.
-    const fmtMiniVol = (v) => v >= 1000 ? (v / 1000).toFixed(2) + 'K' : fmtBtc2(v);
+    const fmtMiniVol = (v) => fmtVolK(v);
     const mostrarTexto = rowH >= 5;
 
     niveis.forEach((n, i) => {
@@ -4188,23 +4193,12 @@ window._grFonteCandles = 'Binance'; // exposto pra UI poder mostrar de onde veio
 // Binance tem, no índice 9) — quando a fonte é Kraken, esse campo fica null,
 // e o indicador de Delta/CVD do candle principal perde precisão nesse caso.
 async function grBuscarKlines(binSymbol, binInterval, limit, endTime) {
-    // Fonte: Binance FUTURES (mesma base do footprint no R2). Se o ativo não
-    // tiver contrato perpétuo lá, cai pro spot só pra esse caso.
+    // Fonte ÚNICA: Binance FUTURES (mesma base do footprint no R2).
     const q = `symbol=${binSymbol}&interval=${binInterval}&limit=${limit}` + (endTime ? `&endTime=${endTime}` : '');
-    try {
-        const r = await fetch(`https://fapi.binance.com/fapi/v1/klines?${q}`);
-        const d = await r.json();
-        if (Array.isArray(d) && d.length > 0) {
-            window._grFonteCandles = 'Binance Futures';
-            return d;
-        }
-    } catch (e) {
-        console.log('Futures falhou, tentando spot:', e.message);
-    }
-    const r2 = await fetch(`https://api.binance.com/api/v3/klines?${q}`);
-    const d2 = await r2.json();
-    window._grFonteCandles = 'Binance';
-    return Array.isArray(d2) ? d2 : [];
+    const r = await fetch(`https://fapi.binance.com/fapi/v1/klines?${q}`);
+    const d = await r.json();
+    window._grFonteCandles = 'Binance Futures';
+    return Array.isArray(d) ? d : [];
 }
 
 let _grTemaClaro = localStorage.getItem('gr_tema_claro') === '1';
@@ -6458,18 +6452,12 @@ if (fibsParaDesenhar.length > 0) {
                 ctx.textAlign = 'left';
                 ctx.fillStyle = '#FFD54F'; ctx.fillText('VD', PAD.left + 4, panY + panPad.top + 12);
                 ctx.fillStyle = vdLblColor;
-                ctx.fillText((lastDelta >= 0 ? '+' : '') + lastDelta.toFixed(2), PAD.left + 28, panY + panPad.top + 12);
+                ctx.fillText((lastDelta >= 0 ? '+' : '') + fmtVolK(lastDelta), PAD.left + 28, panY + panPad.top + 12);
                 window._vdAtual = lastDelta;
 
                 // Label CVD (valor acumulado) embaixo do VD — formatado em K/M pra ficar legível
                 const lastCvd = cvdPoints.length ? cvdPoints[cvdPoints.length - 1].cvd : 0;
-                const _fmtCvd = v => {
-                    const abs = Math.abs(v);
-                    const sinal = v >= 0 ? '+' : '-';
-                    if (abs >= 1000000) return sinal + (abs / 1000000).toFixed(2) + 'M';
-                    if (abs >= 1000) return sinal + (abs / 1000).toFixed(1) + 'K';
-                    return sinal + abs.toFixed(2);
-                };
+                const _fmtCvd = v => (v >= 0 ? '+' : '-') + fmtVolK(Math.abs(v));
                 ctx.font = 'bold 11px -apple-system';
                 ctx.fillStyle = '#FFD54F'; ctx.fillText('CVD', PAD.left + 4, panY + panPad.top + 24);
                 ctx.fillStyle = lastCvd >= 0 ? '#26A69A' : '#EF5350';
@@ -6743,14 +6731,14 @@ if (fibsParaDesenhar.length > 0) {
                 // Valor do último volume
                 const lastVol = candles[candles.length-1]?.v;
                 if (lastVol) {
-                    const fv = lastVol >= 1000 ? (lastVol/1000).toFixed(1)+'K' : lastVol.toFixed(2);
+                    const fv = fmtVolK(lastVol);
                     ctx.fillStyle = '#FFFFFF';
                     ctx.fillText(fv, PAD.left + 28, panY + panPad.top + 10);
                 }
                 // Valor da SMA 21
                 const lastSmaVol = smaVolVis.filter(v => v !== null).pop();
                 if (lastSmaVol != null) {
-                    const fvSma = lastSmaVol >= 1000 ? (lastSmaVol/1000).toFixed(1)+'K' : lastSmaVol.toFixed(2);
+                    const fvSma = fmtVolK(lastSmaVol);
                     ctx.fillStyle = '#FFEB3B';
                     ctx.fillText('SMA21', PAD.left + 4, panY + panPad.top + 22);
                     ctx.fillStyle = '#FFFFFF';
@@ -6900,7 +6888,7 @@ if (fibsParaDesenhar.length > 0) {
                     obvVis.forEach((v,i)=>{ if(!v){os=false;return;} const x=PAD.left+(i/totalSlots)*panChartW+cW/2; if(!os){ctx.moveTo(x,toObvY(v));os=true;}else ctx.lineTo(x,toObvY(v)); });
                     ctx.stroke();
                     const lastObv = validObv[validObv.length-1];
-                    const fmtObv = v => Math.abs(v)>=1000000?(v/1000000).toFixed(1)+'M':Math.abs(v)>=1000?(v/1000).toFixed(0)+'K':v.toFixed(0);
+                    const fmtObv = v => fmtVolK(v);
                     ctx.font='bold 9px -apple-system'; ctx.textAlign='left';
                     ctx.fillStyle='#A5D6A7'; ctx.fillText('OBV', PAD.left+4, panY+panPad.top+10);
                     ctx.fillStyle='#FFFFFF'; ctx.fillText(fmtObv(lastObv), PAD.left+30, panY+panPad.top+10);
@@ -8069,7 +8057,7 @@ function grDrawChartWithCrosshair(yInterno) {
         // Janelinha OHLC
         const isBull = candle.c >= candle.o;
         const corCandle = isBull ? '#26A69A' : '#EF5350';
-        const fmtBtc = v => v != null ? parseFloat(v).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}) + ' btc' : '—';
+        const fmtBtc = v => v != null ? fmtVolK(v) + ' btc' : '—';
 
         const buyVol  = candle.bv != null ? candle.bv : null;
         const sellVol = candle.bv != null ? candle.v - candle.bv : null;
@@ -8265,7 +8253,7 @@ function grDrawChartWithCrosshair(yInterno) {
             // o candle em si já é representado pela reta vertical). O valor
             // que aparece é o VOLUME de cada barra, compacto tipo "1.36K"
             // quando passa de mil, senão no formato BTC normal do app.
-            const fmtMiniVol = (v) => v >= 1000 ? (v / 1000).toFixed(2).replace('.', ',') + 'K' : (v >= 10 ? Math.round(v).toString() : fmtBtc2(v));
+            const fmtMiniVol = (v) => Math.abs(v) >= 1000 ? fmtVolK(v) : (Math.abs(v) >= 10 ? Math.round(v).toString() : fmtBtc2(v));
 
             niveisPrecoDesc.forEach((n, i) => {
                 const ry = miniTop + i * miniRowH;
@@ -13161,7 +13149,7 @@ async function odCarregarSentimento() {
             fetch("https://fapi.binance.com/futures/data/topLongShortAccountRatio?symbol=BTCUSDT&period=4h&limit=24").then(r => r.json()),
             fetch("https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=BTCUSDT&period=4h&limit=24").then(r => r.json()),
             fetch("https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol=BTCUSDT&period=4h&limit=24").then(r => r.json()),
-            fetch("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=4h&limit=24").then(r => r.json()),
+            fetch("https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=4h&limit=24").then(r => r.json()),
             fetch("https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=3600").then(r => r.json()).catch(() => [])
         ]);
         const SVG_UP   = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="vertical-align:-2px"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18"/></svg>`;
@@ -14285,8 +14273,8 @@ async function odCalcularScoreConfluencia() {
             { nome: 'RSI (14)',        voto: rsiV > 50 ? 1 : -1,          detalhe: rsiV.toFixed(1) },
             { nome: 'MACD vs Sinal',   voto: macdLine > macdSignal ? 1 : -1, detalhe: `${macdLine.toFixed(1)} vs ${macdSignal.toFixed(1)}` },
             { nome: 'Bollinger %B',    voto: bbPercB > 0.5 ? 1 : -1,       detalhe: `${(bbPercB * 100).toFixed(1)}%` },
-            { nome: 'Volume Delta',    voto: vdUltimo > 0 ? 1 : -1,        detalhe: vdUltimo.toFixed(2) },
-            { nome: 'OBV (tendência)', voto: obvTendencia > 0 ? 1 : -1,    detalhe: obvTendencia.toFixed(0) },
+            { nome: 'Volume Delta',    voto: vdUltimo > 0 ? 1 : -1,        detalhe: fmtVolK(vdUltimo) },
+            { nome: 'OBV (tendência)', voto: obvTendencia > 0 ? 1 : -1,    detalhe: fmtVolK(obvTendencia) },
             { nome: 'Stochastic %K',   voto: stochK > 50 ? 1 : -1,         detalhe: `${stochK.toFixed(1)}%` }
         ];
         if (ema21d !== null) votosTecnicos.push({ nome: 'Preço vs EMA21 Diário',  voto: precoAtual > ema21d ? 1 : -1, detalhe: `${fmtPreco(ema21d)} (${fmtPct(pctVsPreco(ema21d))})` });
@@ -14570,7 +14558,7 @@ async function odCarregarSazonalidade() {
         // limit=2 cobre o mês corrente + o anterior (proteção contra virada de mês
         // entre uma sessão e outra, caso o último salvo já não seja mais o atual)
         const limit = mesesSalvos.length > 0 ? 2 : 1000;
-        const url = `https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=1M&limit=${limit}`;
+        const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${binSymbol}&interval=1M&limit=${limit}`;
         const r = await fetch(url);
         const d = await r.json();
         if (!Array.isArray(d) || d.length === 0) throw new Error('sem dados');
@@ -15229,40 +15217,7 @@ const FOOTPRINT_DEBOUNCE_MS = 250;    // espera o scroll/zoom "assentar" por ess
 let _grFootprintAtivo = false;         // controla o botão da barra de indicadores
 let _grFootprintCandlesRaw = null;     // array flat {ts, niveis} de TODOS os dias carregados (fetch único), ordenado por ts
 
-// ── Footprint AO VIVO — acumula trade a trade do WS (aggTrade), sem esperar
-// o worker/R2 fechar o minuto. É isso que faz o candle em formação, a régua
-// e o histograma agregado se moverem de verdade em tempo real, não só o
-// preço/candle visual: o VOLUME por nível também cresce ao vivo.
-let _grFootprintLiveMinutoTs = null;    // início (ms, arredondado pro minuto) do minuto em formação agora
-let _grFootprintLiveMinutoMap = new Map(); // preco (tick $10) -> {c, v, nc, nv}, só do minuto atual
-
-function grFootprintAcumularTradeLive(preco, qtd, isBuyerMaker) {
-    if (!_grFootprintCandlesRaw) return; // ainda não carregou histórico nenhum, não tem onde acumular
-    const minutoTs = Math.floor(Date.now() / 60000) * 60000;
-    if (_grFootprintLiveMinutoTs !== minutoTs) {
-        grFootprintFecharMinutoLiveNoHistorico(); // vira o minuto: grava o anterior de vez no histórico bruto
-        _grFootprintLiveMinutoTs = minutoTs;
-        _grFootprintLiveMinutoMap = new Map();
-    }
-    const pAgr = Math.round(preco / 10) * 10; // tick fino $10 — mesmo grão que o worker usa
-    let acc = _grFootprintLiveMinutoMap.get(pAgr);
-    if (!acc) { acc = { c: 0, v: 0, nc: 0, nv: 0 }; _grFootprintLiveMinutoMap.set(pAgr, acc); }
-    // isBuyerMaker true = agressor vendeu (bateu no bid) => venda; false = agressor comprou (bateu no ask) => compra
-    if (isBuyerMaker) { acc.v += qtd; acc.nv += 1; } else { acc.c += qtd; acc.nc += 1; }
-
-    grFootprintTalvezRefrescarModalAoVivo();
-}
-
-// Quando o minuto vira, o que tava só na memória (Map do minuto em formação)
-// vira uma entrada de verdade em _grFootprintCandlesRaw — daí em diante esse
-// minuto é histórico igual qualquer outro vindo do worker.
-function grFootprintFecharMinutoLiveNoHistorico() {
-    if (_grFootprintLiveMinutoTs == null || _grFootprintLiveMinutoMap.size === 0) return;
-    const niveis = [..._grFootprintLiveMinutoMap.entries()].map(([p, v]) => ({ p, c: v.c, v: v.v, nc: v.nc, nv: v.nv }));
-    _grFootprintCandlesRaw = _grFootprintCandlesRaw.filter(c => c.ts !== _grFootprintLiveMinutoTs);
-    _grFootprintCandlesRaw.push({ ts: _grFootprintLiveMinutoTs, niveis });
-    _grFootprintCandlesRaw.sort((a, b) => a.ts - b.ts);
-}
+// Footprint: 100% vindo do R2 (Binance Futures). Nada é acumulado no navegador.
 
 // Estado de qual modal tá aberto agora, pra saber COMO refrescar ao vivo:
 // 'candle' = candle único (grFootprintCandleContexto tem de/ate/candle),
@@ -15451,6 +15406,8 @@ async function grFootprintAtualizarSeAtivo() {
         window._grMiniLadderCache = new Map();
         window._grCrosshairMiniFootCache = { t: null, niveisPrecoDesc: [] };
         grFootprintRecalcularZonasExistentes(); // zonas já marcadas podem trocar de cor com dado novo
+        _grFootprintUltimoRefreshModal = 0;
+        grFootprintTalvezRefrescarModalAoVivo(); // se algum modal estiver aberto, redesenha com o dado novo
     } catch (e) {
         console.log('Atualização automática do footprint falhou, tenta de novo em 60s:', e.message);
     }
@@ -15925,8 +15882,8 @@ function grFootprintAbrirNivelModal(p, v, total, tick) {
     document.getElementById('footprint-nivel-titulo').textContent = 'Nível $' + p.toLocaleString('pt-BR');
     document.getElementById('footprint-nivel-sub').textContent =
         `Faixa $${p.toLocaleString('pt-BR')} – $${faixaFim.toLocaleString('pt-BR')} · ` +
-        `Compra ${v.c.toFixed(3)} BTC · Venda ${v.v.toFixed(3)} BTC · ` +
-        `Delta ${delta >= 0 ? '+' : ''}${delta.toFixed(3)} BTC · Total ${total.toFixed(3)} BTC`;
+        `Compra ${fmtVolK(v.c)} BTC · Venda ${fmtVolK(v.v)} BTC · ` +
+        `Delta ${delta >= 0 ? '+' : ''}${fmtVolK(delta)} BTC · Total ${fmtVolK(total)} BTC`;
     document.getElementById('footprint-nivel-overlay').style.display = 'block';
     grFootprintAtualizarVisibilidadePainel();
     requestAnimationFrame(() => grFootprintDesenharNivelChart(v.c, v.v, total, delta));
@@ -15974,7 +15931,7 @@ function grFootprintGerenciarZonasZii() {
         return;
     }
     const lista = _grZiiZonas.map((z, i) =>
-        `${i + 1}) $${z.lo.toLocaleString('pt-BR')}–$${z.hi.toLocaleString('pt-BR')} · ${z.tipo} · delta ${z.delta >= 0 ? '+' : ''}${z.delta.toFixed(2)}`
+        `${i + 1}) $${z.lo.toLocaleString('pt-BR')}–$${z.hi.toLocaleString('pt-BR')} · ${z.tipo} · delta ${z.delta >= 0 ? '+' : ''}${fmtVolK(z.delta)}`
     ).join('\n');
     const resp = prompt(`Zonas ZII marcadas:\n\n${lista}\n\nDigite o número pra apagar uma, "todas" pra apagar tudo, ou cancele pra manter.`);
     if (resp == null) return;
@@ -16006,7 +15963,7 @@ function grFootprintAbrirSerieModal() {
     let picoTxt = '';
     if (ativos.length > 0) {
         const pico = ativos.reduce((max, s) => (s.compra + s.venda) > (max.compra + max.venda) ? s : max, ativos[0]);
-        picoTxt = `Ativo de ${fmtHora(ativos[0].ts)} a ${fmtHora(ativos[ativos.length - 1].ts)} · Pico às ${fmtHora(pico.ts)} (${(pico.compra + pico.venda).toFixed(3)} BTC)`;
+        picoTxt = `Ativo de ${fmtHora(ativos[0].ts)} a ${fmtHora(ativos[ativos.length - 1].ts)} · Pico às ${fmtHora(pico.ts)} (${fmtVolK(pico.compra + pico.venda)} BTC)`;
     }
 
     document.getElementById('footprint-serie-titulo').textContent = 'Nível $' + p.toLocaleString('pt-BR') + ' — minuto a minuto';
@@ -16163,7 +16120,7 @@ function grFootprintDesenharNivelChart(compra, venda, total, delta) {
         ctx.font = 'bold 12px -apple-system';
         ctx.fillStyle = '#fff';
         ctx.textAlign = 'center';
-        const rotulo = d.sinal !== undefined ? (d.sinal >= 0 ? '+' : '') + d.sinal.toFixed(3) : d.valor.toFixed(3);
+        const rotulo = d.sinal !== undefined ? (d.sinal >= 0 ? '+' : '') + fmtVolK(d.sinal) : fmtVolK(d.valor);
         ctx.fillText(rotulo, x + barW / 2, y - 6);
 
         ctx.font = '11px -apple-system';
@@ -16182,14 +16139,6 @@ let _grFootprintAvulsoCandlePendente = null; // candle que disparou a confirmaç
 function grFootprintTodosOsCandlesBrutos() {
     let todos = _grFootprintCandlesRaw ? _grFootprintCandlesRaw.slice() : [];
     _grFootprintDiasAvulsos.forEach(candlesDoDia => { todos = todos.concat(candlesDoDia); });
-    // Minuto em formação agora (ainda não fechou, só existe na memória) — sem
-    // isso, o candle/histograma ficaria sempre ~1min atrasado do que já rolou.
-    if (_grFootprintLiveMinutoTs != null && _grFootprintLiveMinutoMap.size > 0) {
-        todos.push({
-            ts: _grFootprintLiveMinutoTs,
-            niveis: [..._grFootprintLiveMinutoMap.entries()].map(([p, v]) => ({ p, c: v.c, v: v.v, nc: v.nc, nv: v.nv }))
-        });
-    }
     return todos;
 }
 
@@ -16210,9 +16159,9 @@ async function grFootprintTentarWorkerAntesDoLento(candle) {
             return;
         }
     } catch (e) {
-        console.log('Worker sem esse dia ainda, caindo pro caminho lento:', e.message);
+        console.log('Worker sem esse dia:', e.message);
     }
-    grFootprintPedirConfirmacaoAvulso(candle);
+    alert('Sem dados de footprint desse dia no R2.');
 }
 
 function grFootprintPedirConfirmacaoAvulso(candle) {
@@ -17053,7 +17002,7 @@ function grFootprintDesenharHistorico(colunas, candle) {
     ctx.font = 'bold 8px -apple-system';
     ctx.fillStyle = '#B8860B';
     ctx.textAlign = 'left';
-    ctx.fillText('média ' + mediaVol.toFixed(2), padEsq + 2, yMedia - 3);
+    ctx.fillText('média ' + fmtVolK(mediaVol), padEsq + 2, yMedia - 3);
 
     // Referências de horário: primeiro, meio, último minuto
     ctx.font = '9px -apple-system';
