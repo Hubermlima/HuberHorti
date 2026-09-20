@@ -3637,13 +3637,14 @@ const FOOTPRINT_LINHA_MIN_PX_SEM_TEXTO = 5; // idem, só com cor (mapa de calor)
 const FOOTPRINT_COR_VERDE    = { base: [227, 241, 227], forte: [78, 159, 85] };
 const FOOTPRINT_COR_VERMELHO = { base: [252, 228, 228], forte: [232, 72, 63] };
 
-// Altura de linha (em USD) = menor passo "redondo" (múltiplo de 10, a resolução dos dados)
-// que ainda deixa a linha com a altura mínima em pixels.
+// Altura da linha (USD): a base é o tick do ATR (0.2 × ATR(14) do timeframe atual, igual à TradingView,
+// ver grCalcularTickATR), arredondado pra múltiplo de 10 (resolução dos dados no R2). Se nessa base a
+// linha ficar mais baixa que o mínimo em pixels, usa um múltiplo INTEIRO do tick base (2×, 3×...): a
+// grade continua única e sempre alinhada ao ATR.
 function grFootprintTickDaGrade(pxPorUsd, minLinhaPx) {
-    const usdMin = minLinhaPx / Math.max(pxPorUsd, 1e-9);
-    const passos = [10, 20, 30, 40, 50, 60, 80, 100, 120, 150, 200, 250, 300, 400, 500, 600, 800, 1000, 1500, 2000, 2500, 3000, 4000, 5000, 10000];
-    for (const p of passos) if (p >= usdMin) return p;
-    return passos[passos.length - 1];
+    const base = Math.max(10, Math.round(grCalcularTickATR() / 10) * 10);
+    const mult = Math.max(1, Math.ceil(minLinhaPx / Math.max(pxPorUsd * base, 1e-9)));
+    return base * mult;
 }
 
 // Linhas de um candle na grade de "tick" USD (do preço mais alto pro mais baixo), com POC,
@@ -4281,126 +4282,6 @@ function grDrawCandles(candles, emptyRight) {
         if (_indState.ema100 && !_indOculto.ema100) { desenharLinha(ema100, '#FFFFFF', 1.2); const v = ema100.filter(v=>v!=null).pop(); if (v!=null) window._compValores.ema100 = { cor: '#FFFFFF', valor: fmtN(v) }; }
         if (_indState.ema200 && !_indOculto.ema200) { desenharLinha(ema200, '#F5A623', 1.5); const v = ema200.filter(v=>v!=null).pop(); if (v!=null) window._compValores.ema200 = { cor: '#F5A623', valor: fmtN(v) }; }
 
-        // ── CVD + Delta sobrepostos no Price Action ─────────────────
-        // Segunda camada em cima dos candles, própria régua (não a de preço)
-        // normalizada dentro do painel — CVD (acumulado) e Delta (por candle)
-        // proporcionais entre si mesmo com escalas brutas bem diferentes.
-        // Janela de acumulação = o "Dias" configurável pelo usuário no botão
-        // do histograma (_grFootprintLookbackDias) — mesma janela do painel
-        // CVD isolado. NÃO reseta ao rolar/dar zoom na tela: só quando o
-        // acumulado sai da janela de dias configurada.
-        if (_indState.cvdPA && !_indOculto.cvdPA) {
-            const msPorCandlePA = (_grFootprintAtivo && typeof grFootprintMsPorCandle === 'function') ? grFootprintMsPorCandle() : null;
-            if (msPorCandlePA && _grFootprintCandlesRaw) {
-                const janelaMsPA = (_grFootprintLookbackDias || 7) * 24 * 60 * 60 * 1000;
-                const inicioJanelaPA = Date.now() - janelaMsPA;
-
-                const cvdAllPA = new Array(_grAllCandles.length).fill(null);
-                const deltaAllPA = new Array(_grAllCandles.length).fill(null);
-                let acumuladoPA = 0;
-                for (let i = 0; i < _grAllCandles.length; i++) {
-                    const c = _grAllCandles[i];
-                    if (c.t < inicioJanelaPA) continue; // fora da janela — ainda não começou a acumular
-                    let dc = 0;
-                    const fim = c.t + msPorCandlePA;
-                    for (const raw of _grFootprintCandlesRaw) {
-                        if (raw.ts < c.t || raw.ts >= fim) continue;
-                        (raw.niveis || []).forEach(n => { dc += (n.c - n.v); });
-                    }
-                    acumuladoPA += dc;
-                    cvdAllPA[i] = acumuladoPA;
-                    deltaAllPA[i] = dc;
-                }
-
-                const cvdVals = [], deltaVals = [];
-                for (let i = 0; i < visible; i++) {
-                    const idx = startIdx + i;
-                    cvdVals.push(idx >= 0 && idx < cvdAllPA.length ? cvdAllPA[idx] : null);
-                    deltaVals.push(idx >= 0 && idx < deltaAllPA.length ? deltaAllPA[idx] : null);
-                }
-
-                // Centraliza no meio do range REAL dos candles visíveis (não do
-                // painel inteiro) — eixo Y é fixo, sobra espaço em branco.
-                const yCandleHi = toY(window._grVisibleHigh);
-                const yCandleLo = toY(window._grVisibleLow);
-                const zeroYpa = (yCandleHi + yCandleLo) / 2;
-                const alturaCandlesPx = Math.max(20, Math.abs(yCandleLo - yCandleHi));
-                const xDoIdx = i => PAD.left + (i / totalSlots) * chartW + cW / 2;
-
-                // Normaliza cada série pelo que tá VISÍVEL na tela — é o que dá
-                // reação/cruzamento de verdade entre CVD e Delta. Uma janela maior
-                // (ex: últimos 300 candles) faz o range do CVD ficar dominado por
-                // picos antigos fora da tela (CVD acumula, positivo e negativo se
-                // cancelam ao longo do tempo — o range dele tende a ser definido
-                // por poucos picos isolados). A régua reajusta ao rolar — isso é
-                // padrão em qualquer oscilador de sub-painel (RSI, MACD já fazem
-                // isso no resto do app), não é bug.
-                function calcularRange(valsVisiveis) {
-                    const validos = valsVisiveis.filter(v => v != null);
-                    if (!validos.length) return null;
-                    const minV = Math.min(...validos), maxV = Math.max(...validos);
-                    return { minV, maxV: Math.max(maxV, minV + 0.001) };
-                }
-                const rangeCvd = calcularRange(cvdVals);
-                const rangeDelta = calcularRange(deltaVals);
-
-                function construirPontosNormalizados(vals, range) {
-                    if (!range) return vals.map(() => null);
-                    const { minV, maxV } = range;
-                    const rangeVal = maxV - minV;
-                    const bandTop = zeroYpa - alturaCandlesPx * 0.3;
-                    const bandBottom = zeroYpa + alturaCandlesPx * 0.3;
-                    return vals.map((v, i) => v == null ? null : {
-                        x: xDoIdx(i),
-                        y: bandBottom - ((v - minV) / rangeVal) * (bandBottom - bandTop)
-                    });
-                }
-                // Traça uma curva CONTÍNUA (um path só, sem reiniciar a cada
-                // segmento) passando por todos os pontos — cada ponto original
-                // vira o "puxão" da curva rumo ao ponto médio até o próximo,
-                // aí sim suaviza de verdade, sem quina em cada vértice. Corta
-                // em runs quando encontra null (fora da janela de dias).
-                function grTracarSuave(pts, cor, lw) {
-                    ctx.strokeStyle = cor;
-                    ctx.lineWidth = lw;
-                    ctx.lineJoin = 'round';
-                    ctx.lineCap = 'round';
-                    let run = [];
-                    const flush = () => {
-                        if (run.length >= 2) {
-                            ctx.beginPath();
-                            ctx.moveTo(run[0].x, run[0].y);
-                            for (let i = 1; i < run.length - 1; i++) {
-                                const mx = (run[i].x + run[i + 1].x) / 2, my = (run[i].y + run[i + 1].y) / 2;
-                                ctx.quadraticCurveTo(run[i].x, run[i].y, mx, my);
-                            }
-                            ctx.lineTo(run[run.length - 1].x, run[run.length - 1].y);
-                            ctx.stroke();
-                        }
-                        run = [];
-                    };
-                    pts.forEach(p => { if (p == null) flush(); else run.push(p); });
-                    flush();
-                }
-
-                const cvdPts = construirPontosNormalizados(cvdVals, rangeCvd);
-                const deltaPts = construirPontosNormalizados(deltaVals, rangeDelta);
-
-                grTracarSuave(cvdPts, '#26A69A', 2.2);   // CVD — linha grossa de referência
-                grTracarSuave(deltaPts, '#1565C0', 1.2); // Delta — linha fina por cima
-
-                ctx.font = 'bold 10px -apple-system';
-                ctx.textAlign = 'left';
-                ctx.fillStyle = '#26A69A';
-                ctx.fillText('CVD', PAD.left + 4, PAD.top + 14);
-                ctx.fillStyle = '#1565C0';
-                ctx.fillText('Delta', PAD.left + 32, PAD.top + 14);
-
-                window._cvdPaAtual = cvdVals[cvdVals.length - 1];
-                window._deltaPaAtual = deltaVals[deltaVals.length - 1];
-            }
-        }
-
         // ── EMA 21 Diário (MTF) ───────────────────────────────────────
         if (_indState.ema21d && !_indOculto.ema21d && _grCandlesD.length >= 21) {
             const closesD = _grCandlesD.map(c => c.c);
@@ -5024,6 +4905,127 @@ if (_grTipoGrafico === 'linha') {
 }
 
 
+
+        // ── CVD + Delta sobrepostos no Price Action ─────────────────
+        // Segunda camada EM CIMA dos candles (desenhada depois deles, inclusive por cima das
+        // células do footprint), própria régua (não a de preço)
+        // normalizada dentro do painel — CVD (acumulado) e Delta (por candle)
+        // proporcionais entre si mesmo com escalas brutas bem diferentes.
+        // Janela de acumulação = o "Dias" configurável pelo usuário no botão
+        // do histograma (_grFootprintLookbackDias) — mesma janela do painel
+        // CVD isolado. NÃO reseta ao rolar/dar zoom na tela: só quando o
+        // acumulado sai da janela de dias configurada.
+        if (_indState.cvdPA && !_indOculto.cvdPA) {
+            const msPorCandlePA = (_grFootprintAtivo && typeof grFootprintMsPorCandle === 'function') ? grFootprintMsPorCandle() : null;
+            if (msPorCandlePA && _grFootprintCandlesRaw) {
+                const janelaMsPA = (_grFootprintLookbackDias || 7) * 24 * 60 * 60 * 1000;
+                const inicioJanelaPA = Date.now() - janelaMsPA;
+
+                const cvdAllPA = new Array(_grAllCandles.length).fill(null);
+                const deltaAllPA = new Array(_grAllCandles.length).fill(null);
+                let acumuladoPA = 0;
+                for (let i = 0; i < _grAllCandles.length; i++) {
+                    const c = _grAllCandles[i];
+                    if (c.t < inicioJanelaPA) continue; // fora da janela — ainda não começou a acumular
+                    let dc = 0;
+                    const fim = c.t + msPorCandlePA;
+                    for (const raw of _grFootprintCandlesRaw) {
+                        if (raw.ts < c.t || raw.ts >= fim) continue;
+                        (raw.niveis || []).forEach(n => { dc += (n.c - n.v); });
+                    }
+                    acumuladoPA += dc;
+                    cvdAllPA[i] = acumuladoPA;
+                    deltaAllPA[i] = dc;
+                }
+
+                const cvdVals = [], deltaVals = [];
+                for (let i = 0; i < visible; i++) {
+                    const idx = startIdx + i;
+                    cvdVals.push(idx >= 0 && idx < cvdAllPA.length ? cvdAllPA[idx] : null);
+                    deltaVals.push(idx >= 0 && idx < deltaAllPA.length ? deltaAllPA[idx] : null);
+                }
+
+                // Centraliza no meio do range REAL dos candles visíveis (não do
+                // painel inteiro) — eixo Y é fixo, sobra espaço em branco.
+                const yCandleHi = toY(window._grVisibleHigh);
+                const yCandleLo = toY(window._grVisibleLow);
+                const zeroYpa = (yCandleHi + yCandleLo) / 2;
+                const alturaCandlesPx = Math.max(20, Math.abs(yCandleLo - yCandleHi));
+                const xDoIdx = i => PAD.left + (i / totalSlots) * chartW + cW / 2;
+
+                // Normaliza cada série pelo que tá VISÍVEL na tela — é o que dá
+                // reação/cruzamento de verdade entre CVD e Delta. Uma janela maior
+                // (ex: últimos 300 candles) faz o range do CVD ficar dominado por
+                // picos antigos fora da tela (CVD acumula, positivo e negativo se
+                // cancelam ao longo do tempo — o range dele tende a ser definido
+                // por poucos picos isolados). A régua reajusta ao rolar — isso é
+                // padrão em qualquer oscilador de sub-painel (RSI, MACD já fazem
+                // isso no resto do app), não é bug.
+                function calcularRange(valsVisiveis) {
+                    const validos = valsVisiveis.filter(v => v != null);
+                    if (!validos.length) return null;
+                    const minV = Math.min(...validos), maxV = Math.max(...validos);
+                    return { minV, maxV: Math.max(maxV, minV + 0.001) };
+                }
+                const rangeCvd = calcularRange(cvdVals);
+                const rangeDelta = calcularRange(deltaVals);
+
+                function construirPontosNormalizados(vals, range) {
+                    if (!range) return vals.map(() => null);
+                    const { minV, maxV } = range;
+                    const rangeVal = maxV - minV;
+                    const bandTop = zeroYpa - alturaCandlesPx * 0.3;
+                    const bandBottom = zeroYpa + alturaCandlesPx * 0.3;
+                    return vals.map((v, i) => v == null ? null : {
+                        x: xDoIdx(i),
+                        y: bandBottom - ((v - minV) / rangeVal) * (bandBottom - bandTop)
+                    });
+                }
+                // Traça uma curva CONTÍNUA (um path só, sem reiniciar a cada
+                // segmento) passando por todos os pontos — cada ponto original
+                // vira o "puxão" da curva rumo ao ponto médio até o próximo,
+                // aí sim suaviza de verdade, sem quina em cada vértice. Corta
+                // em runs quando encontra null (fora da janela de dias).
+                function grTracarSuave(pts, cor, lw) {
+                    ctx.strokeStyle = cor;
+                    ctx.lineWidth = lw;
+                    ctx.lineJoin = 'round';
+                    ctx.lineCap = 'round';
+                    let run = [];
+                    const flush = () => {
+                        if (run.length >= 2) {
+                            ctx.beginPath();
+                            ctx.moveTo(run[0].x, run[0].y);
+                            for (let i = 1; i < run.length - 1; i++) {
+                                const mx = (run[i].x + run[i + 1].x) / 2, my = (run[i].y + run[i + 1].y) / 2;
+                                ctx.quadraticCurveTo(run[i].x, run[i].y, mx, my);
+                            }
+                            ctx.lineTo(run[run.length - 1].x, run[run.length - 1].y);
+                            ctx.stroke();
+                        }
+                        run = [];
+                    };
+                    pts.forEach(p => { if (p == null) flush(); else run.push(p); });
+                    flush();
+                }
+
+                const cvdPts = construirPontosNormalizados(cvdVals, rangeCvd);
+                const deltaPts = construirPontosNormalizados(deltaVals, rangeDelta);
+
+                grTracarSuave(cvdPts, '#26A69A', 2.2);   // CVD — linha grossa de referência
+                grTracarSuave(deltaPts, '#1565C0', 1.2); // Delta — linha fina por cima
+
+                ctx.font = 'bold 10px -apple-system';
+                ctx.textAlign = 'left';
+                ctx.fillStyle = '#26A69A';
+                ctx.fillText('CVD', PAD.left + 4, PAD.top + 14);
+                ctx.fillStyle = '#1565C0';
+                ctx.fillText('Delta', PAD.left + 32, PAD.top + 14);
+
+                window._cvdPaAtual = cvdVals[cvdVals.length - 1];
+                window._deltaPaAtual = deltaVals[deltaVals.length - 1];
+            }
+        }
 
         // ── Pivô de Alta (PA) e Pivô de Baixa (PB) ───────────────────
         (function() {
