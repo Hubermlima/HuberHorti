@@ -3688,7 +3688,7 @@ grFootprintSkinAtualizarRotulo();
 
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
-const APP_VERSAO = '20/09 08:08 · 15064 linhas';
+const APP_VERSAO = '20/09 08:23 · 15099 linhas';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) el.textContent = 'Versão ' + APP_VERSAO;
@@ -4211,6 +4211,7 @@ async function grRenderChart() {
             }
             grVwapCarregarAncoras(); // recarrega as âncoras salvas pra esse ativo (independe do timeframe agora)
             grValueAreaCarregarAncora();
+            grFaixaCarregar(); // idem pra marcação de faixa (retângulo do Ponto 1/2)
 
             // Candles diários/semanais (EMA21D/21S e SMAs semanais) NÃO bloqueiam mais o primeiro
             // desenho: carregam em segundo plano e o gráfico redesenha quando chegam. Não dependem do
@@ -4407,10 +4408,9 @@ function grDrawCandles(candles, emptyRight) {
         // rótulo do delta é desenhado depois (por cima), na coluna da direita. Preço → tela via toY(); tempo
         // (ts dos 2 candles marcados) → tela via grVwapIdxPorTs (ts→índice) e o mesmo esquema de slots.
         let faixaGeo = null;
-        if (_grFootprintAtivo && _grFaixaMarcada) {
-            const idxBaixoAbs = grVwapIdxPorTs(_grFaixaMarcada.tsBaixo);
-            const idxAltoAbs = grVwapIdxPorTs(_grFaixaMarcada.tsAlto);
-            if (idxBaixoAbs >= 0 && idxAltoAbs >= 0) {
+        if (_grFaixaMarcada) { // não depende do Fluxo estar ligado: é uma marcação salva no aparelho
+            const idxBaixoAbs = grFaixaIdxContendo(_grFaixaMarcada.tsBaixo); // candle que CONTÉM o ts (vale em qualquer timeframe)
+            if (idxBaixoAbs !== -1) {
                 const xEsq = PAD.left + ((idxBaixoAbs - startIdx) / totalSlots) * chartW;
                 const yTopoFx = toY(_grFaixaMarcada.precoAlto), yBaseFx = toY(_grFaixaMarcada.precoBaixo);
                 faixaGeo = { yTopo: yTopoFx, yBase: yBaseFx };
@@ -6646,6 +6646,7 @@ function grInitTouch() {
                     }
                     window._longPressActive = false;
                     clearTimeout(_longPressTimer);
+                    grFaixaSalvar(); // guarda no aparelho: sobrevive a sair da página e voltar
                     grDrawChart(); // redesenha JÁ: fecha o crosshair e mostra o retângulo (antes esperava o próximo redesenho do WS, até 5 s)
                     e.preventDefault();
                     return;
@@ -7342,6 +7343,40 @@ function grDeltaFaixaPrecoTempo(precoBaixo, precoAlto, tsInicio, tsFimExclusive)
 // o resultado dentro, até uma nova faixa ser marcada (substitui a anterior).
 let _grFaixaP1 = null;       // { preco, ts } do 1º ponto, enquanto aguarda o 2º
 let _grFaixaMarcada = null;  // { precoBaixo, precoAlto, tsBaixo, tsAlto, delta, compra, venda } — resultado atual (quadrado), ou null
+
+// A marcação (retângulo e o 1º ponto pendente) fica salva no aparelho, por ativo — mesma ideia das âncoras do
+// VWAP: guarda preços e TIMESTAMPS de candle (não índices), então sobrevive a sair da página, recarregar e
+// trocar de timeframe. Carrega junto com os candles (grRenderChart) e salva ao marcar (botão do crosshair).
+function _grFaixaLSKey() {
+    return 'gr_faixa_marcada_' + (_ativoId || 'default');
+}
+function grFaixaSalvar() {
+    try { localStorage.setItem(_grFaixaLSKey(), JSON.stringify({ faixa: _grFaixaMarcada, p1: _grFaixaP1 })); } catch (e) {}
+}
+function grFaixaCarregar() {
+    const num = v => typeof v === 'number' && isFinite(v);
+    _grFaixaMarcada = null; _grFaixaP1 = null; // também limpa a marcação do ativo anterior ao trocar de ativo
+    try {
+        const raw = localStorage.getItem(_grFaixaLSKey());
+        const d = raw ? JSON.parse(raw) : null;
+        if (!d) return;
+        const f = d.faixa;
+        if (f && num(f.precoBaixo) && num(f.precoAlto) && num(f.tsBaixo) && num(f.tsAlto) && num(f.delta)) _grFaixaMarcada = f;
+        if (d.p1 && num(d.p1.preco) && num(d.p1.ts)) _grFaixaP1 = d.p1;
+    } catch (e) {}
+}
+// Índice do candle que CONTÉM o timestamp (o último candle que abriu antes dele). Funciona mesmo depois de
+// trocar de timeframe, quando o ts guardado não é mais a abertura exata de nenhum candle. -1 = não há candle
+// carregado (lista vazia); ts anterior ao histórico carregado devolve um índice bem à esquerda (o retângulo
+// começa "fora" da tela e é cortado pela área do gráfico).
+function grFaixaIdxContendo(ts) {
+    const n = _grAllCandles.length;
+    if (!n) return -1;
+    if (ts < _grAllCandles[0].t) return -1e6;
+    let lo = 0, hi = n - 1;
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (_grAllCandles[mid].t <= ts) lo = mid; else hi = mid - 1; }
+    return lo;
+}
 
 function grCrosshairZonaDelta(preco, pctZona) {
     const mapaBase = grFootprintObterMapaBaseValueArea();
