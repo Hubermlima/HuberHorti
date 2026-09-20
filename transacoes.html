@@ -2131,8 +2131,10 @@ _precoAtual = 0;
     document.getElementById('cv-var').textContent   = '—';
     grDrawChart(); // limpa o canvas
 
-                await grRenderChart();
+    grPerfIniciar();
+    cvAtualizarPrecoRealTime();
     cvIniciarRealTime();
+    await grRenderChart();
     if (_cvMinimapAtivo) cvMinimapCarregar();
     cvAtualizarSaldo();
     await Promise.all([carregarTransacoes(), fetchFxRate()]);
@@ -2612,11 +2614,16 @@ function cvAbrir() {
         varEl.style.color = _varPct >= 0 ? '#26A69A' : '#EF5350';
     }
     cvAtualizarSaldo();
+    // Cotação e WebSocket não dependem dos candles: começam agora, em paralelo com eles
+    // (antes só começavam DEPOIS do gráfico terminar de carregar).
+    grPerfIniciar();
+    cvAtualizarPrecoRealTime();
+    cvIniciarRealTime();
     if (_grAllCandles.length === 0) {
         _grOffset = 999999;
-        grRenderChart().then(() => { grInitTouch(); grInitFloatDrag(); cvInitDrawer(); grCalcularComGlobais(); cvIniciarRealTime(); });
+        grRenderChart().then(() => { grInitTouch(); grInitFloatDrag(); cvInitDrawer(); grCalcularComGlobais(); });
     } else {
-        grInitTouch(); grInitFloatDrag(); cvInitDrawer(); grDrawChart(); grCalcularComGlobais(); cvIniciarRealTime();
+        grInitTouch(); grInitFloatDrag(); cvInitDrawer(); grDrawChart(); grCalcularComGlobais();
     }
 }
 
@@ -2649,13 +2656,13 @@ async function cvAtualizarPrecoRealTime() {
 
         // Atualiza globais
         _precoAtual = novoPreco;
+        grPerf('cotação (REST)');
         grFootprintAtualizarLinhaPrecoAtual();
         if (!_regAtual && _grPm > 0) {
             _indState.reg = true;
             _regAtual = { p1: _grPm, p2: _cvTradeAlvoPendente > 0 ? _cvTradeAlvoPendente : _precoAtual * 1.05 };
             _cvTradeAlvoPendente = 0; // consumido
             _regJanelaVisivel = false;
-            _regTracking = false;
             document.getElementById('cv-ind-reg').classList.add('active');
         }
         _varPct     = novaVar;
@@ -2795,6 +2802,7 @@ function cvIniciarRealTime() {
             if (!novoPreco) return;
             const precoAntes = _precoAtual;
             _precoAtual = novoPreco;
+            grPerf('cotação (WebSocket)');
             grFootprintAtualizarLinhaPrecoAtual();
 
             // Detecção de cruzamento alvo/stop
@@ -2840,7 +2848,6 @@ function cvIniciarRealTime() {
                 _regAtual = { p1: _grPm, p2: _cvTradeAlvoPendente > 0 ? _cvTradeAlvoPendente : _precoAtual * 1.05 };
                 _cvTradeAlvoPendente = 0;
                 _regJanelaVisivel = false;
-                _regTracking = false;
                 document.getElementById('cv-ind-reg').classList.add('active');
             }
 
@@ -3007,7 +3014,6 @@ function cvFecharMenu() { document.getElementById('cv-menu-overlay').classList.r
 function cvZoom(dir) {
     if (dir === 'drone') {
     _grDrone = !_grDrone;
-    _grDroneRange = null;
     document.getElementById('cv-btn-drone').classList.toggle('active', _grDrone);
     if (_grDrone) _grZoom = Math.min(500, Math.round(_grZoom * 2));
     else _grZoom = 40;
@@ -3015,7 +3021,6 @@ function cvZoom(dir) {
     return;
 }
 
-    if (_grDrone) _grDroneRange = null;
     if (dir === '+') {
         // Zoom in: menos candles (mais detalhe)
         _grZoom = Math.max(1, Math.round(_grZoom * 0.75));
@@ -3029,7 +3034,7 @@ function cvZoom(dir) {
 function cvSetTf(tf) {
     _grTf = tf;
     _grOffset = 999999;
-    _grAllCandles = []; _grCandlesD = []; _grCandlesW = [];
+    _grAllCandles = [];
     _wsLastDraw = Date.now();
     _cvMinimapChaveCache = ''; _cvMinimapScrollIdx = null; _cvMinimapUltimoRangeKey = null; // tf mudou → minimapa precisa remapear/recarregar
 
@@ -3042,7 +3047,7 @@ function cvSetTf(tf) {
     const btnCustom = document.getElementById('cv-tf-custom');
     if (btnCustom) btnCustom.classList.toggle('active', tf==='custom');
     grRenderChart().then(() => {
-        grInitTouch(); grInitFloatDrag(); grCalcularComGlobais(); cvIniciarRealTime();
+        grInitTouch(); grInitFloatDrag(); grCalcularComGlobais();
         if (_cvMinimapAtivo) cvMinimapCarregar();
     });
 }
@@ -3153,7 +3158,7 @@ function grAgruparCandles(candles, unit, amount) {
 
 // Agrupa candles diários em semanas de calendário real: segunda 00:00 UTC até
 // domingo 23:59 UTC (= domingo ~20h em Manaus/UTC-4, ~21h em Brasília/UTC-3).
-// Existe pra substituir o '1w' nativo da Kraken/Binance, que bucketiza em
+// Existe pra substituir o '1w' nativo da Binance, que bucketiza em
 // blocos fixos de 7 dias a partir do epoch Unix (1970-01-01, quinta-feira) —
 // isso faz a "semana" da exchange virar quarta/quinta em vez de domingo/segunda.
 function grInicioSemanaCivilUTC(tMs) {
@@ -3844,20 +3849,11 @@ let _regHandleDragged = false;
 let _regTrackingTimer = null;
 
 
-window._grKrakenParesCache = null; // Map: ativo base (ex: 'ETH', 'SOL', 'XBT') -> par usável na API da Kraken
-
 window._grFonteCandles = 'Binance'; // exposto pra UI poder mostrar de onde veio o dado
 
-// Busca candles com Kraken como fonte PRIMÁRIA e Binance como fallback automático
-// (Kraken indisponível/erro, ativo sem par USD lá, timeframe sem equivalente na
-// Kraken, ou paginação pra trás via endTime — que a Kraken não suporta).
-// Funciona pra QUALQUER ativo, não só BTC — descobre o par certo sozinho.
-// Devolve SEMPRE no formato de array cru da Binance: [openTime, open, high, low,
-// close, volume, closeTime, ...] — assim todo o código que já consome klines
-// (que espera k[0], k[1], k[4] etc.) continua funcionando sem precisar mudar.
-// Ressalva: a Kraken não tem volume de compra/venda separado por candle (só a
-// Binance tem, no índice 9) — quando a fonte é Kraken, esse campo fica null,
-// e o indicador de Delta/CVD do candle principal perde precisão nesse caso.
+// Busca candles da Binance Futures (fapi) — fonte única, mesma base do footprint no R2.
+// Devolve o array cru da Binance: [openTime, open, high, low, close, volume, closeTime, ...]
+// (índice 9 = volume de compra agressiva), formato que todo o código consome (k[0], k[1], k[4]...).
 async function grBuscarKlines(binSymbol, binInterval, limit, endTime) {
     // Fonte ÚNICA: Binance FUTURES (mesma base do footprint no R2).
     const q = `symbol=${binSymbol}&interval=${binInterval}&limit=${limit}` + (endTime ? `&endTime=${endTime}` : '');
@@ -3904,6 +3900,48 @@ function grToggleTema() {
     grDrawChart();
 }
 
+// Carrega os candles diários (100) e semanais (agrupados de ~3000 diários, semana civil) usados
+// pelas médias MTF. Roda em segundo plano; o token descarta resposta de um ativo que já foi trocado.
+let _grMtfToken = 0;
+async function grCarregarMTF(binSymbol) {
+    const token = ++_grMtfToken;
+    try {
+        const fetchDiariosPaginado = async (paginas) => {
+            let todos = [];
+            let endTime = null;
+            for (let i = 0; i < paginas; i++) {
+                const d = await grBuscarKlines(binSymbol, '1d', 1000, endTime);
+                if (!Array.isArray(d) || d.length === 0) break;
+                const mapeados = d.map(k => ({
+                    t: k[0], o: parseFloat(k[1]), h: parseFloat(k[2]),
+                    l: parseFloat(k[3]), c: parseFloat(k[4]), v: parseFloat(k[5])
+                }));
+                todos = [...mapeados, ...todos];
+                endTime = mapeados[0].t - 1;
+                if (mapeados.length < 1000) break; // acabou o histórico disponível
+            }
+            return todos;
+        };
+        const [resD, diariosParaSemana] = await Promise.all([
+            grBuscarKlines(binSymbol, '1d', 100),
+            fetchDiariosPaginado(3) // ~3000 dias ⇒ cobre as 350 semanas da SMA semanal com folga
+        ]);
+        if (token !== _grMtfToken) return; // trocou de ativo enquanto carregava
+        _grCandlesD = (Array.isArray(resD) ? resD : []).map(k => ({ t: k[0], c: parseFloat(k[4]) }));
+        _grCandlesW = grAgruparCandlesSemanaCivil(diariosParaSemana).map(c => ({ t: c.t, c: c.c }));
+        grPerf('candles diários/semanais (EMA MTF)');
+        if (!window._grTocando) grDrawChart();
+    } catch(e) {}
+}
+
+// Medição de tempo de abertura (aparece no console/eruda): a partir de cvAbrir ou troca de ativo.
+function grPerfIniciar() { window._perfT0 = performance.now(); window._perfMarcas = {}; }
+function grPerf(rotulo) {
+    if (window._perfT0 == null || window._perfMarcas[rotulo]) return;
+    window._perfMarcas[rotulo] = true;
+    console.log('[perf] ' + rotulo + ': ' + Math.round(performance.now() - window._perfT0) + ' ms');
+}
+
 async function grRenderChart() {
     const container = document.getElementById('gr-chart-container');
     const canvasWrap = document.getElementById('gr-chart-canvas-wrap') || container;
@@ -3942,7 +3980,7 @@ async function grRenderChart() {
             const binSymbol = ((_ticker || 'BTC/USD').replace('/', '').replace('-','').toUpperCase()
                 .replace('USD','USDT').replace('USDTT','USDT'));
             // '1week' busca candles DIÁRIOS e agrupa em semana civil (seg-dom) na mão —
-            // o '1w' nativo da Kraken/Binance bucketiza em blocos fixos de 7 dias a
+            // o '1w' nativo da Binance bucketiza em blocos fixos de 7 dias a
             // partir do epoch Unix (quinta-feira), não em semana de calendário real.
             const binInterval = _grTf === '15m' ? '15m' : _grTf === '1h' ? '1h' : (_grTf === '1day' || _grTf === '1week') ? '1d' : _grTf === '1month' ? '1M' : _grTf === 'custom' ? grBaseIntervalCustom(_grTfCustomUnit) : '4h';
             const fetchBin = async (endTime) => {
@@ -3954,8 +3992,21 @@ async function grRenderChart() {
                     bv: k[9] != null ? parseFloat(k[9]) : null
                 }));
             };
-            const page1 = await fetchBin(null);
-            const page2 = page1.length > 0 ? await fetchBin(page1[0].t - 1) : [];
+            // Página 1 (mais recentes) e página 2 (anteriores) em PARALELO quando o intervalo tem
+            // duração fixa (dá pra calcular onde a página 2 termina sem esperar a 1). Se não bater
+            // (relógio do aparelho fora de hora, intervalo variável), busca a página 2 em sequência.
+            const msIntervalo = { '15m': 900000, '1h': 3600000, '4h': 14400000, '1d': 86400000 }[binInterval];
+            let page1, page2;
+            if (msIntervalo) {
+                const abertura = Math.floor(Date.now() / msIntervalo) * msIntervalo; // candle em formação
+                [page1, page2] = await Promise.all([fetchBin(null), fetchBin(abertura - 999 * msIntervalo - 1)]);
+                if (page1.length > 0) page2 = page2.filter(c => c.t < page1[0].t);
+                const continuo = page2.length > 0 && page1.length > 0 && page2[page2.length - 1].t + msIntervalo === page1[0].t;
+                if (!continuo && page1.length > 0) page2 = await fetchBin(page1[0].t - 1);
+            } else {
+                page1 = await fetchBin(null);
+                page2 = page1.length > 0 ? await fetchBin(page1[0].t - 1) : [];
+            }
             _grAllCandles = [...page2, ...page1];
             if (_grTf === '1week') {
                 _grAllCandles = grAgruparCandlesSemanaCivil(_grAllCandles);
@@ -3963,38 +4014,18 @@ async function grRenderChart() {
                 _grAllCandles = grAgruparCandles(_grAllCandles, _grTfCustomUnit, _grTfCustomAmount);
             }
             _grZonasCache = null;
+            if (!(_precoAtual > 0) && _grAllCandles.length > 0) {
+                _precoAtual = _grAllCandles[_grAllCandles.length - 1].c; // enquanto o ticker/WebSocket não responde
+                const precoEl = document.getElementById('cv-preco');
+                if (precoEl) precoEl.textContent = fmtUSD(_precoAtual) + ' USD';
+            }
             grVwapCarregarAncoras(); // recarrega as âncoras salvas pra esse ativo (independe do timeframe agora)
             grValueAreaCarregarAncora();
 
-            // Busca candles diários e semanais para EMA MTF (em paralelo).
-            // _grCandlesW é reconstruído a partir de diários agrupados em semana civil
-            // (mesmo motivo do _grAllCandles acima) — o '1w' nativo da exchange fica
-            // fora de fase (vira quarta/quinta em vez de domingo/segunda), o que
-            // deslocava a EMA21S e as SMA 250/300/350 semanais.
-            try {
-                const fetchDiariosPaginado = async (paginas) => {
-                    let todos = [];
-                    let endTime = null;
-                    for (let i = 0; i < paginas; i++) {
-                        const d = await grBuscarKlines(binSymbol, '1d', 1000, endTime);
-                        if (!Array.isArray(d) || d.length === 0) break;
-                        const mapeados = d.map(k => ({
-                            t: k[0], o: parseFloat(k[1]), h: parseFloat(k[2]),
-                            l: parseFloat(k[3]), c: parseFloat(k[4]), v: parseFloat(k[5])
-                        }));
-                        todos = [...mapeados, ...todos];
-                        endTime = mapeados[0].t - 1;
-                        if (mapeados.length < 1000) break; // acabou o histórico disponível
-                    }
-                    return todos;
-                };
-                const [resD, diariosParaSemana] = await Promise.all([
-                    grBuscarKlines(binSymbol, '1d', 100),
-                    fetchDiariosPaginado(3) // ~3000 dias ⇒ cobre as 350 semanas da SMA semanal com folga
-                ]);
-                _grCandlesD = (Array.isArray(resD) ? resD : []).map(k => ({ t: k[0], c: parseFloat(k[4]) }));
-                _grCandlesW = grAgruparCandlesSemanaCivil(diariosParaSemana).map(c => ({ t: c.t, c: c.c }));
-            } catch(e) {}
+            // Candles diários/semanais (EMA21D/21S e SMAs semanais) NÃO bloqueiam mais o primeiro
+            // desenho: carregam em segundo plano e o gráfico redesenha quando chegam. Não dependem do
+            // timeframe, então só busca se ainda não tiver (troca de timeframe reaproveita).
+            if (_grCandlesD.length === 0 || _grCandlesW.length === 0) grCarregarMTF(binSymbol);
         }
 
 
@@ -4015,6 +4046,7 @@ const startIdx = Math.max(0, Math.min(maxOff, _grOffset));
 
         if (candles.length === 0) return;
 
+        grPerf('candles desenhados');
         grDrawCandles(candles, emptyRight);
     } catch(e) {
         console.log('Chart error:', e.message);
@@ -7095,7 +7127,6 @@ function grInitTouch() {
         if (_regHandleDragged) {
             // Soltou após arrastar — fecha janelinha
             _regJanelaVisivel = false;
-            _regTracking = false;
             if (_regTrackingTimer) clearTimeout(_regTrackingTimer);
         } else {
             // Toque curto no handle — toggle janelinha
@@ -12057,7 +12088,6 @@ function odSazCicloDoMes(ano, mes) {
 }
 
 function odRenderizarSazonalidade(meses) {
-    _odSazMesesCache = meses;
     const loading = document.getElementById('od-saz-loading');
     const wrap = document.getElementById('od-saz-wrap');
     const tabela = document.getElementById('od-saz-tabela');
@@ -12330,27 +12360,6 @@ function cvFecharSetupSheet() {
 </div>
 
 
-<!-- Confirmação de busca avulsa (candle fora da janela dos 15 dias) -->
-<div id="footprint-avulso-confirma" style="display:none;position:fixed;inset:0;z-index:6900;background:rgba(0,0,0,0.6);align-items:center;justify-content:center;">
-  <div style="background:#1E222D;border-radius:14px;padding:20px;margin:0 24px;max-width:340px;">
-    <div style="color:#fff;font-size:15px;font-weight:600;margin-bottom:8px;">Buscar rastro desse dia?</div>
-    <div id="footprint-avulso-texto" style="color:#8E8E93;font-size:13px;line-height:1.5;margin-bottom:18px;"></div>
-    <div style="display:flex;gap:10px;">
-      <button onclick="grFootprintCancelarAvulso()" style="flex:1;padding:10px;border-radius:8px;background:#2A2E39;color:#fff;border:none;font-size:14px;">Cancelar</button>
-      <button onclick="grFootprintConfirmarAvulso()" style="flex:1;padding:10px;border-radius:8px;background:#FFA726;color:#000;border:none;font-weight:700;font-size:14px;">Buscar</button>
-    </div>
-  </div>
-</div>
-
-<!-- Barra de progresso da busca avulsa — fixa, discreta, não trava a navegação -->
-<div id="footprint-avulso-progresso" style="display:none;position:fixed;left:12px;right:12px;bottom:16px;z-index:99999;background:#1C1C1E;border-radius:10px;padding:10px 14px;box-shadow:0 4px 16px rgba(0,0,0,0.4);">
-  <div id="footprint-avulso-progresso-texto" style="color:#8E8E93;font-size:12px;margin-bottom:6px;"></div>
-  <div style="background:#2A2E39;border-radius:4px;height:6px;overflow:hidden;">
-    <div id="footprint-avulso-progresso-barra" style="background:#FFA726;height:100%;width:0%;transition:width 0.3s;"></div>
-  </div>
-  <button id="footprint-avulso-progresso-btn" onclick="grFootprintAbrirAvulsoConcluido()" style="display:none;margin-top:8px;width:100%;padding:8px;border-radius:8px;background:#FFA726;color:#000;border:none;font-weight:700;font-size:13px;">Abrir candle</button>
-</div>
-
 <!-- Modal de footprint de um candle específico (ladder de preços, compra/venda por nível) -->
 <div id="footprint-candle-overlay" style="display:none;position:fixed;inset:0;z-index:6500;background:rgba(0,0,0,0.6);" onclick="grFootprintFecharCandleModal()">
   <div onclick="event.stopPropagation()" style="position:absolute;bottom:0;left:0;right:0;background:#1E222D;border-radius:20px 20px 0 0;display:flex;flex-direction:column;height:92vh;padding-bottom:env(safe-area-inset-bottom);">
@@ -12404,12 +12413,11 @@ function cvFecharSetupSheet() {
 </div>
 
 <script>
-// Fonte dos dados de footprint no worker: 'binance' (Futures, gaveta binance/ no R2)
-// ou 'kraken' (gaveta footprint/ — padrão do worker quando o parâmetro é omitido).
-const FOOTPRINT_FONTE = 'binance';
+// Footprint: dados da Binance Futures, gaveta binance/ do R2, via worker.
+// O parâmetro fonte=binance é mantido pra funcionar também com versões antigas do worker.
 const FOOTPRINT_WORKER_URL = 'https://huberhorti-footprint.huber-produtos.workers.dev/footprint';
 function grFootprintUrlDia(dia) {
-    return `${FOOTPRINT_WORKER_URL}?dia=${dia}` + (FOOTPRINT_FONTE === 'binance' ? '&fonte=binance' : '');
+    return `${FOOTPRINT_WORKER_URL}?dia=${dia}&fonte=binance`;
 }
 let FOOTPRINT_DIAS_AO_ATIVAR = parseInt(localStorage.getItem('grFootprintDiasAoAtivar')) || 30; // quantos dias (pra trás, a partir de hoje) carrega ao ativar. Ajustável pelo menu. Dias mais antigos vêm do R2 sob demanda, ao clicar no candle.
 const FOOTPRINT_MIN_PCT = 0.04;       // esconde barras com menos de 4% do volume do POC (reduz ruído)
@@ -12643,7 +12651,6 @@ async function grFootprintAtivar() {
 
         _grFootprintAtivo = true;
         _grFootprintCandlesRaw = flat;
-        _grFootprintDiasCarregados = dias;
         _grFootprintUltimoRangeVisto = null;
         _grFootprintUltimoRangeCalc = null;
         _grFootprintDisplayCache = null;
@@ -13304,7 +13311,6 @@ function grFootprintDesenharNivelChart(compra, venda, total, delta) {
 }
 
 let _grFootprintDiasAvulsos = new Map(); // dayKey ('2026-08-19') -> array de {ts, niveis} baixados sob demanda
-let _grFootprintAvulsoCandlePendente = null; // candle que disparou a confirmação, guardado pra reabrir depois de confirmar
 
 // Junta o candle bruto (1min) de todas as fontes disponíveis: a janela rolante
 // dos últimos 15 dias (_grFootprintCandlesRaw) + qualquer dia avulso que já
@@ -13315,12 +13321,10 @@ function grFootprintTodosOsCandlesBrutos() {
     return todos;
 }
 
-// Tenta o caminho rápido primeiro: pergunta pro worker (R2) se ele já tem
-// esse dia (o backfill que roda sozinho em segundo plano pode já ter chegado
-// lá). Se tiver, usa na hora — sem precisar catar trade por trade na Kraken.
-// Se não tiver (backfill ainda não chegou, ou deu erro qualquer), cai pro
-// fluxo lento de sempre, sem travar nada.
-async function grFootprintTentarWorkerAntesDoLento(candle) {
+// Candle fora da janela carregada ao ativar o Fluxo: busca o dia dele direto no
+// R2 (via worker), guarda em _grFootprintDiasAvulsos e reabre o modal do candle.
+// Se o R2 não tiver esse dia, avisa.
+async function grFootprintCarregarDiaDoR2(candle) {
     const dia = new Date(candle.t).toISOString().slice(0, 10);
     try {
         const r = await fetch(grFootprintUrlDia(dia));
@@ -13336,118 +13340,6 @@ async function grFootprintTentarWorkerAntesDoLento(candle) {
     }
     alert('Sem dados de footprint desse dia no R2.');
 }
-
-function grFootprintCancelarAvulso() {
-    document.getElementById('footprint-avulso-confirma').style.display = 'none';
-    _grFootprintAvulsoCandlePendente = null;
-}
-
-function grFootprintConfirmarAvulso() {
-    document.getElementById('footprint-avulso-confirma').style.display = 'none';
-    const candle = _grFootprintAvulsoCandlePendente;
-    if (candle) grFootprintBuscarDiaAvulso(candle);
-}
-
-function grFootprintAbrirAvulsoConcluido() {
-    document.getElementById('footprint-avulso-progresso').style.display = 'none';
-    const candle = _grFootprintAvulsoCandlePendente;
-    _grFootprintAvulsoCandlePendente = null;
-    if (candle) grFootprintAbrirCandleModal(candle);
-}
-
-// Busca o dia inteiro (00:00 a 23:59:59 UTC) de trades brutos direto na
-// Kraken, pagina respeitando ~1 req/s (o limite seguro documentado por eles),
-// agrega em candles de 1min (mesma lógica do worker, tick $10) e guarda em
-// _grFootprintDiasAvulsos — só na memória da sessão, some se recarregar.
-async function grFootprintBuscarDiaAvulso(candle) {
-    _grFootprintAvulsoEmAndamento = true;
-    const painel = document.getElementById('footprint-avulso-progresso');
-    const txtEl = document.getElementById('footprint-avulso-progresso-texto');
-    const barraEl = document.getElementById('footprint-avulso-progresso-barra');
-    const btnEl = document.getElementById('footprint-avulso-progresso-btn');
-    painel.style.display = 'block';
-    btnEl.style.display = 'none';
-    barraEl.style.width = '0%';
-
-    const dayKeyStr = new Date(candle.t).toISOString().slice(0, 10);
-    const dataLabel = new Date(candle.t).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', timeZone: 'UTC' });
-    const dayStartMs = new Date(dayKeyStr + 'T00:00:00.000Z').getTime();
-    const dayEndMs = dayStartMs + 24 * 3600 * 1000;
-    const TICK_AVULSO = grCalcularTickATR();
-
-    txtEl.textContent = `Buscando rastro de ${dataLabel}... conectando`;
-
-    const candlesPorMinuto = new Map(); // 'HH:MM' -> { niveis: Map(preco -> {c,v,nc,nv}) }
-    let cursor = Math.floor(dayStartMs / 1000);
-    let falhas = 0;
-    const MAX_PAGINAS = 400;
-
-    for (let pagina = 0; pagina < MAX_PAGINAS; pagina++) {
-        let json;
-        try {
-            const r = await fetch(`https://api.kraken.com/0/public/Trades?pair=XBTUSD&since=${cursor}`);
-            json = await r.json();
-            if (json.error && json.error.length > 0) throw new Error(json.error.join(', '));
-            falhas = 0;
-        } catch (e) {
-            falhas++;
-            txtEl.textContent = `Buscando rastro de ${dataLabel}... erro da Kraken, tentando de novo (${falhas})`;
-            await new Promise(res => setTimeout(res, Math.min(15000, 1000 * Math.pow(2, falhas))));
-            if (falhas >= 6) {
-                txtEl.textContent = `Falhou buscar ${dataLabel} depois de várias tentativas. Toca em Abrir pra ver o que já foi coletado, ou tenta de novo depois.`;
-                break;
-            }
-            pagina--; // não gasta uma página da conta numa tentativa que falhou
-            continue;
-        }
-
-        const chave = Object.keys(json.result || {}).find(k => k !== 'last');
-        const trades = chave ? json.result[chave] : null;
-        if (!Array.isArray(trades) || trades.length === 0) break;
-
-        let ultimoTs = dayStartMs;
-        for (const t of trades) {
-            const tsMs = Math.round(parseFloat(t[2]) * 1000);
-            if (tsMs < dayStartMs) continue; // ainda no lixo de antes do dia (raro, mas possível na 1ª página)
-            if (tsMs >= dayEndMs) { ultimoTs = dayEndMs; continue; } // já passou do dia — ignora, mas não para o loop no meio da página
-            ultimoTs = tsMs;
-
-            const preco = Math.round(parseFloat(t[0]) / TICK_AVULSO) * TICK_AVULSO;
-            const qtd = parseFloat(t[1]);
-            const isVenda = t[3] === 's';
-            const minuto = new Date(tsMs).toISOString().slice(11, 16);
-
-            if (!candlesPorMinuto.has(minuto)) candlesPorMinuto.set(minuto, { ts: Math.floor(tsMs / 60000) * 60000, niveis: new Map() });
-            const cm = candlesPorMinuto.get(minuto);
-            if (!cm.niveis.has(preco)) cm.niveis.set(preco, { c: 0, v: 0, nc: 0, nv: 0 });
-            const nivel = cm.niveis.get(preco);
-            if (isVenda) { nivel.v += qtd; nivel.nv += 1; } else { nivel.c += qtd; nivel.nc += 1; }
-        }
-
-        const progresso = Math.min(100, Math.round(((ultimoTs - dayStartMs) / (dayEndMs - dayStartMs)) * 100));
-        barraEl.style.width = progresso + '%';
-        txtEl.textContent = `Buscando rastro de ${dataLabel}... ${progresso}% (página ${pagina + 1})`;
-
-        const novoCursor = json.result.last;
-        if (!novoCursor || novoCursor === String(cursor)) break;
-        cursor = novoCursor;
-        if (ultimoTs >= dayEndMs) break; // já cobriu o dia inteiro
-
-        await new Promise(res => setTimeout(res, 1000)); // ~1 req/s, respeitando o limite da Kraken
-    }
-
-    const candlesFinal = [...candlesPorMinuto.values()].map(cm => ({
-        ts: cm.ts,
-        niveis: [...cm.niveis.entries()].map(([p, v]) => ({ p, c: Math.round(v.c * 100) / 100, v: Math.round(v.v * 100) / 100, nc: v.nc, nv: v.nv }))
-    }));
-    _grFootprintDiasAvulsos.set(dayKeyStr, candlesFinal);
-    _grFootprintAvulsoEmAndamento = false;
-
-    barraEl.style.width = '100%';
-    txtEl.textContent = `Pronto: ${dataLabel} — ${candlesFinal.length} minutos com negociação encontrados.`;
-    btnEl.style.display = 'block';
-}
-
 
 // Navegador de candles — setas ‹ › no modal, sem precisar fechar e tocar
 // noutro candle. Reaproveita o mesmo grFootprintAbrirCandleModal de sempre
@@ -13486,7 +13378,7 @@ function grFootprintAbrirCandleModal(candle) {
     }
 
     if (mapaFino.size === 0) {
-        grFootprintTentarWorkerAntesDoLento(candle);
+        grFootprintCarregarDiaDoR2(candle);
         return;
     }
 
@@ -13786,7 +13678,6 @@ function grFootprintFecharCandleModal() {
     _grFootprintCandleContexto = null;
     _grFootprintModalModo = null;
     _grFootprintCvdAnteriorAgregadoCache = null;
-    _grFootprintCandlePocs = null;
     _grFootprintCandleLadderRange = null;
     _grFootprintPilhaExplosao = [];
     window._grFootprintRastreioInfo = null;
@@ -14407,7 +14298,6 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
         fronteiras = [];
         for (let p = beginP - tick / 2; p <= endP + tick / 2 + 1e-6; p += tick) fronteiras.push(p);
     }
-    _grFootprintCandleTickAtual = tick;
 
     // Insere as fronteiras de fibo que caem dentro do range visível, mescla e
     // remove duplicata (dentro de $1 de diferença — evita linha de 1px).
@@ -14468,7 +14358,6 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
     });
     const delta = totalCompra - totalVenda;
     const totalGeral = totalCompra + totalVenda;
-    _grFootprintCandlePocs = { pocCompraPreco, pocVendaPreco, tick };
 
     const dataStr = new Date(tCandleStart).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
     // % de variação abertura→fechamento — é esse número que diz a MAGNITUDE do
