@@ -1533,6 +1533,10 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="#1C1C1E"/></svg>
       <span class="cv-menu-item-label" id="cv-menu-skin-label">Skin do Footprint</span>
     </button>
+    <button class="cv-menu-item" onclick="cvFecharMenu();grAjustarVelocidade();">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 14l4-4"/><path d="M3.3 19a10 10 0 1 1 17.4 0"/></svg>
+      <span class="cv-menu-item-label">Velocidade: scroll e zoom</span>
+    </button>
     <div class="cv-menu-divider"></div>
 
     <button class="cv-menu-item cv-menu-group-header" onclick="cvToggleMenuGroup('componentes')">
@@ -1563,6 +1567,8 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <span class="cv-menu-item-label" style="color:#EF5350;">Sair</span>
 
     </button>
+    <div class="cv-menu-divider"></div>
+    <div id="cv-menu-versao" style="padding:8px 16px 10px;font-size:10px;color:#8E8E93;font-family:-apple-system,sans-serif;text-align:center;"></div>
   </div>
 
 </div>
@@ -3672,6 +3678,15 @@ function grFootprintAlternarSkin() {
 }
 grFootprintSkinAtualizarRotulo();
 
+// Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
+// pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
+const APP_VERSAO = '20/09 07:53 · 15058 linhas';
+(function () {
+    const el = document.getElementById('cv-menu-versao');
+    if (el) el.textContent = 'Versão ' + APP_VERSAO;
+    console.log('[versão] ' + APP_VERSAO);
+})();
+
 // Altura da linha (USD) = tick do ATR: 0.2 × ATR(14) do timeframe atual (igual à TradingView, ver
 // grCalcularTickATR), arredondado pra múltiplo de 10 (resolução dos dados no R2). É SEMPRE o ATR:
 // ele filtra e aglutina os níveis (poucas células por candle) e não muda com o zoom. Pra refinar um
@@ -3928,6 +3943,36 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
     }
     return true;
 }
+// Um desenho por quadro: o touchmove dispara mais rápido que a tela redesenha e cada desenho é síncrono e
+// pesado — sem agrupar, os eventos se acumulam e o gráfico "arrasta atrasado" (o arrasto ainda chamava
+// grDrawChart 2x por evento, um por eixo).
+let _grDesenhoAgendado = false;
+function grAgendarDesenho() {
+    if (_grDesenhoAgendado) return;
+    _grDesenhoAgendado = true;
+    requestAnimationFrame(() => { _grDesenhoAgendado = false; grDrawChart(); });
+}
+
+// Velocidade do gráfico ao arrastar (scroll, os dois eixos) e ao pinçar (zoom). 1 = o conteúdo acompanha o
+// dedo; menor = mais lento. Antes eram as constantes AMORTECIMENTO_PAN = 0.35 e AMORTECIMENTO_PINCA = 0.5
+// dentro do touchmove (a pan andava 35% do dedo; o zoom, 50%). Ajustável no menu; valor salvo no aparelho.
+function grVelLer(chave, padrao) {
+    const v = parseFloat(localStorage.getItem(chave));
+    return v >= 0.2 && v <= 2 ? v : padrao;
+}
+let GR_VEL_PAN = grVelLer('grVelPan', 0.9);
+let GR_VEL_ZOOM = grVelLer('grVelZoom', 0.9);
+function grAjustarVelocidade() {
+    const p = prompt('Velocidade do SCROLL (0,2 a 2)\n1 = o gráfico acompanha o dedo; menor = mais lento.\nAtual: ' + String(GR_VEL_PAN).replace('.', ','), String(GR_VEL_PAN).replace('.', ','));
+    if (p === null) return;
+    const z = prompt('Velocidade do ZOOM (0,2 a 2)\nAtual: ' + String(GR_VEL_ZOOM).replace('.', ','), String(GR_VEL_ZOOM).replace('.', ','));
+    if (z === null) return;
+    const vp = parseFloat(String(p).replace(',', '.')), vz = parseFloat(String(z).replace(',', '.'));
+    if (!(vp >= 0.2 && vp <= 2) || !(vz >= 0.2 && vz <= 2)) { alert('Digite valores entre 0,2 e 2.'); return; }
+    GR_VEL_PAN = vp; GR_VEL_ZOOM = vz;
+    try { localStorage.setItem('grVelPan', String(vp)); localStorage.setItem('grVelZoom', String(vz)); } catch (err) {}
+}
+
 let _grDrone = false;
 let _fibs = [];          // array de fibs salvos: [{p1, p2}]
 // Paleta compartilhada entre o desenho no gráfico e a lista do submenu — mesmo índice, mesma cor
@@ -5087,15 +5132,14 @@ if (_grTipoGrafico === 'linha') {
                 const cvdAllPA = new Array(_grAllCandles.length).fill(null);
                 const deltaAllPA = new Array(_grAllCandles.length).fill(null);
                 let acumuladoPA = 0;
+                // Delta de cada candle vem do cache (grObterDeltaTotalPorCandle: varredura única, refeita só quando o
+                // dado do R2 muda). Antes isso era um laço candles × TODOS os minutos, refeito a cada quadro do arrasto.
+                const dtMapaPA = grObterDeltaTotalPorCandle(_grAllCandles);
                 for (let i = 0; i < _grAllCandles.length; i++) {
                     const c = _grAllCandles[i];
                     if (c.t < inicioJanelaPA) continue; // fora da janela — ainda não começou a acumular
-                    let dc = 0;
-                    const fim = c.t + msPorCandlePA;
-                    for (const raw of _grFootprintCandlesRaw) {
-                        if (raw.ts < c.t || raw.ts >= fim) continue;
-                        (raw.niveis || []).forEach(n => { dc += (n.c - n.v); });
-                    }
+                    const dPA = dtMapaPA ? dtMapaPA.get(c.t) : null;
+                    const dc = dPA ? dPA.delta : 0;
                     acumuladoPA += dc;
                     cvdAllPA[i] = acumuladoPA;
                     deltaAllPA[i] = dc;
@@ -5529,9 +5573,7 @@ const aBX = 3, aBY = yR2 - aBH / 2;
             const idxAltoAbs = grVwapIdxPorTs(_grFaixaMarcada.tsAlto);
             if (idxBaixoAbs >= 0 && idxAltoAbs >= 0) {
                 const xEsq = PAD.left + ((idxBaixoAbs - startIdxFx) / totalSlots) * chartW;
-                // Fim do trecho MARCADO (é dele que vem o delta e onde o texto fica centralizado)...
-                const xDirMarcado = PAD.left + ((idxAltoAbs - startIdxFx) / totalSlots) * chartW + cW;
-                // ...mas o retângulo SEMPRE segue até a borda direita do gráfico, além do candle em formação.
+                // O retângulo SEMPRE segue até a borda direita do gráfico, além do candle em formação.
                 const xDir = PAD.left + chartW;
                 const yTopoFx = toY(_grFaixaMarcada.precoAlto);
                 const yBaseFx = toY(_grFaixaMarcada.precoBaixo);
@@ -5546,17 +5588,21 @@ const aBX = 3, aBY = yR2 - aBH / 2;
 
                 const dFx = _grFaixaMarcada.delta;
                 const txtFx = (dFx >= 0 ? '+' : '') + fmtBtc2(dFx) + ' BTC';
-                ctx.font = 'bold 11px -apple-system';
-                ctx.textAlign = 'center';
-                const yMeioFx = (yTopoFx + yBaseFx) / 2;
-                const xMeioFx = (xEsq + xDirMarcado) / 2; // centro do trecho marcado, não do retângulo estendido
-                // Fundo escuro atrás do texto — legível em cima do cinza
-                // translúcido, não importa o que tiver desenhado embaixo.
-                const wTxtFx = ctx.measureText(txtFx).width + 12;
-                ctx.fillStyle = 'rgba(30,30,35,0.75)';
-                ctx.beginPath(); ctx.roundRect(xMeioFx - wTxtFx / 2, yMeioFx - 10, wTxtFx, 20, 4); ctx.fill();
+                // Rótulo do delta: pílula EM PÉ na coluna da direita (a margem do gráfico, colada na lateral da
+                // tela) pra não cobrir candle nenhum. Centrada na altura do retângulo, sem sair da área do gráfico.
+                ctx.font = 'bold 10px -apple-system';
+                const compFx = ctx.measureText(txtFx).width + 10;  // comprimento da pílula (vira a altura na tela)
+                const espFx = 16;                                    // espessura (vira a largura na tela; cabe nos 24px da margem)
+                const yCentroFx = Math.max(PAD.top + compFx / 2, Math.min(PAD.top + chartH - compFx / 2, (yTopoFx + yBaseFx) / 2));
+                ctx.save();
+                ctx.translate(W - espFx / 2 - 2, yCentroFx);
+                ctx.rotate(-Math.PI / 2);
+                ctx.fillStyle = 'rgba(30,30,35,0.88)';
+                ctx.beginPath(); ctx.roundRect(-compFx / 2, -espFx / 2, compFx, espFx, 4); ctx.fill();
                 ctx.fillStyle = dFx >= 0 ? '#26A69A' : '#EF5350';
-                ctx.fillText(txtFx, xMeioFx, yMeioFx + 4);
+                ctx.textAlign = 'center';
+                ctx.fillText(txtFx, 0, 3.5);
+                ctx.restore();
             }
         }
 
@@ -6981,7 +7027,7 @@ function grInitTouch() {
     const yInterno = toCanvasY(e.touches[0].clientY);
     _grCrosshairX = e.touches[0].clientX - canvas.getBoundingClientRect().left;
     window._longPressY = yInterno; // mantém atualizado p/ o redraw periódico do WS não voltar pra posição inicial
-    grDrawChartWithCrosshair(yInterno);
+    grAgendarDesenho(); // grDrawChart desenha com crosshair enquanto _longPressActive
 
 } else if (isDragging) {
 
@@ -6995,7 +7041,7 @@ function grInitTouch() {
                 if ((dxAbs > 8 || dyAbsCancel > 8) && !window._longPressActive) { clearTimeout(_longPressTimer); }
 
                 const dx = e.touches[0].clientX - touchStartX;
-                const AMORTECIMENTO_PAN = 0.35;
+                const AMORTECIMENTO_PAN = GR_VEL_PAN; // velocidade do scroll (ver grVelLer / menu)
                                                  // pequeno movimento pulava candle(s) de vez, parecia abrupto
                 const candlesPerPx = (_grZoom / canvas.width) * AMORTECIMENTO_PAN;
                 const delta = Math.round(dx * candlesPerPx);
@@ -7004,9 +7050,9 @@ function grInitTouch() {
                     const _maxOff = _grAllCandles.length + Math.floor(_grZoom * 0.5);
 
                     _grOffset = Math.max(0, Math.min(_maxOff, _grOffset - delta));
-                    touchStartX = e.touches[0].clientX;
+                    touchStartX += delta / candlesPerPx; // consome só o que virou candle; o resto continua acumulando (antes se perdia)
                     window._grManualPanTs = Date.now(); // marca que o usuário arrastou o gráfico principal de verdade
-                    grDrawChart();
+                    grAgendarDesenho();
                 }
 
                 // Pan vertical manual — eixo Y agora é fixo (tick constante),
@@ -7019,7 +7065,7 @@ function grInitTouch() {
                     _grYAxisCenter += (dyAxis * AMORTECIMENTO_PAN) / _grYAxisPxPerDollar;
                     touchStartY = e.touches[0].clientY;
                     window._grManualPanTs = Date.now();
-                    grDrawChart();
+                    grAgendarDesenho();
                 }
             }
         } else if (e.touches.length === 2) {
@@ -7049,7 +7095,7 @@ function grInitTouch() {
             // atual (grAtualizarPxPerDollar), pra impedir as duas variáveis de
             // derivarem uma da outra depois de muitos ciclos de pinça (era a
             // causa real dos candles ficando achatados).
-            const AMORTECIMENTO_PINCA = 0.5;
+            const AMORTECIMENTO_PINCA = GR_VEL_ZOOM; // velocidade do zoom (ver grVelLer / menu)
             if (lastTouchDist > 0 && dist > 0) {
                 const ratio = 1 + (dist / lastTouchDist - 1) * AMORTECIMENTO_PINCA; // >1 = dedos se afastando = quer tudo maior
                 const zoomAntes = _grZoom;
@@ -7069,7 +7115,7 @@ function grInitTouch() {
             lastTouchDistX = Math.abs(e.touches[0].clientX - e.touches[1].clientX);
             lastTouchDistY = Math.abs(e.touches[0].clientY - e.touches[1].clientY);
             window._grManualPanTs = Date.now();
-            grDrawChart();
+            grAgendarDesenho();
         }
         e.preventDefault();
     }, { passive: false });
