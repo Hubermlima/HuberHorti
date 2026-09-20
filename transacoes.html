@@ -5944,43 +5944,45 @@ if (fibsParaDesenhar.length > 0) {
             ctx.fillStyle = '#B0B3B8'; ctx.fillText('Total', 4, yTotalTxt);
             const margemRotulo = 4 + Math.max(ctx.measureText('Delta').width, ctx.measureText('Total').width) + 4;
 
-            // Sem sinal (+/-): a cor do delta já diz o lado. Rótulo alinhado sob cada candle: deitado
-            // se cabe no espaço do candle; senão EM PÉ (mesma posição, sem pular candle); só se nem em
+            // Rótulo em pílula: texto SEMPRE preto; o fundo é que muda (delta: verde suave se positivo, vermelho
+            // suave se negativo; total: branco). Sem sinal (+/-): o fundo já diz o lado. Alinhado sob cada candle:
+            // deitado se cabe no espaço do candle; senão EM PÉ (mesma posição, sem pular candle); só se nem em
             // pé couber, pula de N em N (sempre inclui o último).
+            const DT_FUNDO = { pos: '#A8DDB5', neg: '#F4B0AE', total: '#FFFFFF' }, DT_TEXTO = '#111111';
             const dtMapa = grObterDeltaTotalPorCandle(_grAllCandles);
             if (dtMapa) {
                 const slotW = chartW / Math.max(totalSlots, 1);
-                let larguraNum = 0;
+                let larguraNum = 0; // largura da pílula = maior texto + 4px de folga
                 for (const c of candles) {
                     const d = dtMapa.get(c.t);
                     if (d) larguraNum = Math.max(larguraNum, ctx.measureText(grFmtVolCompacto(Math.abs(d.delta), 0)).width, ctx.measureText(grFmtVolCompacto(d.total, 0)).width);
                 }
-                larguraNum += 2;
-                const emPe = larguraNum > slotW && larguraNum <= dtH / 2 - 3 && slotW >= 7;
-                const passo = (larguraNum <= slotW || emPe) ? 1 : Math.max(1, Math.ceil(larguraNum / slotW));
+                larguraNum += 4;
+                const cabeDeitado = larguraNum + 1 <= slotW;
+                const emPe = !cabeDeitado && larguraNum <= dtH / 2 - 1 && slotW >= 7;
+                const passo = (cabeDeitado || emPe) ? 1 : Math.max(1, Math.ceil((larguraNum + 1) / slotW));
+                const espessuraPe = Math.max(6, Math.min(10, slotW - 1)); // pílula em pé nunca invade o candle vizinho
+                const pilula = (texto, fundo, rotacionado) => {
+                    const w = ctx.measureText(texto).width + 4, h = rotacionado ? espessuraPe : 10;
+                    ctx.fillStyle = fundo;
+                    ctx.beginPath(); ctx.roundRect(-w / 2, -2.5 - h / 2, w, h, 2); ctx.fill();
+                    ctx.fillStyle = DT_TEXTO; ctx.textAlign = 'center'; ctx.fillText(texto, 0, 0);
+                };
                 for (let i = candles.length - 1; i >= 0; i -= passo) {
                     const dt = dtMapa.get(candles[i].t);
                     if (!dt) continue;
                     const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
                     const txtDelta = grFmtVolCompacto(Math.abs(dt.delta), 0), txtTotal = grFmtVolCompacto(dt.total, 0);
-                    const corDelta = dt.delta >= 0 ? '#26A69A' : '#EF5350';
-                    if (emPe) {
-                        if (x - 4 < margemRotulo) continue;
-                        ctx.save();
-                        ctx.textAlign = 'center';
-                        ctx.fillStyle = corDelta;
-                        ctx.translate(x + 2.5, yDeltaCentro); ctx.rotate(-Math.PI / 2); ctx.fillText(txtDelta, 0, 0);
-                        ctx.restore(); ctx.save();
-                        ctx.textAlign = 'center';
-                        ctx.fillStyle = '#E0E0E0';
-                        ctx.translate(x + 2.5, yTotalCentro); ctx.rotate(-Math.PI / 2); ctx.fillText(txtTotal, 0, 0);
-                        ctx.restore();
-                    } else {
-                        if (x - larguraNum / 2 < margemRotulo) continue; // não invade os rótulos da esquerda
-                        ctx.textAlign = 'center';
-                        ctx.fillStyle = corDelta; ctx.fillText(txtDelta, x, yDeltaTxt);
-                        ctx.fillStyle = '#E0E0E0'; ctx.fillText(txtTotal, x, yTotalTxt);
-                    }
+                    const fundoDelta = dt.delta >= 0 ? DT_FUNDO.pos : DT_FUNDO.neg;
+                    if (emPe ? x - 4 < margemRotulo : x - larguraNum / 2 < margemRotulo) continue; // não invade os rótulos da esquerda
+                    ctx.save(); ctx.translate(emPe ? x + 2.5 : x, emPe ? yDeltaCentro : yDeltaTxt);
+                    if (emPe) ctx.rotate(-Math.PI / 2);
+                    pilula(txtDelta, fundoDelta, emPe);
+                    ctx.restore();
+                    ctx.save(); ctx.translate(emPe ? x + 2.5 : x, emPe ? yTotalCentro : yTotalTxt);
+                    if (emPe) ctx.rotate(-Math.PI / 2);
+                    pilula(txtTotal, DT_FUNDO.total, emPe);
+                    ctx.restore();
                 }
             }
         }
@@ -12651,11 +12653,13 @@ async function grFootprintAtivar() {
         const from = to - FOOTPRINT_DIAS_AO_ATIVAR * 24 * 3600 * 1000;
         const dias = grFootprintDiasEntre(from, to);
 
+        const falhas = []; // motivo de cada dia que não veio (HTTP xxx, sem rede, resposta inválida)
         const respostas = await Promise.all(dias.map(dia =>
             fetch(grFootprintUrlDia(dia))
-                .then(r => r.ok ? r.json() : { candles: {} })
-                .catch(() => ({ candles: {} }))
+                .then(r => { if (!r.ok) { falhas.push('HTTP ' + r.status); return { candles: {} }; } return r.json(); })
+                .catch(e => { falhas.push(e && e.message ? e.message : 'sem rede'); return { candles: {} }; })
         ));
+        if (falhas.length > 0) console.log('Fluxo: ' + falhas.length + ' de ' + dias.length + ' dias falharam (' + falhas[0] + ')');
 
         const flat = [];
         respostas.forEach(dados => {
@@ -12666,6 +12670,10 @@ async function grFootprintAtivar() {
         if (flat.length === 0) {
             info.textContent = `Sem dados de footprint nos últimos ${dias.length} dias.`;
             document.getElementById('cv-ind-footprint').classList.remove('active');
+            // Antes isso desligava o Fluxo (e sumia o painel Delta/Total) sem dizer nada.
+            alert(falhas.length > 0
+                ? `Fluxo não ligou: o R2 falhou em ${falhas.length} de ${dias.length} dias (${falhas[0]}). Confira o worker e a conexão.`
+                : `Fluxo não ligou: o R2 não tem footprint nos últimos ${dias.length} dias.`);
             return;
         }
 
