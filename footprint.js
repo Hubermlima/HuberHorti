@@ -148,6 +148,37 @@ async function lerArquivoDoDia(env, dia) {
     return { chave, dados };
 }
 
+// ── Binance Futures — lê binance/AAAA-MM-DD.json (gravado pelo script no
+// Termux) e CONVERTE pro mesmo formato que o Kraken já usa (candles como
+// objeto por minuto, com poc/delta/total já calculados) — assim o cliente
+// não precisa saber lidar com dois formatos diferentes, só troca a fonte.
+async function lerArquivoDoDiaBinance(env, dia) {
+    const chave = `binance/${dia}.json`;
+    const obj = await env.FOOTPRINT_R2.get(chave);
+    if (!obj) return { chave, dados: { symbol: SYMBOL, dia, candles: {} } };
+    const bruto = await obj.json(); // { dia, fonte, candles: [{ts, niveis:[{p,c,v,nc,nv}]}] }
+
+    const candlesConvertidos = {};
+    for (const c of (bruto.candles || [])) {
+        const minuto = candleMinuteKey(c.ts);
+        let poc = null, pocVolume = -1, deltaTotal = 0, totalGeral = 0;
+        for (const n of c.niveis) {
+            const totalNivel = n.c + n.v;
+            deltaTotal += (n.c - n.v);
+            totalGeral += totalNivel;
+            if (totalNivel > pocVolume) { pocVolume = totalNivel; poc = n.p; }
+        }
+        candlesConvertidos[minuto] = {
+            ts: c.ts,
+            poc,
+            delta: round2(deltaTotal),
+            total: round2(totalGeral),
+            niveis: c.niveis.slice().sort((a, b) => a.p - b.p)
+        };
+    }
+    return { chave, dados: { symbol: SYMBOL, dia, candles: candlesConvertidos } };
+}
+
 async function salvarArquivoDoDia(env, chave, dados) {
     await env.FOOTPRINT_R2.put(chave, JSON.stringify(dados));
 }
@@ -275,7 +306,10 @@ export default {
 
         if (url.pathname === '/footprint') {
             const dia = url.searchParams.get('dia') || dayKey(Date.now());
-            const { dados } = await lerArquivoDoDia(env, dia);
+            const fonte = url.searchParams.get('fonte'); // 'binance' ou omitido (Kraken, padrão)
+            const { dados } = fonte === 'binance'
+                ? await lerArquivoDoDiaBinance(env, dia)
+                : await lerArquivoDoDia(env, dia);
             return Response.json(dados, {
                 headers: { 'Access-Control-Allow-Origin': '*' }
             });
