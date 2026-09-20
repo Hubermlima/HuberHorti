@@ -1544,6 +1544,10 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 14l4-4"/><path d="M3.3 19a10 10 0 1 1 17.4 0"/></svg>
       <span class="cv-menu-item-label">Velocidade: scroll e zoom</span>
     </button>
+    <button class="cv-menu-item cv-menu-subitem" onclick="cvFecharMenu();grValueAreaDesancorar();">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="3"/><line x1="12" y1="22" x2="12" y2="8"/><path d="M5 12H2a10 10 0 0 0 20 0h-3"/></svg>
+      <span class="cv-menu-item-label" id="cv-menu-va-label">Value Area: sem âncora</span>
+    </button>
     </div>
     <div class="cv-menu-divider"></div>
 
@@ -3274,7 +3278,8 @@ window._grCrosshairAbsCache = { t: null, acimaDaMedia: null }; // cache do vered
 // painel Delta/Total (só existe com o Fluxo ligado e o footprint carregado).
 function grAlturasPaineis(H) {
     const sub = (_indState.subInd && !_indOculto.painel) ? Math.floor(H * 0.28) : 0;
-    const dt = (_grFootprintAtivo && _grFootprintCandlesRaw) ? Math.max(40, Math.floor(H * 0.09)) : 0;
+    // Skin cinza mostra só o TOTAL por linha (sem lado dominante): o painel Delta/Total não faz sentido nela.
+    const dt = (_grFootprintAtivo && _grFootprintCandlesRaw && FOOTPRINT_SKIN !== 'cinza') ? Math.max(40, Math.floor(H * 0.09)) : 0;
     return { sub, dt, total: sub + dt };
 }
 
@@ -3477,12 +3482,45 @@ function grValueAreaSalvarAncora() {
         if (_grValueAreaAncoraTs == null) localStorage.removeItem(_grValueAreaLSKey());
         else localStorage.setItem(_grValueAreaLSKey(), String(_grValueAreaAncoraTs));
     } catch (e) {}
+    grValueAreaAtualizarRotuloMenu();
+}
+// A âncora do Value Area é guardada POR ATIVO E POR TIMEFRAME (a chave inclui _grTf). Estas funções olham todos os
+// timeframes do ativo: o item de menu "Desancorar Value Area" remove a âncora de qualquer lugar (antes só dava pra
+// remover tocando no MESMO candle ancorado — impossível quando você não lembra qual foi — e só naquele timeframe).
+function grValueAreaChavesAncora() {
+    const prefixo = 'gr_va_ancora_' + (_ativoId || 'default') + '_';
+    const chaves = [];
+    try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.indexOf(prefixo) === 0) chaves.push(k); } } catch (e) {}
+    return chaves;
+}
+function grValueAreaAtualizarRotuloMenu() {
+    const el = document.getElementById('cv-menu-va-label');
+    if (!el) return;
+    if (_grValueAreaAncoraTs != null) {
+        const quando = new Date(_grValueAreaAncoraTs).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+        el.textContent = 'Desancorar Value Area (⚓ ' + quando + ')';
+    } else if (grValueAreaChavesAncora().length > 0) {
+        el.textContent = 'Desancorar Value Area (⚓ em outro timeframe)';
+    } else {
+        el.textContent = 'Value Area: sem âncora';
+    }
+}
+function grValueAreaDesancorar() {
+    const chaves = grValueAreaChavesAncora();
+    if (_grValueAreaAncoraTs == null && chaves.length === 0) { alert('O Value Area já está sem âncora.'); return; }
+    _grValueAreaAncoraTs = null;
+    try { chaves.forEach(k => localStorage.removeItem(k)); } catch (e) {}
+    _grValueAreaAncoradaBins = null;
+    _grValueAreaCache = { binsRef: null, poc: null, vah: null, val: null }; // força recálculo imediato
+    grValueAreaAtualizarRotuloMenu();
+    grDrawChart();
 }
 function grValueAreaCarregarAncora() {
     try {
         const raw = localStorage.getItem(_grValueAreaLSKey());
         _grValueAreaAncoraTs = raw ? parseInt(raw) : null;
     } catch (e) { _grValueAreaAncoraTs = null; }
+    grValueAreaAtualizarRotuloMenu();
 }
 
 // Chamado pelo botão "Ancorar Value Area" da janela do crosshair. Toggle:
@@ -3688,7 +3726,7 @@ grFootprintSkinAtualizarRotulo();
 
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
-const APP_VERSAO = '20/09 08:23 · 15099 linhas';
+const APP_VERSAO = '20/09 10:23 · 15175 linhas';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) el.textContent = 'Versão ' + APP_VERSAO;
@@ -4322,8 +4360,8 @@ function grDrawCandles(candles, emptyRight) {
         let rsiLvSup = null, rsiLvInf = null;
         if (_indState.rsiLevels && !_indOculto.rsiLevels) {
             const lv = grRSILevels(allCloses, 14, 70, 30);
-            rsiLvSup = extrairJanela(lv.sup, 14);
-            rsiLvInf = extrairJanela(lv.inf, 14);
+            rsiLvSup = extrairJanela(grSuavizarSerie(lv.sup, RSI_LEVELS_SUAVIZACAO), 14);
+            rsiLvInf = extrairJanela(grSuavizarSerie(lv.inf, RSI_LEVELS_SUAVIZACAO), 14);
         }
 
         const closes = candles.map(c => c.c);
@@ -4416,7 +4454,7 @@ function grDrawCandles(candles, emptyRight) {
                 faixaGeo = { yTopo: yTopoFx, yBase: yBaseFx };
                 ctx.save();
                 ctx.beginPath(); ctx.rect(PAD.left, PAD.top, chartW, chartH); ctx.clip(); // não vaza pros painéis nem pro eixo
-                ctx.fillStyle = 'rgba(120,120,130,0.28)';
+                ctx.fillStyle = 'rgba(255,183,77,0.30)'; // laranja claro (o cinza se confundia com a skin cinza)
                 ctx.fillRect(xEsq, yTopoFx, PAD.left + chartW - xEsq, yBaseFx - yTopoFx);
                 ctx.restore();
             }
@@ -4484,7 +4522,8 @@ function grDrawCandles(candles, emptyRight) {
             const RSI_SERIES = [['sup', rsiLvSup, 70], ['inf', rsiLvInf, 30]];
             ctx.save();
             ctx.beginPath(); ctx.rect(PAD.left, PAD.top, chartW, chartH); ctx.clip(); // níveis longe não invadem os painéis
-            RSI_SERIES.forEach(([lado, serie]) => desenharLinha(serie, RSI_COR[lado], 1.4));
+            RSI_SERIES.forEach(([lado, serie]) => grTracarCurvaSuave(ctx,
+                serie.map((v, i) => v == null ? null : { x: PAD.left + (i / totalSlots) * chartW + cW / 2, y: toY(v) }), RSI_COR[lado], 1.4));
             RSI_SERIES.forEach(([lado, serie]) => {
                 let iUlt = -1;
                 for (let i = serie.length - 1; i >= 0; i--) if (serie[i] != null) { iUlt = i; break; }
@@ -5635,15 +5674,15 @@ const aBX = 3, aBY = yR2 - aBH / 2;
             // Delta da faixa ao vivo — só texto, sem pílula, em cima do
             // handle C (canto direito), mesmo estilo discreto do label do
             // POC. Redesenha sozinho a cada tick, mesma lógica do crosshair
-            // (grCrosshairZonaDelta), só que sempre em cima de _precoAtual.
+            // (grCrosshairZonaDeltaPreco), só que sempre em cima de _precoAtual.
             // Cor segue a MESMA paleta de divergência do candle (verde/
             // vermelho quando confirma, roxo/azul quando o delta da faixa
             // briga contra a direção do candle que tá se formando agora) —
             // assim dá pra ver de relance se é "normal" ou "chamando atenção",
             // sem comparar número nenhum de cabeça.
             if (_grFootprintAtivo && _grFootprintBins && !_grMostrarBarrasPA) {
-                const zonaAoVivo = grCrosshairZonaDelta(_precoAtual, PCT_ZONA_PRECO);
-                if (zonaAoVivo) {
+                const zonaAoVivo = grCrosshairZonaDeltaPreco(_precoAtual, PCT_ZONA_PRECO); // mapa do histograma: não depende de Value Area/âncora
+                if (zonaAoVivo && zonaAoVivo.temVolume) {
                     const zTxt = 'Δ ' + (zonaAoVivo.delta >= 0 ? '+' : '') + fmtBtc2(zonaAoVivo.delta);
                     const candleSobe = lastCandle ? lastCandle.c >= lastCandle.o : true;
                     let zCor;
@@ -6092,12 +6131,17 @@ if (fibsParaDesenhar.length > 0) {
                     if (d) maiorTxt = Math.max(maiorTxt, ctx.measureText(grFmtVolCompacto(Math.abs(d.delta), 0)).width, ctx.measureText(grFmtVolCompacto(d.total, 0)).width);
                 }
                 const cabeDeitado = maiorTxt + 3 <= slotW;
-                const emPe = !cabeDeitado && maiorTxt + 3 <= rowH && slotW >= 7;
+                // Não cabe deitado → EM PÉ, com a fonte reduzida até caber na largura da coluna do candle e na altura da
+                // linha da tabela: assim TODOS os candles ganham rótulo. Só se nem assim couber (fonte < 3,5px, candles
+                // finíssimos) volta a pular de N em N — as células continuam coloridas, só o número some.
+                const fsPe = Math.min(7, slotW - 1.5, 7 * (rowH - 3) / Math.max(maiorTxt, 1));
+                const emPe = !cabeDeitado && fsPe >= 3.5;
                 const passo = (cabeDeitado || emPe) ? 1 : Math.max(1, Math.ceil((maiorTxt + 3) / slotW));
                 ctx.textAlign = 'center';
+                if (emPe) ctx.font = 'bold ' + fsPe.toFixed(2) + 'px -apple-system';
                 const escreve = (txt, x, yc) => {
                     if (emPe) {
-                        ctx.save(); ctx.translate(x + 2.5, yc); ctx.rotate(-Math.PI / 2);
+                        ctx.save(); ctx.translate(x + fsPe * 0.36, yc); ctx.rotate(-Math.PI / 2);
                         ctx.textAlign = 'center'; ctx.fillText(txt, 0, 0);
                         ctx.restore();
                     } else {
@@ -7300,26 +7344,7 @@ function grDrawChart() {
     if (crosshairCanvasFechar) crosshairCanvasFechar.getContext('2d').clearRect(0, 0, crosshairCanvasFechar.width, crosshairCanvasFechar.height);
 }
 
-// ── Delta de faixa de preço no crosshair — soma compra/venda de todos os
-// níveis dentro de ±pctZona% do preço apontado pelo crosshair (eixo Y),
-// usando os MESMOS bins agregados da janela "Dias: X" que o Value Area já
-// mantém (grFootprintObterMapaBaseValueArea) — sem re-varrer o histórico
-// bruto a cada frame de arraste. Cacheado por "bucket" de preço ($20) pra
-// não recalcular a cada pixel, só quando o dedo realmente muda de faixa.
-// ── Delta de faixa de preço, versão genérica (recebe os dois limites
-// prontos) — usada tanto pelo Δ ±% do crosshair quanto pela ferramenta de
-// marcar faixa com 2 pontos. Mesmos bins do Value Area (janela "Dias: X").
-function grDeltaFaixaPreco(precoBaixo, precoAlto) {
-    const mapaBase = grFootprintObterMapaBaseValueArea();
-    if (!mapaBase) return null;
-    let compra = 0, venda = 0;
-    mapaBase.forEach((v, p) => {
-        if (p >= precoBaixo && p <= precoAlto) { compra += v.c; venda += v.v; }
-    });
-    return { compra, venda, delta: compra - venda };
-}
-
-// Mesma ideia, mas também limitada por tempo — só soma os candles brutos
+// Delta de faixa de preço LIMITADO POR TEMPO — só soma os candles brutos
 // (1min) entre tsInicio e tsFimExclusive, em vez da janela "Dias: X"
 // inteira. Isso é o "quadrado" (faixa de preço × faixa de tempo) em vez da
 // faixa horizontal infinita. tsFimExclusive precisa já incluir a duração do
@@ -7378,17 +7403,23 @@ function grFaixaIdxContendo(ts) {
     return lo;
 }
 
-function grCrosshairZonaDelta(preco, pctZona) {
-    const mapaBase = grFootprintObterMapaBaseValueArea();
-    if (!mapaBase) return null;
+// ΔV da zona (±pctZona% do preço apontado pela RÉGUA HORIZONTAL do crosshair): soma compra/venda dos níveis dentro
+// da faixa no mapa que DESENHA as barras do histograma do Fluxo (_grFootprintBins, a janela "Dias: X"). Depende só do
+// preço apontado — não do candle e não do Value Area/âncora: com o Value Area ancorado o outro mapa (só desde a âncora)
+// não tinha volume nesse preço e o valor dava +0,00 mesmo com barra visível no histograma. temVolume=false → o
+// histograma não tem volume nessa faixa. Cacheado por faixa de $20 pra não varrer o mapa a cada pixel do arraste.
+function grCrosshairZonaDeltaPreco(preco, pctZona) {
+    const mapa = _grFootprintBins ? _grFootprintBins.mapaBase : null;
+    if (!mapa) return null;
     const bucket = Math.round(preco / 20);
-    const cache = window._grCrosshairZonaCache;
-    if (cache && cache.bucket === bucket && cache.mapaBase === mapaBase) return cache;
+    const cache = window._grCrosshairZonaPrecoCache;
+    if (cache && cache.bucket === bucket && cache.mapa === mapa) return cache;
     const precoBaixo = preco * (1 - pctZona / 100);
     const precoAlto  = preco * (1 + pctZona / 100);
-    const r = grDeltaFaixaPreco(precoBaixo, precoAlto);
-    const resultado = { bucket, mapaBase, compra: r.compra, venda: r.venda, delta: r.delta, precoBaixo, precoAlto };
-    window._grCrosshairZonaCache = resultado;
+    let compra = 0, venda = 0;
+    mapa.forEach((v, p) => { if (p >= precoBaixo && p <= precoAlto) { compra += v.c; venda += v.v; } });
+    const resultado = { bucket, mapa, compra, venda, delta: compra - venda, temVolume: (compra + venda) > 0, precoBaixo, precoAlto };
+    window._grCrosshairZonaPrecoCache = resultado;
     return resultado;
 }
 
@@ -7518,7 +7549,7 @@ function grDrawChartWithCrosshair(yInterno) {
         // Faixa de preço ao redor do crosshair (Y) — ±0.15% pra cima e pra
         // baixo do preço apontado, mesmo espírito de uma mini-zona ZII sob
         // o dedo. Percentual fixo por enquanto; dá pra virar ajustável depois.
-        const zonaCrosshair = temBotaoFootprint ? grCrosshairZonaDelta(preco, PCT_ZONA_PRECO) : null;
+        const zonaCrosshair = temBotaoFootprint ? grCrosshairZonaDeltaPreco(preco, PCT_ZONA_PRECO) : null;
 
         // ── Layout da caixa primeiro (não depende de quantos níveis vão
         // existir) — preciso saber quanto espaço SOBRA pra régua antes de
@@ -7538,7 +7569,7 @@ function grDrawChartWithCrosshair(yInterno) {
                 { label: buyPct,  val: fmtBtc(buyVol),  color: '#26A69A' },
             ] : []),
             ...(zonaCrosshair ? [
-                { label: `ΔV Zona ${fmtN(preco)}`, val: (zonaCrosshair.delta >= 0 ? '+' : '') + fmtBtc2(zonaCrosshair.delta), color: zonaCrosshair.delta >= 0 ? '#26A69A' : '#EF5350' },
+                { label: `ΔV Zona ${fmtN(preco)}`, val: zonaCrosshair.temVolume ? (zonaCrosshair.delta >= 0 ? '+' : '') + fmtBtc2(zonaCrosshair.delta) : '—', color: !zonaCrosshair.temVolume ? '#8E8E93' : (zonaCrosshair.delta >= 0 ? '#26A69A' : '#EF5350') },
             ] : []),
         ];
         const boxPad = 10, lineH = 18;
@@ -9761,6 +9792,44 @@ function grSMASimples(data, period) {
 // no alvo (70 = sobrecomprado, 30 = sobrevendido), dado o estado do RSI (médias de ganho e perda)
 // até o candle anterior. Inverte a recursão: novaMediaGanho = (ganho*(n-1) + alta)/n e
 // novaMediaPerda = (perda*(n-1) + queda)/n, com RS = mediaGanho/mediaPerda = alvo/(100-alvo).
+// Suaviza uma série (com null nas pontas) com média binomial [1,2,1]/4, `passes` vezes. Os níveis do RSI mudam
+// bastante de um candle pro outro e a linha ficava serrilhada. O ÚLTIMO valor (o nível vigente, o que a pílula do
+// eixo mostra) continua exato, sem suavização.
+const RSI_LEVELS_SUAVIZACAO = 3;
+function grSuavizarSerie(vals, passes) {
+    let s = vals.slice();
+    for (let p = 0; p < passes; p++) {
+        const n = s.slice();
+        for (let i = 1; i < s.length - 1; i++) {
+            if (s[i - 1] != null && s[i] != null && s[i + 1] != null) n[i] = (s[i - 1] + 2 * s[i] + s[i + 1]) / 4;
+        }
+        s = n;
+    }
+    for (let i = vals.length - 1; i >= 0; i--) if (vals[i] != null) { s[i] = vals[i]; break; }
+    return s;
+}
+
+// Traça uma curva CONTÍNUA (um path só) passando pelos pontos: cada ponto vira o "puxão" da curva rumo ao ponto
+// médio até o próximo, sem quina em cada vértice (mesmo algoritmo do CVD). Corta em trechos quando acha null.
+function grTracarCurvaSuave(ctx, pts, cor, lw) {
+    ctx.strokeStyle = cor; ctx.lineWidth = lw; ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.setLineDash([]);
+    let run = [];
+    const flush = () => {
+        if (run.length >= 2) {
+            ctx.beginPath();
+            ctx.moveTo(run[0].x, run[0].y);
+            for (let i = 1; i < run.length - 1; i++) {
+                ctx.quadraticCurveTo(run[i].x, run[i].y, (run[i].x + run[i + 1].x) / 2, (run[i].y + run[i + 1].y) / 2);
+            }
+            ctx.lineTo(run[run.length - 1].x, run[run.length - 1].y);
+            ctx.stroke();
+        }
+        run = [];
+    };
+    pts.forEach(p => { if (p == null) flush(); else run.push(p); });
+    flush();
+}
+
 function grRSIDeltaParaAlvo(ganho, perda, periodo, alvo) {
     const rs = alvo / (100 - alvo);
     const n1 = periodo - 1;
@@ -13051,7 +13120,12 @@ function grFootprintCalcularValueArea() {
 function grFootprintObterMapaExibicao(pxPorDolar) {
     const { mapaBase } = _grFootprintBins;
 
-    const tickNecessario = Math.max(10, Math.ceil((FOOTPRINT_MIN_ROW_PX / pxPorDolar) / 10) * 10);
+    // Só múltiplos ÍMPARES de $10 (10, 30, 50...). Cada nível cru L cobre [L-5, L+5); com tick ímpar as bordas da
+    // linha caem nas bordas dos níveis e o rótulo da linha é o centro exato dos negócios. Com tick par (20, 40...)
+    // o Math.round(L/tick) arredondava o meio pra cima e a barra ficava desenhada $5 acima de onde os negócios estão.
+    let nTick = Math.max(1, Math.ceil((FOOTPRINT_MIN_ROW_PX / pxPorDolar) / 10));
+    if (nTick % 2 === 0) nTick += 1;
+    const tickNecessario = nTick * 10;
 
     // Cache só é válido se o tick E a escala do eixo Y (_grMinP/_grMaxP) forem
     // as mesmas de quando foi calculado. Antes só checava o tick — no primeiro
@@ -13272,11 +13346,11 @@ function grFootprintDesenharOverlay() {
 let _grFootprintNivelAtual = null; // {p, tick, v, total} do último nível aberto — usado pelos botões de série temporal e marcar zona ZII
 
 function grFootprintAbrirNivelModal(p, v, total, tick) {
-    const faixaFim = p + tick;
+    const faixaIni = p - tick / 2, faixaFim = p + tick / 2; // a barra é centrada em p (mesma conta do desenho e do agrupamento)
     const delta = v.c - v.v;
     document.getElementById('footprint-nivel-titulo').textContent = 'Nível $' + p.toLocaleString('pt-BR');
     document.getElementById('footprint-nivel-sub').textContent =
-        `Faixa $${p.toLocaleString('pt-BR')} – $${faixaFim.toLocaleString('pt-BR')} · ` +
+        `Faixa $${faixaIni.toLocaleString('pt-BR')} – $${faixaFim.toLocaleString('pt-BR')} · ` +
         `Compra ${fmtVolK(v.c)} BTC · Venda ${fmtVolK(v.v)} BTC · ` +
         `Delta ${delta >= 0 ? '+' : ''}${fmtVolK(delta)} BTC · Total ${fmtVolK(total)} BTC`;
     document.getElementById('footprint-nivel-overlay').style.display = 'block';
@@ -13308,11 +13382,13 @@ function grFootprintFecharNivelModal() {
 // Marcação 100% manual — sem auto-detecção nem blacklist envolvida.
 function grFootprintToggleZonaZii(marcado, p, tick, tipo, total, delta, candleTs) {
     if (marcado) {
-        if (!_grZiiZonas.some(z => z.lo === p && z.tipo === tipo)) {
-            _grZiiZonas.push({ lo: p, hi: p + tick, tipo, total, delta, criadoEm: Date.now(), candleTs });
+        // A linha do ladder é centrada em p (bordas p ± tick/2): a zona cobre a MESMA faixa da linha tocada (antes
+        // era p até p+tick, meia linha acima). `centro` identifica a linha pro checkbox.
+        if (!_grZiiZonas.some(z => z.centro === p && z.tipo === tipo)) {
+            _grZiiZonas.push({ lo: p - tick / 2, hi: p + tick / 2, centro: p, tipo, total, delta, criadoEm: Date.now(), candleTs });
         }
     } else {
-        _grZiiZonas = _grZiiZonas.filter(z => !(z.lo === p && z.tipo === tipo));
+        _grZiiZonas = _grZiiZonas.filter(z => !(z.centro === p && z.tipo === tipo));
     }
     grDrawChart();
     grFootprintAtualizarBotaoExplodir();
@@ -14778,7 +14854,7 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
             chkCompra.type = 'checkbox';
             chkCompra.className = 'zii-check';
             chkCompra.style.cssText = `position:absolute;left:2px;top:${yTopoCss}px;width:16px;height:16px;accent-color:#4CAF50;margin:0;`;
-            chkCompra.checked = _grZiiZonas.some(z => z.lo === p && z.tipo === 'compra');
+            chkCompra.checked = _grZiiZonas.some(z => z.centro === p && z.tipo === 'compra');
             chkCompra.dataset.p = p; chkCompra.dataset.tick = tick; chkCompra.dataset.tipo = 'compra';
             chkCompra.dataset.lo = Math.round(rowLo); chkCompra.dataset.hi = Math.round(rowHi);
             chkCompra.addEventListener('change', () => { grFootprintToggleZonaZii(chkCompra.checked, p, tick, 'compra', v.c, deltaLinha, candle.t); });
@@ -14788,7 +14864,7 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
             chkVenda.type = 'checkbox';
             chkVenda.className = 'zii-check';
             chkVenda.style.cssText = `position:absolute;right:2px;top:${yTopoCss}px;width:16px;height:16px;accent-color:#EF5350;margin:0;`;
-            chkVenda.checked = _grZiiZonas.some(z => z.lo === p && z.tipo === 'venda');
+            chkVenda.checked = _grZiiZonas.some(z => z.centro === p && z.tipo === 'venda');
             chkVenda.dataset.p = p; chkVenda.dataset.tick = tick; chkVenda.dataset.tipo = 'venda';
             chkVenda.dataset.lo = Math.round(rowLo); chkVenda.dataset.hi = Math.round(rowHi);
             chkVenda.addEventListener('change', () => { grFootprintToggleZonaZii(chkVenda.checked, p, tick, 'venda', v.v, deltaLinha, candle.t); });
