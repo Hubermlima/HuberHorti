@@ -3645,6 +3645,8 @@ function grCalcularTickATR(periodo = 14) {
 window._grClusterCache = window._grClusterCache || new Map();
 const FOOTPRINT_IMBALANCE_RATIO = 3;        // desequilíbrio diagonal: 300%
 const FOOTPRINT_NIVEIS_MAX = 8;             // teto de linhas por candle (o mesmo do popup do crosshair)
+const FOOTPRINT_SELECAO_AUMENTO = 1.4;      // candle selecionado no crosshair: números até 40% maiores (se couber)
+const FOOTPRINT_SELECAO_FONTE_MAX = 10;     // ...e nunca acima de 10px
 const FOOTPRINT_CLUSTER_CW_MIN = 5;         // candle mais estreito que isso volta pro candle normal
 const FOOTPRINT_TEXTO_CW_MIN = 20;          // largura mínima do candle pra tentar escrever "bid x ask"
 const FOOTPRINT_COR_VERDE    = { base: [227, 241, 227], forte: [78, 159, 85] };
@@ -3811,6 +3813,35 @@ function grFmtVolCompacto(v, nivel) {
     return nivel >= 2 ? String(Math.round(v)) : v.toFixed(1).replace('.', ',');
 }
 
+// Candle selecionado pelo crosshair (a linha vertical dele), ou null se o crosshair não está ativo. Mesma
+// conta de posição que o próprio crosshair usa pra achar o candle.
+function grCrosshairCandleSelecionadoT(candles, totalSlots, chartW) {
+    if (!window._longPressActive || !candles.length) return null;
+    const slotW = chartW / Math.max(totalSlots, 1);
+    const idx = Math.min(candles.length - 1, Math.max(0, Math.floor((_grCrosshairX - _grPAD.left) / slotW)));
+    return candles[idx].t;
+}
+
+// Tamanho de fonte do candle SELECIONADO: o maior que cabe nele (largura da célula e altura da linha),
+// com teto de +40% (FOOTPRINT_SELECAO_AUMENTO) e 10px. Se não couber nada maior que o tamanho de hoje,
+// devolve o tamanho de hoje (o candle fica como estava). Mesmo formato de número dos demais candles.
+function grFootprintFonteSelecionado(ctx, cl, cfg, wCel, toY) {
+    let alturaMin = Infinity;
+    cl.linhas.forEach(ln => { const h = Math.abs(toY(ln.p - ln.meio) - toY(ln.p + ln.meio)); if (h < alturaMin) alturaMin = h; });
+    ctx.font = '10px -apple-system';
+    const larguraX = ctx.measureText(' x ').width;
+    let maior = 1;
+    cl.linhas.forEach(ln => {
+        const w = cfg.soTotal
+            ? ctx.measureText(grFmtVolCompacto(ln.total, cfg.nivelTxt)).width
+            : ctx.measureText(grFmtVolCompacto(ln.bid, cfg.nivelTxt)).width + larguraX + ctx.measureText(grFmtVolCompacto(ln.ask, cfg.nivelTxt)).width;
+        if (w > maior) maior = w;
+    });
+    const teto = Math.min(cfg.fs * FOOTPRINT_SELECAO_AUMENTO, FOOTPRINT_SELECAO_FONTE_MAX);
+    const fsSel = Math.min(teto, 10 * (wCel - 4) / maior, alturaMin - 3);
+    return fsSel > cfg.fs ? fsSel : cfg.fs;
+}
+
 // Desenha o cluster de UM candle. xSlot = borda esquerda do espaço do candle, cW = largura dele.
 // Retorna false se não há footprint pra esse candle (quem chamou desenha o candle normal).
 function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax) {
@@ -3821,7 +3852,9 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
     const xCel = Math.round(xSlot + barW + 0.5);
     const wCel = Math.max(1, Math.round(xSlot + cW) - xCel);
 
-    const nivelTxt = cfg.nivelTxt, fs = cfg.fs;
+    const nivelTxt = cfg.nivelTxt;
+    let fs = cfg.fs;
+    if (nivelTxt >= 0 && candle.t === cfg.tSel) fs = grFootprintFonteSelecionado(ctx, cl, cfg, wCel, toY); // candle do crosshair: números maiores (se couber)
     const fonteNormal = fs + 'px -apple-system', fonteNegrito = 'bold ' + fs + 'px -apple-system';
 
     // Células
@@ -4922,6 +4955,7 @@ if (_grTipoGrafico === 'linha') {
     // Footprint em clusters: grade única + teto de volume (escala de cor) calculados 1x por desenho
     const clustersCfg = (_grFootprintAtivo && cW >= FOOTPRINT_CLUSTER_CW_MIN)
         ? grFootprintPrepararClusters(ctx, candles, chartH / priceRange, cW) : null;
+    if (clustersCfg) clustersCfg.tSel = grCrosshairCandleSelecionadoT(candles, totalSlots, chartW);
     candles.forEach((c, i) => {
         const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
         const isUp = c.c >= c.o;
@@ -5495,21 +5529,27 @@ const aBX = 3, aBY = yR2 - aBH / 2;
             const idxAltoAbs = grVwapIdxPorTs(_grFaixaMarcada.tsAlto);
             if (idxBaixoAbs >= 0 && idxAltoAbs >= 0) {
                 const xEsq = PAD.left + ((idxBaixoAbs - startIdxFx) / totalSlots) * chartW;
-                const xDir = PAD.left + ((idxAltoAbs - startIdxFx) / totalSlots) * chartW + cW;
+                // Fim do trecho MARCADO (é dele que vem o delta e onde o texto fica centralizado)...
+                const xDirMarcado = PAD.left + ((idxAltoAbs - startIdxFx) / totalSlots) * chartW + cW;
+                // ...mas o retângulo SEMPRE segue até a borda direita do gráfico, além do candle em formação.
+                const xDir = PAD.left + chartW;
                 const yTopoFx = toY(_grFaixaMarcada.precoAlto);
                 const yBaseFx = toY(_grFaixaMarcada.precoBaixo);
+                ctx.save();
+                ctx.beginPath(); ctx.rect(PAD.left, PAD.top, chartW, chartH); ctx.clip(); // não vaza pros painéis nem pro eixo
                 ctx.fillStyle = 'rgba(120,120,130,0.28)';
                 ctx.fillRect(xEsq, yTopoFx, xDir - xEsq, yBaseFx - yTopoFx);
                 ctx.strokeStyle = 'rgba(120,120,130,0.6)';
                 ctx.lineWidth = 1;
                 ctx.strokeRect(xEsq, yTopoFx, xDir - xEsq, yBaseFx - yTopoFx);
+                ctx.restore();
 
                 const dFx = _grFaixaMarcada.delta;
                 const txtFx = (dFx >= 0 ? '+' : '') + fmtBtc2(dFx) + ' BTC';
                 ctx.font = 'bold 11px -apple-system';
                 ctx.textAlign = 'center';
                 const yMeioFx = (yTopoFx + yBaseFx) / 2;
-                const xMeioFx = (xEsq + xDir) / 2;
+                const xMeioFx = (xEsq + xDirMarcado) / 2; // centro do trecho marcado, não do retângulo estendido
                 // Fundo escuro atrás do texto — legível em cima do cinza
                 // translúcido, não importa o que tiver desenhado embaixo.
                 const wTxtFx = ctx.measureText(txtFx).width + 12;
