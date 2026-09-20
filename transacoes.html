@@ -3537,12 +3537,23 @@ let _grZoomAcumulado = _grZoom;
 // lugares seguem ele.
 const PCT_ZONA_PRECO = 0.15;
 
-// Divergência preço x delta — candle sobe mas delta foi negativo (roxo,
-// vendedor dominou apesar do preço) ou candle cai mas delta foi positivo
-// (azul, comprador dominou apesar do preço). Pertence ao framework do
-// footprint — usado tanto no candle normal quanto na mini-régua (FX ligado).
+// Absorção (divergência preço x delta) — candle sobe mas o delta foi negativo (roxo: o comprador passivo
+// absorveu a venda agressiva) ou candle cai mas o delta foi positivo (azul: o vendedor passivo absorveu a
+// compra agressiva). O candle NÃO é mais pintado: a absorção vira um símbolo fora dele (losango) — ABAIXO
+// do candle que subiu (absorção compradora) e ACIMA do que caiu (absorção vendedora). Vale tanto no candle
+// normal quanto no cluster do footprint.
 const CorDivergAlta = '#7B1FA2';
 const CorDivergBaixa = '#1E88E5';
+function grDesenharSimboloAbsorcao(ctx, x, y, cor, yMin, yMax) {
+    const yy = Math.max(yMin + 5, Math.min(yMax - 5, y));
+    ctx.beginPath();
+    ctx.moveTo(x, yy - 4); ctx.lineTo(x + 4, yy); ctx.lineTo(x, yy + 4); ctx.lineTo(x - 4, yy);
+    ctx.closePath();
+    ctx.fillStyle = cor; ctx.fill();
+    ctx.lineWidth = 1; ctx.setLineDash([]);
+    ctx.strokeStyle = _grTemaClaro ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.85)';
+    ctx.stroke();
+}
 
 let _grYAxisCenter = null;      // preço no centro vertical da tela
 let _grYAxisPxPerDollar = null; // tick fixo — pixels por dólar (DERIVADO, não acumulado — ver grAtualizarPxPerDollar)
@@ -3629,7 +3640,7 @@ function grCalcularTickATR(periodo = 14) {
 // Cor: o lado dominante decide o matiz (bid > ask = vermelho, senão verde) e a SOMA bid+ask
 // decide a intensidade. A linha de maior soma do candle (POC) leva borda escura.
 // Número em azul negrito = desequilíbrio diagonal (ask contra o bid da linha de baixo; bid contra
-// o ask da linha de cima; as linhas extremas do candle não servem de parceiras).
+// o ask da linha de cima).
 // O candle vira uma linha fina à esquerda do cluster, indo da abertura ao fechamento.
 window._grClusterCache = window._grClusterCache || new Map();
 const FOOTPRINT_IMBALANCE_RATIO = 3;        // desequilíbrio diagonal: 300%
@@ -3714,8 +3725,9 @@ function grFootprintClusterDoCandle(candle, tick, getTodos) {
     }
     const n = linhas.length;
     for (let i = 0; i < n; i++) {
-        if (i + 1 <= n - 2 && linhas[i].ask > 0 && linhas[i].ask >= FOOTPRINT_IMBALANCE_RATIO * linhas[i + 1].bid) linhas[i].imbAsk = true;
-        if (i - 1 >= 1 && linhas[i].bid > 0 && linhas[i].bid >= FOOTPRINT_IMBALANCE_RATIO * linhas[i - 1].ask) linhas[i].imbBid = true;
+        // ask da linha contra o bid da linha de BAIXO; bid da linha contra o ask da linha de CIMA
+        if (i + 1 < n && linhas[i].ask > 0 && linhas[i].ask >= FOOTPRINT_IMBALANCE_RATIO * linhas[i + 1].bid) linhas[i].imbAsk = true;
+        if (i - 1 >= 0 && linhas[i].bid > 0 && linhas[i].bid >= FOOTPRINT_IMBALANCE_RATIO * linhas[i - 1].ask) linhas[i].imbBid = true;
     }
     cl = { linhas, maxTotal, pocIdx, delta, agrup };
     window._grClusterCache.set(chave, cl);
@@ -3870,10 +3882,17 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
     const yCorpoTopo = Math.max(yMin, Math.round(toY((Math.max(kcAb, kcFe) * cl.agrup + cl.agrup) * tick - meio)));
     const yCorpoBase = Math.min(yMax, Math.round(toY(Math.min(kcAb, kcFe) * cl.agrup * tick - meio)));
     const sobe = candle.c >= candle.o;
-    ctx.fillStyle = sobe && cl.delta < 0 ? CorDivergAlta
-                  : !sobe && cl.delta > 0 ? CorDivergBaixa
-                  : (sobe ? '#2E7D32' : '#D32F2F');
+    ctx.fillStyle = sobe ? '#2E7D32' : '#D32F2F';
     ctx.fillRect(Math.round(xSlot), yCorpoTopo, barW, Math.max(2, yCorpoBase - yCorpoTopo));
+
+    // Absorção: sobe com delta negativo → símbolo ABAIXO do cluster; cai com delta positivo → ACIMA
+    if (sobe && cl.delta < 0) {
+        const ult = cl.linhas[cl.linhas.length - 1];
+        grDesenharSimboloAbsorcao(ctx, xSlot + cW / 2, toY(ult.p - ult.meio) + 8, CorDivergAlta, yMin, yMax);
+    } else if (!sobe && cl.delta > 0) {
+        const prim = cl.linhas[0];
+        grDesenharSimboloAbsorcao(ctx, xSlot + cW / 2, toY(prim.p + prim.meio) - 8, CorDivergBaixa, yMin, yMax);
+    }
     return true;
 }
 let _grDrone = false;
@@ -4913,21 +4932,17 @@ if (_grTipoGrafico === 'linha') {
             if (grDesenharFootprintCluster(ctx, x - cW / 2, cW, c, clustersCfg, toY, PAD.top, PAD.top + chartH)) return;
         }
 
-        // Divergência preço x delta — funciona em qualquer tema, sobrepõe o
-        // esquema normal (corpo E borda ficam na mesma cor única quando diverge,
-        // pra chamar atenção de relance, sem precisar comparar duas cores).
-        let divergCor = null;
+        // Absorção (divergência preço x delta): o candle mantém as cores normais e ganha um símbolo fora
+        // dele (ver grDesenharSimboloAbsorcao).
+        let absorcao = null;
         if (deltaPorCandle) {
             const delta = deltaPorCandle.get(c.t) || 0;
-            if (isUp && delta < 0) divergCor = CorDivergAlta;
-            else if (!isUp && delta > 0) divergCor = CorDivergBaixa;
+            if (isUp && delta < 0) absorcao = 'alta';
+            else if (!isUp && delta > 0) absorcao = 'baixa';
         }
 
         let color, strokeColor;
-        if (divergCor) {
-            color = divergCor;
-            strokeColor = divergCor;
-        } else if (_grTemaClaro) {
+        if (_grTemaClaro) {
             color = isUp ? '#F5F5F5' : '#4A4A4A'; // cinza claro (alta) / cinza escuro (baixa), não branco/preto puro
             strokeColor = '#5C5C5C'; // contorno cinza médio, suave — desenha o pavio e delimita o corpo sem pesar
         } else {
@@ -4950,7 +4965,9 @@ if (_grTipoGrafico === 'linha') {
         const bodyBot = toY(Math.min(c.o, c.c));
         const bodyH = Math.max(1, bodyBot - bodyTop);
         ctx.fillRect(x - cW / 2, bodyTop, cW, bodyH);
-        if (_grTemaClaro || divergCor) ctx.strokeRect(x - cW / 2, bodyTop, cW, bodyH);
+        if (_grTemaClaro) ctx.strokeRect(x - cW / 2, bodyTop, cW, bodyH);
+        if (absorcao === 'alta') grDesenharSimboloAbsorcao(ctx, x, toY(c.l) + 8, CorDivergAlta, PAD.top, PAD.top + chartH);
+        else if (absorcao === 'baixa') grDesenharSimboloAbsorcao(ctx, x, toY(c.h) - 8, CorDivergBaixa, PAD.top, PAD.top + chartH);
 
         // Traços de PoC comprador/vendedor — os 2 níveis de maior volume de
         // cada lado dentro do candle (corpo OU pavio, tanto faz onde caírem).
@@ -5925,64 +5942,83 @@ if (fibsParaDesenhar.length > 0) {
         ctx.fillText(window._grFonteCandles || 'Binance', W - PAD.right - 2, H - PAD.bottom + 22);
 
         // ── Painel Delta/Total (Fluxo) — topo da pilha, ACIMA do painel inferior ──
+        // Tabela de fundo branco: 2 linhas (Delta, Total) x 1 coluna por candle, com linhas de grade. Célula do
+        // delta: verde suave (positivo) ou vermelho suave (negativo); total: branca. Texto sempre preto e sem
+        // sinal (+/-): a cor do delta já diz o lado. Cada coluna é o espaço do candle (alinhada com ele). O
+        // número vai deitado se cabe na coluna; senão EM PÉ (sem pular candle); só se nem em pé couber, pula
+        // de N em N (as células continuam coloridas, só o número some).
         if (_altPan.dt > 0) {
             const dtH = _altPan.dt;
             const dtY = H - _altPan.sub - dtH;
-            ctx.fillStyle = '#0E1117';
-            ctx.fillRect(0, dtY, W, dtH);
-            ctx.strokeStyle = 'rgba(255,255,255,0.08)';
-            ctx.lineWidth = 1;
-            ctx.setLineDash([]);
-            ctx.beginPath(); ctx.moveTo(0, dtY); ctx.lineTo(W, dtY); ctx.stroke();
-
-            const yDeltaTxt = dtY + Math.round(dtH * 0.40);
-            const yTotalTxt = dtY + Math.round(dtH * 0.80);
-            const yDeltaCentro = dtY + dtH * 0.27, yTotalCentro = dtY + dtH * 0.73; // centro de cada faixa (rótulo em pé)
-            ctx.font = 'bold 7px -apple-system';
-            ctx.textAlign = 'left';
-            ctx.fillStyle = '#FFD54F'; ctx.fillText('Delta', 4, yDeltaTxt);
-            ctx.fillStyle = '#B0B3B8'; ctx.fillText('Total', 4, yTotalTxt);
-            const margemRotulo = 4 + Math.max(ctx.measureText('Delta').width, ctx.measureText('Total').width) + 4;
-
-            // Rótulo em pílula: texto SEMPRE preto; o fundo é que muda (delta: verde suave se positivo, vermelho
-            // suave se negativo; total: branco). Sem sinal (+/-): o fundo já diz o lado. Alinhado sob cada candle:
-            // deitado se cabe no espaço do candle; senão EM PÉ (mesma posição, sem pular candle); só se nem em
-            // pé couber, pula de N em N (sempre inclui o último).
-            const DT_FUNDO = { pos: '#A8DDB5', neg: '#F4B0AE', total: '#FFFFFF' }, DT_TEXTO = '#111111';
+            const yMeio = dtY + Math.round(dtH / 2), yFim = dtY + dtH;
+            const rowH = yMeio - dtY;
+            const DT = { fundo: '#FFFFFF', pos: '#BFE6C9', neg: '#F8C6C4', linha: '#C4C9D0', borda: '#8E959F', texto: '#111111' };
+            const slotW = chartW / Math.max(totalSlots, 1);
+            const colX = i => PAD.left + i * slotW; // borda esquerda da coluna do candle i (mesma conta do candle)
             const dtMapa = grObterDeltaTotalPorCandle(_grAllCandles);
+
+            ctx.fillStyle = DT.fundo;
+            ctx.fillRect(0, dtY, W, dtH);
             if (dtMapa) {
-                const slotW = chartW / Math.max(totalSlots, 1);
-                let larguraNum = 0; // largura da pílula = maior texto + 4px de folga
+                candles.forEach((c, i) => {
+                    const d = dtMapa.get(c.t);
+                    if (!d) return;
+                    ctx.fillStyle = d.delta >= 0 ? DT.pos : DT.neg;
+                    ctx.fillRect(Math.round(colX(i)), dtY, Math.max(1, Math.round(colX(i + 1)) - Math.round(colX(i))), rowH);
+                });
+            }
+
+            // linhas da tabela
+            ctx.lineWidth = 1; ctx.setLineDash([]);
+            ctx.strokeStyle = DT.linha;
+            ctx.beginPath();
+            ctx.moveTo(0, yMeio + 0.5); ctx.lineTo(W, yMeio + 0.5);                          // entre Delta e Total
+            ctx.moveTo(Math.round(PAD.left) + 0.5, dtY); ctx.lineTo(Math.round(PAD.left) + 0.5, yFim); // coluna dos títulos
+            if (slotW >= 8) {                                                                   // uma linha por coluna de candle
+                for (let i = 1; i <= candles.length; i++) {
+                    const xl = Math.round(colX(i)) + 0.5;
+                    ctx.moveTo(xl, dtY); ctx.lineTo(xl, yFim);
+                }
+            }
+            ctx.stroke();
+            ctx.strokeStyle = DT.borda;
+            ctx.beginPath();
+            ctx.moveTo(0, dtY + 0.5); ctx.lineTo(W, dtY + 0.5);                               // topo
+            ctx.moveTo(0, yFim - 0.5); ctx.lineTo(W, yFim - 0.5);                             // base
+            ctx.stroke();
+
+            // títulos e números
+            const yD = dtY + rowH / 2, yT = yMeio + (yFim - yMeio) / 2;
+            ctx.font = 'bold 7px -apple-system';
+            ctx.fillStyle = DT.texto;
+            ctx.textAlign = 'left';
+            ctx.fillText('Delta', 4, yD + 2.5);
+            ctx.fillText('Total', 4, yT + 2.5);
+            if (dtMapa) {
+                let maiorTxt = 0;
                 for (const c of candles) {
                     const d = dtMapa.get(c.t);
-                    if (d) larguraNum = Math.max(larguraNum, ctx.measureText(grFmtVolCompacto(Math.abs(d.delta), 0)).width, ctx.measureText(grFmtVolCompacto(d.total, 0)).width);
+                    if (d) maiorTxt = Math.max(maiorTxt, ctx.measureText(grFmtVolCompacto(Math.abs(d.delta), 0)).width, ctx.measureText(grFmtVolCompacto(d.total, 0)).width);
                 }
-                larguraNum += 4;
-                const cabeDeitado = larguraNum + 1 <= slotW;
-                const emPe = !cabeDeitado && larguraNum <= dtH / 2 - 1 && slotW >= 7;
-                const passo = (cabeDeitado || emPe) ? 1 : Math.max(1, Math.ceil((larguraNum + 1) / slotW));
-                const espessuraPe = Math.max(6, Math.min(10, slotW - 1)); // pílula em pé nunca invade o candle vizinho
-                const pilula = (texto, fundo, rotacionado) => {
-                    const w = ctx.measureText(texto).width + 4, h = rotacionado ? espessuraPe : 10;
-                    ctx.fillStyle = fundo;
-                    ctx.beginPath(); ctx.roundRect(-w / 2, -2.5 - h / 2, w, h, 2); ctx.fill();
-                    ctx.fillStyle = DT_TEXTO; ctx.textAlign = 'center'; ctx.fillText(texto, 0, 0);
+                const cabeDeitado = maiorTxt + 3 <= slotW;
+                const emPe = !cabeDeitado && maiorTxt + 3 <= rowH && slotW >= 7;
+                const passo = (cabeDeitado || emPe) ? 1 : Math.max(1, Math.ceil((maiorTxt + 3) / slotW));
+                ctx.textAlign = 'center';
+                const escreve = (txt, x, yc) => {
+                    if (emPe) {
+                        ctx.save(); ctx.translate(x + 2.5, yc); ctx.rotate(-Math.PI / 2);
+                        ctx.textAlign = 'center'; ctx.fillText(txt, 0, 0);
+                        ctx.restore();
+                    } else {
+                        ctx.fillText(txt, x, yc + 2.5);
+                    }
                 };
                 for (let i = candles.length - 1; i >= 0; i -= passo) {
-                    const dt = dtMapa.get(candles[i].t);
-                    if (!dt) continue;
-                    const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
-                    const txtDelta = grFmtVolCompacto(Math.abs(dt.delta), 0), txtTotal = grFmtVolCompacto(dt.total, 0);
-                    const fundoDelta = dt.delta >= 0 ? DT_FUNDO.pos : DT_FUNDO.neg;
-                    if (emPe ? x - 4 < margemRotulo : x - larguraNum / 2 < margemRotulo) continue; // não invade os rótulos da esquerda
-                    ctx.save(); ctx.translate(emPe ? x + 2.5 : x, emPe ? yDeltaCentro : yDeltaTxt);
-                    if (emPe) ctx.rotate(-Math.PI / 2);
-                    pilula(txtDelta, fundoDelta, emPe);
-                    ctx.restore();
-                    ctx.save(); ctx.translate(emPe ? x + 2.5 : x, emPe ? yTotalCentro : yTotalTxt);
-                    if (emPe) ctx.rotate(-Math.PI / 2);
-                    pilula(txtTotal, DT_FUNDO.total, emPe);
-                    ctx.restore();
+                    const d = dtMapa.get(candles[i].t);
+                    if (!d) continue;
+                    const x = colX(i) + cW / 2;
+                    escreve(grFmtVolCompacto(Math.abs(d.delta), 0), x, yD);
+                    escreve(grFmtVolCompacto(d.total, 0), x, yT);
                 }
             }
         }
