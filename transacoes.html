@@ -3328,7 +3328,7 @@ function grFootprintAlternarSkin() {
 grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
-const APP_VERSAO = '20/09 23:14 · 15753 linhas · CORPO-VIVO v10';
+const APP_VERSAO = '20/09 23:14 · 15753 linhas · CORPO-VIVO v11';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) el.textContent = 'Versão ' + APP_VERSAO;
@@ -5151,7 +5151,7 @@ const aBX = 3, aBY = yR2 - aBH / 2;
             // assim dá pra ver de relance se é "normal" ou "chamando atenção",
             // sem comparar número nenhum de cabeça.
             if (_grFootprintAtivo && (_grFootprintBins || _grVpAncoraTs != null)) {
-                const zonaAoVivo = grCrosshairZonaDeltaPreco(_precoAtual, PCT_ZONA_PRECO); // mapa do histograma: não depende de Value Area/âncora
+                const zonaAoVivo = grCrosshairZonaDeltaPreco(_precoAtual, PCT_ZONA_PRECO); // nível do preço atual, da janela "Dias": não depende de Value Area nem de âncora
                 if (zonaAoVivo && zonaAoVivo.temVolume) {
                     const zTxt = 'Δ ' + (zonaAoVivo.delta >= 0 ? '+' : '') + fmtBtc2(zonaAoVivo.delta);
                     const candleSobe = lastCandle ? lastCandle.c >= lastCandle.o : true;
@@ -6771,35 +6771,31 @@ function grFaixaIdxContendo(ts) {
     while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (_grAllCandles[mid].t <= ts) lo = mid; else hi = mid - 1; }
     return lo;
 }
-// ΔV da zona (±pctZona% do preço apontado pela RÉGUA HORIZONTAL do crosshair): soma compra/venda dos níveis dentro
-// da faixa no mapa que DESENHA as barras do Volume Profile ancorado (sem ele, o da janela "Dias: X"). Depende só do
-// preço apontado — não do candle e não do Value Area/âncora: com o Value Area ancorado o outro mapa (só desde a âncora)
-// não tinha volume nesse preço e o valor dava +0,00 mesmo com barra visível no histograma. temVolume=false → o
-// histograma não tem volume nessa faixa. Cacheado por faixa de $20 pra não varrer o mapa a cada pixel do arraste.
+// ΔV do NÍVEL apontado (a linha de preço do crosshair, ou o preço atual): compra − venda de QUALQUER nível de preço, na
+// mesma linha (tick do ATR) das células do footprint e do Volume Profile. NÃO depende de Value Area nem de Volume Profile
+// ancorado — antes, com o VP ancorado, só contava o volume desde a âncora e níveis fora daquele perfil davam "—". Agora é
+// sempre o mapa da janela "Dias: X" (o mesmo do CVD/Delta/histograma agregado), então qualquer nível que negociou nessa janela
+// mostra o delta dele. Cacheado por nível/tick/mapa (o mapa é refeito 1× por minuto).
 function grCrosshairZonaDeltaPreco(preco, pctZona) {
-    // Volume Profile ancorado (as barras que estão na tela); sem ele, o mapa da janela de dias, como antes.
-    const vp = _grVpAncoraTs != null ? grVpObterMapa() : null;
-    const mapa = (vp && vp.mapa.size > 0) ? vp.mapa : (_grFootprintBins ? _grFootprintBins.mapaBase : null);
+    const mapa = _grFootprintBins ? _grFootprintBins.mapaBase : null;
     if (!mapa) return null;
-    // Volume Profile em modo ATR: o delta é o da LINHA AGREGADA inteira em que o preço está (a mesma barra do perfil,
-    // com os sub-níveis de $10 já somados), e não o de uma zona de ±0,15% — assim não é preciso somar os sub-níveis na mão.
-    if (vp && vp.mapa.size > 0 && GR_VP_LINHAS_MODO === 'atr' && _grMaxP > _grMinP) {
+    if (_grMaxP > _grMinP && _grChartH > 0) {
         const tick = grVpTick(_grChartH / (_grMaxP - _grMinP));
         const centro = Math.round(preco / tick) * tick;
-        const linha = grVpAgrupar(vp, tick).mapa.get(centro);
-        const compra = linha ? linha.c : 0, venda = linha ? linha.v : 0;
-        return { compra, venda, delta: compra - venda, temVolume: (compra + venda) > 0, precoBaixo: centro - tick / 2, precoAlto: centro + tick / 2, agregado: true, centro, tick };
+        const cacheN = window._grCrosshairNivelCache;
+        if (cacheN && cacheN.centro === centro && cacheN.tick === tick && cacheN.mapa === mapa) return cacheN;
+        let compra = 0, venda = 0;
+        mapa.forEach((v, p) => { if ((tick === 10 ? p : Math.round(p / tick) * tick) === centro) { compra += v.c; venda += v.v; } });
+        const nivel = { centro, tick, mapa, compra, venda, delta: compra - venda, temVolume: (compra + venda) > 0, precoBaixo: centro - tick / 2, precoAlto: centro + tick / 2, agregado: true };
+        window._grCrosshairNivelCache = nivel;
+        return nivel;
     }
-    const bucket = Math.round(preco / 20);
-    const cache = window._grCrosshairZonaPrecoCache;
-    if (cache && cache.bucket === bucket && cache.mapa === mapa) return cache;
+    // Sem escala de preço válida ainda (gráfico não renderizou): cai na zona de ±pctZona% do preço apontado.
     const precoBaixo = preco * (1 - pctZona / 100);
     const precoAlto  = preco * (1 + pctZona / 100);
     let compra = 0, venda = 0;
     mapa.forEach((v, p) => { if (p >= precoBaixo && p <= precoAlto) { compra += v.c; venda += v.v; } });
-    const resultado = { bucket, mapa, compra, venda, delta: compra - venda, temVolume: (compra + venda) > 0, precoBaixo, precoAlto };
-    window._grCrosshairZonaPrecoCache = resultado;
-    return resultado;
+    return { mapa, compra, venda, delta: compra - venda, temVolume: (compra + venda) > 0, precoBaixo, precoAlto };
 }
 function grDrawChartWithCrosshair(yInterno) {
     // Desenha o gráfico sem recursão
