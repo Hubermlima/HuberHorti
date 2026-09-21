@@ -2837,8 +2837,15 @@ async function cvFecharTargetModal() {
 }
 
 function cvIniciarRealTime() {
-    // Fecha WS anterior se existir
-    if (window._cvWs) { try { window._cvWs.close(); } catch(e) {} }
+    // Fecha WS anterior se existir. Antes de fechar, DESLIGA os handlers dele: o onclose do socket antigo agendava outra
+    // reconexão, que fechava o socket novo (saudável) e agendava mais uma... um ciclo de reconexões sem fim.
+    if (window._cvWs) {
+        const velho = window._cvWs;
+        velho.onopen = velho.onmessage = velho.onerror = velho.onclose = null;
+        try { velho.close(); } catch(e) {}
+    }
+    if (window._cvWsReconnectTimer) { clearTimeout(window._cvWsReconnectTimer); window._cvWsReconnectTimer = null; }
+    window._cvWsCriadoEm = Date.now();
     const symbol = (_ticker || 'BTC/USD').replace('/', '').toLowerCase();
     const binSym = symbol.replace('btcusd','btcusdt').replace('ethusd','ethusdt').replace('usd','usdt').replace('usdtt','usdt');
     const ws = new WebSocket('wss://fstream.binance.com/ws/' + binSym + '@aggTrade');
@@ -2981,6 +2988,7 @@ function cvIniciarRealTime() {
     };
 
     ws.onclose = function() {
+        if (window._cvWs !== ws) return; // socket antigo (já substituído): não reconecta
         // Reconecta com backoff exponencial (3s, 6s, 12s... até 60s) em vez de
         // martelar a cada 3s pra sempre — evita sobrecarregar o app quando não
         // tem rede nenhuma disponível (ex: ambiente de preview sem acesso externo).
@@ -3263,11 +3271,23 @@ async function grReconciliarUltimosCandles() {
 function grAoVoltarDoSegundoPlano() {
     if (!_grAllCandles.length || !window._cvWsUltimaMsg) return;
     if (Date.now() - window._cvWsUltimaMsg <= 8000) return; // WebSocket ativo: nada a fazer
-    try { if (!window._cvWs || window._cvWs.readyState !== 1) cvIniciarRealTime(); } catch (err) {}
+    try {
+        const st = window._cvWs ? window._cvWs.readyState : 3;
+        if (st >= 2 || (st === 0 && Date.now() - (window._cvWsCriadoEm || 0) > 10000)) cvIniciarRealTime();
+    } catch (err) {}
     grReconciliarUltimosCandles();
     if (_grFootprintAtivo) { grFootprintAtualizarSeAtivo(); grFootprintLivePreencherBuraco(); }
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') grAoVoltarDoSegundoPlano(); });
+setInterval(() => {
+    if (!window._cvWs || !_grAllCandles.length || document.visibilityState !== 'visible') return;
+    const ultimo = Math.max(window._cvWsUltimaMsg || 0, window._cvWsCriadoEm || 0);
+    if (Date.now() - ultimo < 15000) return;              // recebeu algo há pouco: saudável
+    if (Date.now() - (window._cvWsReiniciadoPeloVigia || 0) < 10000) return; // não reinicia em cima de si mesmo
+    window._cvWsReiniciadoPeloVigia = Date.now();
+    console.log('[vigia] WebSocket sem mensagens há ' + Math.round((Date.now() - ultimo) / 1000) + ' s — reiniciando o tempo real');
+    try { cvIniciarRealTime(); } catch (err) {}
+}, 5000);
 window.addEventListener('pageshow', grAoVoltarDoSegundoPlano);
 window.addEventListener('online', grAoVoltarDoSegundoPlano);
 
@@ -3994,7 +4014,7 @@ grFootprintSkinAtualizarRotulo();
 
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
-const APP_VERSAO = '20/09 22:31 · 15697 linhas';
+const APP_VERSAO = '20/09 22:56 · 15717 linhas';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) el.textContent = 'Versão ' + APP_VERSAO;
