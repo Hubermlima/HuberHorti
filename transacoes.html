@@ -2907,17 +2907,30 @@ function cvIniciarRealTime() {
             // candle novo em vez de ficar mutando o antigo pra sempre.
             if (_grAllCandles.length > 0) {
                 const last = _grAllCandles[_grAllCandles.length - 1];
-                const inicioAtual = grInicioPeriodoAtual(Date.now());
-                if (inicioAtual > last.t) {
-                    const q0 = parseFloat(d.q) || 0;
-                    _grAllCandles.push({ t: inicioAtual, o: novoPreco, h: novoPreco, l: novoPreco, c: novoPreco, v: q0, bv: d.m === false ? q0 : 0 });
-                } else {
+                // Em que candle o trade entra? Pelo HORÁRIO DO TRADE (d.T, da exchange) — e não pelo relógio do celular. Com o
+                // relógio uns segundos adiantado/atrasado (ou a rede atrasando o trade) o candle novo nascia cedo/tarde: abertura
+                // errada, e trades do candle antigo indo pro novo (o footprint já usava o horário do trade, então corpo e células
+                // divergiam). Só cai no relógio local se o trade vier sem horário.
+                const inicioTrade = grInicioPeriodoAtual(d.T > 0 ? d.T : Date.now());
+                const qv = parseFloat(d.q) || 0;
+                if (inicioTrade > last.t) {
+                    _grAllCandles.push({ t: inicioTrade, o: novoPreco, h: novoPreco, l: novoPreco, c: novoPreco, v: qv, bv: d.m === false ? qv : 0 });
+                } else if (inicioTrade === last.t) {
                     last.c = novoPreco;
                     last.h = Math.max(last.h, novoPreco);
                     last.l = Math.min(last.l, novoPreco);
                     // volume do candle em formação: o REST só traz até a hora do carregamento, então cada trade soma (bv = compra a mercado)
-                    const qv = parseFloat(d.q);
                     if (qv > 0) { last.v = (last.v || 0) + qv; if (d.m === false) last.bv = (last.bv || 0) + qv; }
+                } else {
+                    // trade atrasado que pertence a um candle mais antigo: entra nele (não suja o que está em formação)
+                    for (let i = _grAllCandles.length - 2; i >= 0 && i >= _grAllCandles.length - 4; i--) {
+                        const ant = _grAllCandles[i];
+                        if (ant.t === inicioTrade) {
+                            ant.h = Math.max(ant.h, novoPreco); ant.l = Math.min(ant.l, novoPreco);
+                            if (qv > 0) { ant.v = (ant.v || 0) + qv; if (d.m === false) ant.bv = (ant.bv || 0) + qv; }
+                            break;
+                        }
+                    }
                 }
             }
 
@@ -3096,6 +3109,7 @@ function cvSetTf(tf) {
     // A escala vertical era calibrada UMA vez por sessão, no 1º timeframe aberto, e herdada por todos os outros (candles
     // achatados nos pequenos, compridos nos grandes). Agora recalibra a cada timeframe (o fator manual vem por cima).
     _grYAxisCenter = null; _grPxPerDollarReferencia = null; _grZoomReferencia = null;
+    window._grAbsSerie = null;
     _wsLastDraw = Date.now();
     _cvMinimapChaveCache = ''; _cvMinimapScrollIdx = null; _cvMinimapUltimoRangeKey = null; // tf mudou → minimapa precisa remapear/recarregar
 
@@ -3224,8 +3238,9 @@ function grAgruparParaTf(base) {
 // trades), refaz os candles recentes a partir da exchange: nativos = troca só a ponta (100 candles); agrupados
 // (personalizado/semana) = recarrega tudo.
 async function grReconciliarUltimosCandles() {
-    if (window._grReconciliando || !_grAllCandles.length) return;
-    window._grReconciliando = true;
+    if (window._grReconciliando && Date.now() - (window._grReconciliandoTs || 0) < 60000) return; // trava expira em 60 s
+    if (!_grAllCandles.length) return;
+    window._grReconciliando = true; window._grReconciliandoTs = Date.now();
     try {
         if (_grTf === '1week' || _grTf === 'custom') {
             const noFim = _grOffset >= _grAllCandles.length - _grZoom - 2;
@@ -3238,6 +3253,7 @@ async function grReconciliarUltimosCandles() {
             if (novos.length) {
                 const desde = novos[0].t;
                 _grAllCandles = _grAllCandles.filter(c => c.t < desde).concat(novos);
+                window._grAbsSerie = null;
                 _grZonasCache = null; window._grClusterCache = new Map();
                 grDrawChart();
             }
@@ -3259,10 +3275,11 @@ window.addEventListener('online', grAoVoltarDoSegundoPlano);
 // Antes eram só 2 páginas (2.000 candles) e o histórico simplesmente parava. Teto de GR_HIST_MAX_CANDLES pra não pesar.
 const GR_HIST_MAX_CANDLES = 20000;
 async function grCarregarHistoricoAnterior() {
-    if (window._grHistCarregando || window._grHistFim || !_grAllCandles.length) return;
+    if (window._grHistFim || !_grAllCandles.length) return;
+    if (window._grHistCarregando && Date.now() - (window._grHistCarregandoTs || 0) < 60000) return; // trava expira em 60 s
     if (_grAllCandles.length >= GR_HIST_MAX_CANDLES) { window._grHistFim = true; return; }
     const chaveTf = _grTf + '|' + _grTfCustomUnit + '|' + _grTfCustomAmount + '|' + _ticker;
-    window._grHistCarregando = true;
+    window._grHistCarregando = true; window._grHistCarregandoTs = Date.now();
     try {
         const agrupado = _grTf === '1week' || _grTf === 'custom';
         const primeiro = agrupado && window._grBaseCandles && window._grBaseCandles.length ? window._grBaseCandles[0].t : _grAllCandles[0].t;
@@ -3743,17 +3760,51 @@ let _grZoomAcumulado = _grZoom;
 // lugares seguem ele.
 const PCT_ZONA_PRECO = 0.15;
 
-// Absorção (divergência preço x delta) — candle sobe mas o delta foi negativo (roxo: o comprador passivo
+// Absorção = divergência preço × delta COM absorção acima da média (ver grAbsorcaoAcimaDaMedia) — candle sobe mas o delta foi negativo (roxo: o comprador passivo
 // absorveu a venda agressiva) ou candle cai mas o delta foi positivo (azul: o vendedor passivo absorveu a
 // compra agressiva). O candle NÃO é mais pintado: a absorção vira um símbolo fora dele (losango) — ABAIXO
 // do candle que subiu (absorção compradora) e ACIMA do que caiu (absorção vendedora). Vale tanto no candle
 // normal quanto no cluster do footprint.
 const CorDivergAlta = '#7B1FA2';
 const CorDivergBaixa = '#1E88E5';
+// Absorção de cada candle = Volume ÷ (((High − Low) ÷ Open) × 100) ÷ 1000, e a média móvel simples de 20 períodos dela (a linha
+// branca do painel ABSORÇÃO). Uma série só, usada pelo painel E pelos losangos AC/AV: o critério "acima da média" do losango é
+// exatamente a barra passar da linha branca. Cache incremental: só o candle em formação (e o que acabou de fechar) mudam.
+function grAbsorcaoSerie() {
+    const cs = _grAllCandles, n = cs.length;
+    const valDe = c => { const rp = c.o > 0 ? ((c.h - c.l) / c.o) * 100 : 0; return rp > 0 ? (c.v || 0) / rp / 1000 : 0; };
+    let s = window._grAbsSerie;
+    if (!s || n === 0 || s.t0 !== cs[0].t || n < s.n || n > s.n + 1) {
+        const vals = cs.map(valDe);
+        s = { t0: n ? cs[0].t : 0, n, vals, sma: grSMASimples(vals, 20) };
+        window._grAbsSerie = s;
+        return s;
+    }
+    if (n === s.n + 1) { s.vals.push(0); s.sma.push(null); s.n = n; } // candle novo
+    for (let i = Math.max(0, n - 2); i < n; i++) {
+        s.vals[i] = valDe(cs[i]);
+        if (i < 19) { s.sma[i] = null; continue; }
+        let soma = 0; for (let j = i - 19; j <= i; j++) soma += s.vals[j];
+        s.sma[i] = soma / 20;
+    }
+    return s;
+}
+// Quanto a absorção do candle passa da média, em % ((valor ÷ média − 1) × 100): é o número que vai embaixo do losango. Devolve
+// null se a absorção NÃO está acima da média (ou não há média ainda) — e aí não há losango (a divergência preço × delta sozinha
+// não basta). Mesma fórmula e mesma média (SMA 20) do painel ABSORÇÃO.
+function grAbsorcaoExcessoPct(candle) {
+    const cs = _grAllCandles;
+    let lo = 0, hi = cs.length - 1, idx = -1;
+    while (lo <= hi) { const mid = (lo + hi) >> 1; if (cs[mid].t === candle.t) { idx = mid; break; } if (cs[mid].t < candle.t) lo = mid + 1; else hi = mid - 1; }
+    if (idx < 0) return null;
+    const s = grAbsorcaoSerie(), m = s.sma[idx];
+    return (m != null && m > 0 && s.vals[idx] > m) ? (s.vals[idx] / m - 1) * 100 : null;
+}
+
 // O losango carrega o veredito EMBAIXO dele: "AC" (Absorção Compradora: losango roxo, abaixo do candle, que subiu com
 // delta negativo) ou "AV" (Absorção Vendedora: losango azul, acima do candle, que caiu com delta positivo) e a variação
 // % do preço do candle (o Delta $). `yBorda` é a borda do candle do lado do losango (mínima pra compradora, máxima pra
-// vendedora). O rótulo SEMPRE aparece: com coluna larga, em 2 linhas deitadas (sigla e %); com coluna estreita, em UMA
+// vendedora). O número é o EXCESSO da absorção sobre a média, em % (grAbsorcaoExcessoPct). O rótulo SEMPRE aparece: com coluna larga, em 2 linhas deitadas (sigla e %); com coluna estreita, em UMA
 // linha EM PÉ ("AC 0.39%" girado, precisa só de ~7px de largura), com a fonte reduzida até caber na coluna. Com o
 // losango ACIMA do candle ele sobe o tanto que o rótulo ocupa, pra o texto caber entre ele e o candle.
 function grDesenharSimboloAbsorcao(ctx, x, yBorda, tipo, pct, slotW, yMin, yMax) {
@@ -3943,7 +3994,7 @@ grFootprintSkinAtualizarRotulo();
 
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
-const APP_VERSAO = '20/09 21:36 · 15609 linhas';
+const APP_VERSAO = '20/09 22:31 · 15697 linhas';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) el.textContent = 'Versão ' + APP_VERSAO;
@@ -4284,13 +4335,15 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
     ctx.fillRect(Math.round(xSlot), yCorpoTopo, barW, Math.max(2, yCorpoBase - yCorpoTopo));
 
     // Absorção: sobe com delta negativo → símbolo ABAIXO do cluster; cai com delta positivo → ACIMA
-    const pctCandle = candle.o ? ((candle.c - candle.o) / candle.o) * 100 : 0;
+    const divergiu = (sobe && cl.delta < 0) || (!sobe && cl.delta > 0);
+    const excessoPct = divergiu ? grAbsorcaoExcessoPct(candle) : null;
+    if (excessoPct == null) return true; // sem divergência, ou absorção abaixo da média: sem losango
     if (sobe && cl.delta < 0) {
         const ult = cl.linhas[cl.linhas.length - 1];
-        grDesenharSimboloAbsorcao(ctx, xSlot + cW / 2, toY(ult.p - ult.meio), 'compradora', pctCandle, cW + 1, yMin, yMax);
+        grDesenharSimboloAbsorcao(ctx, xSlot + cW / 2, toY(ult.p - ult.meio), 'compradora', excessoPct, cW + 1, yMin, yMax);
     } else if (!sobe && cl.delta > 0) {
         const prim = cl.linhas[0];
-        grDesenharSimboloAbsorcao(ctx, xSlot + cW / 2, toY(prim.p + prim.meio), 'vendedora', pctCandle, cW + 1, yMin, yMax);
+        grDesenharSimboloAbsorcao(ctx, xSlot + cW / 2, toY(prim.p + prim.meio), 'vendedora', excessoPct, cW + 1, yMin, yMax);
     }
     return true;
 }
@@ -5381,11 +5434,14 @@ if (_grTipoGrafico === 'linha') {
 
         // Absorção (divergência preço x delta): o candle mantém as cores normais e ganha um símbolo fora
         // dele (ver grDesenharSimboloAbsorcao).
-        let absorcao = null;
+        let absorcao = null, absExcessoPct = null;
         if (deltaPorCandle) {
             const delta = deltaPorCandle.get(c.t) || 0;
             if (isUp && delta < 0) absorcao = 'alta';
             else if (!isUp && delta > 0) absorcao = 'baixa';
+            // Divergência sozinha não é absorção: o candle também precisa ter absorção ACIMA DA MÉDIA (critério combinado)
+            absExcessoPct = absorcao ? grAbsorcaoExcessoPct(c) : null;
+            if (absExcessoPct == null) absorcao = null;
         }
 
         let color, strokeColor;
@@ -5413,9 +5469,9 @@ if (_grTipoGrafico === 'linha') {
         const bodyH = Math.max(1, bodyBot - bodyTop);
         ctx.fillRect(x - cW / 2, bodyTop, cW, bodyH);
         if (_grTemaClaro) ctx.strokeRect(x - cW / 2, bodyTop, cW, bodyH);
-        const pctC = c.o ? ((c.c - c.o) / c.o) * 100 : 0, slotWAbs = chartW / Math.max(totalSlots, 1);
-        if (absorcao === 'alta') grDesenharSimboloAbsorcao(ctx, x, toY(c.l), 'compradora', pctC, slotWAbs, PAD.top, PAD.top + chartH);
-        else if (absorcao === 'baixa') grDesenharSimboloAbsorcao(ctx, x, toY(c.h), 'vendedora', pctC, slotWAbs, PAD.top, PAD.top + chartH);
+        const slotWAbs = chartW / Math.max(totalSlots, 1);
+        if (absorcao === 'alta') grDesenharSimboloAbsorcao(ctx, x, toY(c.l), 'compradora', absExcessoPct, slotWAbs, PAD.top, PAD.top + chartH);
+        else if (absorcao === 'baixa') grDesenharSimboloAbsorcao(ctx, x, toY(c.h), 'vendedora', absExcessoPct, slotWAbs, PAD.top, PAD.top + chartH);
 
         // Traços de PoC comprador/vendedor — os 2 níveis de maior volume de
         // cada lado dentro do candle (corpo OU pavio, tanto faz onde caírem).
@@ -6794,15 +6850,9 @@ if (fibsParaDesenhar.length > 0) {
                 // apontar de que lado ele tá. A barra só sinaliza "tem algo suspeito
                 // aqui" (quanto maior, mais volume pra pouco movimento); o lado só se
                 // revela DEPOIS, quando ele vira agressor visível e empurra o preço.
-                const absPeriodo = 20;
-                // Fórmula: Volume ÷ (((High − Low) ÷ Open) × 100) ÷ 1000 — o range vira % da abertura (comparável entre
-                // preços e timeframes) e o /1000 deixa o número legível. QUANTO MAIOR, MAIOR A ABSORÇÃO: muito volume
-                // sendo absorvido por pouco movimento de preço.
-                const absAllVals = _grAllCandles.map(c => {
-                    const rangePct = c.o > 0 ? ((c.h - c.l) / c.o) * 100 : 0;
-                    return rangePct > 0 ? (c.v || 0) / rangePct / 1000 : 0;
-                });
-                const absAllSma = grSMASimples(absAllVals, absPeriodo);
+                const absSerie = grAbsorcaoSerie(); // a mesma série (e a mesma média) que decide os losangos AC/AV
+                const absAllVals = absSerie.vals;
+                const absAllSma = absSerie.sma;
                 const absOffset = total - absAllVals.length; // deve ser 0, mas por segurança
 
                 const absVals = [];
@@ -6813,22 +6863,43 @@ if (fibsParaDesenhar.length > 0) {
                     absSma.push(idx >= 0 ? absAllSma[idx] : null);
                 }
 
-                const maxAbs = Math.max(...absVals, 1) * 1.15;
+                // NORMALIZAÇÃO: as barras não são mais relativas à maior barra da tela (um único pico achatava todas as
+                // outras e a escala mudava a cada arrasto). Agora cada barra é o valor da fórmula DIVIDIDO pelo "normal" do
+                // ativo — a mediana dos últimos 100 candles fechados. 1× = normal, 2× = o dobro do normal. A escala é FIXA
+                // (teto em 5×): a mesma altura significa a mesma coisa em qualquer ponto do histórico, e o cinza claro/forte
+                // segue o mesmo degradê do Delta (do normal a 3×). Barra acima do teto ganha uma tampa branca.
+                const absRecentes = absAllVals.slice(-101, -1).filter(v => v > 0).sort((x, y) => x - y);
+                let refAbs = absRecentes.length >= 8 ? absRecentes[Math.floor(absRecentes.length / 2)] : 0;
+                if (!(refAbs > 0)) refAbs = Math.max(...absVals.filter(v => v > 0), 1) / 2; // sem histórico: metade da maior visível
+                const TETO_ABS = 5;
                 const baseY = panY + panPad.top + panChartH; // linha de base embaixo — barra só cresce pra cima
-                const escala = panChartH / maxAbs;
+                const escala = panChartH / TETO_ABS;
 
-                // Histograma vertical — sempre pra cima, sem verde/vermelho. Opacidade
-                // escala com a intensidade (igual heatmap do footprint): quanto maior a
-                // absorção, mais sólida a barra.
+                // Histograma vertical — sempre pra cima, sem verde/vermelho.
                 absVals.forEach((v, i) => {
                     const x = PAD.left + (i / totalSlots) * panChartW + cW / 2;
-                    const alturaPx = v * escala;
-                    const intensidade = Math.min(1, v / maxAbs);
+                    const razao = v / refAbs;
+                    const alturaPx = Math.min(razao, TETO_ABS) * escala;
+                    const intensidade = Math.max(0, Math.min(1, (razao - 1) / 2)); // 1× → 3×
                     ctx.fillStyle = `rgba(255,193,7,${0.30 + intensidade * 0.60})`;
                     ctx.fillRect(x - cW * 0.4, baseY - alturaPx, cW * 0.8, alturaPx);
+                    if (razao > TETO_ABS) { ctx.fillStyle = 'rgba(255,255,255,0.9)'; ctx.fillRect(x - cW * 0.4, baseY - alturaPx, cW * 0.8, 2); }
                 });
 
-                // Média móvel única — sem separar por lado (não tem mais lado aqui).
+                // Linha do "normal" (1×)
+                const yNormal = baseY - escala;
+                ctx.save();
+                ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+                ctx.lineWidth = 1;
+                ctx.setLineDash([4, 3]);
+                ctx.beginPath(); ctx.moveTo(PAD.left, yNormal); ctx.lineTo(PAD.left + panChartW, yNormal); ctx.stroke();
+                ctx.restore();
+                ctx.font = '9px -apple-system';
+                ctx.textAlign = 'left';
+                ctx.fillStyle = 'rgba(255,255,255,0.55)';
+                ctx.fillText('1× normal', PAD.left + 4, yNormal - 3);
+
+                // Média móvel única (também normalizada)
                 ctx.strokeStyle = 'rgba(255,255,255,0.55)';
                 ctx.lineWidth = 1.2;
                 ctx.beginPath();
@@ -6836,7 +6907,7 @@ if (fibsParaDesenhar.length > 0) {
                 absSma.forEach((v, i) => {
                     if (v === null) { started = false; return; }
                     const x = PAD.left + (i / totalSlots) * panChartW + cW / 2;
-                    const y = baseY - v * escala;
+                    const y = baseY - Math.min(v / refAbs, TETO_ABS) * escala;
                     if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
                 });
                 ctx.stroke();
@@ -6848,15 +6919,16 @@ if (fibsParaDesenhar.length > 0) {
                 ctx.fillText('ABSORÇÃO', PAD.left + 4, panY + panPad.top + 12);
                 ctx.font = '9px -apple-system';
                 ctx.fillStyle = 'rgba(255,255,255,0.55)';
-                ctx.fillText('vol ÷ range% ÷ 1000 (maior = mais)', PAD.left + 84, panY + panPad.top + 12);
+                ctx.fillText('vol ÷ range% ÷ 1000, em × do normal', PAD.left + 84, panY + panPad.top + 12);
 
                 window._absorcaoAtual = absVals[absVals.length - 1];
-                // valor do último candle da tela, à direita do painel
+                window._absorcaoRazao = absVals[absVals.length - 1] / refAbs;
+                // último candle da tela, à direita: quantas vezes o normal (e o valor bruto da fórmula)
                 ctx.font = 'bold 10px -apple-system';
                 ctx.textAlign = 'right';
                 ctx.fillStyle = '#FFC107';
                 const absUlt = absVals[absVals.length - 1];
-                ctx.fillText((absUlt < 10 ? absUlt.toFixed(2) : absUlt.toFixed(1)).replace('.', ','), PAD.left + panChartW - 2, panY + panPad.top + 12);
+                ctx.fillText('×' + (absUlt / refAbs).toFixed(1).replace('.', ',') + ' (' + (absUlt < 10 ? absUlt.toFixed(2) : absUlt.toFixed(1)).replace('.', ',') + ')', PAD.left + panChartW - 2, panY + panPad.top + 12);
 
         }
     }
@@ -13002,14 +13074,21 @@ function grFootprintLiveTrade(d) {
     if (window._grLiveSym && window._grLiveSym !== 'btcusdt') return; // o R2 do Fluxo só existe pro BTC
     const p = parseFloat(d.p), q = parseFloat(d.q), T = d.T || Date.now();
     if (!(p > 0) || !(q > 0)) return;
-    if (window._grLiveCarregando) { window._grLiveBuffer.push([d.a, T, p, q, d.m === true]); return; }
+    if (window._grLiveCarregando) {
+        if (Date.now() - (window._grLiveCarregandoTs || 0) < 60000) { window._grLiveBuffer.push([d.a, T, p, q, d.m === true]); return; }
+        // o preenchimento travou (passou de 60 s): solta a trava e aplica o que estava esperando, na ordem
+        window._grLiveCarregando = false;
+        const espera = window._grLiveBuffer; window._grLiveBuffer = [];
+        espera.forEach(t => grFootprintLiveAdd(t[0], t[1], t[2], t[3], t[4]));
+    }
     grFootprintLiveAdd(d.a, T, p, q, d.m === true);
 }
 // Preenche o buraco entre o último minuto do R2 e agora (REST de aggTrades, paginada por fromId).
 async function grFootprintLivePreencherBuraco() {
-    if (!_grFootprintAtivo || !_grFootprintCandlesRaw || window._grLiveCarregando) return;
+    if (!_grFootprintAtivo || !_grFootprintCandlesRaw) return;
+    if (window._grLiveCarregando && Date.now() - (window._grLiveCarregandoTs || 0) < 60000) return; // trava expira em 60 s
     if (window._grLiveSym && window._grLiveSym !== 'btcusdt') return;
-    window._grLiveCarregando = true;
+    window._grLiveCarregando = true; window._grLiveCarregandoTs = Date.now();
     try {
         let ultimoR2 = 0;
         for (let i = _grFootprintCandlesRaw.length - 1; i >= 0 && i >= _grFootprintCandlesRaw.length - 5; i--) ultimoR2 = Math.max(ultimoR2, _grFootprintCandlesRaw[i].ts);
@@ -13017,7 +13096,7 @@ async function grFootprintLivePreencherBuraco() {
         let fromId = null, paginas = 0;
         while (paginas < 40) {
             const url = 'https://fapi.binance.com/fapi/v1/aggTrades?symbol=BTCUSDT&limit=1000' + (fromId != null ? '&fromId=' + fromId : '&startTime=' + desde);
-            const r = await fetch(url);
+            const r = await grFetchTimeout(url, {}, 12000);
             if (!r.ok) break;
             const trades = await r.json();
             if (!Array.isArray(trades) || trades.length === 0) break;
@@ -13070,14 +13149,17 @@ function grFootprintLiveAplicar() {
 }
 
 async function grFootprintAtualizarSeAtivo() {
-    if (!_grFootprintAtivo || !_grFootprintCandlesRaw || window._grR2Atualizando) return;
-    window._grR2Atualizando = true;
+    // A trava expira em 30 s: uma requisição travada (rede que caiu no meio, app voltando do segundo plano) não pode
+    // deixar o refresh parado pra sempre — era isso que fazia o footprint parar de acompanhar até sair e entrar na tela.
+    if (!_grFootprintAtivo || !_grFootprintCandlesRaw) return;
+    if (window._grR2Atualizando && Date.now() - (window._grR2AtualizandoTs || 0) < 30000) return;
+    window._grR2Atualizando = true; window._grR2AtualizandoTs = Date.now();
     try {
         const diaHoje = new Date().toISOString().slice(0, 10);
         // Incremental: só os minutos a partir de 10 min antes do último que o R2 já nos deu (o worker novo respeita
         // "desde"; o antigo devolve o dia todo — o merge abaixo funciona igual). O "_" fura qualquer cache.
         const desde = window._grR2UltimoTs ? window._grR2UltimoTs - 10 * 60000 : 0;
-        const r = await fetch(grFootprintUrlDia(diaHoje) + (desde ? '&desde=' + desde : '') + '&_=' + Date.now(), { cache: 'no-store' });
+        const r = await grFetchTimeout(grFootprintUrlDia(diaHoje) + (desde ? '&desde=' + desde : '') + '&_=' + Date.now(), { cache: 'no-store' }, 12000);
         if (!r.ok) return;
         const dados = await r.json();
         const candlesHoje = Object.values(dados.candles || {});
@@ -13105,13 +13187,19 @@ async function grFootprintAtualizarSeAtivo() {
     } finally { window._grR2Atualizando = false; }
 }
 
+// fetch que desiste depois de `ms` (a requisição travada devolve erro em vez de ficar pendurada pra sempre)
+function grFetchTimeout(url, opts, ms) {
+    const ctl = new AbortController();
+    const id = setTimeout(() => ctl.abort(), ms || 15000);
+    return fetch(url, Object.assign({}, opts || {}, { signal: ctl.signal })).finally(() => clearTimeout(id));
+}
 // Baixa UM dia do R2 com até 3 tentativas (espera 0,8 s e 3,2 s entre elas). Devolve { dia, candles, estado, motivo }:
 //   'ok' (tem dado) | 'vazio' (o R2 respondeu, mas sem nenhum minuto nesse dia) | 'falhou' (não deu pra baixar).
 async function grFootprintBaixarDia(dia) {
     let motivo = '';
     for (let t = 0; t < 3; t++) {
         try {
-            const r = await fetch(grFootprintUrlDia(dia));
+            const r = await grFetchTimeout(grFootprintUrlDia(dia), {}, 25000);
             if (!r.ok) throw new Error('HTTP ' + r.status);
             const dados = await r.json();
             const candles = Object.values(dados.candles || {});
