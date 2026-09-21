@@ -3328,7 +3328,7 @@ function grFootprintAlternarSkin() {
 grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
-const APP_VERSAO = '20/09 23:14 · 15753 linhas · CORPO-VIVO v11';
+const APP_VERSAO = '20/09 23:14 · 15753 linhas · CORPO-VIVO v12';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) el.textContent = 'Versão ' + APP_VERSAO;
@@ -3774,6 +3774,23 @@ async function grBuscarKlines(binSymbol, binInterval, limit, endTime) {
 }
 let _grTemaClaro = localStorage.getItem('gr_tema_claro') === '1';
 function grCorFundo() { return _grTemaClaro ? '#FFFFFF' : '#131722'; }
+// Eixo Y no estilo TradingView (lightweight-charts, PriceTickMarkBuilder): o espaçamento entre rótulos é em PIXELS — no mínimo
+// fontSize × 2,5 ("tickMarkDensity" 2,5 do TradingView) — e o passo é o MENOR número redondo (1, 2, 2,5, 4, 5 × 10ⁿ) que cabe
+// nesse espaçamento. Depende só da altura do gráfico e do range de preço, não do zoom horizontal (antes eram ~7 divisões fixas:
+// ~70 px entre rótulos, poucos números na tela).
+function grPassoEixoY(range, alturaPx, fontSize) {
+    const maxSpan = range * Math.ceil(fontSize * 2.5) / alturaPx;
+    if (!(maxSpan > 0) || !isFinite(maxSpan)) return 1;
+    const mag = Math.pow(10, Math.floor(Math.log10(maxSpan)));
+    for (const m of [1, 2, 2.5, 4, 5, 10]) if (m * mag >= maxSpan * (1 - 1e-9)) return m * mag;
+    return 10 * mag;
+}
+// Casas decimais que o passo exige (passo 2,5 → 1 casa; passo 0,25 → 2 casas; passo inteiro → 0).
+function grFmtPrecoEixo(p, passo) {
+    let d = 0;
+    while (d < 8 && Math.abs(passo * Math.pow(10, d) - Math.round(passo * Math.pow(10, d))) > 1e-7) d++;
+    return d === 0 ? fmtN(p) : p.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+}
 // Paths oficiais do Heroicons (variante solid, viewBox 24x24) — baixados do
 // pacote oficial, não de memória. Heroicons não tem ícone de "âncora"; o
 // substituto semântico padrão pra "marcar um ponto" é o bookmark.
@@ -4023,9 +4040,11 @@ function grDrawCandles(candles, emptyRight) {
         let minP = _grYAxisCenter - (chartH / _grYAxisPxPerDollar) / 2;
         let maxP = _grYAxisCenter + (chartH / _grYAxisPxPerDollar) / 2;
         // PAD.left flexível — calcula após maxP/minP estarem definidos
+        const fsEixo = 11;
+        const gridStep = grPassoEixoY(maxP - minP, chartH, fsEixo);
         {
-            ctx.font = '10px -apple-system';
-            const maxW = Math.max(ctx.measureText(fmtN(maxP)).width, ctx.measureText(fmtN(minP)).width);
+            ctx.font = fsEixo + 'px -apple-system';
+            const maxW = Math.max(ctx.measureText(grFmtPrecoEixo(maxP, gridStep)).width, ctx.measureText(grFmtPrecoEixo(minP, gridStep)).width);
             PAD.left = Math.ceil(maxW) + 14;
         }
         // Recalcula chartW com PAD.left atualizado
@@ -4047,35 +4066,28 @@ function grDrawCandles(candles, emptyRight) {
         // Fundo — escuro ou claro, conforme o tema escolhido
         ctx.fillStyle = grCorFundo();
         ctx.fillRect(0, 0, W, H);
-        // Grid horizontal — espaçamento redondo tipo TradingView
-        const gridPrices = [];
-        const range = maxP - minP;
-        // Calcula step redondo (100, 200, 500, 1000, 2000...)
-        // Mais zoom out = mais divisões no eixo Y = candles proporcionais
-        const zoomFator = Math.max(1, _grZoom / 40);
-        const targetDivisoes = Math.round(7 + (zoomFator - 1) * 5); // 7 a ~20 divisões
-        const rawStep = range / targetDivisoes;
-        const magnitude = Math.pow(10, Math.floor(Math.log10(rawStep)));
-        const niceSteps = [1, 2, 2.5, 5, 10];
-        let gridStep = magnitude;
-        for (const s of niceSteps) {
-            const candidate = s * magnitude;
-            if (range / candidate <= targetDivisoes + 3) { gridStep = candidate; break; }
-        }
-        const firstGrid = Math.ceil(minP / gridStep) * gridStep;
-        for (let p = firstGrid; p <= maxP; p += gridStep) gridPrices.push(p);
-        gridPrices.forEach(price => {
-            const y = toY(price);
-            if (y < PAD.top || y > PAD.top + chartH) return;
-            ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+        // Grid horizontal + rótulos do eixo Y — passo e espaçamento como no TradingView (ver grPassoEixoY). Cores seguem o tema:
+        // antes grade e números eram BRANCOS mesmo no tema claro (fundo branco) e simplesmente não apareciam.
+        {
+            const corGrade = _grTemaClaro ? 'rgba(0,0,0,0.09)' : 'rgba(255,255,255,0.06)';
+            const corRotulo = _grTemaClaro ? '#131722' : '#D1D4DC';
             ctx.lineWidth = 1;
             ctx.setLineDash([]);
-            ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(W - PAD.right, y); ctx.stroke();
-            ctx.fillStyle = '#FFFFFF';
-            ctx.font = '10px -apple-system';
+            ctx.font = fsEixo + 'px -apple-system';
             ctx.textAlign = 'right';
-            ctx.fillText(fmtN(price), PAD.left - 5, y + 4);
-        });
+            for (let k = Math.ceil(minP / gridStep); k * gridStep <= maxP; k++) {
+                const price = Math.round(k * gridStep * 1e8) / 1e8;
+                const y = toY(price);
+                if (y < PAD.top || y > PAD.top + chartH) continue;
+                ctx.strokeStyle = corGrade;
+                ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(W - PAD.right, y); ctx.stroke();
+                // só desenha o número se ele cabe inteiro dentro da área do gráfico (o TradingView faz o mesmo: "entireTextOnly")
+                if (y - fsEixo / 2 >= PAD.top && y + fsEixo / 2 <= PAD.top + chartH) {
+                    ctx.fillStyle = corRotulo;
+                    ctx.fillText(grFmtPrecoEixo(price, gridStep), PAD.left - 5, y + 4);
+                }
+            }
+        }
         // ── Faixa laranja da ferramenta "Marcar Faixa" (Ponto 1/2) ───────────────────────────────
         // Desenhada ANTES dos candles e indicadores: fica por baixo de tudo e sem borda, pra não interferir na leitura
         // dos valores nas células. É uma FAIXA DE PREÇO de largura total, sem limite pra esquerda nem pra direita (alcança
