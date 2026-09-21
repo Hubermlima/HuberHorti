@@ -3337,7 +3337,7 @@ function grFootprintAlternarSkin() {
 grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
-const APP_VERSAO = '20/09 23:14 · 15753 linhas · CORPO-VIVO v20';
+const APP_VERSAO = '20/09 23:14 · 15753 linhas · CORPO-VIVO v23';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) el.textContent = 'Versão ' + APP_VERSAO;
@@ -6943,23 +6943,54 @@ function grAreaVeredito(r, posicao, lo, hi) {
     if (posicao === 'abaixo') return { ...G, lado: 'long', acao: 'LONG', curto: 'Suporte ainda não testado', titulo: 'SUPORTE POTENCIAL · ainda não testado', sub: 'A zona está abaixo do preço atual e nenhum candle do período a testou. Vale observar a reação quando o preço chegar.' };
     return { ...N, lado: null, acao: 'AGUARDAR', curto: 'Zona sem teste no período', titulo: 'ZONA SEM TESTE NO PERÍODO', sub: 'Nenhum candle da área tocou a zona.' };
 }
-// Zona REFINADA (stop curto): dentro da zona principal, a faixa de largura fixa (REFINO × largura da zona) que concentra MAIS volume,
-// olhando os níveis finos do footprint (não as linhas de $690 do gráfico). É onde o jogador grande mais operou — e por ser estreita
-// deixa o stop pequeno. Devolve { lo, hi, t } (t = volume dentro dela).
-const GR_ZII_REFINO = 0.33;
-function grAreaRefinar(niv, passo, zLo, zHi) {
-    const larg = Math.max(passo * 3, (zHi - zLo) * GR_ZII_REFINO);
-    if (niv.length === 0 || larg >= zHi - zLo) return { lo: zLo, hi: zHi, t: niv.reduce((q, x) => q + x.t, 0) };
-    let j = 0, soma = 0, melhor = -1, ini = niv[0].p;
+// Faixa ESTREITA (a refinada, de stop curto): dentro da faixa principal, o trecho mais denso de volume — onde o jogador grande mais
+// operou. Com bom senso para o stop não ser pego à toa e para a entrada ser alcançada:
+//  • largura mínima de 2,5 linhas do gráfico (= ½ ATR do timeframe, pois a linha é 0,2 ATR): mais estreita que isso o stop cai no ruído
+//    do próprio candle e o preço varre antes de reagir;
+//  • do lado de onde o preço vem: no short o trecho não pode ficar colado no fundo da faixa oposta à do preço — ele começa, no máximo,
+//    a 60% do caminho a partir da borda mais próxima do preço (senão o preço reage na parte de baixo da faixa e nunca alcança a entrada);
+//  • se a faixa principal já é estreita (o trecho ocuparia 90% dela ou mais), não há faixa menor segura: a estreita = a principal.
+// Devolve { lo, hi, t, igual, minAplicado } (t = volume dentro dela).
+const GR_ZII_REFINO = 0.33, GR_ZII_MIN_LINHAS = 2.5, GR_ZII_LADO_PERTO = 0.6;
+function grAreaRefinar(niv, passo, zLo, zHi, tick, lado) {
+    const zW = zHi - zLo, total = niv.reduce((q, x) => q + x.t, 0);
+    const alvo = zW * GR_ZII_REFINO, larg = Math.max(alvo, GR_ZII_MIN_LINHAS * tick, passo * 3);
+    if (niv.length === 0 || larg >= zW * 0.9) return { lo: zLo, hi: zHi, t: total, igual: true, minAplicado: false };
+    const sobra = zW - larg; // quanto o trecho pode andar dentro da faixa
+    let j = 0, soma = 0, melhor = -1, ini = null;
     for (let i = 0; i < niv.length; i++) {
         while (j < niv.length && niv[j].p <= niv[i].p + larg - passo + 1e-9) { soma += niv[j].t; j++; }
-        if (soma > melhor) { melhor = soma; ini = niv[i].p; }
+        const desde = niv[i].p - passo / 2 - zLo; // distância do começo do trecho até a borda de baixo da faixa
+        const vale = lado === 'short' ? desde <= GR_ZII_LADO_PERTO * sobra + 1e-9 : (lado === 'long' ? desde >= (1 - GR_ZII_LADO_PERTO) * sobra - 1e-9 : true);
+        if (vale && soma > melhor) { melhor = soma; ini = niv[i].p; }
         soma -= niv[i].t;
     }
+    if (ini === null) return { lo: zLo, hi: zHi, t: total, igual: true, minAplicado: false };
     let lo = ini - passo / 2, hi = lo + larg;
     if (hi > zHi) { hi = zHi; lo = hi - larg; }
     if (lo < zLo) { lo = zLo; hi = lo + larg; }
-    return { lo, hi, t: Math.max(0, melhor) };
+    return { lo, hi, t: Math.max(0, melhor), igual: false, minAplicado: larg > alvo + 1e-9 };
+}
+// Teste no período: quantas vezes o preço ALCANÇOU a entrada (toque novo, sem contar o candle seguinte que continua lá) e, no mesmo
+// candle ou nos 2 seguintes, varreu o STOP. Conta pelos candles do timeframe atual, dentro do período da área (conservador: se o
+// candle do toque já passou do stop, conta como stopado).
+function grAreaTesteHistorico(a, entrada, stop, lado) {
+    const cs = _grAllCandles, ms = grFootprintMsPorCandle();
+    const r = { toques: 0, stops: 0 };
+    let tocavaAntes = false;
+    for (let i = 0; i < cs.length; i++) {
+        const c = cs[i];
+        if (c.t + ms <= a.tsIni || c.t > a.tsFim) continue;
+        const toca = c.l <= entrada && c.h >= entrada;
+        if (toca && !tocavaAntes) {
+            r.toques++;
+            let varreu = false;
+            for (let k = i; k < Math.min(cs.length, i + 3) && !varreu; k++) varreu = lado === 'short' ? cs[k].h >= stop : cs[k].l <= stop;
+            if (varreu) r.stops++;
+        }
+        tocavaAntes = toca;
+    }
+    return r;
 }
 // Minigráfico do relatório (SVG): à esquerda o preço (VWAP por minuto) ao longo do tempo da área; à direita o volume por
 // linha de preço (verde = compra dominou na linha, vermelho = venda dominou). As zonas de interesse são faixas horizontais
@@ -7033,10 +7064,9 @@ function grAreaMinigrafico(a, grade, tick, zonas, porMin, p0) {
 // Tudo vem do footprint de 1 minuto (compra = agressão compradora, venda = agressão vendedora); as linhas de preço usam o
 // mesmo tick (ATR) das células do gráfico. O núcleo do relatório são as ZONAS DE INTERESSE (faixas de preço, não pontos):
 // mesma ideia do "fundo dourado" do app — linhas com ≥ 50% do volume da linha mais forte formam o núcleo; a zona leva mais
-// 1 linha de "ombro" de cada lado (≥ 30%). Os 3 botões "Estreita / Normal / Larga" do relatório ajustam esses cortes. O delta não decide se é zona: volume alto com delta equilibrado é justamente
+// 1 linha de "ombro" de cada lado (≥ 30%). O delta não decide se é zona: volume alto com delta equilibrado é justamente
 // disputa/absorção. O delta só diz de que lado a zona pende.
 function grAreaGerarRelatorio(a) {
-    const corLadoTxt = z => { const l = z.plano ? z.plano.lado : z.veredito.lado; return l === 'short' ? '#C62828' : (l === 'long' ? '#2E7D32' : '#F57C00'); };
     const tick = Math.max(10, grTickAtr());
     const mapa = new Map(), fino = new Map();
     let compra = 0, venda = 0, nc = 0, nv = 0;
@@ -7076,11 +7106,7 @@ function grAreaGerarRelatorio(a) {
     const p0 = (typeof _precoAtual === 'number' && _precoAtual > 0) ? _precoAtual : null;
 
     // ── ZONAS DE INTERESSE ────────────────────────────────────────────────────────────────────────
-    const SENS = [{ nome: 'Estreita', hot: 0.65, ombro: 0.4 }, { nome: 'Normal', hot: 0.5, ombro: 0.3 }, { nome: 'Larga', hot: 0.4, ombro: 0.2 }];
-    let sensI = (typeof window !== 'undefined') ? window._grAreaSens : undefined;
-    if (!Number.isInteger(sensI)) { try { sensI = parseInt(localStorage.getItem('gr_area_sens')); } catch (e) {} }
-    if (!(sensI >= 0 && sensI <= 2)) sensI = 1;
-    const HOT = SENS[sensI].hot, OMBRO = SENS[sensI].ombro;
+    const HOT = 0.5, OMBRO = 0.3; // núcleo = linhas com ≥ 50% do volume da mais forte; ombro (1 linha de cada lado) ≥ 30%
     let zonas = [];
     if (maxT >= 1.3 * media) {
         const quentes = [];
@@ -7107,21 +7133,22 @@ function grAreaGerarRelatorio(a) {
             // com o preço dentro da zona não há plano (só as zonas). Short: entra na borda de BAIXO da refinada e o stop vai logo acima
             // dela; long: entra na borda de CIMA e o stop vai logo abaixo. A folga é pequena (15% da refinada, mín. 3 níveis).
             const niv = finoOrd.filter(x => x.p >= lo && x.p <= hi);
-            const ref = grAreaRefinar(niv, passo, lo, hi);
             const lado = veredito.lado || (posicao === 'acima' ? 'short' : (posicao === 'abaixo' ? 'long' : null));
+            const ref = grAreaRefinar(niv, passo, lo, hi, tick, lado);
+            const folga = Math.max(passo * 3, 0.15 * (ref.hi - ref.lo), 0.25 * tick); // folga do stop: 15% da estreita, no mín. ¼ de linha
             let plano = null;
             if (lado) {
-                const folga = Math.max(passo * 3, 0.15 * (ref.hi - ref.lo));
                 const entrada = lado === 'short' ? ref.lo : ref.hi, stop = lado === 'short' ? ref.hi + folga : ref.lo - folga;
                 const entradaN = lado === 'short' ? lo : hi, stopN = lado === 'short' ? hi + folga : lo - folga;
-                plano = { lado, entrada, stop, risco: Math.abs(entrada - stop), riscoPct: Math.abs(entrada - stop) / entrada, entradaN, stopN, riscoN: Math.abs(entradaN - stopN), riscoNPct: Math.abs(entradaN - stopN) / entradaN };
+                plano = { lado, entrada, stop, risco: Math.abs(entrada - stop), riscoPct: Math.abs(entrada - stop) / entrada, entradaN, stopN, riscoN: Math.abs(entradaN - stopN), riscoNPct: Math.abs(entradaN - stopN) / entradaN,
+                    teste: grAreaTesteHistorico(a, entrada, stop, lado), testeN: grAreaTesteHistorico(a, entradaN, stopN, lado) };
             }
             return {
-                lo, hi, c, v, t, d: dz, dom, share, dens, nLin, posicao, reacao, veredito, ref: { lo: ref.lo, hi: ref.hi, share: t > 0 ? ref.t / t : 0 }, plano,
+                lo, hi, c, v, t, d: dz, dom, share, dens, nLin, posicao, reacao, veredito, folga, ref: { lo: ref.lo, hi: ref.hi, share: t > 0 ? ref.t / t : 0, igual: ref.igual, minAplicado: ref.minAplicado }, plano,
                 nucleoLo: grade[n.lo].p - tick / 2, nucleoHi: grade[n.hi].p + tick / 2,
                 forca: share >= 0.4 ? 'forte' : (share >= 0.2 ? 'moderada' : 'fraca'), // pela fatia do volume (a densidade fica inflada quando a área marcada é justa)
             };
-        }).sort((x, y) => y.t - x.t).slice(0, 3);
+        }).sort((x, y) => y.t - x.t).slice(0, 1); // só a faixa principal (a de mais volume)
     }
 
     // ── Onde cada lado dominou (faixas, com critério menos rígido: ≥ 8% da linha e linha com volume relevante) ─────
@@ -7160,12 +7187,10 @@ function grAreaGerarRelatorio(a) {
     const dt = (a.tsFim + 60000 - a.tsIni) / nFat;
     const fatias = Array.from({ length: nFat }, (_, i) => ({ t0: a.tsIni + i * dt, c: 0, v: 0 }));
     porMin.forEach(m => { const i = Math.min(nFat - 1, Math.max(0, Math.floor((m.ts - a.tsIni) / dt))); fatias[i].c += m.c; fatias[i].v += m.v; });
-    const maxAbsFat = Math.max(1e-9, ...fatias.map(f => Math.abs(f.c - f.v)));
 
     // ── formatação ─────────────────────────────────────────────────────────────────────────────
-    // Na tela: só o essencial (ação, entrada, stop, risco, minigráfico). Todo o resto fica em "Ver detalhes" (recolhido). O texto
-    // de "Copiar" leva tudo.
-    const VERDE = '#16A34A', VERM = '#DC2626';
+    // Na tela: o mapa (minigráfico) e as DUAS faixas — a principal e a estreita —, cada uma com o seu botão Trade e uma explicação curta.
+    // O texto de "Copiar" leva o resto (resumo, quem dominou, delta no tempo).
     const sg = v => (v >= 0 ? '+' : '') + fmtBtc2(v);
     const pc = v => (v * 100).toFixed(0) + '%';
     const pc1 = v => (v * 100).toFixed(1).replace('.', ',') + '%';
@@ -7179,88 +7204,72 @@ function grAreaGerarRelatorio(a) {
     const fimTxt = hora(soData ? a.tsFim : a.tsFim + 60000);
     const cab = 'Tempo: ' + hora(a.tsIni) + ' → ' + fimTxt + (soData ? ' (dias completos, UTC)' : '') + ' · ' + porMin.length + ' min com negócios';
     const cab2 = 'Preço: ' + faixa(a.precoBaixo, a.precoAlto) + ' · linhas de ' + fmtN(tick) + (p0 ? ' · preço atual ' + fmtN(p0) : '');
-    const T = [], Hh = [], Hd = []; // texto p/ copiar · essencial na tela · detalhes recolhidos
-    const sec = t => { T.push('', t.toUpperCase()); Hd.push('<div style="margin-top:14px;font-size:11px;font-weight:700;color:#8E8E93;letter-spacing:.4px;">' + t.toUpperCase() + '</div>'); };
-    const lin = (a1, b1, cor) => { T.push('• ' + a1 + ': ' + b1); Hd.push('<div style="display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid #F2F4F8;font-size:13px;"><span>' + a1 + '</span><span style="font-weight:700;' + (cor ? 'color:' + cor + ';' : '') + '">' + b1 + '</span></div>'); };
-    const txt = (s2, cor) => { T.push('• ' + s2); Hd.push('<div style="padding:5px 0;font-size:13px;line-height:1.4;' + (cor ? 'color:' + cor + ';' : '') + '">' + s2 + '</div>'); };
-    const caixa = (rot, val) => '<div style="flex:1;background:#FFFFFF;border-radius:8px;padding:7px 4px;text-align:center;"><div style="font-size:10.5px;color:#8E8E93;font-weight:700;">' + rot + '</div><div style="font-size:16px;font-weight:800;color:#1C1C1E;">' + val + '</div></div>';
+    const T = [], Hh = []; // texto p/ copiar · o que aparece na tela
+    const sec = t => T.push('', t.toUpperCase());
+    const lin = (a1, b1) => T.push('• ' + a1 + ': ' + b1);
+    const txt = s2 => T.push('• ' + s2);
+    const caixa = (rot, val) => '<div style="flex:1;background:#FFFFFF;border-radius:8px;padding:6px 4px;text-align:center;"><div style="font-size:10.5px;color:#8E8E93;font-weight:700;">' + rot + '</div><div style="font-size:15px;font-weight:800;color:#1C1C1E;">' + val + '</div></div>';
 
     if (zonas.length === 0) {
-        Hh.push('<div style="margin-top:10px;padding:14px;border-radius:12px;background:#F2F2F7;"><div style="font-size:24px;font-weight:900;color:#8E8E93;">SEM ZONA</div><div style="font-size:13px;color:#6B7280;margin-top:4px;">O volume está espalhado pela área.</div></div>');
-        T.push('• SEM ZONA: o volume está espalhado pela área (a linha mais forte não passa de 1,3× a média).');
+        Hh.push('<div style="margin-top:10px;padding:14px;border-radius:12px;background:#F2F2F7;"><div style="font-size:24px;font-weight:900;color:#8E8E93;">SEM FAIXA</div><div style="font-size:13px;color:#6B7280;margin-top:4px;">O volume está espalhado pela área.</div></div>');
+        T.push('• SEM FAIXA: o volume está espalhado pela área (a linha mais forte não passa de 1,3× a média).');
     } else {
-        const z = zonas[0], v = z.veredito, rc = z.reacao, pl = z.plano;
-        // 1) o essencial
-        Hh.push('<div style="margin-top:10px;padding:12px;border-radius:12px;background:' + v.bg + ';">'
-            + '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;"><span style="font-size:28px;font-weight:900;line-height:1;color:' + v.cor + ';">' + v.acao + '</span><span style="font-size:13px;font-weight:700;text-align:right;color:' + v.cor + ';">' + v.curto + '</span></div>'
-            + '<div style="display:flex;gap:8px;margin-top:12px;">' + (pl ? caixa('ENTRADA', fmtN(pl.entrada)) + caixa('STOP', fmtN(pl.stop)) + caixa('RISCO', pcr(pl.riscoPct)) : caixa('ACIMA DE', fmtN(z.hi)) + caixa('ABAIXO DE', fmtN(z.lo))) + '</div>'
-            + '<div style="margin-top:8px;font-size:12px;color:#6B7280;">Zona ' + faixa(z.lo, z.hi) + ' · refinada ' + faixa(z.ref.lo, z.ref.hi) + '</div></div>');
-        T.push('• ' + v.acao + ' · ' + v.curto);
-        T.push(pl ? '• Entrada ' + fmtN(pl.entrada) + ' · Stop ' + fmtN(pl.stop) + ' · Risco ' + pcr(pl.riscoPct) : '• Sem plano de entrada: o preço está dentro da zona. Acima de ' + fmtN(z.hi) + ' pende para compra; abaixo de ' + fmtN(z.lo) + ', para venda.');
-        T.push('• Zona ' + faixa(z.lo, z.hi) + ' · refinada ' + faixa(z.ref.lo, z.ref.hi));
+        const z = zonas[0], v = z.veredito, rc = z.reacao, pl = z.plano, ref = z.ref;
+        const bg2 = v.lado === 'short' ? '#FDE4E4' : (v.lado === 'long' ? '#DCFCE7' : '#FEF3C7');
+        const teste = q => ' No período o preço alcançou a entrada ' + q.toques + '× e varreu o stop ' + q.stops + '×.';
+        const rej = rc.rejBaixo + rc.rejCima, romp = rc.rompCima + rc.rompBaixo;
+        const reacaoTxt = rc.toques === 0 ? 'o preço não chegou a testar a faixa' : rej + ' rejeições · ' + romp + ' rompimentos' + (rc.aceit ? ' · ' + rc.aceit + ' fechamentos dentro' : '');
+        const explP = pc(z.share) + ' do volume da área · ' + reacaoTxt + ' · Δ ' + pc1(z.d / z.t) + '.' + (pl ? teste(pl.testeN) : ' O preço está dentro da faixa: sem entrada até ele sair.');
+        const explE = ref.igual ? 'A faixa principal já é estreita: não há um trecho menor com segurança.'
+            : 'Trecho mais denso da faixa: ' + pc(ref.share) + ' do volume dela em ' + pc((ref.hi - ref.lo) / (z.hi - z.lo)) + ' da largura' + (pl ? '; stop ' + (pl.riscoN / pl.risco).toFixed(1).replace('.', ',') + '× menor.' + teste(pl.teste) : '.') + (ref.minAplicado ? ' Largura mínima de ½ ATR aplicada, para o stop não cair no ruído.' : '');
+        const cartao = (nome, zonaKey, lo, hi, e, s, risco, expl, bg, motivo) =>
+            '<div style="margin-top:10px;padding:12px;border-radius:12px;background:' + bg + ';">'
+            + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">'
+            + '<div><div style="font-size:11px;font-weight:700;color:#6B7280;letter-spacing:.4px;">' + nome + '</div><div style="font-size:18px;font-weight:800;">' + faixa(lo, hi) + '</div></div>'
+            + '<button onclick="grTradeAbrir(\'' + zonaKey + '\')" style="border:none;background:' + v.cor + ';color:#FFFFFF;border-radius:10px;padding:10px 20px;font-size:15px;font-weight:800;">Trade</button></div>'
+            + '<div style="margin-top:8px;font-size:14px;font-weight:800;color:' + v.cor + ';">' + v.acao + (motivo ? ' · ' + v.curto : '') + '</div>'
+            + (e != null ? '<div style="display:flex;gap:8px;margin-top:8px;">' + caixa('ENTRADA', fmtN(e)) + caixa('STOP', fmtN(s)) + caixa('RISCO', pcr(risco)) + '</div>' : '')
+            + '<div style="margin-top:8px;font-size:12px;line-height:1.45;color:#6B7280;">' + expl + '</div></div>';
         Hh.push(grAreaMinigrafico(a, grade, tick, zonas, porMin, p0));
-        Hh.push('<div style="display:flex;gap:6px;margin:2px 0 0;">' + SENS.map((q, i) => '<button onclick="grAreaSetSens(' + i + ')" style="border:none;border-radius:8px;padding:5px 11px;font-size:12px;font-weight:700;background:' + (i === sensI ? '#1C1C1E' : '#E5E5EA') + ';color:' + (i === sensI ? '#FFFFFF' : '#1C1C1E') + ';">' + q.nome + '</button>').join('') + '</div>');
-        T.push('• Largura da zona: ' + SENS[sensI].nome + ' (núcleo = linhas com ≥ ' + Math.round(HOT * 100) + '% do volume da mais forte; ombro ≥ ' + Math.round(OMBRO * 100) + '%)');
-
-        // 2) detalhes (recolhidos)
-        sec('Zonas');
-        zonas.forEach((zz, i) => {
-            const cor = corLadoTxt(zz);
-            const partes = [zz.veredito.curto.toLowerCase(), pc(zz.share) + ' do volume', zz.dens.toFixed(1).replace('.', ',') + '× densidade', 'Δ ' + sg(zz.d) + ' (' + (zz.d / zz.t * 100).toFixed(1).replace('.', ',') + '%)', 'zona ' + zz.forca, 'núcleo ' + faixa(zz.nucleoLo, zz.nucleoHi)];
-            if (zz.posicao) partes.push(zz.posicao === 'dentro' ? 'preço atual dentro' : 'fica ' + zz.posicao + ' do preço atual');
-            const linhaZ = 'Z' + (i + 1) + ' · ' + faixa(zz.lo, zz.hi);
-            T.push('• ' + linhaZ + ' — ' + partes.join(' · '));
-            Hd.push('<div style="padding:6px 0;border-bottom:1px solid #F2F4F8;font-size:13px;line-height:1.4;"><span style="font-weight:800;color:' + cor + ';">' + linhaZ + '</span><br><span style="color:#48484A;">' + partes.join(' · ') + '</span></div>');
-        });
-        if (pl) {
-            sec('Plano');
-            txt('Zona inteira ' + faixa(z.lo, z.hi) + ': entrada ' + fmtN(pl.entradaN) + ' · stop ' + fmtN(pl.stopN) + ' · risco ' + fmtN(pl.riscoN) + ' (' + pcr(pl.riscoNPct) + ')');
-            txt('Stop refinado ' + faixa(z.ref.lo, z.ref.hi) + ': entrada ' + fmtN(pl.entrada) + ' · stop ' + fmtN(pl.stop) + ' · risco ' + fmtN(pl.risco) + ' (' + pcr(pl.riscoPct) + ')');
-            txt('A faixa refinada guarda ' + pc(z.ref.share) + ' do volume da zona em ' + pc((z.ref.hi - z.ref.lo) / (z.hi - z.lo)) + ' da largura dela; o stop fica ' + (pl.riscoN / pl.risco).toFixed(1).replace('.', ',') + '× menor que o da zona inteira.');
-        }
-        sec('Reação do preço');
+        Hh.push(cartao('FAIXA PRINCIPAL', 'normal', z.lo, z.hi, pl ? pl.entradaN : null, pl ? pl.stopN : null, pl ? pl.riscoNPct : null, explP, v.bg, true));
+        if (!ref.igual) Hh.push(cartao('FAIXA ESTREITA', 'refinada', ref.lo, ref.hi, pl ? pl.entrada : null, pl ? pl.stop : null, pl ? pl.risco / pl.entrada : null, explE, bg2, false));
+        // texto para copiar (completo)
+        T.push('• ' + v.acao + ' · ' + v.curto);
+        T.push('• FAIXA PRINCIPAL ' + faixa(z.lo, z.hi) + (pl ? ' — entrada ' + fmtN(pl.entradaN) + ' · stop ' + fmtN(pl.stopN) + ' · risco ' + pcr(pl.riscoNPct) : ''));
+        T.push('  ' + explP);
+        if (!ref.igual) { T.push('• FAIXA ESTREITA ' + faixa(ref.lo, ref.hi) + (pl ? ' — entrada ' + fmtN(pl.entrada) + ' · stop ' + fmtN(pl.stop) + ' · risco ' + pcr(pl.riscoPct) : '')); T.push('  ' + explE); }
+        else T.push('• FAIXA ESTREITA: ' + explE);
+        T.push('• Núcleo de maior volume ' + faixa(z.nucleoLo, z.nucleoHi) + ' · faixa ' + z.forca + ' · ' + z.dens.toFixed(1).replace('.', ',') + '× a densidade média' + (z.posicao ? ' · ' + (z.posicao === 'dentro' ? 'preço atual dentro' : 'fica ' + z.posicao + ' do preço atual') : ''));
+        T.push('• ' + v.titulo + '. ' + v.sub);
         const nomeEv = { rejBaixo: 'rejeição por baixo', rejCima: 'rejeição por cima', rompCima: 'rompimento para cima', rompBaixo: 'rompimento para baixo' };
         const evU = rc.eventos.length ? rc.eventos[rc.eventos.length - 1] : null;
-        txt(v.titulo + '. ' + v.sub);
-        txt(rc.nCandles + ' candles no período · ' + rc.toques + ' tocaram a zona · ' + rc.aceit + ' fecharam dentro · rejeições: ↓' + rc.rejBaixo + ' (resistência) ↑' + rc.rejCima + ' (suporte) · rompimentos: ↑' + rc.rompCima + ' ↓' + rc.rompBaixo + (evU ? ' · último evento: ' + nomeEv[evU.tipo] + ' em ' + hora(evU.ts) : ''));
+        T.push('• ' + rc.nCandles + ' candles no período · ' + rc.toques + ' tocaram a faixa · ' + rc.aceit + ' fecharam dentro · rejeições: ↓' + rc.rejBaixo + ' (resistência) ↑' + rc.rejCima + ' (suporte) · rompimentos: ↑' + rc.rompCima + ' ↓' + rc.rompBaixo + (evU ? ' · último evento: ' + nomeEv[evU.tipo] + ' em ' + hora(evU.ts) : ''));
     }
 
     sec('Resumo');
-    lin('Agressão compradora', fmtBtc2(compra) + ' BTC (' + pc(compra / total) + ')', VERDE);
-    lin('Agressão vendedora', fmtBtc2(venda) + ' BTC (' + pc(venda / total) + ')', VERM);
-    lin('Delta', sg(delta) + ' BTC (' + pc1(delta / total) + ' do volume)', delta >= 0 ? VERDE : VERM);
+    lin('Agressão compradora', fmtBtc2(compra) + ' BTC (' + pc(compra / total) + ')');
+    lin('Agressão vendedora', fmtBtc2(venda) + ' BTC (' + pc(venda / total) + ')');
+    lin('Delta', sg(delta) + ' BTC (' + pc1(delta / total) + ' do volume)');
     lin('Volume agredido total', fmtBtc2(total) + ' BTC');
     if (nc > 0 && nv > 0) lin('Tamanho médio por ordem agressora', 'compra ' + (compra / nc).toFixed(3).replace('.', ',') + ' · venda ' + (venda / nv).toFixed(3).replace('.', ',') + ' BTC');
 
     sec('Onde cada lado dominou');
-    if (zonasC.length === 0 && zonasV.length === 0 && pilhasC.length === 0 && pilhasV.length === 0) txt('Nenhuma faixa teve um lado claramente dominante no delta (normal: cada negócio tem os dois lados). A leitura está no veredito da zona.');
-    zonasC.forEach(z => lin('Compradora · ' + faixa(z.lo, z.hi), 'Δ ' + sg(z.d), VERDE));
-    zonasV.forEach(z => lin('Vendedora · ' + faixa(z.lo, z.hi), 'Δ ' + sg(z.d), VERM));
-    pilhasC.forEach(q => txt('Desequilíbrio comprador empilhado: ' + q.n + ' linhas seguidas em ' + faixa(q.lo, q.hi), VERDE));
-    pilhasV.forEach(q => txt('Desequilíbrio vendedor empilhado: ' + q.n + ' linhas seguidas em ' + faixa(q.lo, q.hi), VERM));
+    if (zonasC.length === 0 && zonasV.length === 0 && pilhasC.length === 0 && pilhasV.length === 0) txt('Nenhuma faixa teve um lado claramente dominante no delta (normal: cada negócio tem os dois lados).');
+    zonasC.forEach(z => lin('Compradora · ' + faixa(z.lo, z.hi), 'Δ ' + sg(z.d)));
+    zonasV.forEach(z => lin('Vendedora · ' + faixa(z.lo, z.hi), 'Δ ' + sg(z.d)));
+    pilhasC.forEach(q => txt('Desequilíbrio comprador empilhado: ' + q.n + ' linhas seguidas em ' + faixa(q.lo, q.hi)));
+    pilhasV.forEach(q => txt('Desequilíbrio vendedor empilhado: ' + q.n + ' linhas seguidas em ' + faixa(q.lo, q.hi)));
 
     sec('Delta ao longo do tempo');
-    fatias.forEach(f => {
-        const d = f.c - f.v, w = Math.abs(d) / maxAbsFat * 50, cor = d >= 0 ? VERDE : VERM;
-        T.push('• ' + hora(f.t0) + '  Δ ' + sg(d));
-        Hd.push('<div style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12px;"><span style="width:84px;color:#8E8E93;">' + hora(f.t0) + '</span><div style="flex:1;height:8px;background:#F2F2F7;border-radius:4px;position:relative;"><div style="position:absolute;top:0;height:100%;border-radius:4px;background:' + cor + ';left:' + (d >= 0 ? 50 : 50 - w) + '%;width:' + w + '%;"></div></div><span style="width:64px;text-align:right;font-weight:700;color:' + cor + ';">' + sg(d) + '</span></div>');
-    });
+    fatias.forEach(f => txt(hora(f.t0) + '  Δ ' + sg(f.c - f.v)));
     txt('Heurística sobre o footprint: mostra o que foi negociado, não a intenção nem a identidade de quem estava passivo.');
 
     const texto = ['RELATÓRIO DA ÁREA', cab, cab2].concat(T).join('\n');
-    const html = '<div style="font-size:12px;color:#8E8E93;">' + hora(a.tsIni) + ' → ' + fimTxt + ' · ' + faixa(a.precoBaixo, a.precoAlto) + '</div>' + Hh.join('')
-        + '<details style="margin-top:12px;"><summary style="font-size:13px;font-weight:700;color:#007AFF;padding:8px 0;">Ver detalhes</summary>' + Hd.join('') + '</details>';
+    const html = '<div style="font-size:12px;color:#8E8E93;">' + hora(a.tsIni) + ' → ' + fimTxt + ' · ' + faixa(a.precoBaixo, a.precoAlto) + '</div>' + Hh.join('');
     const zP = zonas[0] || null;
     const zii = zP ? { tsIni: a.tsIni, lado: zP.plano ? zP.plano.lado : null, lo: zP.lo, hi: zP.hi, refLo: zP.ref.lo, refHi: zP.ref.hi,
-        entrada: zP.plano ? zP.plano.entrada : null, stop: zP.plano ? zP.plano.stop : null, entradaN: zP.plano ? zP.plano.entradaN : null, stopN: zP.plano ? zP.plano.stopN : null, risco: zP.plano ? zP.plano.risco : null, riscoPct: zP.plano ? zP.plano.riscoPct : null } : null;
+        entrada: zP.plano ? zP.plano.entrada : null, stop: zP.plano ? zP.plano.stop : null, entradaN: zP.plano ? zP.plano.entradaN : null, stopN: zP.plano ? zP.plano.stopN : null, folga: zP.folga, risco: zP.plano ? zP.plano.risco : null, riscoPct: zP.plano ? zP.plano.riscoPct : null } : null;
     return { html, texto, zonas, zii };
-}
-// Botões "Estreita / Normal / Larga" do relatório: muda a largura das zonas e refaz o relatório.
-function grAreaSetSens(i) {
-    window._grAreaSens = i;
-    try { localStorage.setItem('gr_area_sens', String(i)); } catch (e) {}
-    grAreaAtualizarZii(); // as zonas desenhadas no gráfico seguem a largura escolhida
-    grAreaAbrirRelatorio();
 }
 // Recalcula as zonas (ZII + refinada + entrada/stop) da área marcada e guarda para o gráfico desenhar. Sem área ou sem footprint, limpa.
 function grAreaAtualizarZii() {
@@ -7280,7 +7289,7 @@ function grAreaAbrirRelatorio() {
     if (!ov) {
         ov = document.createElement('div');
         ov.id = 'area-relatorio-overlay';
-        ov.style.cssText = 'display:none;position:fixed;inset:0;z-index:7000;background:rgba(0,0,0,0.5);align-items:stretch;justify-content:center;';
+        ov.style.cssText = 'display:none;position:fixed;inset:0;z-index:9650;background:rgba(0,0,0,0.5);align-items:stretch;justify-content:center;'; // acima da barra de abas do topo (z-index 9600), senão ela cobre o cabeçalho (Fechar)
         ov.onclick = e => { if (e.target === ov) grAreaFecharRelatorio(); };
         document.body.appendChild(ov);
     }
@@ -7294,6 +7303,168 @@ function grAreaAbrirRelatorio() {
         + '<div style="flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px 16px calc(32px + env(safe-area-inset-bottom));">' + r.html + '</div></div>';
     ov.style.display = 'flex';
 }
+// ══ TRADE (modal) ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// Formulário do trade a partir da faixa do relatório: cada faixa (principal ou estreita) tem o seu botão Trade. Aqui você escolhe o
+// SENTIDO (short ou long): entrada e stop saem da faixa e do sentido (e podem ser editados). Você digita Valor Trade, Margem (% do capital que aceita perder no stop) e, em até 4 alvos, o
+// preço e o % a fechar. O resto é conta — as fórmulas da planilha, com o sinal do P&L pelo sentido (perda negativa, ganho positivo).
+// Fica salvo no aparelho, por ativo e por faixa; abre de novo com o último trade daquela faixa.
+let _grTradeS = null; // estado do formulário aberto
+const GR_TRADE_ALVOS = 4;
+function grTradeChave(zona) { return 'gr_trade_' + (_ativoId || 'default') + '_' + zona; }
+function grTradeNomeFaixa(zona) { return zona === 'normal' ? 'Faixa principal' : 'Faixa estreita'; }
+function grTradeNum(v) { // aceita "2,07", "2.07", "1.000,50" e "1,000.50"
+    let s = String(v == null ? '' : v).trim().replace(/\s/g, '');
+    if (s === '') return null;
+    const c = s.lastIndexOf(','), p = s.lastIndexOf('.');
+    if (c >= 0 && p >= 0) s = c > p ? s.replace(/\./g, '').replace(',', '.') : s.replace(/,/g, '');
+    else if (c >= 0) s = s.replace(',', '.');
+    const n = Number(s);
+    return isFinite(n) ? n : null;
+}
+function grTradeFmtIn(v) { // valor de um campo (sem separador de milhar, para não confundir com decimal)
+    if (v == null) return '';
+    const d = v >= 1000 ? 1 : (v >= 10 ? 3 : (v >= 1 ? 4 : 6));
+    return String(Number(v.toFixed(d)));
+}
+function grTradeNiveis(zona, sentido) { // entrada e stop da zona escolhida, no sentido escolhido (mesma regra do relatório)
+    const z = _grAreaZii;
+    if (!z || !zona || !sentido) return null;
+    const lo = zona === 'refinada' ? z.refLo : z.lo, hi = zona === 'refinada' ? z.refHi : z.hi;
+    const folga = z.folga != null ? z.folga : 0.15 * (z.refHi - z.refLo);
+    return sentido === 'short' ? { entrada: lo, stop: hi + folga } : { entrada: hi, stop: lo - folga };
+}
+function grTradeNovo(zona) {
+    const z = _grAreaZii;
+    const s = { data: new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' }), ticket: (_ticker || '').split('/')[0],
+        zona: zona, sentido: z && z.lado ? z.lado : null, entrada: null, stop: null, valor: null, margem: null,
+        alvos: Array.from({ length: GR_TRADE_ALVOS }, () => ({ preco: null, fechar: null, realizado: false })) };
+    const n = grTradeNiveis(s.zona, s.sentido);
+    if (n) { s.entrada = n.entrada; s.stop = n.stop; }
+    return s;
+}
+function grTradeCarregar(zona) {
+    try {
+        const s = JSON.parse(localStorage.getItem(grTradeChave(zona)) || 'null');
+        if (s && Array.isArray(s.alvos) && s.alvos.length === GR_TRADE_ALVOS) return s;
+    } catch (e) {}
+    return null;
+}
+function grTradeSalvar() { try { localStorage.setItem(grTradeChave(_grTradeS.zona), JSON.stringify(_grTradeS)); } catch (e) {} }
+// Contas (puras). D = entrada, E = stop, F = valor do trade, G = margem (%), H = alavancagem, I = P&L no stop, J = alvo em %,
+// K = preço do alvo, L = % a fechar, M = valor fechado, N = P&L do alvo, O = R/r do alvo, Q = P&L realizado, R = R/R total.
+function grTradeCalcular(s) {
+    const D = s.entrada, E = s.stop, F = s.valor, G = s.margem, dir = s.sentido === 'short' ? -1 : 1;
+    const ok = D > 0 && E > 0 && D !== E;
+    const distPct = ok ? Math.abs(D - E) / D * 100 : null;
+    const H = ok && G != null ? G / distPct : null;
+    const I = ok && F != null && H != null ? F * H * dir * (E - D) / D : null; // negativo = perda
+    const alvos = s.alvos.map(a => {
+        const K = a.preco, L = a.fechar, temK = K > 0;
+        const J = ok && temK ? dir * (K - D) / D * 100 : null;
+        const M = F != null && L != null ? F * (L / 100) : null;
+        const N = ok && temK && F != null && L != null && H != null ? F * (L / 100) * H * dir * (K - D) / D : null;
+        return { J, M, N, O: J != null ? J / distPct : null, Q: a.realizado && N != null ? N : 0 };
+    });
+    const somaN = alvos.reduce((q, a) => q + (a.N || 0), 0);
+    const somaFechar = s.alvos.reduce((q, a) => q + (a.fechar || 0), 0);
+    const avisos = [];
+    if (!s.sentido) avisos.push('Escolha Short ou Long.');
+    if (D != null && E != null && s.sentido && ok) {
+        if (s.sentido === 'short' && E < D) avisos.push('Stop do lado errado: no Short ele fica acima da entrada.');
+        if (s.sentido === 'long' && E > D) avisos.push('Stop do lado errado: no Long ele fica abaixo da entrada.');
+    }
+    if (ok && s.sentido) s.alvos.forEach((a, i) => {
+        if (a.preco > 0 && ((s.sentido === 'short' && a.preco >= D) || (s.sentido === 'long' && a.preco <= D))) avisos.push('Alvo ' + (i + 1) + ' do lado errado: no ' + (s.sentido === 'short' ? 'Short fica abaixo' : 'Long fica acima') + ' da entrada.');
+    });
+    if (somaFechar > 100.0001) avisos.push('Fechar (%) soma ' + somaFechar.toFixed(0) + '%: passa de 100%.');
+    if (G != null && G > 100) avisos.push('Margem acima de 100%: o stop perderia mais que o capital.');
+    return { ok, distPct, H, I, alvos, somaN, R: I != null && I !== 0 ? somaN / Math.abs(I) : null, pnlReal: alvos.reduce((q, a) => q + a.Q, 0), somaFechar, avisos };
+}
+function grTradeLer() { // campos da tela → estado
+    const v = id => { const el = document.getElementById(id); return el ? el.value : ''; };
+    const s = _grTradeS;
+    s.entrada = grTradeNum(v('tr-entrada')); s.stop = grTradeNum(v('tr-stop'));
+    s.valor = grTradeNum(v('tr-valor')); s.margem = grTradeNum(v('tr-margem'));
+    s.alvos.forEach((a, i) => {
+        a.preco = grTradeNum(v('tr-preco-' + i)); a.fechar = grTradeNum(v('tr-fechar-' + i));
+        const ck = document.getElementById('tr-real-' + i); a.realizado = !!(ck && ck.checked);
+    });
+}
+function grTradeAoDigitar() { grTradeLer(); grTradeSalvar(); grTradeAtualizarTela(); }
+function grTradeAplicarNiveis() { // o sentido mudou → refaz entrada e stop
+    const n = grTradeNiveis(_grTradeS.zona, _grTradeS.sentido);
+    if (!n) return;
+    _grTradeS.entrada = n.entrada; _grTradeS.stop = n.stop;
+    const e = document.getElementById('tr-entrada'), st = document.getElementById('tr-stop');
+    if (e) e.value = grTradeFmtIn(n.entrada);
+    if (st) st.value = grTradeFmtIn(n.stop);
+}
+function grTradeSetSentido(sd) {
+    _grTradeS.sentido = sd;
+    grTradeAplicarNiveis(); grTradeAoDigitar();
+}
+function grTradeAtualizarTela() {
+    const s = _grTradeS, c = grTradeCalcular(s);
+    const cor = v => v == null || v === 0 ? '#8E8E93' : (v > 0 ? '#16A34A' : '#DC2626');
+    const fm = (v, sinal) => v == null ? '—' : (sinal && v > 0 ? '+' : '') + v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const set = (id, txt, corTxt) => { const el = document.getElementById(id); if (!el) return; el.textContent = txt; if (corTxt) el.style.color = corTxt; };
+    set('tr-alav', c.H == null ? '—' : c.H.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '×', c.H == null ? '#8E8E93' : '#1C1C1E');
+    set('tr-pnlstop', fm(c.I, true), cor(c.I));
+    c.alvos.forEach((a, i) => {
+        set('tr-j-' + i, a.J == null ? '—' : fm(a.J, true) + '%', cor(a.J));
+        set('tr-m-' + i, fm(a.M), a.M == null ? '#8E8E93' : '#1C1C1E');
+        set('tr-n-' + i, fm(a.N, true), cor(a.N));
+        set('tr-o-' + i, a.O == null ? '—' : fm(a.O, true), cor(a.O));
+    });
+    set('tr-rr', c.R == null ? '—' : fm(c.R, true), cor(c.R));
+    set('tr-prev', fm(c.somaN, true), cor(c.somaN));
+    set('tr-real', fm(c.pnlReal, true), cor(c.pnlReal));
+    const av = document.getElementById('tr-avisos');
+    if (av) { av.style.display = c.avisos.length ? 'block' : 'none'; av.innerHTML = c.avisos.map(x => '⚠ ' + x).join('<br>'); }
+    ['short', 'long'].forEach(k => {
+        const b = document.getElementById('tr-' + k); if (!b) return;
+        const ativo = s.sentido === k, corK = k === 'short' ? '#DC2626' : '#16A34A';
+        b.style.background = ativo ? corK : '#E5E5EA'; b.style.color = ativo ? '#FFFFFF' : '#1C1C1E';
+    });
+}
+function grTradeRender() {
+    const s = _grTradeS;
+    let ov = document.getElementById('trade-overlay');
+    if (!ov) {
+        ov = document.createElement('div');
+        ov.id = 'trade-overlay';
+        ov.style.cssText = 'display:none;position:fixed;inset:0;z-index:9660;background:rgba(0,0,0,0.5);align-items:stretch;justify-content:center;'; // por cima do relatório e da barra de abas do topo
+        ov.onclick = e => { if (e.target === ov) grTradeFechar(); };
+        document.body.appendChild(ov);
+    }
+    const rot = (txt) => '<div style="font-size:11px;font-weight:700;color:#8E8E93;margin-bottom:3px;">' + txt + '</div>';
+    const inp = (id, txt, val, ph) => '<label style="flex:1;min-width:0;">' + rot(txt) + '<input id="' + id + '" type="text" inputmode="decimal" value="' + val + '" placeholder="' + (ph || '') + '" oninput="grTradeAoDigitar()" style="width:100%;box-sizing:border-box;border:1px solid #D1D1D6;border-radius:8px;padding:9px 10px;font-size:16px;font-weight:600;background:#FFFFFF;color:#1C1C1E;"></label>';
+    const cel = (id, txt) => '<div style="background:#F8F8FA;border-radius:8px;padding:6px 2px;"><div style="font-size:10px;font-weight:700;color:#8E8E93;">' + txt + '</div><div id="' + id + '" style="font-size:13px;font-weight:800;">—</div></div>';
+    const alvos = s.alvos.map((a, i) => '<div style="border:1px solid #E5E5EA;border-radius:12px;padding:10px;margin-top:8px;">'
+        + '<div style="display:flex;justify-content:space-between;align-items:center;"><span style="font-size:13px;font-weight:800;">Alvo ' + (i + 1) + '</span>'
+        + '<label style="display:flex;align-items:center;gap:6px;font-size:13px;"><input type="checkbox" id="tr-real-' + i + '"' + (a.realizado ? ' checked' : '') + ' onchange="grTradeAoDigitar()" style="width:20px;height:20px;">Realizado</label></div>'
+        + '<div style="display:flex;gap:8px;margin-top:8px;">' + inp('tr-preco-' + i, 'Preço do alvo', grTradeFmtIn(a.preco)) + inp('tr-fechar-' + i, 'Fechar (%)', a.fechar == null ? '' : String(a.fechar)) + '</div>'
+        + '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:8px;text-align:center;">' + cel('tr-j-' + i, 'Alvo %') + cel('tr-m-' + i, 'Fechar $') + cel('tr-n-' + i, 'P&L Profit') + cel('tr-o-' + i, 'R/r') + '</div></div>').join('');
+    ov.innerHTML = '<div style="background:#FFFFFF;width:100%;max-width:560px;display:flex;flex-direction:column;font-family:-apple-system,sans-serif;color:#1C1C1E;box-sizing:border-box;">'
+        + '<div style="flex:none;display:flex;justify-content:space-between;align-items:center;padding:calc(12px + env(safe-area-inset-top)) 16px 10px;border-bottom:1px solid #F2F2F7;background:#FFFFFF;">'
+        + '<div><div style="font-size:17px;font-weight:800;">Trade · ' + grTradeNomeFaixa(s.zona) + '</div><div style="font-size:12px;color:#8E8E93;">' + s.ticket + ' · ' + s.data + '</div></div>'
+        + '<div style="display:flex;gap:8px;"><button onclick="grTradeNovoClick()" style="border:none;background:#E5E5EA;color:#1C1C1E;border-radius:8px;padding:6px 12px;font-size:13px;font-weight:700;">Novo</button>'
+        + '<button onclick="grTradeFechar()" style="border:none;background:#1C1C1E;color:#FFFFFF;border-radius:8px;padding:6px 12px;font-size:13px;font-weight:700;">Fechar</button></div></div>'
+        + '<div style="flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px 16px calc(32px + env(safe-area-inset-bottom));">'
+        + '<div>' + rot('Sentido') + '<div style="display:flex;gap:8px;"><button id="tr-short" onclick="grTradeSetSentido(\'short\')" style="flex:1;border:none;border-radius:8px;padding:12px 0;font-size:16px;font-weight:800;">Short</button><button id="tr-long" onclick="grTradeSetSentido(\'long\')" style="flex:1;border:none;border-radius:8px;padding:12px 0;font-size:16px;font-weight:800;">Long</button></div></div>'
+        + '<div style="display:flex;gap:8px;margin-top:10px;">' + inp('tr-entrada', 'Entrada', grTradeFmtIn(s.entrada)) + inp('tr-stop', 'Stop', grTradeFmtIn(s.stop)) + '</div>'
+        + '<div style="display:flex;gap:8px;margin-top:10px;">' + inp('tr-valor', 'Valor Trade', grTradeFmtIn(s.valor), 'ex.: 1000') + inp('tr-margem', 'Margem (%)', grTradeFmtIn(s.margem), 'ex.: 50') + '</div>'
+        + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;text-align:center;">' + cel('tr-alav', 'Alavancagem') + cel('tr-pnlstop', 'P&L no stop') + '</div>'
+        + '<div style="margin-top:14px;font-size:11px;font-weight:700;color:#8E8E93;letter-spacing:.4px;">ALVOS</div>' + alvos
+        + '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:14px;text-align:center;">' + cel('tr-rr', 'R/R total') + cel('tr-prev', 'P&L previsto') + cel('tr-real', 'P&L realizado') + '</div>'
+        + '<div id="tr-avisos" style="display:none;margin-top:12px;padding:10px 12px;border-radius:10px;background:#FFFBEB;color:#B45309;font-size:13px;line-height:1.5;font-weight:600;"></div>'
+        + '</div></div>';
+    ov.style.display = 'flex';
+    grTradeAtualizarTela();
+}
+function grTradeAbrir(zona) { zona = zona === 'normal' ? 'normal' : 'refinada'; _grTradeS = grTradeCarregar(zona) || grTradeNovo(zona); grTradeRender(); }
+function grTradeNovoClick() { _grTradeS = grTradeNovo(_grTradeS.zona); grTradeSalvar(); grTradeRender(); }
+function grTradeFechar() { const ov = document.getElementById('trade-overlay'); if (ov) ov.style.display = 'none'; }
 function grAreaFecharRelatorio() {
     const ov = document.getElementById('area-relatorio-overlay');
     if (ov) ov.style.display = 'none';
