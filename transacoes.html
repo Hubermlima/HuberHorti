@@ -3330,7 +3330,7 @@ function grFootprintAlternarSkin() {
 grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
-const APP_VERSAO = '20/09 23:14 · 15753 linhas · CORPO-VIVO v13';
+const APP_VERSAO = '20/09 23:14 · 15753 linhas · CORPO-VIVO v15';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) el.textContent = 'Versão ' + APP_VERSAO;
@@ -5153,7 +5153,7 @@ const aBX = 3, aBY = yR2 - aBH / 2;
             }
         }
         if (_grAreaArmada) { // dica de uso enquanto a ferramenta está ligada
-            const dica = _grAreaP1 == null ? 'ÁREA · segure no gráfico e marque o canto superior esquerdo' : 'ÁREA · marque o canto inferior direito';
+            const dica = _grAreaP1 == null ? 'ÁREA · segure no gráfico e marque o canto superior esquerdo' : 'ÁREA · toque e arraste o crosshair até o canto inferior direito; onde soltar é o canto final';
             ctx.font = 'bold 10px -apple-system'; ctx.textAlign = 'left';
             const wDica = ctx.measureText(dica).width + 14;
             ctx.fillStyle = 'rgba(255,183,77,0.95)'; ctx.beginPath(); ctx.roundRect(PAD.left + 6, PAD.top + 6, wDica, 18, 5); ctx.fill();
@@ -5995,11 +5995,13 @@ function grInitTouch() {
                 if (dentro(ch.del)) { window._longPressActive = false; clearTimeout(_longPressTimer); grAreaRemover(); e.preventDefault(); return; }
                 if (dentro(ch.rel)) { window._longPressActive = false; clearTimeout(_longPressTimer); grDrawChart(); grAreaAbrirRelatorio(); e.preventDefault(); return; }
             }
-            // Janela do crosshair: □ maximiza o resto, — minimiza (mantém o crosshair aberto)
+            // Janela do crosshair: UM botão alterna □ (expande) ↔ — (recolhe); o crosshair continua aberto
             if (window._longPressActive) {
-                const tocou = r => r && ex2 >= r.x - 4 && ex2 <= r.x + r.w + 4 && ey2 >= r.y - 4 && ey2 <= r.y + r.h + 4;
-                if (tocou(window._grCrosshairMaxBtnArea)) { window._grCrosshairMaximizada = true; grDrawChart(); e.preventDefault(); return; }
-                if (tocou(window._grCrosshairMinBtnArea)) { window._grCrosshairMaximizada = false; grDrawChart(); e.preventDefault(); return; }
+                const tb = window._grCrosshairToggleBtnArea;
+                if (tb && ex2 >= tb.x - 4 && ex2 <= tb.x + tb.w + 4 && ey2 >= tb.y - 4 && ey2 <= tb.y + tb.h + 4) {
+                    window._grCrosshairMaximizada = !window._grCrosshairMaximizada;
+                    grDrawChart(); e.preventDefault(); return;
+                }
             }
             // Toque no botão "Ver Footprint" da janela do crosshair
             if (window._longPressActive && window._grCrosshairFootprintBtnArea) {
@@ -6043,19 +6045,26 @@ function grInitTouch() {
                     return;
                 }
             }
-            // Toque no botão "Marcar canto ↖/↘" (ferramenta Área): fixa o canto exatamente onde o crosshair está
-            // (preço da linha horizontal, minuto da vertical) e fecha o crosshair; no 2º canto o retângulo fica na tela.
+            // Toque no botão "Marcar canto ↖" (ferramenta Área): fixa o 1º canto exatamente onde o crosshair está (preço da linha
+            // horizontal, minuto da vertical). O crosshair CONTINUA aberto: agora é só tocar e arrastar até o canto inferior direito.
             if (window._longPressActive && window._grCrosshairAreaBtnArea) {
                 const ta2 = window._grCrosshairAreaBtnArea;
                 if (ex2 >= ta2.x && ex2 <= ta2.x + ta2.w && ey2 >= ta2.y && ey2 <= ta2.y + ta2.h) {
                     grAreaMarcarCanto(window._grCrosshairPrecoAtual, window._grCrosshairTsAtual);
-                    window._longPressActive = false;
-                    clearTimeout(_longPressTimer);
-                    grAreaSalvar();
-                    grDrawChart(); // redesenha JÁ: fecha o crosshair e mostra o canto / o retângulo
+                    window._grCrosshairAreaBtnArea = null;
+                    grDrawChart(); // mostra o 1º canto e a dica; o retângulo passa a acompanhar o crosshair
                     e.preventDefault();
                     return;
                 }
+            }
+            // Ferramenta Área com o 1º canto já marcado: tocar e arrastar leva o crosshair ao 2º canto; ONDE SOLTAR é o canto final.
+            if (window._longPressActive && _grAreaArmada && _grAreaP1) {
+                window._grAreaArrastando = true;
+                _grCrosshairX = e.touches[0].clientX - canvas.getBoundingClientRect().left;
+                window._longPressY = toCanvasY(e.touches[0].clientY);
+                grAgendarDesenho();
+                e.preventDefault();
+                return;
             }
             // Toque simples fecha o crosshair se estava ativo
             if (window._longPressActive) {
@@ -6254,6 +6263,7 @@ function grInitTouch() {
         if (isDragging) {
             window._longPressActive = true;
             window._grCrosshairMaximizada = false; // a janela abre sempre minimizada (só data e ΔV Nível)
+            window._grAreaArrastando = !!(_grAreaArmada && _grAreaP1); // Área: com o 1º canto marcado, soltar aqui fecha o retângulo
             isDragging = false;
             _grCrosshairX = _liveTouchX - canvas.getBoundingClientRect().left;
             window._longPressY = toCanvasY(_liveTouchY);
@@ -6271,6 +6281,7 @@ function grInitTouch() {
         if (isDragging) {
             window._longPressActive = true;
             window._grCrosshairMaximizada = false; // a janela abre sempre minimizada (só data e ΔV Nível)
+            window._grAreaArrastando = !!(_grAreaArmada && _grAreaP1); // Área: com o 1º canto marcado, soltar aqui fecha o retângulo
             isDragging = false;
             _grCrosshairX = _liveTouchX - canvas.getBoundingClientRect().left;
             window._longPressY = toCanvasY(_liveTouchY);
@@ -6283,6 +6294,7 @@ function grInitTouch() {
             isDragging = false;
             clearTimeout(_longPressTimer);
             window._longPressActive = false;
+            window._grAreaArrastando = false;
             lastTouchDist = Math.hypot(
                 e.touches[0].clientX - e.touches[1].clientX,
                 e.touches[0].clientY - e.touches[1].clientY
@@ -6700,6 +6712,20 @@ function grInitTouch() {
         }
         _regHandleDragged = false;
         grDrawChart();
+    } else if (window._longPressActive && window._grAreaArrastando) {
+            // Ferramenta Área: onde soltar é o 2º canto (preço e minuto exatos do ponto solto). Fecha o crosshair e mostra o retângulo.
+            window._grAreaArrastando = false;
+            const tSolto = e.changedTouches && e.changedTouches[0];
+            if (tSolto && _grAreaP1) {
+                const xSolto = tSolto.clientX - canvas.getBoundingClientRect().left;
+                const precoSolto = grToPrice(toCanvasY(tSolto.clientY));
+                const tsSolto = Math.floor(grIndexToTime(grXToIndex(xSolto)) / 60000) * 60000;
+                grAreaMarcarCanto(precoSolto, tsSolto);
+            }
+            window._longPressActive = false;
+            clearTimeout(_longPressTimer);
+            grAreaSalvar();
+            grDrawChart();
     } else if (window._longPressActive) {
             // Crosshair persiste — não desativa ao soltar. Próximo touchstart
             // limpa. Não abre mais o footprint sozinho aqui — isso agora só
@@ -6765,6 +6791,10 @@ function grAreaCarregar() {
     } catch (e) {}
     grAreaAtualizarBotao();
 }
+// x (canvas) do instante ts — mesma conta do desenho do retângulo (posição exata do minuto dentro do candle).
+function grAreaXDoTempo(ts) {
+    return (window._grPADLeft || 0) + ((grTimeToIndex(ts) - (window._grStartIdx || 0)) / (window._grTotalSlots || 1)) * (window._grChartW || 1);
+}
 function grAreaAtualizarBotao() {
     const b = document.getElementById('cv-ind-area');
     if (b) b.classList.toggle('active', _grAreaArmada);
@@ -6772,7 +6802,7 @@ function grAreaAtualizarBotao() {
 // Botão "Área" da barra: liga/desliga a ferramenta. Ligada, o crosshair (toque longo) mostra o botão de marcar o canto.
 function cvToggleArea() {
     _grAreaArmada = !_grAreaArmada;
-    _grAreaP1 = null; // ligar/desligar sempre recomeça a marcação
+    _grAreaP1 = null; window._grAreaArrastando = false; // ligar/desligar sempre recomeça a marcação
     grAreaAtualizarBotao();
     if (_grAreaArmada) {
         const barra = document.getElementById('cv-barra-unificada');
@@ -6794,7 +6824,7 @@ function grAreaMarcarCanto(preco, ts) {
     grAreaSalvar(); grAreaAtualizarBotao();
 }
 function grAreaRemover() {
-    _grAreaMarcada = null; _grAreaP1 = null; _grAreaArmada = false; window._grAreaChips = null;
+    _grAreaMarcada = null; _grAreaP1 = null; _grAreaArmada = false; window._grAreaArrastando = false; window._grAreaChips = null;
     grAreaSalvar(); grAreaAtualizarBotao();
     grDrawChart();
 }
@@ -6815,9 +6845,73 @@ function grAreaResumo(a) {
     _grAreaResumoCache = { key, r };
     return r;
 }
+// Minigráfico do relatório (SVG): à esquerda o preço (VWAP por minuto) ao longo do tempo da área; à direita o volume por
+// linha de preço (verde = compra dominou na linha, vermelho = venda dominou). As zonas de interesse são faixas horizontais
+// atravessando os dois — a principal em laranja (com o núcleo mais forte), as demais em azul. Linha azul tracejada = preço atual.
+function grAreaMinigrafico(a, grade, tick, zonas, porMin, p0) {
+    const W = 340, H = 236, top = 12, bot = 20, xL0 = 6, xL1 = 204, xP0 = 212, xP1 = 282, xTxt = 286;
+    const pMin = Math.min(a.precoBaixo, grade[0].p - tick / 2), pMax = Math.max(a.precoAlto, grade[grade.length - 1].p + tick / 2);
+    const alt = H - top - bot;
+    const y = p => top + (pMax - p) / (pMax - pMin) * alt;
+    const maxT = Math.max(1e-9, ...grade.map(g => g.t));
+    const t0 = a.tsIni, t1 = a.tsFim + 60000;
+    const f1 = v => v.toFixed(1);
+    const s = [];
+    s.push('<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" style="display:block;margin:10px 0 4px;background:#FAFAFC;border:1px solid #E5E5EA;border-radius:8px;font-family:-apple-system,sans-serif;">');
+    // faixas das zonas (por baixo de tudo)
+    zonas.forEach((z, i) => {
+        const cor = i === 0 ? '255,152,0' : '33,150,243';
+        s.push('<rect x="' + xL0 + '" y="' + f1(y(z.hi)) + '" width="' + (xP1 - xL0) + '" height="' + f1(Math.max(1, y(z.lo) - y(z.hi))) + '" fill="rgba(' + cor + ',0.16)" stroke="rgba(' + cor + ',0.9)" stroke-width="1"/>');
+        if (z.nucleoLo != null) s.push('<rect x="' + xL0 + '" y="' + f1(y(z.nucleoHi)) + '" width="' + (xP1 - xL0) + '" height="' + f1(Math.max(1, y(z.nucleoLo) - y(z.nucleoHi))) + '" fill="rgba(' + cor + ',0.16)"/>');
+    });
+    // perfil de volume por linha: cada barra é dividida em compra (verde, à esquerda) e venda (vermelho, à direita) — fica claro
+    // se a linha foi equilibrada (metade/metade) ou pendeu para um lado
+    grade.forEach(g => {
+        if (g.t <= 0) return;
+        const emZona = zonas.some(z => g.p >= z.lo && g.p <= z.hi);
+        const yy = y(g.p + tick / 2), hh = Math.max(1, y(g.p - tick / 2) - yy - 0.6);
+        const L = g.t / maxT * (xP1 - xP0), Lc = L * g.c / g.t;
+        const op = emZona ? 0.95 : 0.45;
+        s.push('<rect x="' + xP0 + '" y="' + f1(yy) + '" width="' + f1(Lc) + '" height="' + f1(hh) + '" fill="#26A69A" opacity="' + op + '"/>');
+        s.push('<rect x="' + f1(xP0 + Lc) + '" y="' + f1(yy) + '" width="' + f1(L - Lc) + '" height="' + f1(hh) + '" fill="#EF5350" opacity="' + op + '"/>');
+    });
+    // preço ao longo do tempo (VWAP por minuto, agrupado em até ~160 pontos)
+    const nPts = Math.min(160, porMin.length);
+    if (nPts >= 2) {
+        const passo = porMin.length / nPts, pts = [];
+        for (let i = 0; i < nPts; i++) {
+            let sv = 0, sw = 0;
+            for (let j = Math.floor(i * passo); j < Math.floor((i + 1) * passo) && j < porMin.length; j++) { sv += porMin[j].pv; sw += porMin[j].c + porMin[j].v; }
+            if (sw > 0) { const tm = porMin[Math.min(porMin.length - 1, Math.floor((i + 0.5) * passo))].ts; pts.push(f1(xL0 + (tm - t0) / (t1 - t0) * (xL1 - xL0)) + ',' + f1(y(sv / sw))); }
+        }
+        s.push('<polyline points="' + pts.join(' ') + '" fill="none" stroke="#1C1C1E" stroke-width="1.3" stroke-linejoin="round"/>');
+    }
+    // preço atual
+    if (p0 != null && p0 >= pMin && p0 <= pMax) {
+        s.push('<line x1="' + xL0 + '" x2="' + xP1 + '" y1="' + f1(y(p0)) + '" y2="' + f1(y(p0)) + '" stroke="#007AFF" stroke-width="1" stroke-dasharray="4 3"/>');
+        s.push('<text x="' + xTxt + '" y="' + f1(y(p0) + 3) + '" font-size="8.5" fill="#007AFF" font-weight="700">atual</text>');
+    }
+    // rótulos das zonas (bordas à direita, "Zn" dentro da faixa)
+    zonas.forEach((z, i) => {
+        const cor = i === 0 ? '#E65100' : '#1565C0';
+        s.push('<text x="' + (xL0 + 4) + '" y="' + f1(y(z.hi) + 10) + '" font-size="9" font-weight="800" fill="' + cor + '">Z' + (i + 1) + '</text>');
+        s.push('<text x="' + xTxt + '" y="' + f1(y(z.hi) - 1.5) + '" font-size="8.5" fill="' + cor + '">' + fmtN(z.hi) + '</text>');
+        s.push('<text x="' + xTxt + '" y="' + f1(y(z.lo) + 8.5) + '" font-size="8.5" fill="' + cor + '">' + fmtN(z.lo) + '</text>');
+    });
+    // eixo do tempo
+    const dia = ts => new Date(ts).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+    s.push('<text x="' + xL0 + '" y="' + (H - 6) + '" font-size="8.5" fill="#8E8E93">' + dia(t0) + '</text>');
+    s.push('<text x="' + xL1 + '" y="' + (H - 6) + '" font-size="8.5" fill="#8E8E93" text-anchor="end">' + dia(t1) + '</text>');
+    s.push('<text x="' + ((xP0 + xP1) / 2) + '" y="' + (H - 6) + '" font-size="8.5" fill="#8E8E93" text-anchor="middle">volume</text>');
+    s.push('</svg>');
+    return s.join('');
+}
 // Monta o relatório da área. Devolve { html, texto } ou null se não há footprint dentro do retângulo.
 // Tudo vem do footprint de 1 minuto (compra = agressão compradora, venda = agressão vendedora); as linhas de preço usam o
-// mesmo tick (ATR) das células do gráfico.
+// mesmo tick (ATR) das células do gráfico. O núcleo do relatório são as ZONAS DE INTERESSE (faixas de preço, não pontos):
+// mesma ideia do "fundo dourado" do app — linhas com ≥ 50% do volume da linha mais forte formam o núcleo; a zona leva mais
+// 1 linha de "ombro" de cada lado (≥ 40%). Os 3 botões "Estreita / Normal / Larga" do relatório ajustam esses cortes. O delta não decide se é zona: volume alto com delta equilibrado é justamente
+// disputa/absorção. O delta só diz de que lado a zona pende.
 function grAreaGerarRelatorio(a) {
     const tick = Math.max(10, grTickAtr());
     const mapa = new Map();
@@ -6843,111 +6937,139 @@ function grAreaGerarRelatorio(a) {
     porMin.sort((x, y) => x.ts - y.ts);
     const delta = compra - venda;
     const filas = Array.from(mapa.entries()).map(([p, l]) => ({ p, c: l.c, v: l.v, d: l.c - l.v, t: l.c + l.v })).sort((x, y) => x.p - y.p);
-    const maxT = Math.max(...filas.map(f => f.t));
-    const poc = filas.reduce((m, f) => f.t > m.t ? f : m, filas[0]);
+    // grade contínua de linhas (com as vazias): a vizinhança é real, não "a próxima linha que teve negócio"
+    const porK = new Map(filas.map(f => [Math.round(f.p / tick), f]));
+    const k0 = Math.round(filas[0].p / tick), k1 = Math.round(filas[filas.length - 1].p / tick);
+    const grade = [];
+    for (let k = k0; k <= k1; k++) grade.push(porK.get(k) || { p: k * tick, c: 0, v: 0, d: 0, t: 0 });
+    const media = total / grade.length;
+    const maxT = Math.max(...grade.map(g => g.t));
+    const p0 = (typeof _precoAtual === 'number' && _precoAtual > 0) ? _precoAtual : null;
 
-    // Áreas de agressão: sequências de linhas vizinhas em que um lado dominou de verdade (|delta| ≥ 12% da maior linha),
-    // aceitando 1 linha neutra no meio. As 3 maiores de cada lado.
-    const relevante = f => Math.abs(f.d) >= 0.12 * maxT;
-    const zonas = sinal => {
+    // ── ZONAS DE INTERESSE ────────────────────────────────────────────────────────────────────────
+    const SENS = [{ nome: 'Estreita', hot: 0.65, ombro: 0.5 }, { nome: 'Normal', hot: 0.5, ombro: 0.4 }, { nome: 'Larga', hot: 0.4, ombro: 0.3 }];
+    let sensI = (typeof window !== 'undefined') ? window._grAreaSens : undefined;
+    if (!Number.isInteger(sensI)) { try { sensI = parseInt(localStorage.getItem('gr_area_sens')); } catch (e) {} }
+    if (!(sensI >= 0 && sensI <= 2)) sensI = 1;
+    const HOT = SENS[sensI].hot, OMBRO = SENS[sensI].ombro;
+    let zonas = [];
+    if (maxT >= 1.3 * media) {
+        const quentes = [];
+        grade.forEach((g, i) => { if (g.t >= HOT * maxT) quentes.push(i); });
+        const nucleos = []; let cur = null;
+        quentes.forEach(i => { if (cur && i - cur.hi <= 2) cur.hi = i; else { cur = { lo: i, hi: i }; nucleos.push(cur); } }); // aceita 1 linha fraca no meio
+        nucleos.forEach(n => {
+            n.zLo = (n.lo - 1 >= 0 && grade[n.lo - 1].t >= OMBRO * maxT) ? n.lo - 1 : n.lo;
+            n.zHi = (n.hi + 1 < grade.length && grade[n.hi + 1].t >= OMBRO * maxT) ? n.hi + 1 : n.hi;
+        });
+        const fund = [];
+        nucleos.forEach(n => { const u = fund[fund.length - 1]; if (u && n.zLo <= u.zHi + 1) { u.hi = n.hi; u.zHi = Math.max(u.zHi, n.zHi); } else fund.push({ ...n }); });
+        zonas = fund.map(n => {
+            let c = 0, v = 0;
+            for (let i = n.zLo; i <= n.zHi; i++) { c += grade[i].c; v += grade[i].v; }
+            const t = c + v, dz = c - v, dom = t > 0 ? Math.abs(dz) / t : 0;
+            const nLin = n.zHi - n.zLo + 1;
+            const lo = grade[n.zLo].p - tick / 2, hi = grade[n.zHi].p + tick / 2;
+            const share = t / total, dens = share / (nLin / grade.length);
+            const posicao = p0 == null ? null : (p0 < lo ? 'acima' : (p0 > hi ? 'abaixo' : 'dentro'));
+            return {
+                lo, hi, c, v, t, d: dz, dom, share, dens, nLin, posicao,
+                nucleoLo: grade[n.lo].p - tick / 2, nucleoHi: grade[n.hi].p + tick / 2,
+                forca: (share >= 0.35 && dens >= 2) ? 'forte' : (share >= 0.2 ? 'moderada' : 'fraca'),
+                papel: posicao === 'acima' ? 'resistência provável (fica acima do preço atual)' : (posicao === 'abaixo' ? 'suporte provável (fica abaixo do preço atual)' : (posicao === 'dentro' ? 'o preço atual está dentro dela: reação esperada nas bordas' : '')),
+                carater: dom < 0.08 ? 'delta equilibrado: disputa, volume alto sem lado vencedor (absorção)' : (dz > 0 ? 'pende para o lado comprador' : 'pende para o lado vendedor')
+            };
+        }).sort((x, y) => y.t - x.t).slice(0, 3);
+    }
+
+    // ── Onde cada lado dominou (faixas, com critério menos rígido: ≥ 8% da linha e linha com volume relevante) ─────
+    const domRow = g => g.t >= 0.8 * media && Math.abs(g.d) / g.t >= 0.08;
+    const zonasLado = sinal => {
         const zs = []; let z = null;
-        filas.forEach((f, i) => {
-            if (relevante(f) && Math.sign(f.d) === sinal) {
-                if (z && i - z.ultimo <= 2) { z.fim = i; z.ultimo = i; } else { z = { ini: i, fim: i, ultimo: i }; zs.push(z); }
-            }
+        grade.forEach((g, i) => {
+            if (domRow(g) && Math.sign(g.d) === sinal) { if (z && i - z.ultimo <= 2) { z.fim = i; z.ultimo = i; } else { z = { ini: i, fim: i, ultimo: i }; zs.push(z); } }
         });
         return zs.map(q => {
             let c = 0, v = 0;
-            for (let i = q.ini; i <= q.fim; i++) { c += filas[i].c; v += filas[i].v; }
-            return { lo: filas[q.ini].p - tick / 2, hi: filas[q.fim].p + tick / 2, c, v, d: c - v };
-        }).sort((x, y) => Math.abs(y.d) - Math.abs(x.d)).slice(0, 3);
+            for (let i = q.ini; i <= q.fim; i++) { c += grade[i].c; v += grade[i].v; }
+            return { lo: grade[q.ini].p - tick / 2, hi: grade[q.fim].p + tick / 2, c, v, d: c - v };
+        }).sort((x, y) => Math.abs(y.d) - Math.abs(x.d)).slice(0, 2);
     };
-    const zonasC = zonas(1), zonasV = zonas(-1);
-    const topC = filas.slice().sort((x, y) => y.c - x.c).slice(0, 3);
-    const topV = filas.slice().sort((x, y) => y.v - x.v).slice(0, 3);
+    const zonasC = zonasLado(1), zonasV = zonasLado(-1);
 
-    // Desequilíbrio empilhado (mesma regra diagonal das células): compra da linha ≥ RAZÃO × venda da linha de baixo;
-    // venda da linha ≥ RAZÃO × compra da linha de cima. Só conta pilha de 3+ linhas seguidas.
+    // Desequilíbrio empilhado (regra diagonal das células): compra da linha ≥ RAZÃO × venda da linha de baixo; venda ≥ RAZÃO × compra da de cima.
     const R = FOOTPRINT_IMBALANCE_RATIO;
-    const adj = (i, j) => Math.abs(Math.abs(filas[i].p - filas[j].p) - tick) < 1e-6;
-    const impC = filas.map((f, i) => i > 0 && adj(i, i - 1) && f.c > 0 && f.c >= R * filas[i - 1].v);
-    const impV = filas.map((f, i) => i < filas.length - 1 && adj(i, i + 1) && f.v > 0 && f.v >= R * filas[i + 1].c);
+    const adj = (i, j) => i >= 0 && j >= 0 && i < grade.length && j < grade.length && Math.abs(i - j) === 1;
+    const impC = grade.map((g, i) => adj(i, i - 1) && g.c > 0 && g.c >= R * grade[i - 1].v);
+    const impV = grade.map((g, i) => adj(i, i + 1) && g.v > 0 && g.v >= R * grade[i + 1].c);
     const pilhas = flags => {
         const out = []; let ini = -1;
-        for (let i = 0; i <= filas.length; i++) {
-            const ok = i < filas.length && flags[i] && (ini < 0 || adj(i, i - 1));
-            if (ok) { if (ini < 0) ini = i; continue; }
-            if (ini >= 0 && i - ini >= 3) out.push({ lo: filas[ini].p - tick / 2, hi: filas[i - 1].p + tick / 2, n: i - ini });
-            ini = (i < filas.length && flags[i]) ? i : -1;
+        for (let i = 0; i <= grade.length; i++) {
+            if (i < grade.length && flags[i]) { if (ini < 0) ini = i; continue; }
+            if (ini >= 0 && i - ini >= 3) out.push({ lo: grade[ini].p - tick / 2, hi: grade[i - 1].p + tick / 2, n: i - ini });
+            ini = -1;
         }
         return out;
     };
     const pilhasC = pilhas(impC), pilhasV = pilhas(impV);
 
-    // Fluxo no tempo: até 6 fatias iguais entre o 1º e o último minuto marcado.
+    // Fluxo no tempo: até 6 fatias iguais.
     const nFat = Math.max(1, Math.min(6, Math.floor(porMin.length / 2)));
     const dt = (a.tsFim + 60000 - a.tsIni) / nFat;
     const fatias = Array.from({ length: nFat }, (_, i) => ({ t0: a.tsIni + i * dt, c: 0, v: 0 }));
     porMin.forEach(m => { const i = Math.min(nFat - 1, Math.max(0, Math.floor((m.ts - a.tsIni) / dt))); fatias[i].c += m.c; fatias[i].v += m.v; });
     const maxAbsFat = Math.max(1e-9, ...fatias.map(f => Math.abs(f.c - f.v)));
 
-    // Preço no começo × no fim (VWAP dos ~10% primeiros e últimos minutos, só dentro da área) → dá a leitura de absorção.
-    const nk = Math.max(1, Math.round(porMin.length * 0.1));
-    const vwap = arr => { let s = 0, w = 0; arr.forEach(m => { s += m.pv; w += m.c + m.v; }); return w > 0 ? s / w : null; };
-    const pIni = vwap(porMin.slice(0, nk)), pFim = vwap(porMin.slice(-nk));
-    const mov = (pIni != null && pFim != null) ? pFim - pIni : null;
-    const movPct = (mov != null && pIni) ? mov / pIni * 100 : null;
-
-    // Leitura (heurística): delta contra o movimento do preço = o lado oposto ao delta absorveu.
-    const dom = Math.abs(delta) / total;
-    const ladoDelta = delta >= 0 ? 'compradora' : 'vendedora';
-    const leitura = [];
-    if (dom < 0.05) leitura.push('Equilíbrio: nenhum lado dominou (delta de ' + (dom * 100).toFixed(1).replace('.', ',') + '% do volume).');
-    else {
-        leitura.push('Agressão ' + ladoDelta + ' dominou: ' + (Math.max(compra, venda) / total * 100).toFixed(0) + '% do volume agredido.');
-        if (movPct != null && Math.abs(movPct) >= 0.05) {
-            const subiu = mov > 0;
-            if ((delta > 0) === subiu) leitura.push('O preço andou a favor do delta (' + (subiu ? 'subiu' : 'caiu') + ' ' + Math.abs(movPct).toFixed(2).replace('.', ',') + '%): continuidade, sem sinal de absorção.');
-            else if (delta > 0) leitura.push('Compra agressiva NÃO sustentou o preço (caiu ' + Math.abs(movPct).toFixed(2).replace('.', ',') + '%): provável absorção por vendedores passivos.');
-            else leitura.push('Venda agressiva NÃO derrubou o preço (subiu ' + Math.abs(movPct).toFixed(2).replace('.', ',') + '%): provável absorção por compradores passivos.');
-        } else if (dom >= 0.15) {
-            leitura.push('Preço praticamente parado com delta ' + ladoDelta + ' forte: provável absorção pelo lado oposto.');
-        }
-    }
-    leitura.push('Heurística sobre o footprint: ele mostra o que foi negociado, não a intenção nem a identidade de quem estava passivo.');
-
     // ── formatação ─────────────────────────────────────────────────────────────────────────────
-    const VERDE = '#16A34A', VERM = '#DC2626';
+    const VERDE = '#16A34A', VERM = '#DC2626', LARANJA = '#E65100';
     const sg = v => (v >= 0 ? '+' : '') + fmtBtc2(v);
     const pc = v => (v * 100).toFixed(0) + '%';
+    const pc1 = v => (v * 100).toFixed(1).replace('.', ',') + '%';
     const faixa = (lo, hi) => fmtN(lo) + ' – ' + fmtN(hi);
     const hora = ts => new Date(ts).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
     const cab = 'Tempo: ' + hora(a.tsIni) + ' → ' + hora(a.tsFim + 60000) + ' (' + porMin.length + ' min com negócios)';
-    const cab2 = 'Preço: ' + faixa(a.precoBaixo, a.precoAlto) + ' · linhas de ' + fmtN(tick);
+    const cab2 = 'Preço: ' + faixa(a.precoBaixo, a.precoAlto) + ' · linhas de ' + fmtN(tick) + (p0 ? ' · preço atual ' + fmtN(p0) : '');
     const T = [], Hh = [];
     const sec = t => { T.push('', t.toUpperCase()); Hh.push('<div style="margin-top:16px;font-size:11px;font-weight:700;color:#8E8E93;letter-spacing:.4px;">' + t.toUpperCase() + '</div>'); };
     const lin = (a1, b1, cor) => { T.push('• ' + a1 + ': ' + b1); Hh.push('<div style="display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid #F2F4F8;font-size:13px;"><span>' + a1 + '</span><span style="font-weight:700;' + (cor ? 'color:' + cor + ';' : '') + '">' + b1 + '</span></div>'); };
     const txt = (s, cor) => { T.push('• ' + s); Hh.push('<div style="padding:5px 0;font-size:13px;line-height:1.4;' + (cor ? 'color:' + cor + ';' : '') + '">' + s + '</div>'); };
 
+    // Conclusão + minigráfico + lista de zonas
+    sec('Zona de interesse');
+    T.push('• Sensibilidade: ' + SENS[sensI].nome + ' (núcleo = linhas com ≥ ' + Math.round(HOT * 100) + '% do volume da mais forte; ombro ≥ ' + Math.round(OMBRO * 100) + '%)');
+    Hh.push('<div style="display:flex;gap:6px;margin:6px 0 2px;">' + SENS.map((q, i) => '<button onclick="grAreaSetSens(' + i + ')" style="border:none;border-radius:8px;padding:5px 11px;font-size:12px;font-weight:700;background:' + (i === sensI ? '#1C1C1E' : '#E5E5EA') + ';color:' + (i === sensI ? '#FFFFFF' : '#1C1C1E') + ';">' + q.nome + '</button>').join('') + '<span style="align-self:center;font-size:11px;color:#8E8E93;margin-left:4px;">largura da zona</span></div>');
+    if (zonas.length === 0) {
+        txt('Nenhuma zona se destacou: o volume está espalhado pela área (a linha mais forte não passa de 1,3× a média).');
+    } else {
+        const z = zonas[0];
+        const concl = 'Zona principal: <b>' + faixa(z.lo, z.hi) + '</b> — ' + pc(z.share) + ' do volume em ' + pc(z.nLin / grade.length) + ' do preço (' + z.dens.toFixed(1).replace('.', ',') + '× a densidade média), zona ' + z.forca + '. ' + z.carater.charAt(0).toUpperCase() + z.carater.slice(1) + '.' + (z.papel ? ' ' + z.papel.charAt(0).toUpperCase() + z.papel.slice(1) + '.' : '');
+        Hh.push('<div style="margin-top:8px;padding:10px 12px;border-radius:10px;background:#FFF3E0;border:1px solid #FFB74D;font-size:13px;line-height:1.45;color:#1C1C1E;">' + concl + '</div>');
+        T.push('• ' + concl.replace(/<\/?b>/g, ''));
+        Hh.push(grAreaMinigrafico(a, grade, tick, zonas, porMin, p0));
+        Hh.push('<div style="font-size:11px;color:#8E8E93;line-height:1.4;margin-bottom:6px;">Faixas = zonas de interesse (núcleo: linhas com ≥ ' + Math.round(HOT * 100) + '% do volume da mais forte, mais 1 linha de ombro de cada lado). Barras = volume por linha, dividido em compra (verde) e venda (vermelho). Linha preta = preço.</div>');
+        zonas.forEach((zz, i) => {
+            const cor = i === 0 ? LARANJA : '#1565C0';
+            const partes = [pc(zz.share) + ' do volume', zz.dens.toFixed(1).replace('.', ',') + '× densidade', 'Δ ' + sg(zz.d) + ' (' + (zz.d / zz.t * 100).toFixed(1).replace('.', ',') + '%)', 'zona ' + zz.forca, 'núcleo ' + faixa(zz.nucleoLo, zz.nucleoHi)];
+            if (zz.posicao) partes.push(zz.posicao === 'dentro' ? 'preço atual dentro' : 'fica ' + zz.posicao + ' do preço atual');
+            const linhaZ = 'Z' + (i + 1) + ' · ' + faixa(zz.lo, zz.hi);
+            T.push('• ' + linhaZ + ' — ' + partes.join(' · '));
+            Hh.push('<div style="padding:6px 0;border-bottom:1px solid #F2F4F8;font-size:13px;line-height:1.4;"><span style="font-weight:800;color:' + cor + ';">' + linhaZ + '</span><br><span style="color:#48484A;">' + partes.join(' · ') + '</span></div>');
+        });
+    }
+
     sec('Resumo');
     lin('Agressão compradora', fmtBtc2(compra) + ' BTC (' + pc(compra / total) + ')', VERDE);
     lin('Agressão vendedora', fmtBtc2(venda) + ' BTC (' + pc(venda / total) + ')', VERM);
-    lin('Delta', sg(delta) + ' BTC', delta >= 0 ? VERDE : VERM);
+    lin('Delta', sg(delta) + ' BTC (' + pc1(delta / total) + ' do volume)', delta >= 0 ? VERDE : VERM);
     lin('Volume agredido total', fmtBtc2(total) + ' BTC');
     if (nc > 0 && nv > 0) lin('Tamanho médio por ordem agressora', 'compra ' + (compra / nc).toFixed(3).replace('.', ',') + ' · venda ' + (venda / nv).toFixed(3).replace('.', ',') + ' BTC');
-    lin('Nível de maior volume (POC)', fmtN(poc.p) + ' (Δ ' + sg(poc.d) + ')');
 
-    sec('Áreas de agressão compradora');
-    if (zonasC.length === 0) txt('Nenhuma área compradora se destacou.');
-    zonasC.forEach(z => lin(faixa(z.lo, z.hi), 'Δ ' + sg(z.d) + ' (compra ' + fmtBtc2(z.c) + ' · venda ' + fmtBtc2(z.v) + ')', VERDE));
-    if (topC.length) txt('Níveis com mais compra agressiva: ' + topC.map(f => fmtN(f.p) + ' (' + fmtBtc2(f.c) + ')').join(' · '));
-    pilhasC.forEach(q => txt('Desequilíbrio comprador empilhado: ' + q.n + ' linhas seguidas entre ' + faixa(q.lo, q.hi), VERDE));
-
-    sec('Áreas de agressão vendedora');
-    if (zonasV.length === 0) txt('Nenhuma área vendedora se destacou.');
-    zonasV.forEach(z => lin(faixa(z.lo, z.hi), 'Δ ' + sg(z.d) + ' (compra ' + fmtBtc2(z.c) + ' · venda ' + fmtBtc2(z.v) + ')', VERM));
-    if (topV.length) txt('Níveis com mais venda agressiva: ' + topV.map(f => fmtN(f.p) + ' (' + fmtBtc2(f.v) + ')').join(' · '));
-    pilhasV.forEach(q => txt('Desequilíbrio vendedor empilhado: ' + q.n + ' linhas seguidas entre ' + faixa(q.lo, q.hi), VERM));
+    sec('Onde cada lado dominou');
+    if (zonasC.length === 0 && zonasV.length === 0 && pilhasC.length === 0 && pilhasV.length === 0) txt('Nenhuma faixa teve um lado claramente dominante: o fluxo aqui é de disputa, e o sinal está na zona de interesse acima.');
+    zonasC.forEach(z => lin('Compradora · ' + faixa(z.lo, z.hi), 'Δ ' + sg(z.d), VERDE));
+    zonasV.forEach(z => lin('Vendedora · ' + faixa(z.lo, z.hi), 'Δ ' + sg(z.d), VERM));
+    pilhasC.forEach(q => txt('Desequilíbrio comprador empilhado: ' + q.n + ' linhas seguidas em ' + faixa(q.lo, q.hi), VERDE));
+    pilhasV.forEach(q => txt('Desequilíbrio vendedor empilhado: ' + q.n + ' linhas seguidas em ' + faixa(q.lo, q.hi), VERM));
 
     sec('Delta ao longo do tempo');
     fatias.forEach(f => {
@@ -6955,13 +7077,17 @@ function grAreaGerarRelatorio(a) {
         T.push('• ' + hora(f.t0) + '  Δ ' + sg(d));
         Hh.push('<div style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12px;"><span style="width:84px;color:#8E8E93;">' + hora(f.t0) + '</span><div style="flex:1;height:8px;background:#F2F2F7;border-radius:4px;position:relative;"><div style="position:absolute;top:0;height:100%;border-radius:4px;background:' + cor + ';left:' + (d >= 0 ? 50 : 50 - w) + '%;width:' + w + '%;"></div></div><span style="width:64px;text-align:right;font-weight:700;color:' + cor + ';">' + sg(d) + '</span></div>');
     });
-
-    sec('Leitura');
-    leitura.forEach(s => txt(s));
+    txt('Heurística sobre o footprint: mostra o que foi negociado, não a intenção nem a identidade de quem estava passivo.');
 
     const texto = ['RELATÓRIO DA ÁREA', cab, cab2].concat(T).join('\n');
     const html = '<div style="font-size:12px;color:#8E8E93;line-height:1.5;">' + cab + '<br>' + cab2 + '</div>' + Hh.join('');
-    return { html, texto };
+    return { html, texto, zonas };
+}
+// Botões "Estreita / Normal / Larga" do relatório: muda a largura das zonas e refaz o relatório.
+function grAreaSetSens(i) {
+    window._grAreaSens = i;
+    try { localStorage.setItem('gr_area_sens', String(i)); } catch (e) {}
+    grAreaAbrirRelatorio();
 }
 function grAreaAbrirRelatorio() {
     const a = _grAreaMarcada;
@@ -7125,7 +7251,22 @@ function grDrawChartWithCrosshair(yInterno) {
     const candleIdx = startIdx + Math.min(rawIdx, cc2.length - 1);
     const candle = _grAllCandles[Math.max(0, Math.min(total - 1, candleIdx))];
     const idxCandleCrosshair = Math.max(0, Math.min(total - 1, candleIdx));
-    if (candle) {
+    // Ferramenta Área com o 1º canto marcado: retângulo AO VIVO do 1º canto até o crosshair (onde soltar = 2º canto). A janelinha
+    // do crosshair não aparece nessa fase — só as linhas e o retângulo, pra nada esconder a área.
+    const areaArrastando = _grAreaArmada && _grAreaP1;
+    if (areaArrastando) {
+        const xp1 = grAreaXDoTempo(_grAreaP1.ts), yp1 = grLineY(_grAreaP1.preco);
+        const rx0 = Math.min(xp1, _grCrosshairX), rx1 = Math.max(xp1, _grCrosshairX), ry0 = Math.min(yp1, yInterno), ry1 = Math.max(yp1, yInterno);
+        ctx.save();
+        ctx.beginPath(); ctx.rect(_grPAD.left, _grPAD.top, W - _grPAD.left - _grPAD.right, _grChartH); ctx.clip();
+        ctx.fillStyle = 'rgba(255,183,77,0.20)'; ctx.fillRect(rx0, ry0, rx1 - rx0, ry1 - ry0);
+        ctx.strokeStyle = '#FFB74D'; ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]); ctx.strokeRect(rx0, ry0, rx1 - rx0, ry1 - ry0);
+        ctx.restore();
+        ctx.setLineDash([]);
+        window._grCrosshairFootprintBtnArea = null; window._grCrosshairAncorarBtnArea = null; window._grCrosshairValueAreaBtnArea = null;
+        window._grCrosshairVpBtnArea = null; window._grCrosshairAreaBtnArea = null; window._grCrosshairToggleBtnArea = null;
+    }
+    if (candle && !areaArrastando) {
         const d = new Date(candle.t);
         const _customSoData = _grTf === 'custom' && (_grTfCustomUnit === 'dia' || _grTfCustomUnit === 'mes');
         // timeZone:'UTC' é obrigatório aqui: os candles de 1day/1week/1month/custom-dia/mes
@@ -7188,7 +7329,7 @@ function grDrawChartWithCrosshair(yInterno) {
         // Com a ferramenta ÁREA armada, o botão de marcar o canto aparece SEMPRE (é ele que fixa o canto onde o crosshair está).
         const BTN_H = 26;
         const botoes = [];
-        if (_grAreaArmada) botoes.push({ chave: 'area', txt: _grAreaP1 == null ? 'Marcar canto ↖ (sup. esq.)' : 'Marcar canto ↘ (inf. dir.)', icone: HEROICON_BOOKMARK });
+        if (_grAreaArmada && _grAreaP1 == null) botoes.push({ chave: 'area', txt: 'Marcar canto ↖ (sup. esq.)', icone: HEROICON_BOOKMARK });
         if (maximizada && temBotaoFootprint) {
             const jaEAncora = _grVwapAncoras.some(a => a.ts === candle.t);
             const jaEAncoraVA = _grValueAreaAncoraTs != null && _grValueAreaAncoraTs === candle.t;
@@ -7207,8 +7348,8 @@ function grDrawChartWithCrosshair(yInterno) {
         const maiorLabelW = Math.max(0, ...linhas.concat(linhasOhlc).map(l => ctx.measureText(l.label).width));
         const colLabel = Math.max(44, Math.ceil(maiorLabelW) + 6), colVal = 80;
         const maiorBtnW = botoes.length ? Math.max(...botoes.map(b => ctx.measureText(b.txt).width)) + 22 + 12 : 0;
-        const HB_W = 20, HB_H = 16, HB_GAP = 4;
-        const headerW = boxPad / 2 + 2 + dateW + 12 + 2 * HB_W + HB_GAP + 8;
+        const HB_W = 20, HB_H = 16;
+        const headerW = boxPad / 2 + 2 + dateW + 12 + HB_W + 8;
         const boxW = Math.max(colLabel + colVal + boxPad, maiorBtnW, headerW);
         let bx = _grCrosshairX + 10;
         if (bx + boxW > W - _grPAD.right) bx = _grCrosshairX - boxW - 10;
@@ -7228,23 +7369,18 @@ function grDrawChartWithCrosshair(yInterno) {
         ctx.strokeStyle = corCandle;
         ctx.lineWidth = 1.5;
         ctx.beginPath(); ctx.roundRect(bx, by, boxW, boxH, 8); ctx.stroke();
-        // Cabeçalho: data à esquerda; à direita □ (maximiza o resto da janela) e — (minimiza). O que está ativo fica escuro.
+        // Cabeçalho: data à esquerda; à direita UM botão que alterna — □ (expande o resto da janela) e, expandida, vira — (recolhe).
         ctx.font = 'bold 12px -apple-system';
         ctx.textAlign = 'left';
         ctx.fillStyle = corTxt;
         ctx.fillText(dtxt, bx + boxPad / 2 + 2, by + 16);
-        const hbMin = { x: bx + boxW - 6 - HB_W, y: by + 4, w: HB_W, h: HB_H };
-        const hbMax = { x: hbMin.x - HB_GAP - HB_W, y: by + 4, w: HB_W, h: HB_H };
-        [[hbMax, maximizada, 'max'], [hbMin, !maximizada, 'min']].forEach(([r, ativo, tipo]) => {
-            ctx.fillStyle = ativo ? '#8E8E93' : '#D1D1D6';
-            ctx.beginPath(); ctx.roundRect(r.x, r.y, r.w, r.h, 4); ctx.fill();
-            ctx.strokeStyle = ativo ? '#FFFFFF' : '#1C1C1E';
-            ctx.fillStyle = ativo ? '#FFFFFF' : '#1C1C1E';
-            ctx.lineWidth = 1.5;
-            if (tipo === 'max') ctx.strokeRect(r.x + 5.5, r.y + 3.5, r.w - 11, r.h - 7);
-            else ctx.fillRect(r.x + 5, r.y + r.h / 2 - 1, r.w - 10, 2);
-        });
-        window._grCrosshairMaxBtnArea = hbMax; window._grCrosshairMinBtnArea = hbMin;
+        const hbT = { x: bx + boxW - 6 - HB_W, y: by + 4, w: HB_W, h: HB_H };
+        ctx.fillStyle = '#D1D1D6';
+        ctx.beginPath(); ctx.roundRect(hbT.x, hbT.y, hbT.w, hbT.h, 4); ctx.fill();
+        ctx.strokeStyle = '#1C1C1E'; ctx.fillStyle = '#1C1C1E'; ctx.lineWidth = 1.5;
+        if (!maximizada) ctx.strokeRect(hbT.x + 5.5, hbT.y + 3.5, hbT.w - 11, hbT.h - 7); // □ = expandir
+        else ctx.fillRect(hbT.x + 5, hbT.y + hbT.h / 2 - 1, hbT.w - 10, 2);              // — = recolher
+        window._grCrosshairToggleBtnArea = hbT;
         linhasVisiveis.forEach((l, i) => {
             const ly = by + dateLineH + boxPad / 2 + i * lineH + lineH * 0.75;
             ctx.font = 'bold 11px -apple-system';
