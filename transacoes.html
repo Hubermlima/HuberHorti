@@ -1548,6 +1548,14 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="6" x2="14" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="10" y2="18"/></svg>
       <span class="cv-menu-item-label" id="cv-menu-vplinhas-label">Volume Profile: linhas ATR</span>
     </button>
+    <button class="cv-menu-item cv-menu-subitem" onclick="cvFecharMenu();grModalAlternarLinhasModo();">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/></svg>
+      <span class="cv-menu-item-label" id="cv-menu-modallinhas-label">Modais (Footprint e Histograma agregado): linhas ATR (~14)</span>
+    </button>
+    <button class="cv-menu-item cv-menu-subitem" onclick="cvFecharMenu();grFootprintAtualizarSeAtivo();">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.5 15a9 9 0 1 1-2.1-9.4L23 10"/></svg>
+      <span class="cv-menu-item-label" id="cv-menu-fluxostatus-label">Fluxo: desligado</span>
+    </button>
     <button class="cv-menu-item cv-menu-subitem" onclick="cvFecharMenu();grVpAjustarComprimento();">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="12" x2="20" y2="12"/><polyline points="15 7 20 12 15 17"/></svg>
       <span class="cv-menu-item-label" id="cv-menu-vpcomp-label">Volume Profile: comprimento das barras</span>
@@ -2901,11 +2909,15 @@ function cvIniciarRealTime() {
                 const last = _grAllCandles[_grAllCandles.length - 1];
                 const inicioAtual = grInicioPeriodoAtual(Date.now());
                 if (inicioAtual > last.t) {
-                    _grAllCandles.push({ t: inicioAtual, o: novoPreco, h: novoPreco, l: novoPreco, c: novoPreco, v: 0, bv: null });
+                    const q0 = parseFloat(d.q) || 0;
+                    _grAllCandles.push({ t: inicioAtual, o: novoPreco, h: novoPreco, l: novoPreco, c: novoPreco, v: q0, bv: d.m === false ? q0 : 0 });
                 } else {
                     last.c = novoPreco;
                     last.h = Math.max(last.h, novoPreco);
                     last.l = Math.min(last.l, novoPreco);
+                    // volume do candle em formação: o REST só traz até a hora do carregamento, então cada trade soma (bv = compra a mercado)
+                    const qv = parseFloat(d.q);
+                    if (qv > 0) { last.v = (last.v || 0) + qv; if (d.m === false) last.bv = (last.bv || 0) + qv; }
                 }
             }
 
@@ -3804,7 +3816,7 @@ function _grYFatorKey() { return 'gr_yfator_' + _grTf + (_grTf === 'custom' ? '_
 function grYFatorCarregar() {
     let v = NaN;
     try { v = parseFloat(localStorage.getItem(_grYFatorKey())); } catch (err) {}
-    _grYFator = (v >= 0.1 && v <= 25) ? v : 1;
+    _grYFator = (v >= 0.02 && v <= 100) ? v : 1;
     if (typeof grAmbienteAtualizarRotulos === 'function') grAmbienteAtualizarRotulos();
 }
 function grYFatorSalvar() {
@@ -3931,7 +3943,7 @@ grFootprintSkinAtualizarRotulo();
 
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
-const APP_VERSAO = '20/09 16:33 · 15446 linhas';
+const APP_VERSAO = '20/09 20:20 · 15549 linhas';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) el.textContent = 'Versão ' + APP_VERSAO;
@@ -6783,9 +6795,12 @@ if (fibsParaDesenhar.length > 0) {
                 // aqui" (quanto maior, mais volume pra pouco movimento); o lado só se
                 // revela DEPOIS, quando ele vira agressor visível e empurra o preço.
                 const absPeriodo = 20;
+                // Fórmula: Volume ÷ (((High − Low) ÷ Open) × 100) ÷ 1000 — o range vira % da abertura (comparável entre
+                // preços e timeframes) e o /1000 deixa o número legível. QUANTO MAIOR, MAIOR A ABSORÇÃO: muito volume
+                // sendo absorvido por pouco movimento de preço.
                 const absAllVals = _grAllCandles.map(c => {
-                    const range = c.h - c.l;
-                    return range > 0 ? (c.v || 0) / range : 0;
+                    const rangePct = c.o > 0 ? ((c.h - c.l) / c.o) * 100 : 0;
+                    return rangePct > 0 ? (c.v || 0) / rangePct / 1000 : 0;
                 });
                 const absAllSma = grSMASimples(absAllVals, absPeriodo);
                 const absOffset = total - absAllVals.length; // deve ser 0, mas por segurança
@@ -6833,9 +6848,15 @@ if (fibsParaDesenhar.length > 0) {
                 ctx.fillText('ABSORÇÃO', PAD.left + 4, panY + panPad.top + 12);
                 ctx.font = '9px -apple-system';
                 ctx.fillStyle = 'rgba(255,255,255,0.55)';
-                ctx.fillText('volume alto + range baixo — lado só se confirma depois', PAD.left + 84, panY + panPad.top + 12);
+                ctx.fillText('vol ÷ range% ÷ 1000 (maior = mais)', PAD.left + 84, panY + panPad.top + 12);
 
                 window._absorcaoAtual = absVals[absVals.length - 1];
+                // valor do último candle da tela, à direita do painel
+                ctx.font = 'bold 10px -apple-system';
+                ctx.textAlign = 'right';
+                ctx.fillStyle = '#FFC107';
+                const absUlt = absVals[absVals.length - 1];
+                ctx.fillText((absUlt < 10 ? absUlt.toFixed(2) : absUlt.toFixed(1)).replace('.', ','), PAD.left + panChartW - 2, panY + panPad.top + 12);
 
         }
     }
@@ -7258,6 +7279,11 @@ function grInitTouch() {
             const xa = (e.touches[0].clientX - rectP.left) * escP, xb = (e.touches[1].clientX - rectP.left) * escP;
             const limiteEixo = (window._grPADLeft != null ? window._grPADLeft : 45) + 10;
             window._grPincaY = (xa < limiteEixo && xb < limiteEixo) ? { lastDist: Math.abs(e.touches[0].clientY - e.touches[1].clientY) } : null;
+            // Pinça no EIXO X: os dois dedos começam ABAIXO do gráfico de preços (faixa de baixo: painéis e margem) → só a
+            // LARGURA dos candles muda; a altura fica exatamente onde está.
+            const ya = (e.touches[0].clientY - rectP.top) * (grLH(canvas) / rectP.height), yb = (e.touches[1].clientY - rectP.top) * (grLH(canvas) / rectP.height);
+            const fundoPlot = _grPAD.top + _grChartH;
+            window._grPincaX = (!window._grPincaY && ya > fundoPlot && yb > fundoPlot) ? { lastDist: Math.abs(e.touches[0].clientX - e.touches[1].clientX) } : null;
         }
         e.preventDefault();
     }, { passive: false });
@@ -7442,6 +7468,37 @@ function grInitTouch() {
                 }
             }
         } else if (e.touches.length === 2) {
+            if (window._grPincaX) {
+                // Pinça no eixo X: muda só o zoom horizontal (largura dos candles), ancorado no candle sob o meio da pinça, e
+                // COMPENSA o fator vertical pra escala de preço (altura dos candles) ficar exatamente parada.
+                const distX = Math.abs(e.touches[0].clientX - e.touches[1].clientX);
+                if (window._grPincaX.lastDist > 12 && distX > 12) {
+                    const ratioX = 1 + (distX / window._grPincaX.lastDist - 1) * GR_VEL_ZOOM; // >1 = dedos se afastando = candles mais largos
+                    let fracX = null, idxAbsAntes = null;
+                    if (window._grPADLeft != null && window._grChartW && window._grTotalSlots && window._grStartIdx != null) {
+                        const rectX = canvas.getBoundingClientRect();
+                        const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rectX.left;
+                        fracX = Math.max(0, Math.min(1, (midX - window._grPADLeft) / window._grChartW));
+                        idxAbsAntes = window._grStartIdx + fracX * window._grTotalSlots;
+                    }
+                    const pxAntes = _grYAxisPxPerDollar;
+                    _grZoomAcumulado = Math.max(1, Math.min(500, _grZoomAcumulado / ratioX));
+                    _grZoom = Math.round(_grZoomAcumulado);
+                    grAtualizarPxPerDollar();
+                    if (pxAntes && _grYAxisPxPerDollar) {
+                        _grYFator = Math.max(0.02, Math.min(100, _grYFator * pxAntes / _grYAxisPxPerDollar));
+                        grAtualizarPxPerDollar();
+                    }
+                    if (idxAbsAntes != null) {
+                        _grOffset = Math.max(0, Math.min(_grAllCandles.length - 1, Math.round(idxAbsAntes - fracX * _grZoom)));
+                    }
+                }
+                window._grPincaX.lastDist = distX;
+                window._grManualPanTs = Date.now();
+                grAgendarDesenho();
+                e.preventDefault();
+                return;
+            }
             if (window._grPincaY) {
                 // Pinça no eixo Y: multiplica o fator da escala vertical; o preço entre os dedos fica parado; a largura não muda.
                 const distY = Math.abs(e.touches[0].clientY - e.touches[1].clientY);
@@ -7450,7 +7507,7 @@ function grInitTouch() {
                     const rectY = canvas.getBoundingClientRect();
                     const midY = (((e.touches[0].clientY + e.touches[1].clientY) / 2) - rectY.top) * (grLH(canvas) / rectY.height);
                     const p0 = grToPrice(midY);
-                    const novoFator = Math.max(0.1, Math.min(25, _grYFator * ratioY));
+                    const novoFator = Math.max(0.02, Math.min(100, _grYFator * ratioY));
                     if (novoFator !== _grYFator && p0 > 0) {
                         _grYFator = novoFator;
                         grAtualizarPxPerDollar();
@@ -7520,6 +7577,7 @@ function grInitTouch() {
 
     canvas.addEventListener('touchend', e => {
     if (window._grPincaY && e.touches.length < 2) { window._grPincaY = null; grYFatorSalvar(); } // fim da pinça no eixo Y: guarda o fator
+    if (window._grPincaX && e.touches.length < 2) { window._grPincaX = null; grYFatorSalvar(); } // fim da pinça no eixo X: guarda o fator (compensado)
     isDragging = false;
     if (_medidaDrawing) {
         _medidaDrawing = false;
@@ -12739,6 +12797,7 @@ function cvFecharSetupSheet() {
 // Footprint: dados da Binance Futures, gaveta binance/ do R2, via worker.
 // O parâmetro fonte=binance é mantido pra funcionar também com versões antigas do worker.
 const FOOTPRINT_WORKER_URL = 'https://huberhorti-footprint.huber-produtos.workers.dev/footprint';
+const FOOTPRINT_REFRESH_MS = 15000; // o dia de hoje é atualizado do R2 a cada 15 s (era 60 s), pedindo só os minutos novos
 function grFootprintUrlDia(dia) {
     return `${FOOTPRINT_WORKER_URL}?dia=${dia}&fonte=binance`;
 }
@@ -13011,14 +13070,19 @@ function grFootprintLiveAplicar() {
 }
 
 async function grFootprintAtualizarSeAtivo() {
-    if (!_grFootprintAtivo || !_grFootprintCandlesRaw) return;
+    if (!_grFootprintAtivo || !_grFootprintCandlesRaw || window._grR2Atualizando) return;
+    window._grR2Atualizando = true;
     try {
         const diaHoje = new Date().toISOString().slice(0, 10);
-        const r = await fetch(grFootprintUrlDia(diaHoje));
+        // Incremental: só os minutos a partir de 10 min antes do último que o R2 já nos deu (o worker novo respeita
+        // "desde"; o antigo devolve o dia todo — o merge abaixo funciona igual). O "_" fura qualquer cache.
+        const desde = window._grR2UltimoTs ? window._grR2UltimoTs - 10 * 60000 : 0;
+        const r = await fetch(grFootprintUrlDia(diaHoje) + (desde ? '&desde=' + desde : '') + '&_=' + Date.now(), { cache: 'no-store' });
         if (!r.ok) return;
         const dados = await r.json();
         const candlesHoje = Object.values(dados.candles || {});
-        if (candlesHoje.length === 0) return;
+        if (candlesHoje.length === 0) { grFluxoStatusAtualizar(); return; }
+        candlesHoje.forEach(c => { if (c.ts > (window._grR2UltimoTs || 0)) window._grR2UltimoTs = c.ts; });
 
         const tsHoje = new Set(candlesHoje.map(c => c.ts));
         _grFootprintCandlesRaw = _grFootprintCandlesRaw.filter(c => !tsHoje.has(c.ts));
@@ -13035,9 +13099,10 @@ async function grFootprintAtualizarSeAtivo() {
         grFootprintRecalcularZonasExistentes(); // zonas já marcadas podem trocar de cor com dado novo
         _grFootprintUltimoRefreshModal = 0;
         grFootprintTalvezRefrescarModalAoVivo(); // se algum modal estiver aberto, redesenha com o dado novo
+        grFluxoStatusAtualizar();
     } catch (e) {
-        console.log('Atualização automática do footprint falhou, tenta de novo em 60s:', e.message);
-    }
+        console.log('Atualização automática do footprint falhou, tenta de novo em 15s:', e.message);
+    } finally { window._grR2Atualizando = false; }
 }
 
 async function grFootprintAtivar() {
@@ -13078,6 +13143,8 @@ async function grFootprintAtivar() {
 
         _grFootprintAtivo = true;
         _grFootprintCandlesRaw = flat;
+        window._grR2UltimoTs = flat.reduce((m, c) => c.ts > m ? c.ts : m, 0); // até onde o R2 tem dado (sem o ao vivo)
+        grFluxoStatusAtualizar();
         _grFootprintUltimoRangeVisto = null;
         _grFootprintUltimoRangeCalc = null;
 
@@ -13109,7 +13176,7 @@ async function grFootprintAtivar() {
         // busca só o dia de HOJE (o único que ainda está mudando) e mescla no
         // que já está carregado, em vez de rebaixar os 15 dias inteiros de novo.
         if (_grFootprintRefreshInterval) clearInterval(_grFootprintRefreshInterval);
-        _grFootprintRefreshInterval = setInterval(grFootprintAtualizarSeAtivo, 60000);
+        _grFootprintRefreshInterval = setInterval(grFootprintAtualizarSeAtivo, FOOTPRINT_REFRESH_MS);
     } catch (e) {
         info.textContent = 'Footprint ERRO: ' + e.message;
         console.log('Footprint erro completo:', e);
@@ -13324,6 +13391,7 @@ function grFootprintPararOverlay() {
     _grFootprintCandlesRaw = null;
     _grFootprintBins = null;
     grFootprintLiveReset(); // desliga o footprint ao vivo junto
+    window._grR2UltimoTs = 0; grFluxoStatusAtualizar();
     _grFootprintUltimoRangeVisto = null;
     _grFootprintUltimoRangeCalc = null;
     const overlay = document.getElementById('footprint-overlay-canvas');
@@ -13492,14 +13560,35 @@ async function grVpGarantirDados() {
 }
 
 // ── Configurações Ambiente: rótulos e ajustes do Volume Profile e das linhas do footprint ──
+// Diagnóstico do Fluxo: até que minuto o R2 tem dado e o atraso (a demora costuma vir do script do Termux, não do app).
+function grFluxoStatusAtualizar() {
+    const el = document.getElementById('cv-menu-fluxostatus-label');
+    if (!el) return;
+    if (!_grFootprintAtivo || !window._grR2UltimoTs) { el.textContent = 'Fluxo: desligado'; return; }
+    const hm = ts => new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    const atraso = Math.max(0, Math.round((Date.now() - window._grR2UltimoTs) / 60000));
+    let aoVivo = 0; window._grLiveMin.forEach((v, ts) => { if (ts > aoVivo) aoVivo = ts; });
+    el.textContent = 'Fluxo: R2 até ' + hm(window._grR2UltimoTs) + ' (atraso ' + atraso + ' min)' + (aoVivo ? ' · ao vivo até ' + hm(aoVivo) : '') + ' — tocar p/ atualizar';
+}
 function grAmbienteAtualizarRotulos() {
+    grFluxoStatusAtualizar();
     const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
     set('cv-menu-fplinhas-label', 'Footprint: linhas ' + (FOOTPRINT_LINHAS_MODO === 'atr' ? 'ATR' : 'Auto (mais níveis)'));
     set('cv-menu-vplinhas-label', 'Volume Profile: linhas ' + (GR_VP_LINHAS_MODO === 'atr' ? 'ATR' : 'Auto (mais níveis)'));
+    set('cv-menu-modallinhas-label', 'Modais (Footprint e Histograma agregado): linhas ' + (GR_MODAL_LINHAS_MODO === 'atr' ? 'ATR (~14)' : 'Micro ($10)'));
     set('cv-menu-vpcomp-label', 'Volume Profile: comprimento das barras (' + Math.round(GR_VP_COMPRIMENTO_PCT) + '%)');
     set('cv-menu-yfator-label', 'Escala vertical: ×' + _grYFator.toFixed(2).replace('.', ',') + (_grYFator === 1 ? ' (automática)' : ' — tocar para resetar'));
     set('cv-menu-vp-label', _grVpAncoraTs == null ? 'Volume Profile: sem âncora'
         : 'Remover Volume Profile (⚓ ' + grVpRotuloData(_grVpAncoraTs) + ')');
+}
+// Linhas da régua dos modais "Ver Footprint" e "Histograma agregado": 'atr' (padrão, ~14 linhas na grade do gráfico) ou
+// 'micro' ($10, com teto). Persistido; alterna pelo menu Configurações Ambiente.
+let GR_MODAL_LINHAS_MODO = localStorage.getItem('grModalLinhasModo') === 'micro' ? 'micro' : 'atr';
+const GR_MODAL_MICRO_MAX_LINHAS = 200;
+function grModalAlternarLinhasModo() {
+    GR_MODAL_LINHAS_MODO = GR_MODAL_LINHAS_MODO === 'atr' ? 'micro' : 'atr';
+    try { localStorage.setItem('grModalLinhasModo', GR_MODAL_LINHAS_MODO); } catch (err) {}
+    grAmbienteAtualizarRotulos();
 }
 function grVpAlternarLinhasModo() {
     GR_VP_LINHAS_MODO = GR_VP_LINHAS_MODO === 'atr' ? 'auto' : 'atr';
@@ -14809,7 +14898,13 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
     // linhas, então o tick base já nasce menor. Resultado: os níveis de fibo
     // encaixam quase certinho na grade (sem sobrar pedaço torto do lado),
     // porque o tick já foi calculado sabendo que eles iam entrar.
-    const TICK_BASE = grCalcularTickATR(), TARGET_LINHAS_BASE = 14;
+    // Altura das linhas (Configurações Ambiente, vale pro "Ver Footprint" e pro "Histograma agregado"):
+    //  - 'atr'   → múltiplo ÍMPAR do tick do ATR (o MESMO tick, arredondado a $10, dos clusters e do Volume Profile), com ~14
+    //              linhas: cada linha da régua cobre a mesma faixa de preço de uma linha do gráfico. Ímpar porque só assim as
+    //              bordas da linha grossa caem nas bordas das linhas-base.
+    //  - 'micro' → os níveis reais de $10 (o dado tem essa resolução), com teto de GR_MODAL_MICRO_MAX_LINHAS linhas: numa
+    //              faixa grande (ex.: os "Dias" do histograma agregado) agrupa no menor múltiplo ímpar de $10 que caiba.
+    const TICK_BASE = grTickAtr(), TARGET_LINHAS_BASE = 14;
     let targetLinhas = TARGET_LINHAS_BASE;
     if (nivelFibo) {
         const niveisDentroDoRange = nivelFibo.filter(nf => nf.preco >= lo && nf.preco <= hi).length;
@@ -14830,7 +14925,15 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
         fronteiras = [];
         for (let i = 0; i <= targetLinhas; i++) fronteiras.push(lo + i * tick);
     } else {
-        tick = Math.max(TICK_BASE, Math.round(((hi - lo) / targetLinhas) / TICK_BASE) * TICK_BASE);
+        if (GR_MODAL_LINHAS_MODO === 'micro') {
+            let n = Math.max(1, Math.ceil(Math.ceil((hi - lo) / 10) / GR_MODAL_MICRO_MAX_LINHAS));
+            if (n % 2 === 0) n += 1;
+            tick = 10 * n;
+        } else {
+            let m = Math.max(1, Math.round(((hi - lo) / targetLinhas) / TICK_BASE));
+            if (m % 2 === 0) m += 1;
+            tick = TICK_BASE * m;
+        }
         const beginP = Math.floor(lo / tick) * tick;
         const endP = Math.ceil(hi / tick) * tick;
         // Fronteiras do tick uniforme (N+1 bordas pra N linhas, borda = centro ± tick/2).
