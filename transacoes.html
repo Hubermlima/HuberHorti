@@ -3282,6 +3282,11 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 setInterval(() => {
     if (!window._cvWs || !_grAllCandles.length || document.visibilityState !== 'visible') return;
     const ultimo = Math.max(window._cvWsUltimaMsg || 0, window._cvWsCriadoEm || 0);
+    // WebSocket mudo há mais de 8 s: enquanto ele não volta, a cotação anda por REST (a cada 5 s), pra não ficar congelada
+    if (Date.now() - ultimo > 8000 && Date.now() - (window._cvPollVigia || 0) > 5000) {
+        window._cvPollVigia = Date.now();
+        try { cvAtualizarPrecoRealTime(); } catch (err) {}
+    }
     if (Date.now() - ultimo < 15000) return;              // recebeu algo há pouco: saudável
     if (Date.now() - (window._cvWsReiniciadoPeloVigia || 0) < 10000) return; // não reinicia em cima de si mesmo
     window._cvWsReiniciadoPeloVigia = Date.now();
@@ -4014,7 +4019,7 @@ grFootprintSkinAtualizarRotulo();
 
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
-const APP_VERSAO = '20/09 22:56 · 15717 linhas';
+const APP_VERSAO = '20/09 23:14 · 15753 linhas';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) el.textContent = 'Versão ' + APP_VERSAO;
@@ -13241,6 +13246,46 @@ async function grFootprintBaixarDias(dias, simultaneos) {
     }));
     return resultado;
 }
+// Encaixa dias recém-baixados no histórico (sem duplicar minuto), invalida os caches e redesenha UMA vez. Devolve se entrou dado.
+function grFootprintMesclarDias(baixados) {
+    let ganhou = false;
+    baixados.forEach(b => {
+        const item = (window._grFluxoDias || []).find(d => d.dia === b.dia);
+        if (item) item.estado = b.estado;
+        if (b.estado === 'falhou' || !b.candles.length) return;
+        const tsSet = new Set(b.candles.map(c => c.ts));
+        _grFootprintCandlesRaw = _grFootprintCandlesRaw.filter(c => !tsSet.has(c.ts));
+        _grFootprintCandlesRaw.push(...b.candles);
+        ganhou = true;
+    });
+    if (ganhou) {
+        _grFootprintCandlesRaw.sort((x, y) => x.ts - y.ts);
+        _grDtPorCandleCache = { key: null, mapa: null }; _grDeltaPorCandleCache = { key: null, mapa: null }; _grPocsPorCandleCache = { key: null, mapa: null };
+        _grVpMapaCache = null; window._grFpRefCache = {}; window._grDeltaRefCache = null; window._grClusterCache = new Map();
+        _grFootprintUltimoRangeVisto = null; _grFootprintUltimoRangeCalc = null;
+        grDrawChart();
+    }
+    grFluxoStatusAtualizar();
+    return ganhou;
+}
+// O Fluxo liga assim que os dias MAIS RECENTES chegam; o resto do histórico vem depois, em lotes, sem travar a tela. (Antes
+// o footprint só aparecia quando os 30 dias terminavam — com o worker lento eram dezenas de segundos sem nada.)
+async function grFootprintCarregarRestante(dias) {
+    window._grFluxoCarregandoResto = true;
+    try {
+        for (let i = 0; i < dias.length; i += 6) {
+            if (!_grFootprintAtivo) return;
+            const lote = await grFootprintBaixarDias(dias.slice(i, i + 6), 6);
+            if (!_grFootprintAtivo) return;
+            grFootprintMesclarDias(lote);
+        }
+    } finally { window._grFluxoCarregandoResto = false; }
+    if (_grFootprintAtivo) {
+        grFootprintRecuperarDias(0);                       // dias que ainda falharam: continua tentando
+        _grVpDadosChave = null; grVpGarantirDados();       // agora que o histórico está completo, o perfil busca o que falta
+        grFluxoStatusAtualizar();
+    }
+}
 // Dias que ainda falharam depois das tentativas: tenta de novo em segundo plano (a cada 15 s, até 8 vezes) e, quando
 // consegue, encaixa no histórico e redesenha — sem precisar desligar e ligar o Fluxo.
 function grFootprintRecuperarDias(tentativa) {
@@ -13249,26 +13294,7 @@ function grFootprintRecuperarDias(tentativa) {
     setTimeout(async () => {
         if (!_grFootprintAtivo || !_grFootprintCandlesRaw) return;
         const baixados = await grFootprintBaixarDias(pendentes, 2);
-        let ganhou = false;
-        baixados.forEach(b => {
-            if (b.estado === 'falhou') return;
-            const item = window._grFluxoDias.find(d => d.dia === b.dia);
-            if (item) item.estado = b.estado;
-            if (b.candles.length) {
-                const tsSet = new Set(b.candles.map(c => c.ts));
-                _grFootprintCandlesRaw = _grFootprintCandlesRaw.filter(c => !tsSet.has(c.ts));
-                _grFootprintCandlesRaw.push(...b.candles);
-                ganhou = true;
-            }
-        });
-        if (ganhou) {
-            _grFootprintCandlesRaw.sort((a, b) => a.ts - b.ts);
-            _grDtPorCandleCache = { key: null, mapa: null }; _grDeltaPorCandleCache = { key: null, mapa: null }; _grPocsPorCandleCache = { key: null, mapa: null };
-            _grVpMapaCache = null; window._grFpRefCache = {}; window._grDeltaRefCache = null; window._grClusterCache = new Map();
-            _grFootprintUltimoRangeVisto = null; _grFootprintUltimoRangeCalc = null;
-            grDrawChart();
-        }
-        grFluxoStatusAtualizar();
+        grFootprintMesclarDias(baixados);
         grFootprintRecuperarDias(tentativa + 1);
     }, 15000);
 }
@@ -13285,14 +13311,21 @@ async function grFootprintAtivar() {
         const from = to - FOOTPRINT_DIAS_AO_ATIVAR * 24 * 3600 * 1000;
         const dias = grFootprintDiasEntre(from, to);
 
-        // 5 dias por vez, com até 3 tentativas cada (antes: os 30 de uma vez, sem nova tentativa)
-        const baixados = await grFootprintBaixarDias(dias, 5);
-        const falhas = baixados.filter(b => b.estado === 'falhou').map(b => b.motivo); // motivo de cada dia que não veio
-        window._grFluxoDias = baixados.map(b => ({ dia: b.dia, estado: b.estado }));
-        if (falhas.length > 0) console.log('Fluxo: ' + falhas.length + ' de ' + dias.length + ' dias falharam (' + falhas[0] + ')');
-
+        // Dias mais recentes PRIMEIRO (hoje e ontem, com até 3 tentativas cada): o Fluxo liga assim que eles chegam e o resto do
+        // histórico vem em segundo plano. Só se hoje e ontem não tiverem NADA é que espera o resto pra decidir.
+        const recentesPrimeiro = dias.slice().sort().reverse();
+        let restantes = recentesPrimeiro.slice(2);
+        let baixados = await grFootprintBaixarDias(recentesPrimeiro.slice(0, 2), 2);
+        window._grFluxoDias = recentesPrimeiro.map(d => { const b = baixados.find(x => x.dia === d); return { dia: d, estado: b ? b.estado : 'carregando' }; });
         const flat = [];
         baixados.forEach(b => b.candles.forEach(c => flat.push(c)));
+        if (flat.length === 0 && restantes.length > 0) {
+            const b2 = await grFootprintBaixarDias(restantes, 8);
+            b2.forEach(b => { const it = window._grFluxoDias.find(d => d.dia === b.dia); if (it) it.estado = b.estado; b.candles.forEach(c => flat.push(c)); });
+            baixados = baixados.concat(b2); restantes = [];
+        }
+        const falhas = baixados.filter(b => b.estado === 'falhou').map(b => b.motivo); // motivo de cada dia que não veio
+        if (falhas.length > 0) console.log('Fluxo: ' + falhas.length + ' de ' + dias.length + ' dias falharam (' + falhas[0] + ')');
         flat.sort((a, b) => a.ts - b.ts);
 
         if (flat.length === 0) {
@@ -13318,9 +13351,10 @@ async function grFootprintAtivar() {
         if (_grFootprintOverlayInterval) clearInterval(_grFootprintOverlayInterval);
         _grFootprintOverlayInterval = setInterval(grFootprintDesenharOverlay, 200);
         grFootprintDesenharOverlay();
-        _grVpDadosChave = null; grVpGarantirDados(); // âncora do Volume Profile mais antiga que os dias carregados: busca os que faltam
+        if (restantes.length > 0) grFootprintCarregarRestante(restantes); // histórico em segundo plano (o perfil busca o que falta quando ele terminar)
+        else { _grVpDadosChave = null; grVpGarantirDados(); } // âncora do Volume Profile mais antiga que os dias carregados: busca os que faltam
         grFootprintLiveIniciar(); // footprint ao vivo do candle em formação (preenche o buraco desde o último minuto do R2)
-        grFootprintRecuperarDias(0); // dias que ainda falharam: continua tentando em segundo plano
+        if (restantes.length === 0) grFootprintRecuperarDias(0); // dias que ainda falharam: continua tentando em segundo plano
 
         grFootprintRecalcularZonasExistentes(); // já entra com o delta somando o histórico todo, não só o candle que originou
 
@@ -13556,7 +13590,7 @@ function grFootprintPararOverlay() {
     _grFootprintCandlesRaw = null;
     _grFootprintBins = null;
     grFootprintLiveReset(); // desliga o footprint ao vivo junto
-    window._grR2UltimoTs = 0; grFluxoStatusAtualizar();
+    window._grR2UltimoTs = 0; window._grFluxoCarregandoResto = false; grFluxoStatusAtualizar();
     _grFootprintUltimoRangeVisto = null;
     _grFootprintUltimoRangeCalc = null;
     const overlay = document.getElementById('footprint-overlay-canvas');
@@ -13685,7 +13719,7 @@ function grVpAgrupar(dados, tick) {
 // e avisa.
 async function grVpGarantirDados() {
     if (_grVpAncoraTs == null || !_grFootprintAtivo || !_grFootprintCandlesRaw || _grFootprintCandlesRaw.length === 0) return;
-    if (_grVpCarregando) return;
+    if (_grVpCarregando || window._grFluxoCarregandoResto) return; // histórico do Fluxo ainda chegando: espera (senão baixaria os mesmos dias duas vezes)
     let rawMin = Infinity;
     for (const c of _grFootprintCandlesRaw) if (c.ts < rawMin) rawMin = c.ts;
     const chave = _grVpAncoraTs + '_' + rawMin;
@@ -13734,6 +13768,8 @@ function grFluxoStatusAtualizar() {
     const falhou = dias.filter(d => d.estado === 'falhou').map(d => fmt(d.dia));
     const vazios = dias.filter(d => d.estado === 'vazio' && d.dia !== hojeStr).map(d => fmt(d.dia));
     let dias_txt = '';
+    const carregando = dias.filter(d => d.estado === 'carregando').length;
+    if (carregando) dias_txt += ' · carregando histórico (' + (dias.length - carregando) + '/' + dias.length + ' dias)';
     if (falhou.length) dias_txt += ' · FALHOU (tentando de novo): ' + lista(falhou);
     if (vazios.length) dias_txt += ' · sem dados no R2: ' + lista(vazios);
     el.textContent = 'Fluxo: R2 até ' + hm(window._grR2UltimoTs) + ' (atraso ' + atraso + ' min)' + (aoVivo ? ' · ao vivo até ' + hm(aoVivo) : '') + dias_txt + ' — tocar p/ atualizar';
