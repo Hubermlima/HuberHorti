@@ -3330,7 +3330,7 @@ function grFootprintAlternarSkin() {
 grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
-const APP_VERSAO = '20/09 23:14 · 15753 linhas · CORPO-VIVO v15';
+const APP_VERSAO = '20/09 23:14 · 15753 linhas · CORPO-VIVO v16';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) el.textContent = 'Versão ' + APP_VERSAO;
@@ -5153,7 +5153,7 @@ const aBX = 3, aBY = yR2 - aBH / 2;
             }
         }
         if (_grAreaArmada) { // dica de uso enquanto a ferramenta está ligada
-            const dica = _grAreaP1 == null ? 'ÁREA · segure no gráfico e marque o canto superior esquerdo' : 'ÁREA · toque e arraste o crosshair até o canto inferior direito; onde soltar é o canto final';
+            const dica = _grAreaP1 == null ? 'ÁREA · segure no gráfico: o preço é o da linha horizontal, o período vem do candle' : 'ÁREA · arraste até o canto inferior direito e solte no candle final';
             ctx.font = 'bold 10px -apple-system'; ctx.textAlign = 'left';
             const wDica = ctx.measureText(dica).width + 14;
             ctx.fillStyle = 'rgba(255,183,77,0.95)'; ctx.beginPath(); ctx.roundRect(PAD.left + 6, PAD.top + 6, wDica, 18, 5); ctx.fill();
@@ -6050,7 +6050,7 @@ function grInitTouch() {
             if (window._longPressActive && window._grCrosshairAreaBtnArea) {
                 const ta2 = window._grCrosshairAreaBtnArea;
                 if (ex2 >= ta2.x && ex2 <= ta2.x + ta2.w && ey2 >= ta2.y && ey2 <= ta2.y + ta2.h) {
-                    grAreaMarcarCanto(window._grCrosshairPrecoAtual, window._grCrosshairTsAtual);
+                    grAreaMarcarCanto(window._grCrosshairPrecoAtual, grAreaCandleNoX(_grCrosshairX));
                     window._grCrosshairAreaBtnArea = null;
                     grDrawChart(); // mostra o 1º canto e a dica; o retângulo passa a acompanhar o crosshair
                     e.preventDefault();
@@ -6719,8 +6719,7 @@ function grInitTouch() {
             if (tSolto && _grAreaP1) {
                 const xSolto = tSolto.clientX - canvas.getBoundingClientRect().left;
                 const precoSolto = grToPrice(toCanvasY(tSolto.clientY));
-                const tsSolto = Math.floor(grIndexToTime(grXToIndex(xSolto)) / 60000) * 60000;
-                grAreaMarcarCanto(precoSolto, tsSolto);
+                grAreaMarcarCanto(precoSolto, grAreaCandleNoX(xSolto)); // preço exato do ponto solto + candle onde soltou
             }
             window._longPressActive = false;
             clearTimeout(_longPressTimer);
@@ -6810,15 +6809,26 @@ function cvToggleArea() {
     }
     grDrawChart();
 }
-// Fixa um canto onde o crosshair está. 1º canto = superior esquerdo, 2º = inferior direito (a ordem não importa: o retângulo
-// é sempre montado pelos mínimos e máximos). No 2º canto o retângulo fica na tela e a ferramenta desliga.
-function grAreaMarcarCanto(preco, ts) {
-    if (!(preco > 0) || ts == null) return;
-    if (_grAreaP1 == null) { _grAreaP1 = { preco, ts }; return; }
+// Candle sob a coluna x → { ini, fim }: primeiro e último MINUTO do candle. O período da área vem dos candles tocados (o
+// preço continua exato, pelo eixo Y): 1º canto = começo do candle onde marcou; 2º canto = FIM do candle onde soltou.
+function grAreaCandleNoX(x) {
+    const n = _grAllCandles.length;
+    if (!n) return null;
+    const idx = Math.max(0, Math.min(n - 1, Math.floor(grXToIndex(x))));
+    const c = _grAllCandles[idx];
+    const fimExcl = idx + 1 < n ? _grAllCandles[idx + 1].t : c.t + grFootprintMsPorCandle();
+    return { ini: c.t, fim: fimExcl - 60000 };
+}
+// Fixa um canto: preço EXATO (linha horizontal do crosshair) + o candle tocado (cand = { ini, fim }). 1º canto = superior
+// esquerdo, 2º = inferior direito (a ordem não importa: o retângulo é montado pelos mínimos e máximos). No 2º canto o
+// retângulo fica na tela e a ferramenta desliga.
+function grAreaMarcarCanto(preco, cand) {
+    if (!(preco > 0) || !cand) return;
+    if (_grAreaP1 == null) { _grAreaP1 = { preco, ts: cand.ini, fim: cand.fim }; return; }
     if (Math.abs(preco - _grAreaP1.preco) < 1) return; // mesmo preço: altura zero, ignora
     _grAreaMarcada = {
         precoBaixo: Math.min(_grAreaP1.preco, preco), precoAlto: Math.max(_grAreaP1.preco, preco),
-        tsIni: Math.min(_grAreaP1.ts, ts), tsFim: Math.max(_grAreaP1.ts, ts)
+        tsIni: Math.min(_grAreaP1.ts, cand.ini), tsFim: Math.max(_grAreaP1.fim, cand.fim)
     };
     _grAreaP1 = null; _grAreaArmada = false;
     grAreaSalvar(); grAreaAtualizarBotao();
@@ -6910,7 +6920,7 @@ function grAreaMinigrafico(a, grade, tick, zonas, porMin, p0) {
 // Tudo vem do footprint de 1 minuto (compra = agressão compradora, venda = agressão vendedora); as linhas de preço usam o
 // mesmo tick (ATR) das células do gráfico. O núcleo do relatório são as ZONAS DE INTERESSE (faixas de preço, não pontos):
 // mesma ideia do "fundo dourado" do app — linhas com ≥ 50% do volume da linha mais forte formam o núcleo; a zona leva mais
-// 1 linha de "ombro" de cada lado (≥ 40%). Os 3 botões "Estreita / Normal / Larga" do relatório ajustam esses cortes. O delta não decide se é zona: volume alto com delta equilibrado é justamente
+// 1 linha de "ombro" de cada lado (≥ 30%). Os 3 botões "Estreita / Normal / Larga" do relatório ajustam esses cortes. O delta não decide se é zona: volume alto com delta equilibrado é justamente
 // disputa/absorção. O delta só diz de que lado a zona pende.
 function grAreaGerarRelatorio(a) {
     const tick = Math.max(10, grTickAtr());
@@ -6947,7 +6957,7 @@ function grAreaGerarRelatorio(a) {
     const p0 = (typeof _precoAtual === 'number' && _precoAtual > 0) ? _precoAtual : null;
 
     // ── ZONAS DE INTERESSE ────────────────────────────────────────────────────────────────────────
-    const SENS = [{ nome: 'Estreita', hot: 0.65, ombro: 0.5 }, { nome: 'Normal', hot: 0.5, ombro: 0.4 }, { nome: 'Larga', hot: 0.4, ombro: 0.3 }];
+    const SENS = [{ nome: 'Estreita', hot: 0.65, ombro: 0.4 }, { nome: 'Normal', hot: 0.5, ombro: 0.3 }, { nome: 'Larga', hot: 0.4, ombro: 0.2 }];
     let sensI = (typeof window !== 'undefined') ? window._grAreaSens : undefined;
     if (!Number.isInteger(sensI)) { try { sensI = parseInt(localStorage.getItem('gr_area_sens')); } catch (e) {} }
     if (!(sensI >= 0 && sensI <= 2)) sensI = 1;
@@ -6975,7 +6985,7 @@ function grAreaGerarRelatorio(a) {
             return {
                 lo, hi, c, v, t, d: dz, dom, share, dens, nLin, posicao,
                 nucleoLo: grade[n.lo].p - tick / 2, nucleoHi: grade[n.hi].p + tick / 2,
-                forca: (share >= 0.35 && dens >= 2) ? 'forte' : (share >= 0.2 ? 'moderada' : 'fraca'),
+                forca: share >= 0.4 ? 'forte' : (share >= 0.2 ? 'moderada' : 'fraca'), // pela fatia do volume (a densidade fica inflada quando a área marcada é justa)
                 papel: posicao === 'acima' ? 'resistência provável (fica acima do preço atual)' : (posicao === 'abaixo' ? 'suporte provável (fica abaixo do preço atual)' : (posicao === 'dentro' ? 'o preço atual está dentro dela: reação esperada nas bordas' : '')),
                 carater: dom < 0.08 ? 'delta equilibrado: disputa, volume alto sem lado vencedor (absorção)' : (dz > 0 ? 'pende para o lado comprador' : 'pende para o lado vendedor')
             };
@@ -7026,8 +7036,12 @@ function grAreaGerarRelatorio(a) {
     const pc = v => (v * 100).toFixed(0) + '%';
     const pc1 = v => (v * 100).toFixed(1).replace('.', ',') + '%';
     const faixa = (lo, hi) => fmtN(lo) + ' – ' + fmtN(hi);
-    const hora = ts => new Date(ts).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
-    const cab = 'Tempo: ' + hora(a.tsIni) + ' → ' + hora(a.tsFim + 60000) + ' (' + porMin.length + ' min com negócios)';
+    // Candles diários/semanais/mensais são definidos em fronteiras UTC (meia-noite UTC): mostra só a data, em UTC (como a janelinha
+    // do crosshair) — no fuso do aparelho o dia parecia deslocado. Intradiário: data e hora locais.
+    const soData = _grTf === '1day' || _grTf === '1week' || _grTf === '1month' || (_grTf === 'custom' && (_grTfCustomUnit === 'dia' || _grTfCustomUnit === 'mes'));
+    const hora = ts => soData ? new Date(ts).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', timeZone: 'UTC' })
+        : new Date(ts).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const cab = 'Tempo: ' + hora(a.tsIni) + ' → ' + hora(soData ? a.tsFim : a.tsFim + 60000) + (soData ? ' (dias completos, UTC)' : '') + ' · ' + porMin.length + ' min com negócios';
     const cab2 = 'Preço: ' + faixa(a.precoBaixo, a.precoAlto) + ' · linhas de ' + fmtN(tick) + (p0 ? ' · preço atual ' + fmtN(p0) : '');
     const T = [], Hh = [];
     const sec = t => { T.push('', t.toUpperCase()); Hh.push('<div style="margin-top:16px;font-size:11px;font-weight:700;color:#8E8E93;letter-spacing:.4px;">' + t.toUpperCase() + '</div>'); };
@@ -7192,7 +7206,6 @@ function grDrawChartWithCrosshair(yInterno) {
     const preco = grToPrice(yInterno);
     if (!preco || preco <= 0) return;
     window._grCrosshairPrecoAtual = preco;
-    window._grCrosshairTsAtual = Math.floor(grIndexToTime(grXToIndex(_grCrosshairX)) / 60000) * 60000; // minuto exato sob a linha vertical
     // Linhas do crosshair (horizontal e vertical) e pílula de preço no eixo: desenhadas POR ÚLTIMO, por cima da janela
     // suspensa. A janela é opaca e escondia a linha (e o que ela está marcando) atrás dela. Mesmo estilo de sempre.
     const desenharLinhasDoCrosshair = () => {
@@ -7255,8 +7268,9 @@ function grDrawChartWithCrosshair(yInterno) {
     // do crosshair não aparece nessa fase — só as linhas e o retângulo, pra nada esconder a área.
     const areaArrastando = _grAreaArmada && _grAreaP1;
     if (areaArrastando) {
-        const xp1 = grAreaXDoTempo(_grAreaP1.ts), yp1 = grLineY(_grAreaP1.preco);
-        const rx0 = Math.min(xp1, _grCrosshairX), rx1 = Math.max(xp1, _grCrosshairX), ry0 = Math.min(yp1, yInterno), ry1 = Math.max(yp1, yInterno);
+        const candAtual = grAreaCandleNoX(_grCrosshairX) || { ini: _grAreaP1.ts, fim: _grAreaP1.fim };
+        const xa1 = grAreaXDoTempo(Math.min(_grAreaP1.ts, candAtual.ini)), xa2 = grAreaXDoTempo(Math.max(_grAreaP1.fim, candAtual.fim) + 60000), yp1 = grLineY(_grAreaP1.preco);
+        const rx0 = Math.min(xa1, xa2), rx1 = Math.max(xa1, xa2), ry0 = Math.min(yp1, yInterno), ry1 = Math.max(yp1, yInterno);
         ctx.save();
         ctx.beginPath(); ctx.rect(_grPAD.left, _grPAD.top, W - _grPAD.left - _grPAD.right, _grChartH); ctx.clip();
         ctx.fillStyle = 'rgba(255,183,77,0.20)'; ctx.fillRect(rx0, ry0, rx1 - rx0, ry1 - ry0);
