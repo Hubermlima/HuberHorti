@@ -2691,6 +2691,15 @@ function cvFechar() {
     }
 }
 
+// Coloca o preço no candle em formação (c/h/l), só se ele ainda é o candle do período atual. Usado pelo REST quando o
+// WebSocket está mudo: antes o REST mexia só na linha/etiqueta de cotação e o corpo do candle ficava parado.
+function grAplicarPrecoNoCandleEmFormacao(preco) {
+    if (!(preco > 0) || !_grAllCandles.length) return;
+    const last = _grAllCandles[_grAllCandles.length - 1];
+    if (grInicioPeriodoAtual(Date.now()) !== last.t) return; // virou o período: candle novo quem abre é o WebSocket/reconciliação
+    last.c = preco; last.h = Math.max(last.h, preco); last.l = Math.min(last.l, preco);
+}
+
 async function cvAtualizarPrecoRealTime() {
     try {
         const symbol = (_ticker || 'BTC/USD').replace('/', '').toLowerCase();
@@ -2699,7 +2708,12 @@ async function cvAtualizarPrecoRealTime() {
         const data = await res.json();
         if (!data || !data.lastPrice) return;
 
-        const novoPreco = parseFloat(data.lastPrice);
+        // WebSocket vivo (trade nos últimos 8 s) = ele é a ÚNICA fonte da cotação. O ticker/24hr é outra fonte (defasada em
+        // relação ao aggTrade): empurrar o preço dele por cima fazia a linha/etiqueta da cotação alternar entre as duas
+        // enquanto o corpo do candle só seguia o WebSocket — os dois ficavam dessincronizados.
+        const wsVivo = !!window._cvWsUltimaMsg && (Date.now() - window._cvWsUltimaMsg) <= 8000 && _precoAtual > 0;
+        const novoPreco = wsVivo ? _precoAtual : parseFloat(data.lastPrice);
+        if (!wsVivo) grAplicarPrecoNoCandleEmFormacao(novoPreco); // sem WebSocket: o candle acompanha a mesma cotação da linha
         const open24h   = parseFloat(data.openPrice);
         const novaVar   = ((novoPreco - open24h) / open24h) * 100;
 
@@ -2976,6 +2990,8 @@ function cvIniciarRealTime() {
 
     ws.onopen = function() {
         window._cvWsFalhasSeguidas = 0; // reconectou — zera o contador de backoff
+        // O polling REST criado no onerror nunca era desligado: ficava rodando pra sempre junto com o WebSocket
+        if (window._cvTickerInterval) { clearInterval(window._cvTickerInterval); window._cvTickerInterval = null; }
         grAoVoltarDoSegundoPlano();     // se ficou um buraco sem trades, refaz o candle em formação a partir da exchange
     };
 
@@ -4282,6 +4298,16 @@ function grFootprintFonteSelecionado(ctx, cl, cfg, wCel, toY) {
     return fsSel > cfg.fs ? fsSel : cfg.fs;
 }
 
+// Candle EM FORMAÇÃO (o último, se ainda é o do período atual): o corpo é ditado EXCLUSIVAMENTE pela linha da cotação
+// (_precoAtual) — o fechamento visual é o preço da linha, e máxima/mínima esticam junto se a linha passar delas. Nenhuma
+// outra fonte (trade que chegou, REST, grade do footprint) mexe no corpo. Devolve uma cópia (com _vivo) só pro desenho;
+// o objeto real em _grAllCandles não é alterado. Candles fechados voltam como estão.
+function grCandleVisual(c) {
+    if (!(_precoAtual > 0) || !_grAllCandles.length || c !== _grAllCandles[_grAllCandles.length - 1]) return c;
+    if (grInicioPeriodoAtual(Date.now()) !== c.t) return c; // já não é o candle do período atual
+    return Object.assign({}, c, { c: _precoAtual, h: Math.max(c.h, _precoAtual), l: Math.min(c.l, _precoAtual), _vivo: true });
+}
+
 // Desenha o cluster de UM candle. xSlot = borda esquerda do espaço do candle, cW = largura dele.
 // Retorna false se não há footprint pra esse candle (quem chamou desenha o candle normal).
 function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax) {
@@ -4352,10 +4378,17 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
         });
     }
 
-    // Candle: linha fina à esquerda, da abertura ao fechamento (linhas que contêm os dois preços)
-    const kcAb = Math.floor(Math.floor((candle.o + meio) / tick) / cl.agrup), kcFe = Math.floor(Math.floor((candle.c + meio) / tick) / cl.agrup);
-    const yCorpoTopo = Math.max(yMin, Math.round(toY((Math.max(kcAb, kcFe) * cl.agrup + cl.agrup) * tick - meio)));
-    const yCorpoBase = Math.min(yMax, Math.round(toY(Math.min(kcAb, kcFe) * cl.agrup * tick - meio)));
+    // Candle: linha fina à esquerda, da abertura ao fechamento. Candle FECHADO: linhas que contêm os dois preços (alinha com as
+    // células). Candle EM FORMAÇÃO: preço exato, da abertura até a linha da cotação — acompanha a régua, sem arredondar pra linha.
+    let yCorpoTopo, yCorpoBase;
+    if (candle._vivo) {
+        yCorpoTopo = Math.max(yMin, Math.round(toY(Math.max(candle.o, candle.c))));
+        yCorpoBase = Math.min(yMax, Math.round(toY(Math.min(candle.o, candle.c))));
+    } else {
+        const kcAb = Math.floor(Math.floor((candle.o + meio) / tick) / cl.agrup), kcFe = Math.floor(Math.floor((candle.c + meio) / tick) / cl.agrup);
+        yCorpoTopo = Math.max(yMin, Math.round(toY((Math.max(kcAb, kcFe) * cl.agrup + cl.agrup) * tick - meio)));
+        yCorpoBase = Math.min(yMax, Math.round(toY(Math.min(kcAb, kcFe) * cl.agrup * tick - meio)));
+    }
     const sobe = candle.c >= candle.o;
     ctx.fillStyle = sobe ? '#2E7D32' : '#D32F2F';
     ctx.fillRect(Math.round(xSlot), yCorpoTopo, barW, Math.max(2, yCorpoBase - yCorpoTopo));
