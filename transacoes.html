@@ -2808,6 +2808,10 @@ function grAlturasPaineis(H) {
 // Delta (compra-venda) e Total (compra+venda) por candle EXIBIDO, somando o
 // footprint bruto (R2) dentro da janela de cada candle. Mesma varredura de
 // dois ponteiros do delta por candle. Só guarda candles que têm dado.
+// Resultados POR CANDLE (delta, total, PoCs), guardados um a um (chave "t_msPorCandle"): cada candle só é recalculado quando
+// os minutos dele mudam. Antes qualquer mudança no bruto (a cada segundo, por causa do ao vivo) refazia a varredura de TODOS
+// os candles — com centenas de dias carregados isso travava o app. Ver grFootprintInvalidarDerivados.
+const _grDtMemo = new Map(), _grDeltaMemo = new Map(), _grPocsMemo = new Map();
 let _grDtPorCandleCache = { key: null, mapa: null };
 function grObterDeltaTotalPorCandle(candles) {
     if (!_grFootprintAtivo || !_grFootprintCandlesRaw || candles.length === 0) return null;
@@ -2816,19 +2820,23 @@ function grObterDeltaTotalPorCandle(candles) {
     const key = candles.length + '_' + candles[0].t + '_' + candles[candles.length - 1].t + '_' + raw.length + '_' + rawUlt;
     if (_grDtPorCandleCache.key === key) return _grDtPorCandleCache.mapa;
     const msPorCandle = grFootprintMsPorCandle();
+    if (_grDtMemo.size > 8000) _grDtMemo.clear();
     const mapa = new Map();
-    let idx = 0;
     for (let i = 0; i < candles.length; i++) {
         const de = candles[i].t;
-        const ate = de + msPorCandle;
-        while (idx < raw.length && raw[idx].ts < de) idx++;
-        let j = idx, compra = 0, venda = 0, achou = false;
-        while (j < raw.length && raw[j].ts < ate) {
-            (raw[j].niveis || []).forEach(n => { compra += (n.c || 0); venda += (n.v || 0); });
-            achou = true;
-            j++;
+        const mk = de + '_' + msPorCandle;
+        let v = _grDtMemo.get(mk);
+        if (v === undefined) {
+            const ate = de + msPorCandle;
+            let compra = 0, venda = 0, achou = false;
+            for (let j = grFootprintIdxMinuto(raw, de); j < raw.length && raw[j].ts < ate; j++) {
+                (raw[j].niveis || []).forEach(n => { compra += (n.c || 0); venda += (n.v || 0); });
+                achou = true;
+            }
+            v = achou ? { delta: compra - venda, total: compra + venda } : false;
+            _grDtMemo.set(mk, v);
         }
-        if (achou) mapa.set(candles[i].t, { delta: compra - venda, total: compra + venda });
+        if (v) mapa.set(de, v);
     }
     _grDtPorCandleCache = { key, mapa };
     return mapa;
@@ -2840,18 +2848,22 @@ function grObterDeltaPorCandle(candles) {
     if (_grDeltaPorCandleCache.key === key) return _grDeltaPorCandleCache.mapa;
     const msPorCandle = grFootprintMsPorCandle();
     const raw = _grFootprintCandlesRaw;
+    if (_grDeltaMemo.size > 8000) _grDeltaMemo.clear();
     const mapa = new Map();
-    let idx = 0;
     for (let i = 0; i < candles.length; i++) {
         const de = candles[i].t;
-        const ate = de + msPorCandle;
-        while (idx < raw.length && raw[idx].ts < de) idx++; // avança sem voltar — os dois arrays estão ordenados
-        let j = idx, compra = 0, venda = 0;
-        while (j < raw.length && raw[j].ts < ate) {
-            (raw[j].niveis || []).forEach(n => { compra += (n.c || 0); venda += (n.v || 0); });
-            j++;
+        const mk = de + '_' + msPorCandle;
+        let v = _grDeltaMemo.get(mk);
+        if (v === undefined) {
+            const ate = de + msPorCandle;
+            let compra = 0, venda = 0;
+            for (let j = grFootprintIdxMinuto(raw, de); j < raw.length && raw[j].ts < ate; j++) {
+                (raw[j].niveis || []).forEach(n => { compra += (n.c || 0); venda += (n.v || 0); });
+            }
+            v = compra - venda;
+            _grDeltaMemo.set(mk, v);
         }
-        mapa.set(candles[i].t, compra - venda);
+        mapa.set(de, v);
     }
     _grDeltaPorCandleCache = { key, mapa };
     return mapa;
@@ -2867,27 +2879,30 @@ function grObterPocsPorCandle(candles) {
     if (_grPocsPorCandleCache.key === key) return _grPocsPorCandleCache.mapa;
     const msPorCandle = grFootprintMsPorCandle();
     const raw = _grFootprintCandlesRaw;
+    if (_grPocsMemo.size > 8000) _grPocsMemo.clear();
     const mapa = new Map();
-    let idx = 0;
     for (let i = 0; i < candles.length; i++) {
         const de = candles[i].t;
-        const ate = de + msPorCandle;
-        while (idx < raw.length && raw[idx].ts < de) idx++;
-        let j = idx;
-        const niveis = new Map(); // p -> {c, v}
-        while (j < raw.length && raw[j].ts < ate) {
-            (raw[j].niveis || []).forEach(n => {
-                if (!niveis.has(n.p)) niveis.set(n.p, { c: 0, v: 0 });
-                const acc = niveis.get(n.p);
-                acc.c += (n.c || 0);
-                acc.v += (n.v || 0);
-            });
-            j++;
+        const mk = de + '_' + msPorCandle;
+        let v = _grPocsMemo.get(mk);
+        if (v === undefined) {
+            const ate = de + msPorCandle;
+            const niveis = new Map(); // p -> {c, v}
+            for (let j = grFootprintIdxMinuto(raw, de); j < raw.length && raw[j].ts < ate; j++) {
+                (raw[j].niveis || []).forEach(n => {
+                    if (!niveis.has(n.p)) niveis.set(n.p, { c: 0, v: 0 });
+                    const acc = niveis.get(n.p);
+                    acc.c += (n.c || 0);
+                    acc.v += (n.v || 0);
+                });
+            }
+            const arr = Array.from(niveis.entries()).map(([p, x]) => ({ p, c: x.c, v: x.v }));
+            const comprasTop = arr.filter(n => n.c > 0).sort((a, b) => b.c - a.c).slice(0, 2);
+            const vendasTop = arr.filter(n => n.v > 0).sort((a, b) => b.v - a.v).slice(0, 2);
+            v = { comprasTop, vendasTop };
+            _grPocsMemo.set(mk, v);
         }
-        const arr = Array.from(niveis.entries()).map(([p, v]) => ({ p, c: v.c, v: v.v }));
-        const comprasTop = arr.filter(n => n.c > 0).sort((a, b) => b.c - a.c).slice(0, 2);
-        const vendasTop = arr.filter(n => n.v > 0).sort((a, b) => b.v - a.v).slice(0, 2);
-        mapa.set(candles[i].t, { comprasTop, vendasTop });
+        mapa.set(de, v);
     }
     _grPocsPorCandleCache = { key, mapa };
     return mapa;
@@ -3313,7 +3328,7 @@ function grFootprintAlternarSkin() {
 grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
-const APP_VERSAO = '20/09 23:14 · 15753 linhas · CORPO-VIVO v9';
+const APP_VERSAO = '20/09 23:14 · 15753 linhas · CORPO-VIVO v10';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) el.textContent = 'Versão ' + APP_VERSAO;
@@ -3386,10 +3401,8 @@ function grFootprintClusterDoCandle(candle, tick, getTodos) {
     const meio = tick / 2;
     const mapa = new Map();
     let kMin = Infinity, kMax = -Infinity;
-    const todos = getTodos();
-    for (let m = 0; m < todos.length; m++) {
-        const minuto = todos[m];
-        if (minuto.ts < de || minuto.ts >= ate) continue;
+    // Só os minutos DESTE candle (busca binária) — antes varria e copiava o histórico inteiro a cada candle novo na tela.
+    grFootprintParaCadaMinuto(de, ate, minuto => {
         const niveis = minuto.niveis || [];
         for (let j = 0; j < niveis.length; j++) {
             const nv = niveis[j];
@@ -3398,7 +3411,7 @@ function grFootprintClusterDoCandle(candle, tick, getTodos) {
             if (!a) { a = { bid: 0, ask: 0 }; mapa.set(k, a); if (k < kMin) kMin = k; if (k > kMax) kMax = k; }
             a.bid += nv.v; a.ask += nv.c;
         }
-    }
+    });
     if (mapa.size === 0) { window._grClusterCache.set(chave, false); return null; }
     // Teto de linhas por candle (o mesmo do popup do crosshair): candle muito mais alto que o ATR junta
     // `agrup` linhas vizinhas da grade em uma (agrup inteiro), então as bordas continuam alinhadas à grade
@@ -3490,12 +3503,11 @@ function grFootprintReferenciaCor(tick) {
     for (let i = cs.length - 1 - nFech; i < cs.length - 1; i++) starts.push(cs[i].t);
     const fim = cs[cs.length - 1].t; // começo do candle em formação
     const somas = new Map();
-    for (const m of grFootprintTodosOsCandlesBrutos()) {
-        if (m.ts < starts[0] || m.ts >= fim) continue;
+    grFootprintParaCadaMinuto(starts[0], fim, m => {
         let lo = 0, hi = starts.length - 1;
         while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (starts[mid] <= m.ts) lo = mid; else hi = mid - 1; } // candle que contém o minuto
         (m.niveis || []).forEach(n => { const k = lo + ':' + Math.round(n.p / tick); somas.set(k, (somas.get(k) || 0) + n.c + n.v); });
-    }
+    });
     let valor = null;
     if (somas.size >= 20) {
         const v = Array.from(somas.values()).sort((a, b) => a - b);
@@ -6712,15 +6724,12 @@ function grDrawChart() {
 // faixa horizontal infinita. tsFimExclusive precisa já incluir a duração do
 // último candle do TF atual (fim real da faixa, não só o open dele).
 function grDeltaFaixaPrecoTempo(precoBaixo, precoAlto, tsInicio, tsFimExclusive) {
-    const todos = grFootprintTodosOsCandlesBrutos();
-    if (!todos) return null;
     let compra = 0, venda = 0;
-    for (const c of todos) {
-        if (c.ts < tsInicio || c.ts >= tsFimExclusive) continue;
+    grFootprintParaCadaMinuto(tsInicio, tsFimExclusive, c => {
         (c.niveis || []).forEach(n => {
             if (n.p >= precoBaixo && n.p <= precoAlto) { compra += n.c; venda += n.v; }
         });
-    }
+    });
     return { compra, venda, delta: compra - venda };
 }
 // ── Ferramenta "Marcar Faixa" — 2 cliques no botão do crosshair marcam um
@@ -10873,9 +10882,9 @@ function grFootprintCvdAcumuladoAntes(antesDoIdx) {
         if (c.t < inicioJanela) continue;
         const fim = c.t + msPorCandleCvd;
         let dc = 0;
-        for (const raw of _grFootprintCandlesRaw) {
-            if (raw.ts < c.t || raw.ts >= fim) continue;
-            (raw.niveis || []).forEach(n => { dc += (n.c - n.v); });
+        const brutos = _grFootprintCandlesRaw;
+        for (let k = grFootprintIdxMinuto(brutos, c.t); k < brutos.length && brutos[k].ts < fim; k++) {
+            (brutos[k].niveis || []).forEach(n => { dc += (n.c - n.v); });
         }
         acumulado += dc;
     }
@@ -10900,6 +10909,46 @@ function grFootprintMsPorCandle() {
         default:       return 4 * 3600000;
     }
 }
+// Índice do primeiro minuto com ts >= alvo. O bruto (_grFootprintCandlesRaw) vive ORDENADO por ts, então é busca binária —
+// antes cada candle varria o histórico inteiro (centenas de milhares de minutos) só pra achar os seus ~240.
+function grFootprintIdxMinuto(arr, alvo) {
+    let lo = 0, hi = arr.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (arr[mid].ts < alvo) lo = mid + 1; else hi = mid; }
+    return lo;
+}
+// Chama fn(minuto) para cada minuto do Fluxo com ts em [de, ate): o bruto (busca binária) + os dias avulsos (poucos e
+// pequenos). Mesma ordem de antes (bruto, depois avulsos) e sem copiar o array inteiro a cada chamada.
+function grFootprintParaCadaMinuto(de, ate, fn) {
+    const raw = _grFootprintCandlesRaw;
+    if (raw) for (let i = grFootprintIdxMinuto(raw, de); i < raw.length && raw[i].ts < ate; i++) fn(raw[i]);
+    _grFootprintDiasAvulsos.forEach(dia => { for (let k = 0; k < dia.length; k++) { const m = dia[k]; if (m.ts >= de && m.ts < ate) fn(m); } });
+}
+// Invalida o que foi derivado dos minutos em [minTs, maxTs] (sem argumentos: tudo). As chaves das listas de candles não
+// enxergam mudança de conteúdo com o mesmo tamanho, por isso as listas são sempre zeradas; os resultados por candle só saem
+// os que tocam a faixa.
+function grFootprintInvalidarDerivados(minTs, maxTs) {
+    _grDtPorCandleCache = { key: null, mapa: null };
+    _grDeltaPorCandleCache = { key: null, mapa: null };
+    _grPocsPorCandleCache = { key: null, mapa: null };
+    if (minTs == null) { _grDtMemo.clear(); _grDeltaMemo.clear(); _grPocsMemo.clear(); return; }
+    const podar = memo => memo.forEach((v, k) => {
+        const u = k.indexOf('_'), t = +k.slice(0, u), ms = +k.slice(u + 1);
+        if (t <= maxTs && t + ms > minTs) memo.delete(k);
+    });
+    podar(_grDtMemo); podar(_grDeltaMemo); podar(_grPocsMemo);
+}
+// Clusters (células) já montados que tocam os minutos [minTs, maxTs] — só esses são refeitos (antes: todos, a cada lote
+// de download e a cada 60 s). O cache só guarda o timeframe atual (é zerado ao trocar), então a duração do candle é a de agora.
+function grFootprintInvalidarClusters(minTs, maxTs) {
+    const cache = window._grClusterCache; if (!cache) return;
+    const ms = grFootprintMsPorCandle();
+    cache.forEach((v, k) => { const tk = +k.slice(0, k.indexOf('_')); if (tk <= maxTs && tk + ms > minTs) cache.delete(k); });
+}
+// Dado ANTIGO mudou (dias novos, ligar/desligar o Fluxo, dias avulsos): a parte fixa do Volume Profile precisa ser refeita.
+let _grFpVersaoAntiga = 0;
+let _grVpFixo = null;
+let _grZonasFixo = null; // soma por preço da parte antiga do bruto (usada pelo recálculo das zonas)
+function grFootprintDadosAntigosMudaram() { _grFpVersaoAntiga++; _grVpFixo = null; _grZonasFixo = null; }
 function grFootprintDiasEntre(fromMs, toMs) {
     const dias = [];
     const cursor = new Date(fromMs);
@@ -10933,17 +10982,28 @@ let _grFootprintRefreshInterval = null;
 // então se um reteste virar o delta pro lado oposto, a zona muda de cor sozinha.
 function grFootprintRecalcularZonasExistentes() {
     if (!_grFootprintCandlesRaw || !Array.isArray(_grZiiZonas) || _grZiiZonas.length === 0) return;
+    // Soma o histórico por preço e cada zona só soma os preços dela (antes: histórico inteiro × cada zona). A parte ANTIGA
+    // (até ~3 h atrás) fica guardada e só é refeita de hora em hora ou quando chega dado antigo; o resto é somado na hora.
+    const raw = _grFootprintCandlesRaw;
+    const soma = (mapa, candle) => (candle.niveis || []).forEach(n => {
+        let a = mapa.get(n.p);
+        if (!a) { a = { c: 0, v: 0 }; mapa.set(n.p, a); }
+        a.c += n.c; a.v += n.v;
+    });
+    const corte = Math.floor((Date.now() - 3 * 3600000) / 3600000) * 3600000;
+    if (!_grZonasFixo || _grZonasFixo.corte !== corte || _grZonasFixo.versao !== _grFpVersaoAntiga) {
+        const m = new Map(), fimIdx = grFootprintIdxMinuto(raw, corte);
+        for (let i = 0; i < fimIdx; i++) soma(m, raw[i]);
+        _grZonasFixo = { corte, versao: _grFpVersaoAntiga, mapa: m };
+    }
+    const porPreco = new Map();
+    _grZonasFixo.mapa.forEach((a, p) => porPreco.set(p, { c: a.c, v: a.v }));
+    for (let i = grFootprintIdxMinuto(raw, corte); i < raw.length; i++) soma(porPreco, raw[i]);
     _grZiiZonas.forEach(zona => {
         let c = 0, v = 0, total = 0;
-        for (const candle of _grFootprintCandlesRaw) {
-            (candle.niveis || []).forEach(n => {
-                if (n.p >= zona.lo && n.p < zona.hi) {
-                    c += n.c;
-                    v += n.v;
-                    total += n.c + n.v;
-                }
-            });
-        }
+        porPreco.forEach((a, p) => {
+            if (p >= zona.lo && p < zona.hi) { c += a.c; v += a.v; total += a.c + a.v; }
+        });
         if (total <= 0) return; // sem dado nessa faixa ainda — mantém o que já tinha
         zona.delta = c - v;
         zona.total = total;
@@ -11036,7 +11096,7 @@ function grFootprintLiveAplicar() {
         return -lo - 1;
     };
     const somaRaw = (c) => { let s = 0; (c.niveis || []).forEach(n => { s += (n.c || 0) + (n.v || 0); }); return s; };
-    let mudou = false;
+    let mudou = false, minMud = Infinity, maxMud = -Infinity;
     const corte = Date.now() - 120 * 60000;
     window._grLiveMin.forEach((niveis, minTs) => {
         if (minTs < corte) { window._grLiveMin.delete(minTs); return; }
@@ -11047,9 +11107,11 @@ function grFootprintLiveAplicar() {
         if (i >= 0) { if (somaRaw(raw[i]) >= total) return; raw[i] = entrada; }   // R2 já tem mais volume: fica o do R2
         else raw.splice(-i - 1, 0, entrada);
         mudou = true;
+        if (minTs < minMud) minMud = minTs;
+        if (minTs > maxMud) maxMud = minTs;
     });
     if (!mudou) return;
-    _grDtPorCandleCache = { key: null, mapa: null }; _grDeltaPorCandleCache = { key: null, mapa: null }; _grPocsPorCandleCache = { key: null, mapa: null };
+    grFootprintInvalidarDerivados(minMud, maxMud); // só os candles que tocam esses minutos (antes: todos, a cada segundo)
     _grVpMapaCache = null; window._grFpRefCache = {}; window._grDeltaRefCache = null;
     // clusters: só o candle em formação e o anterior mudam
     const cs = _grAllCandles;
@@ -11076,16 +11138,22 @@ async function grFootprintAtualizarSeAtivo() {
         if (candlesHoje.length === 0) { grFluxoStatusAtualizar(); return; }
         candlesHoje.forEach(c => { if (c.ts > (window._grR2UltimoTs || 0)) window._grR2UltimoTs = c.ts; });
         const tsHoje = new Set(candlesHoje.map(c => c.ts));
-        _grFootprintCandlesRaw = _grFootprintCandlesRaw.filter(c => !tsHoje.has(c.ts));
-        _grFootprintCandlesRaw.push(...candlesHoje);
-        _grFootprintCandlesRaw.sort((a, b) => a.ts - b.ts);
+        let minTsH = Infinity, maxTsH = -Infinity;
+        candlesHoje.forEach(c => { if (c.ts < minTsH) minTsH = c.ts; if (c.ts > maxTsH) maxTsH = c.ts; });
+        // Só a cauda do bruto (a partir do 1º minuto recebido) é refeita: antes filtrava e ordenava o histórico INTEIRO a cada 60 s.
+        const brutoAtual = _grFootprintCandlesRaw;
+        const i0 = grFootprintIdxMinuto(brutoAtual, minTsH);
+        const cauda = brutoAtual.slice(i0).filter(c => !tsHoje.has(c.ts));
+        for (let k = 0; k < candlesHoje.length; k++) cauda.push(candlesHoje[k]);
+        cauda.sort((a, b) => a.ts - b.ts);
+        _grFootprintCandlesRaw = brutoAtual.slice(0, i0).concat(cauda);
+        if (minTsH < Date.now() - 3 * 3600000) grFootprintDadosAntigosMudaram(); // o R2 mexeu em minutos antigos (Termux atrasado)
         window._grLiveSujo = true; grFootprintLiveAplicar(); // o R2 sobrescreveu os minutos de hoje: reaplica o ao vivo por cima
-        _grDtPorCandleCache = { key: null, mapa: null };
-        _grDeltaPorCandleCache = { key: null, mapa: null };
+        grFootprintInvalidarDerivados(minTsH, maxTsH);
         // Limpa os caches da régua também — sem isso, o candle em formação
         // (o único cujo dado muda a cada 60s) ficava com o volume CONGELADO
         // do primeiro cálculo, nunca refletindo os trades novos que chegam.
-        window._grClusterCache = new Map();
+        grFootprintInvalidarClusters(minTsH, maxTsH);
         grFootprintRecalcularZonasExistentes(); // zonas já marcadas podem trocar de cor com dado novo
         _grFootprintUltimoRefreshModal = 0;
         grFootprintTalvezRefrescarModalAoVivo(); // se algum modal estiver aberto, redesenha com o dado novo
@@ -11131,19 +11199,32 @@ async function grFootprintBaixarDias(dias, simultaneos) {
 // Encaixa dias recém-baixados no histórico (sem duplicar minuto), invalida os caches e redesenha UMA vez. Devolve se entrou dado.
 function grFootprintMesclarDias(baixados) {
     let ganhou = false;
+    const novos = [];
     baixados.forEach(b => {
         const item = (window._grFluxoDias || []).find(d => d.dia === b.dia);
         if (item) item.estado = b.estado;
         if (b.estado === 'falhou' || !b.candles.length) return;
-        const tsSet = new Set(b.candles.map(c => c.ts));
-        _grFootprintCandlesRaw = _grFootprintCandlesRaw.filter(c => !tsSet.has(c.ts));
-        _grFootprintCandlesRaw.push(...b.candles);
+        for (let k = 0; k < b.candles.length; k++) novos.push(b.candles[k]);
         ganhou = true;
     });
     if (ganhou) {
-        _grFootprintCandlesRaw.sort((x, y) => x.ts - y.ts);
-        _grDtPorCandleCache = { key: null, mapa: null }; _grDeltaPorCandleCache = { key: null, mapa: null }; _grPocsPorCandleCache = { key: null, mapa: null };
-        _grVpMapaCache = null; window._grFpRefCache = {}; window._grDeltaRefCache = null; window._grClusterCache = new Map();
+        novos.sort((x, y) => x.ts - y.ts);
+        const bruto = _grFootprintCandlesRaw;
+        if (!bruto.length || novos[novos.length - 1].ts < bruto[0].ts) {
+            // Dias MAIS ANTIGOS que tudo o que já está aqui (o caso do carregamento em lotes): só coloca na frente — sem filtrar
+            // nem reordenar as centenas de milhares de minutos a cada lote.
+            _grFootprintCandlesRaw = novos.concat(bruto);
+        } else {
+            const tsSet = new Set(novos.map(c => c.ts));
+            const juntos = bruto.filter(c => !tsSet.has(c.ts));
+            for (let k = 0; k < novos.length; k++) juntos.push(novos[k]);
+            juntos.sort((x, y) => x.ts - y.ts);
+            _grFootprintCandlesRaw = juntos;
+        }
+        grFootprintInvalidarDerivados(novos[0].ts, novos[novos.length - 1].ts);
+        grFootprintDadosAntigosMudaram();
+        _grVpMapaCache = null; window._grFpRefCache = {}; window._grDeltaRefCache = null;
+        grFootprintInvalidarClusters(novos[0].ts, novos[novos.length - 1].ts);
         _grFootprintUltimoRangeVisto = null; _grFootprintUltimoRangeCalc = null;
         grDrawChart();
     }
@@ -11153,16 +11234,18 @@ function grFootprintMesclarDias(baixados) {
 // O Fluxo liga assim que os dias MAIS RECENTES chegam; o resto do histórico vem depois, em lotes, sem travar a tela. (Antes
 // o footprint só aparecia quando os 30 dias terminavam — com o worker lento eram dezenas de segundos sem nada.)
 async function grFootprintCarregarRestante(dias) {
+    const ger = window._grFluxoGeracao || 0; // se o Fluxo for desligado/religado no meio, este carregador para (não duplica o download)
+    const vigente = () => _grFootprintAtivo && ger === (window._grFluxoGeracao || 0);
     window._grFluxoCarregandoResto = true;
     try {
         for (let i = 0; i < dias.length; i += 6) {
-            if (!_grFootprintAtivo) return;
+            if (!vigente()) return;
             const lote = await grFootprintBaixarDias(dias.slice(i, i + 6), 6);
-            if (!_grFootprintAtivo) return;
+            if (!vigente()) return;
             grFootprintMesclarDias(lote);
         }
-    } finally { window._grFluxoCarregandoResto = false; }
-    if (_grFootprintAtivo) {
+    } finally { if (ger === (window._grFluxoGeracao || 0)) window._grFluxoCarregandoResto = false; }
+    if (vigente()) {
         grFootprintRecuperarDias(0);                       // dias que ainda falharam: continua tentando
         _grVpDadosChave = null; grVpGarantirDados();       // agora que o histórico está completo, o perfil busca o que falta
         grFluxoStatusAtualizar();
@@ -11171,11 +11254,14 @@ async function grFootprintCarregarRestante(dias) {
 // Dias que ainda falharam depois das tentativas: tenta de novo em segundo plano (a cada 15 s, até 8 vezes) e, quando
 // consegue, encaixa no histórico e redesenha — sem precisar desligar e ligar o Fluxo.
 function grFootprintRecuperarDias(tentativa) {
+    const ger = window._grFluxoGeracao || 0;
     const pendentes = (window._grFluxoDias || []).filter(d => d.estado === 'falhou').map(d => d.dia);
-    if (!_grFootprintAtivo || pendentes.length === 0 || tentativa >= 8) { grFluxoStatusAtualizar(); return; }
+    // Até 20 rodadas de 6 dias (antes: 8 rodadas de 2 = só 16 dias — com centenas de dias, o que sobrava nunca voltava).
+    if (!_grFootprintAtivo || pendentes.length === 0 || tentativa >= 20) { grFluxoStatusAtualizar(); return; }
     setTimeout(async () => {
-        if (!_grFootprintAtivo || !_grFootprintCandlesRaw) return;
-        const baixados = await grFootprintBaixarDias(pendentes, 2);
+        if (!_grFootprintAtivo || !_grFootprintCandlesRaw || ger !== (window._grFluxoGeracao || 0)) return;
+        const baixados = await grFootprintBaixarDias(pendentes.slice(0, 6), 3);
+        if (!_grFootprintAtivo || !_grFootprintCandlesRaw || ger !== (window._grFluxoGeracao || 0)) return;
         grFootprintMesclarDias(baixados);
         grFootprintRecuperarDias(tentativa + 1);
     }, 15000);
@@ -11217,6 +11303,7 @@ async function grFootprintAtivar() {
         }
         _grFootprintAtivo = true;
         _grFootprintCandlesRaw = flat;
+        grFootprintInvalidarDerivados(); grFootprintDadosAntigosMudaram();
         window._grR2UltimoTs = flat.reduce((m, c) => c.ts > m ? c.ts : m, 0); // até onde o R2 tem dado (sem o ao vivo)
         grFluxoStatusAtualizar();
         _grFootprintUltimoRangeVisto = null;
@@ -11276,12 +11363,26 @@ async function grFootprintAjustarDiasAoAtivar() {
     if (novo === null) return; // cancelou
     const dias = parseInt(novo);
     if (!dias || dias < 1 || dias > 365) { alert('Digite um número de dias entre 1 e 365.'); return; }
+    const antes = FOOTPRINT_DIAS_AO_ATIVAR;
     FOOTPRINT_DIAS_AO_ATIVAR = dias;
     localStorage.setItem('grFootprintDiasAoAtivar', String(dias));
-    if (_grFootprintAtivo) {
-        grFootprintPararOverlay();
-        await grFootprintAtivar();
+    if (!_grFootprintAtivo) return;
+    if (dias > antes && _grFootprintCandlesRaw && !window._grFluxoCarregandoResto) {
+        // Aumentou: baixa só os dias MAIS ANTIGOS que faltam, sem derrubar o que já está carregado (antes desligava o Fluxo e
+        // rebaixava tudo do zero — com 300 dias, dezenas de MB de novo e o gráfico sem footprint no meio).
+        const to = Date.now(), from = to - dias * 24 * 3600 * 1000;
+        const lista = (window._grFluxoDias = window._grFluxoDias || []);
+        const existentes = new Set(lista.map(d => d.dia));
+        const novos = grFootprintDiasEntre(from, to).filter(d => !existentes.has(d)).sort().reverse();
+        if (novos.length > 0) {
+            novos.forEach(d => lista.push({ dia: d, estado: 'carregando' }));
+            grFluxoStatusAtualizar();
+            grFootprintCarregarRestante(novos);
+        }
+        return;
     }
+    grFootprintPararOverlay();
+    await grFootprintAtivar();
 }
 function grFootprintRecalcularSeNecessario() {
     if (!_grFootprintCandlesRaw) return;
@@ -11297,8 +11398,10 @@ function grFootprintRecalcularSeNecessario() {
     _grFootprintUltimoRangeVisto = range;
     const mapaBase = new Map(); // preco -> {c, v}, sempre em tick $10 fixo
     let totalCandles = 0;
-    for (const c of _grFootprintCandlesRaw) {
-        if (c.ts < range.from || c.ts > range.to) continue;
+    const brutosRC = _grFootprintCandlesRaw;
+    for (let iRC = grFootprintIdxMinuto(brutosRC, range.from); iRC < brutosRC.length; iRC++) {
+        const c = brutosRC[iRC];
+        if (c.ts > range.to) break;
         totalCandles++;
         (c.niveis || []).forEach(n => {
             if (!mapaBase.has(n.p)) mapaBase.set(n.p, { c: 0, v: 0 });
@@ -11341,8 +11444,9 @@ function grFootprintObterMapaBaseValueArea() {
         return _grValueAreaAncoradaBins.mapaBase;
     }
     const mapaBase = new Map();
-    for (const c of _grFootprintCandlesRaw) {
-        if (c.ts < _grValueAreaAncoraTs) continue;
+    const brutosVA = _grFootprintCandlesRaw;
+    for (let iVA = grFootprintIdxMinuto(brutosVA, _grValueAreaAncoraTs); iVA < brutosVA.length; iVA++) {
+        const c = brutosVA[iVA];
         (c.niveis || []).forEach(n => {
             if (!mapaBase.has(n.p)) mapaBase.set(n.p, { c: 0, v: 0 });
             const acc = mapaBase.get(n.p);
@@ -11404,6 +11508,8 @@ function grFootprintPararOverlay() {
     _grFootprintAtivo = false;
     _grFootprintCandlesRaw = null;
     _grFootprintBins = null;
+    window._grFluxoGeracao = (window._grFluxoGeracao || 0) + 1; // carregadores em andamento do Fluxo anterior se abortam
+    grFootprintInvalidarDerivados(); grFootprintDadosAntigosMudaram();
     grFootprintLiveReset(); // desliga o footprint ao vivo junto
     window._grR2UltimoTs = 0; window._grFluxoCarregandoResto = false; grFluxoStatusAtualizar();
     _grFootprintUltimoRangeVisto = null;
@@ -11490,17 +11596,27 @@ function grVpObterMapa() {
     if (_grVpAncoraTs == null || !_grFootprintCandlesRaw) return null;
     const chave = _grVpAncoraTs + '_' + Math.floor(Date.now() / 60000) + '_' + _grFootprintCandlesRaw.length + '_' + _grFootprintDiasAvulsos.size;
     if (_grVpMapaCache && _grVpMapaCache.chave === chave) return _grVpMapaCache;
-    const mapa = new Map();
-    let minutos = 0;
-    grFootprintTodosOsCandlesBrutos().forEach(c => {
-        if (c.ts < _grVpAncoraTs) return;
-        minutos++;
+    const soma = (mapa, c) => {
         (c.niveis || []).forEach(n => {
             let a = mapa.get(n.p);
             if (!a) { a = { c: 0, v: 0 }; mapa.set(n.p, a); }
             a.c += n.c; a.v += n.v;
         });
-    });
+    };
+    // Parte ANTIGA (até ~3 h atrás): não muda — o ao vivo só mexe nas últimas 2 h e o refresh de 60 s no fim. É refeita só
+    // de hora em hora ou quando chega dado antigo (grFootprintDadosAntigosMudaram). O que muda a cada segundo é só o resto.
+    // (Antes o perfil inteiro, desde a âncora, era somado de novo a cada segundo — com âncora antiga e muitos dias, travava.)
+    const corte = Math.floor((Date.now() - 3 * 3600000) / 3600000) * 3600000;
+    let fixo = _grVpFixo;
+    if (!fixo || fixo.anchor !== _grVpAncoraTs || fixo.corte !== corte || fixo.versao !== _grFpVersaoAntiga) {
+        const m = new Map(); let mins = 0;
+        if (corte > _grVpAncoraTs) grFootprintParaCadaMinuto(_grVpAncoraTs, corte, c => { mins++; soma(m, c); });
+        fixo = _grVpFixo = { anchor: _grVpAncoraTs, corte, versao: _grFpVersaoAntiga, mapa: m, minutos: mins };
+    }
+    const mapa = new Map();
+    fixo.mapa.forEach((v, p) => mapa.set(p, { c: v.c, v: v.v }));
+    let minutos = fixo.minutos;
+    grFootprintParaCadaMinuto(Math.max(_grVpAncoraTs, corte), Infinity, c => { minutos++; soma(mapa, c); });
     _grVpMapaCache = { chave, mapa, minutos, agrup: null };
     return _grVpMapaCache;
 }
@@ -11532,8 +11648,7 @@ function grVpAgrupar(dados, tick) {
 async function grVpGarantirDados() {
     if (_grVpAncoraTs == null || !_grFootprintAtivo || !_grFootprintCandlesRaw || _grFootprintCandlesRaw.length === 0) return;
     if (_grVpCarregando || window._grFluxoCarregandoResto) return; // histórico do Fluxo ainda chegando: espera (senão baixaria os mesmos dias duas vezes)
-    let rawMin = Infinity;
-    for (const c of _grFootprintCandlesRaw) if (c.ts < rawMin) rawMin = c.ts;
+    const rawMin = _grFootprintCandlesRaw[0].ts; // o bruto vive ordenado por ts
     const chave = _grVpAncoraTs + '_' + rawMin;
     if (_grVpDadosChave === chave) return;
     const alvo = Math.max(_grVpAncoraTs, Date.now() - GR_VP_LIMITE_DIAS * 86400000);
@@ -11548,7 +11663,7 @@ async function grVpGarantirDados() {
                 if (b.candles.length > 0) _grFootprintDiasAvulsos.set(dia, b.candles.map(c => ({ ts: c.ts, niveis: c.niveis })));
                 _grVpCarregando.feitos++;
             }));
-            _grVpMapaCache = null;
+            _grVpMapaCache = null; grFootprintDadosAntigosMudaram();
             try { grFootprintDesenharOverlay(); } catch (err) {}
         }
     } finally { _grVpCarregando = null; }
@@ -11930,6 +12045,7 @@ async function grFootprintCarregarDiaDoR2(candle) {
         const candlesDoDia = Object.values(dados.candles || {});
         if (candlesDoDia.length > 0) {
             _grFootprintDiasAvulsos.set(dia, candlesDoDia.map(c => ({ ts: c.ts, niveis: c.niveis })));
+            grFootprintDadosAntigosMudaram();
             window._grClusterCache = new Map(); // candles desse dia estavam marcados "sem dado"
             grFootprintAbrirCandleModal(candle); // tenta de novo, agora já com o dado em mãos
             return;
