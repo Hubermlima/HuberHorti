@@ -4327,7 +4327,14 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
     // Células
     const geo = [];
     cl.linhas.forEach((ln, i) => {
-        const yTop = Math.round(toY(ln.p + ln.meio)), yBot = Math.round(toY(ln.p - ln.meio));
+        let yTop = Math.round(toY(ln.p + ln.meio)), yBot = Math.round(toY(ln.p - ln.meio));
+        if (candle._vivo) {
+            // Candle EM FORMAÇÃO: o bloco de células termina no preço EXATO da máxima/mínima (que já inclui a linha da
+            // cotação), e não na borda da linha do footprint — senão o candle "anda de degrau em degrau" e não acompanha a régua.
+            yTop = Math.max(yTop, Math.round(toY(candle.h)));
+            yBot = Math.min(yBot, Math.round(toY(candle.l)));
+            if (yBot < yTop) { geo.push(null); return; }
+        }
         if (yBot < yMin || yTop > yMax || ln.total <= 0) { geo.push(null); return; }
         const y0 = Math.max(yMin, yTop), y1 = Math.min(yMax, yBot);
         geo.push({ y0, y1 });
@@ -15035,10 +15042,14 @@ function grFootprintAtualizarLinhaPrecoAtual() {
 
     // Candle real ao vivo — lê o.h.l.c direto do objeto (é o mesmo item que o
     // WS/polling mutam em _grAllCandles, então já vem atualizado sozinho).
+    // O fechamento do corpo é o MESMO _precoAtual da linha amarela (não o c do objeto, que só é atualizado DEPOIS desta
+    // função no handler do WebSocket — o corpo ficava um trade atrás da linha). Máxima/mínima esticam junto.
     if (range.modoLive === 'real' && range.candleReal) {
         const c = range.candleReal;
-        desenharCandleOverlay(c.o, c.h, c.l, c.c);
-        grFootprintAtualizarPctSpan(c.o, c.h, c.l, c.c);
+        const pv = (typeof _precoAtual === 'number' && _precoAtual > 0) ? _precoAtual : c.c;
+        const hLive = Math.max(c.h, pv), lLive = Math.min(c.l, pv);
+        desenharCandleOverlay(c.o, hLive, lLive, pv);
+        grFootprintAtualizarPctSpan(c.o, hLive, lLive, pv);
     }
 
     // Histograma agregado — não é candle de verdade, então o/h/l ficam fixos
