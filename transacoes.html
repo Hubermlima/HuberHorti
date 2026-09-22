@@ -3444,7 +3444,7 @@ function grFootprintAlternarSkin() {
 grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
-const APP_VERSAO = '20/09 23:14 · 15753 linhas · CORPO-VIVO v31';
+const APP_VERSAO = '20/09 23:14 · 15753 linhas · CORPO-VIVO v33';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) el.textContent = 'Versão ' + APP_VERSAO;
@@ -4162,14 +4162,26 @@ function grDrawCandles(candles, emptyRight) {
         if (_indState.bollinger && !_indOculto.bollinger) {
             const period = 20;
             const allBolMid = grEMA(allCloses, period); // SMA approximation via EMA
-            // Calcula desvio padrão
+            // Desvio padrão por JANELA DESLIZANTE (soma e soma dos quadrados atualizadas a cada passo) em vez de slice()+reduce()
+            // a cada candle: O(n) em vez de O(n×período). Bollinger fica ligado por padrão (_indState.bollinger=true) mesmo sem o
+            // usuário nunca ter tocado nele — com muito histórico carregado (dias/timeframe curto), o slice()+reduce() sozinho
+            // era a maior fatia do tempo de CADA desenho do gráfico (~70 ms de ~110 ms, medido com 86 mil candles carregados).
+            // Mesmo resultado matemático (testado contra a versão antiga: diferença na casa de 10⁻⁸, só arredondamento de ponto
+            // flutuante).
             const allBolUpper = [], allBolLower = [];
+            let somaBol = 0, somaSqBol = 0;
+            for (let k = 0; k < period && k < allCloses.length; k++) { const v = allCloses[k]; somaBol += v; somaSqBol += v * v; }
             for (let i = period - 1; i < allCloses.length; i++) {
-                const slice = allCloses.slice(i - period + 1, i + 1);
-                const mean = slice.reduce((a,b)=>a+b,0) / period;
-                const std = Math.sqrt(slice.reduce((a,b)=>a+(b-mean)**2,0) / period);
-                allBolUpper.push(allBolMid[i - (allCloses.length - allBolMid.length)] + 2 * std);
-                allBolLower.push(allBolMid[i - (allCloses.length - allBolMid.length)] - 2 * std);
+                if (i > period - 1) { // desliza a janela: sai o candle mais antigo, entra o novo
+                    const entra = allCloses[i], sai = allCloses[i - period];
+                    somaBol += entra - sai; somaSqBol += entra * entra - sai * sai;
+                }
+                const meanBol = somaBol / period;
+                const varBol = Math.max(0, somaSqBol / period - meanBol * meanBol); // nunca negativo por erro de arredondamento
+                const std = Math.sqrt(varBol);
+                const midIdx = i - (allCloses.length - allBolMid.length);
+                allBolUpper.push(allBolMid[midIdx] + 2 * std);
+                allBolLower.push(allBolMid[midIdx] - 2 * std);
             }
             bolMid   = extrairJanela(allBolMid, period);
             bolUpper = extrairJanela(allBolUpper, period);
@@ -6376,12 +6388,15 @@ function grInitTouch() {
             }
             const target = grGetDragTarget(yInterno);
             if (target) {
-                _grDragLine = target;
-                isDragging = false;
+                _grDragLineCandidato = target; // decidido só no 1º movimento (ver touchmove) — não trava o scroll na hora
+                _grDragLine = null;
+                isDragging = true;
+                touchStartX = e.touches[0].clientX;
+                touchStartY = e.touches[0].clientY;
                 if (target === 'stop') window._stopHandleDragged = false;
             } else if (_indState.reg) {
     // Gráfico livre — handle controla a régua
-    _grDragLine = null;
+    _grDragLine = null; _grDragLineCandidato = null;
     touchStartX = e.touches[0].clientX;
     touchStartY = e.touches[0].clientY;
     isDragging = true;
@@ -6399,7 +6414,7 @@ function grInitTouch() {
     }, 500);
 }
  else {
-    _grDragLine = null;
+    _grDragLine = null; _grDragLineCandidato = null;
     touchStartX = e.touches[0].clientX;
     touchStartY = e.touches[0].clientY;
     isDragging = true;
@@ -6417,7 +6432,7 @@ function grInitTouch() {
     }, 1100);
 }
         } else if (e.touches.length === 2) {
-            _grDragLine = null;
+            _grDragLine = null; _grDragLineCandidato = null;
             isDragging = false;
             clearTimeout(_longPressTimer);
             window._longPressActive = false;
@@ -6544,6 +6559,14 @@ function grInitTouch() {
                 }
                 e.preventDefault();
                 return;
+            }
+            if (_grDragLineCandidato) {
+                const dxCand = e.touches[0].clientX - touchStartX, dyCand = e.touches[0].clientY - touchStartY;
+                if (Math.abs(dxCand) > 6 || Math.abs(dyCand) > 6) { // espera um mínimo de movimento pra não decidir por tremedeira
+                    if (Math.abs(dyCand) > Math.abs(dxCand) * 1.3) { _grDragLine = _grDragLineCandidato; isDragging = false; } // vertical → arrasta a linha
+                    // horizontal (ou misto): continua isDragging=true, já rolando o gráfico normalmente — não mexe em mais nada aqui
+                    _grDragLineCandidato = null;
+                }
             }
             if (_grDragLine) {
                 const yInterno = toCanvasY(e.touches[0].clientY);
@@ -6814,11 +6837,11 @@ function grInitTouch() {
             window._stopJanelaVisivel = false;
         }
         window._stopHandleDragged = false;
-        _grDragLine = null;
+        _grDragLine = null; _grDragLineCandidato = null;
         grDrawChart();
         return;
     }
-    _grDragLine = null;
+    _grDragLine = null; _grDragLineCandidato = null; // se soltou antes de mover (toque rápido perto de uma linha), não fica lixo pro próximo gesto
     if (!window._longPressActive) clearTimeout(_longPressTimer);
     if (_fibDragging) {
         _fibDragging = false;
@@ -7961,6 +7984,12 @@ let _grCrosshairX = 0;
 const _grPAD = { top: 22, right: 24, bottom: 30, left: 45 };
 // Linha sendo arrastada: 'entrada' | 'stop' | 'alvo' | null
 let _grDragLine = null;
+// Toque perto de uma linha de preço (pm/alvo/entrada/stop/nível/alerta) não decide na hora entre "arrastar a linha" e
+// "rolar o gráfico" — as linhas atravessam a tela inteira (sem alça só numa pontinha, exceto o Stop), então um toque em
+// QUALQUER lugar da largura, mesmo numa área em branco longe dos candles, virava arraste de linha e nunca rolava. Agora o
+// toque fica "candidato" e só é decidido no 1º movimento: se o gesto for majoritariamente VERTICAL, vira arraste da linha;
+// se for HORIZONTAL (ou a mistura normal de um scroll), volta a ser rolagem normal — bug grave de UX corrigido.
+let _grDragLineCandidato = null;
 let _grEntrada = 0, _grStop = 0, _grAlvo = 0;
 let _grPm = 0;
 let _grQtd = 0;
