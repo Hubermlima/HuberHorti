@@ -2898,44 +2898,56 @@ function grAlturasPaineis(H) {
 // footprint bruto (R2) dentro da janela de cada candle. Mesma varredura de
 // dois ponteiros do delta por candle. Só guarda candles que têm dado.
 // Resultados POR CANDLE (delta, total, PoCs), guardados um a um (chave "t_msPorCandle"): cada candle só é recalculado quando
-// os minutos dele mudam. Antes qualquer mudança no bruto (a cada segundo, por causa do ao vivo) refazia a varredura de TODOS
-// os candles — com centenas de dias carregados isso travava o app. Ver grFootprintInvalidarDerivados.
+// os minutos dele mudam. A chave do mapa de fora é só ESTRUTURAL (quantos candles, do primeiro ao último, +duração) — NÃO leva
+// o tamanho do bruto: um tick do "ao vivo" muda o bruto a cada segundo mas não troca o CONJUNTO de candles em tela, então não
+// devia invalidar nada aqui. Quem mantém isso correto é grFootprintAtualizarCachesLive, chamada a cada tick: ela escreve
+// DIRETO no candle que mudou (quase sempre só o último), sem re-varrer os milhares de candles carregados. Antes, qualquer
+// tick forçava refazer o mapa inteiro do zero — com centenas de dias carregados isso travava o app por quase 1s por tick.
 const _grDtMemo = new Map(), _grDeltaMemo = new Map(), _grPocsMemo = new Map();
-let _grDtPorCandleCache = { key: null, mapa: null };
+// Varre os minutos de UM candle e soma compra/venda — a conta-base reaproveitada pelo cálculo cheio e pelo atualizador ao vivo.
+function grDtCalcularCandle(de, msPorCandle, raw) {
+    const ate = de + msPorCandle;
+    let compra = 0, venda = 0, achou = false;
+    for (let j = grFootprintIdxMinuto(raw, de); j < raw.length && raw[j].ts < ate; j++) {
+        (raw[j].niveis || []).forEach(n => { compra += (n.c || 0); venda += (n.v || 0); });
+        achou = true;
+    }
+    return achou ? { delta: compra - venda, total: compra + venda } : false;
+}
+let _grDtPorCandleCache = { key: null, mapa: null, candlesRef: null, msPorCandle: null };
 function grObterDeltaTotalPorCandle(candles) {
     if (!_grFootprintAtivo || !_grFootprintCandlesRaw || candles.length === 0) return null;
     const raw = _grFootprintCandlesRaw;
-    const rawUlt = raw.length ? raw[raw.length - 1].ts : 0;
-    const key = candles.length + '_' + candles[0].t + '_' + candles[candles.length - 1].t + '_' + raw.length + '_' + rawUlt;
-    if (_grDtPorCandleCache.key === key) return _grDtPorCandleCache.mapa;
     const msPorCandle = grFootprintMsPorCandle();
+    const key = candles.length + '_' + candles[0].t + '_' + candles[candles.length - 1].t + '_' + msPorCandle;
+    if (_grDtPorCandleCache.key === key) return _grDtPorCandleCache.mapa;
     if (_grDtMemo.size > 8000) _grDtMemo.clear();
     const mapa = new Map();
     for (let i = 0; i < candles.length; i++) {
         const de = candles[i].t;
         const mk = de + '_' + msPorCandle;
         let v = _grDtMemo.get(mk);
-        if (v === undefined) {
-            const ate = de + msPorCandle;
-            let compra = 0, venda = 0, achou = false;
-            for (let j = grFootprintIdxMinuto(raw, de); j < raw.length && raw[j].ts < ate; j++) {
-                (raw[j].niveis || []).forEach(n => { compra += (n.c || 0); venda += (n.v || 0); });
-                achou = true;
-            }
-            v = achou ? { delta: compra - venda, total: compra + venda } : false;
-            _grDtMemo.set(mk, v);
-        }
+        if (v === undefined) { v = grDtCalcularCandle(de, msPorCandle, raw); _grDtMemo.set(mk, v); }
         if (v) mapa.set(de, v);
     }
-    _grDtPorCandleCache = { key, mapa };
+    _grDtPorCandleCache = { key, mapa, candlesRef: candles, msPorCandle };
     return mapa;
 }
-let _grDeltaPorCandleCache = { key: null, mapa: null };
+// Mesma varredura do candle, só que devolve sempre o delta puro (nunca "false") — usada por grObterDeltaPorCandle.
+function grDeltaCalcularCandle(de, msPorCandle, raw) {
+    const ate = de + msPorCandle;
+    let compra = 0, venda = 0;
+    for (let j = grFootprintIdxMinuto(raw, de); j < raw.length && raw[j].ts < ate; j++) {
+        (raw[j].niveis || []).forEach(n => { compra += (n.c || 0); venda += (n.v || 0); });
+    }
+    return compra - venda;
+}
+let _grDeltaPorCandleCache = { key: null, mapa: null, candlesRef: null, msPorCandle: null };
 function grObterDeltaPorCandle(candles) {
     if (!_grFootprintAtivo || !_grFootprintCandlesRaw || candles.length === 0) return null;
-    const key = candles.length + '_' + candles[0].t + '_' + candles[candles.length - 1].t + '_' + _grFootprintCandlesRaw.length;
-    if (_grDeltaPorCandleCache.key === key) return _grDeltaPorCandleCache.mapa;
     const msPorCandle = grFootprintMsPorCandle();
+    const key = candles.length + '_' + candles[0].t + '_' + candles[candles.length - 1].t + '_' + msPorCandle;
+    if (_grDeltaPorCandleCache.key === key) return _grDeltaPorCandleCache.mapa;
     const raw = _grFootprintCandlesRaw;
     if (_grDeltaMemo.size > 8000) _grDeltaMemo.clear();
     const mapa = new Map();
@@ -2943,30 +2955,40 @@ function grObterDeltaPorCandle(candles) {
         const de = candles[i].t;
         const mk = de + '_' + msPorCandle;
         let v = _grDeltaMemo.get(mk);
-        if (v === undefined) {
-            const ate = de + msPorCandle;
-            let compra = 0, venda = 0;
-            for (let j = grFootprintIdxMinuto(raw, de); j < raw.length && raw[j].ts < ate; j++) {
-                (raw[j].niveis || []).forEach(n => { compra += (n.c || 0); venda += (n.v || 0); });
-            }
-            v = compra - venda;
-            _grDeltaMemo.set(mk, v);
-        }
+        if (v === undefined) { v = grDeltaCalcularCandle(de, msPorCandle, raw); _grDeltaMemo.set(mk, v); }
         mapa.set(de, v);
     }
-    _grDeltaPorCandleCache = { key, mapa };
+    _grDeltaPorCandleCache = { key, mapa, candlesRef: candles, msPorCandle };
     return mapa;
 }
 // PoC comprador/vendedor por candle EXIBIDO — os 2 níveis de maior volume de
 // CADA lado (olhando só a coluna compra pra ranquear um, só venda pro outro),
 // pra marcar como traço fino no candle. Mesma varredura de dois ponteiros do
 // delta por candle, só que aqui guarda os níveis, não só a soma.
-let _grPocsPorCandleCache = { key: null, mapa: null };
+// Varre os minutos de UM candle e devolve os 2 níveis de maior compra e os 2 de maior venda — reaproveitada pelo cálculo cheio
+// e pelo atualizador ao vivo.
+function grPocsCalcularCandle(de, msPorCandle, raw) {
+    const ate = de + msPorCandle;
+    const niveis = new Map(); // p -> {c, v}
+    for (let j = grFootprintIdxMinuto(raw, de); j < raw.length && raw[j].ts < ate; j++) {
+        (raw[j].niveis || []).forEach(n => {
+            if (!niveis.has(n.p)) niveis.set(n.p, { c: 0, v: 0 });
+            const acc = niveis.get(n.p);
+            acc.c += (n.c || 0);
+            acc.v += (n.v || 0);
+        });
+    }
+    const arr = Array.from(niveis.entries()).map(([p, x]) => ({ p, c: x.c, v: x.v }));
+    const comprasTop = arr.filter(n => n.c > 0).sort((a, b) => b.c - a.c).slice(0, 2);
+    const vendasTop = arr.filter(n => n.v > 0).sort((a, b) => b.v - a.v).slice(0, 2);
+    return { comprasTop, vendasTop };
+}
+let _grPocsPorCandleCache = { key: null, mapa: null, candlesRef: null, msPorCandle: null };
 function grObterPocsPorCandle(candles) {
     if (!_grFootprintAtivo || !_grFootprintCandlesRaw || candles.length === 0) return null;
-    const key = candles.length + '_' + candles[0].t + '_' + candles[candles.length - 1].t + '_' + _grFootprintCandlesRaw.length;
-    if (_grPocsPorCandleCache.key === key) return _grPocsPorCandleCache.mapa;
     const msPorCandle = grFootprintMsPorCandle();
+    const key = candles.length + '_' + candles[0].t + '_' + candles[candles.length - 1].t + '_' + msPorCandle;
+    if (_grPocsPorCandleCache.key === key) return _grPocsPorCandleCache.mapa;
     const raw = _grFootprintCandlesRaw;
     if (_grPocsMemo.size > 8000) _grPocsMemo.clear();
     const mapa = new Map();
@@ -2974,26 +2996,10 @@ function grObterPocsPorCandle(candles) {
         const de = candles[i].t;
         const mk = de + '_' + msPorCandle;
         let v = _grPocsMemo.get(mk);
-        if (v === undefined) {
-            const ate = de + msPorCandle;
-            const niveis = new Map(); // p -> {c, v}
-            for (let j = grFootprintIdxMinuto(raw, de); j < raw.length && raw[j].ts < ate; j++) {
-                (raw[j].niveis || []).forEach(n => {
-                    if (!niveis.has(n.p)) niveis.set(n.p, { c: 0, v: 0 });
-                    const acc = niveis.get(n.p);
-                    acc.c += (n.c || 0);
-                    acc.v += (n.v || 0);
-                });
-            }
-            const arr = Array.from(niveis.entries()).map(([p, x]) => ({ p, c: x.c, v: x.v }));
-            const comprasTop = arr.filter(n => n.c > 0).sort((a, b) => b.c - a.c).slice(0, 2);
-            const vendasTop = arr.filter(n => n.v > 0).sort((a, b) => b.v - a.v).slice(0, 2);
-            v = { comprasTop, vendasTop };
-            _grPocsMemo.set(mk, v);
-        }
+        if (v === undefined) { v = grPocsCalcularCandle(de, msPorCandle, raw); _grPocsMemo.set(mk, v); }
         mapa.set(de, v);
     }
-    _grPocsPorCandleCache = { key, mapa };
+    _grPocsPorCandleCache = { key, mapa, candlesRef: candles, msPorCandle };
     return mapa;
 }
 // Liga/desliga as barras de volume profile ("nuvem") desenhadas no price
@@ -3438,7 +3444,7 @@ function grFootprintAlternarSkin() {
 grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
-const APP_VERSAO = '20/09 23:14 · 15753 linhas · CORPO-VIVO v30';
+const APP_VERSAO = '20/09 23:14 · 15753 linhas · CORPO-VIVO v31';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) el.textContent = 'Versão ' + APP_VERSAO;
@@ -11826,6 +11832,39 @@ function grFootprintParaCadaMinuto(de, ate, fn) {
 // Invalida o que foi derivado dos minutos em [minTs, maxTs] (sem argumentos: tudo). As chaves das listas de candles não
 // enxergam mudança de conteúdo com o mesmo tamanho, por isso as listas são sempre zeradas; os resultados por candle só saem
 // os que tocam a faixa.
+// Chamada a CADA TIQUE do "ao vivo" (o preço mexendo, a cada segundo): recalcula só o(s) candle(s) que tocam [minTs, maxTs]
+// — na prática, quase sempre só o último, o candle em formação — e já escreve o resultado direto nos 3 caches por-candle
+// (o memo individual E o mapa de fora que grObterDeltaTotalPorCandle/grObterDeltaPorCandle/grObterPocsPorCandle devolvem),
+// sem precisar esperar o próximo desenho notar a mudança nem re-varrer os milhares de candles carregados. Só atualiza o mapa
+// de fora se ele for do MESMO conjunto de candles e do mesmo timeframe (candlesRef/msPorCandle) — senão o mapa é doutra tela
+// e vai ser refeito do zero na próxima vez que for pedido, o que já é o comportamento certo.
+function grFootprintAtualizarCachesLive(minTs, maxTs) {
+    const candles = _grAllCandles;
+    if (!candles || !candles.length || !_grFootprintCandlesRaw) return;
+    const raw = _grFootprintCandlesRaw;
+    const msPorCandle = grFootprintMsPorCandle();
+    for (let i = candles.length - 1; i >= 0; i--) {
+        const de = candles[i].t;
+        if (de > maxTs) continue;          // candle mais novo que a faixa — ainda não chegou nele (candles em ordem crescente)
+        if (de + msPorCandle <= minTs) break; // já passou da faixa indo pra trás — os candles antes desse são mais antigos ainda
+        const mk = de + '_' + msPorCandle;
+        const vDt = grDtCalcularCandle(de, msPorCandle, raw);
+        _grDtMemo.set(mk, vDt);
+        if (_grDtPorCandleCache.mapa && _grDtPorCandleCache.candlesRef === candles && _grDtPorCandleCache.msPorCandle === msPorCandle) {
+            if (vDt) _grDtPorCandleCache.mapa.set(de, vDt); else _grDtPorCandleCache.mapa.delete(de);
+        }
+        const vDelta = grDeltaCalcularCandle(de, msPorCandle, raw);
+        _grDeltaMemo.set(mk, vDelta);
+        if (_grDeltaPorCandleCache.mapa && _grDeltaPorCandleCache.candlesRef === candles && _grDeltaPorCandleCache.msPorCandle === msPorCandle) {
+            _grDeltaPorCandleCache.mapa.set(de, vDelta);
+        }
+        const vPocs = grPocsCalcularCandle(de, msPorCandle, raw);
+        _grPocsMemo.set(mk, vPocs);
+        if (_grPocsPorCandleCache.mapa && _grPocsPorCandleCache.candlesRef === candles && _grPocsPorCandleCache.msPorCandle === msPorCandle) {
+            _grPocsPorCandleCache.mapa.set(de, vPocs);
+        }
+    }
+}
 function grFootprintInvalidarDerivados(minTs, maxTs) {
     _grDtPorCandleCache = { key: null, mapa: null };
     _grDeltaPorCandleCache = { key: null, mapa: null };
@@ -12011,7 +12050,7 @@ function grFootprintLiveAplicar() {
         if (minTs > maxMud) maxMud = minTs;
     });
     if (!mudou) return;
-    grFootprintInvalidarDerivados(minMud, maxMud); // só os candles que tocam esses minutos (antes: todos, a cada segundo)
+    grFootprintAtualizarCachesLive(minMud, maxMud); // já escreve o candle certo nos 3 caches — sem re-varrer tudo a cada tique
     _grVpMapaCache = null; window._grFpRefCache = {}; window._grDeltaRefCache = null;
     // clusters: só o candle em formação e o anterior mudam
     const cs = _grAllCandles;
