@@ -3444,7 +3444,7 @@ function grFootprintAlternarSkin() {
 grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
-const APP_VERSAO = '20/09 23:14 · 15753 linhas · CORPO-VIVO v34';
+const APP_VERSAO = '20/09 23:14 · 15753 linhas · CORPO-VIVO v36';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) el.textContent = 'Versão ' + APP_VERSAO;
@@ -3749,21 +3749,23 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
     if (nivelTxt >= 0 && candle.t === cfg.tSel) fs = grFootprintFonteSelecionado(ctx, cl, cfg, wCel, toY); // candle do crosshair: números maiores (se couber)
     // Números o mais escuros e legíveis possível: preto puro, peso 600 (o desequilíbrio, peso 800 e azul).
     const fonteNormal = '600 ' + fs + 'px -apple-system', fonteNegrito = '800 ' + fs + 'px -apple-system';
-    // Células
+    // Células. A ponta (a linha mais alta e a mais baixa do candle) pode sair cortada pela máxima/mínima real, menor que as
+    // outras — é o "remainder cell" que a NinjaTrader também tem, não um bug (pesquisado e confirmado). Mas o número dela
+    // não pode ficar escondido só por ser fina: fica marcada ("pontaCortada") pra pular a trava de altura mínima no texto,
+    // mais abaixo — ela sempre mostra o valor, mesmo bem fininha (nas linhas do meio, que nunca são cortadas, a trava de
+    // altura mínima continua valendo do jeito de sempre, pro texto não virar sopa de letra quando o gráfico tá bem zoom out).
+    const n = cl.linhas.length;
     const geo = [];
     cl.linhas.forEach((ln, i) => {
         let yTop = Math.round(toY(ln.p + ln.meio)), yBot = Math.round(toY(ln.p - ln.meio));
-        // O bloco de células NUNCA pode passar da máxima/mínima REAL do candle (bug grave corrigido: com agrupamento — teto
-        // de degraus, ATR de período curto, tick Manual pequeno — ou com a fonte do footprint discordando em $ da fonte do
-        // candle, a linha de cima/baixo podia ficar fora do candle e ele parecia "maior" ou "menor" do que é de verdade).
-        // Vale pra TODO candle, fechado ou em formação (antes só valia pro em formação) e pros 3 modos (ATR, Auto, Manual),
-        // porque os três passam por aqui.
-        yTop = Math.max(yTop, Math.round(toY(candle.h)));
-        yBot = Math.min(yBot, Math.round(toY(candle.l)));
+        const yTopReal = Math.round(toY(candle.h)), yBotReal = Math.round(toY(candle.l));
+        const pontaCortada = (i === 0 || i === n - 1) && (yTop < yTopReal || yBot > yBotReal);
+        yTop = Math.max(yTop, yTopReal);
+        yBot = Math.min(yBot, yBotReal);
         if (yBot < yTop) { geo.push(null); return; }
         if (yBot < yMin || yTop > yMax || ln.total <= 0) { geo.push(null); return; }
         const y0 = Math.max(yMin, yTop), y1 = Math.min(yMax, yBot);
-        geo.push({ y0, y1 });
+        geo.push({ y0, y1, pontaCortada });
         // por linha-base: uma linha agrupada (teto de níveis do modo ATR) soma várias, então divide pelo agrupamento
         ctx.fillStyle = grFootprintCorCelula(ln.bid / (cl.agrup || 1), ln.ask / (cl.agrup || 1), cfg.refCor);
         ctx.fillRect(xCel, y0, wCel, Math.max(1, y1 - y0));
@@ -3784,7 +3786,8 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
         ctx.textAlign = 'right';
         cl.linhas.forEach((ln, i) => {
             const g = geo[i];
-            if (!g || g.y1 - g.y0 < 8) return;
+            if (!g) return;
+            if (g.y1 - g.y0 < 8 && !g.pontaCortada) return; // fininha E não é a ponta cortada: some, como sempre
             const imb = ln.imbAsk || ln.imbBid;
             ctx.font = imb ? fonteNegrito : fonteNormal;
             ctx.fillStyle = imb ? '#1A2BD8' : '#000000';
@@ -3797,7 +3800,8 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
         ctx.textAlign = 'left';
         cl.linhas.forEach((ln, i) => {
             const g = geo[i];
-            if (!g || g.y1 - g.y0 < 8) return;
+            if (!g) return;
+            if (g.y1 - g.y0 < 8 && !g.pontaCortada) return; // fininha E não é a ponta cortada: some, como sempre
             const a = grFmtVolCompacto(ln.bid, nivelTxt), b = grFmtVolCompacto(ln.ask, nivelTxt);
             ctx.font = ln.imbBid ? fonteNegrito : fonteNormal; const wa = ctx.measureText(a).width;
             ctx.font = fonteNormal;                             const wx = ctx.measureText(' x ').width;
