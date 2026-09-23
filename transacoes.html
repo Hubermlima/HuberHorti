@@ -2945,7 +2945,7 @@ let _grAllCandles = [];
 function grAlturasPaineis(H) {
     const sub = (_indState.subInd && !_indOculto.painel) ? Math.floor(H * 0.28) : 0;
     // Skin cinza mostra só o TOTAL por linha (sem lado dominante): o painel Delta/Total não faz sentido nela.
-    const dt = (_grFootprintAtivo && _grFootprintCandlesRaw && FOOTPRINT_SKIN !== 'cinza') ? Math.max(78, Math.floor(H * 0.167)) : 0; // 4 linhas: Delta V, Delta $, Total e Bid x Ask
+    const dt = (_grFootprintAtivo && _grFootprintCandlesRaw && FOOTPRINT_SKIN !== 'cinza') ? Math.max(58, Math.floor(H * 0.125)) : 0; // 3 linhas: Delta V, Delta $ e Total
     return { sub, dt, total: sub + dt };
 }
 // Delta (compra-venda) e Total (compra+venda) por candle EXIBIDO, somando o
@@ -3929,6 +3929,28 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
             ctx.font = fonteNormal;                             ctx.fillStyle = '#000000';                          ctx.fillText(' x ', x, y); x += wx;
             ctx.font = ln.imbAsk ? fonteNegrito : fonteNormal; ctx.fillStyle = ln.imbAsk ? '#1A2BD8' : '#000000'; ctx.fillText(b, x, y);
         });
+    }
+    // Total do candle inteiro (bid x ask), uma linha só, logo ABAIXO do bloco de células — não é célula nem abre nada,
+    // é só a soma de todos os níveis daquele footprint. Herda fonte/tamanho/zoom das células (fs, nivelTxt): cresce e
+    // encolhe junto com elas e some no mesmo ponto em que os números das células somem (zoom bem afastado).
+    if (nivelTxt >= 0) {
+        const validosTotal = geo.filter(g => g);
+        if (validosTotal.length) {
+            const yBaseBlocoTotal = Math.max(...validosTotal.map(g => g.y1));
+            let totBid = 0, totAsk = 0;
+            cl.linhas.forEach(ln => { totBid += ln.bid; totAsk += ln.ask; });
+            const yTotal = yBaseBlocoTotal + fs + 3;
+            if (yTotal <= yMax) {
+                const a = grFmtVolCompacto(totBid, nivelTxt), b = grFmtVolCompacto(totAsk, nivelTxt);
+                ctx.font = fonteNormal;
+                const wa = ctx.measureText(a).width, wx = ctx.measureText(' x ').width, wb = ctx.measureText(b).width;
+                let x = xCel + (wCel - (wa + wx + wb)) / 2;
+                ctx.fillStyle = '#000000';
+                ctx.fillText(a, x, yTotal); x += wa;
+                ctx.fillText(' x ', x, yTotal); x += wx;
+                ctx.fillText(b, x, yTotal);
+            }
+        }
     }
     // Candle: linha fina à esquerda, da abertura ao fechamento. Candle FECHADO: linhas que contêm os dois preços (alinha com as
     // células). Candle EM FORMAÇÃO: preço exato, da abertura até a linha da cotação — acompanha a régua, sem arredondar pra linha.
@@ -5846,21 +5868,19 @@ if (fibsParaDesenhar.length > 0) {
         ctx.font = 'bold 9px -apple-system';
         ctx.textAlign = 'right';
         ctx.fillText(window._grFonteCandles || 'Binance', W - PAD.right - 2, H - PAD.bottom + 22);
-        // ── Painel Delta V / Delta $ / Total / Bid x Ask (Fluxo) — topo da pilha, ACIMA do painel inferior ──
-        // Tabela de fundo branco: 4 linhas (Delta V, Delta $, Total, Bid x Ask) x 1 coluna por candle, com linhas de grade.
+        // ── Painel Delta V / Delta $ / Total (Fluxo) — topo da pilha, ACIMA do painel inferior ──
+        // Tabela de fundo branco: 3 linhas (Delta V, Delta $, Total) x 1 coluna por candle, com linhas de grade.
         // Delta V = delta de volume do candle (compra − venda do footprint); Delta $ = variação % do preço do candle
         // (fechamento − abertura, sobre a abertura). As duas ganham célula verde suave (positivo) ou vermelho suave
-        // (negativo); Total e Bid x Ask, brancas. Texto sempre preto e sem sinal (+/-): a cor já diz o lado. Cada coluna
-        // é o espaço do candle (alinhada com ele). O número vai deitado se cabe na coluna; senão EM PÉ (sem pular
-        // candle); só se nem em pé couber, pula de N em N (as células continuam coloridas, só o número some).
-        // Bid x Ask = total agregado (soma de todos os minutos do candle) do lado vendedor x comprador do footprint,
-        // só como leitura — não é um botão nem abre nada.
+        // (negativo); Total, branca. Texto sempre preto e sem sinal (+/-): a cor já diz o lado. Cada coluna é o espaço
+        // do candle (alinhada com ele). O número vai deitado se cabe na coluna; senão EM PÉ (sem pular candle); só se
+        // nem em pé couber, pula de N em N (as células continuam coloridas, só o número some).
         if (_altPan.dt > 0) {
             const dtH = _altPan.dt;
             const dtY = H - _altPan.sub - dtH;
             const yFim = dtY + dtH;
-            const rowH = dtH / 4;
-            const yL1 = dtY + Math.round(rowH), yL2 = dtY + Math.round(2 * rowH), yL3 = dtY + Math.round(3 * rowH); // divisórias entre as linhas
+            const rowH = dtH / 3;
+            const yL1 = dtY + Math.round(rowH), yL2 = dtY + Math.round(2 * rowH); // divisórias entre as linhas
             const DT = { fundo: '#FFFFFF', pos: '#BFE6C9', neg: '#F8C6C4', linha: '#C4C9D0', borda: '#8E959F', texto: '#111111' };
             const slotW = chartW / Math.max(totalSlots, 1);
             const colX = i => PAD.left + i * slotW; // borda esquerda da coluna do candle i (mesma conta do candle)
@@ -5882,7 +5902,6 @@ if (fibsParaDesenhar.length > 0) {
             ctx.beginPath();
             ctx.moveTo(0, yL1 + 0.5); ctx.lineTo(W, yL1 + 0.5);                              // entre Delta V e Delta $
             ctx.moveTo(0, yL2 + 0.5); ctx.lineTo(W, yL2 + 0.5);                              // entre Delta $ e Total
-            ctx.moveTo(0, yL3 + 0.5); ctx.lineTo(W, yL3 + 0.5);                              // entre Total e Bid x Ask
             ctx.moveTo(Math.round(PAD.left) + 0.5, dtY); ctx.lineTo(Math.round(PAD.left) + 0.5, yFim); // coluna dos títulos
             if (slotW >= 8) {                                                                   // uma linha por coluna de candle
                 for (let i = 1; i <= candles.length; i++) {
@@ -5897,23 +5916,19 @@ if (fibsParaDesenhar.length > 0) {
             ctx.moveTo(0, yFim - 0.5); ctx.lineTo(W, yFim - 0.5);                             // base
             ctx.stroke();
             // títulos e números
-            const yC1 = dtY + rowH / 2, yC2 = dtY + rowH * 1.5, yC3 = dtY + rowH * 2.5, yC4 = dtY + rowH * 3.5;
+            const yC1 = dtY + rowH / 2, yC2 = dtY + rowH * 1.5, yC3 = dtY + rowH * 2.5;
             ctx.font = 'bold 7px -apple-system';
             ctx.fillStyle = DT.texto;
             ctx.textAlign = 'left';
             ctx.fillText('Delta V', 4, yC1 + 2.5);
             ctx.fillText('Delta $', 4, yC2 + 2.5);
             ctx.fillText('Total', 4, yC3 + 2.5);
-            ctx.fillText('Bid x Ask', 4, yC4 + 2.5);
             const txtPct = p => Math.abs(p).toFixed(2) + '%';
-            // Bid (venda) e Ask (compra) totais do candle, a partir de delta (ask-bid) e total (ask+bid) já calculados —
-            // mesma convenção bid/venda, ask/compra usada nas células do footprint.
-            const txtBidAsk = d => grFmtVolCompacto((d.total - d.delta) / 2, 0) + ' x ' + grFmtVolCompacto((d.total + d.delta) / 2, 0);
             let maiorTxt = 0;
             for (const c of candles) {
                 const d = dtMapa ? dtMapa.get(c.t) : null;
                 const p = pctDoCandle(c);
-                if (d) maiorTxt = Math.max(maiorTxt, ctx.measureText(grFmtVolCompacto(Math.abs(d.delta), 0)).width, ctx.measureText(grFmtVolCompacto(d.total, 0)).width, ctx.measureText(txtBidAsk(d)).width);
+                if (d) maiorTxt = Math.max(maiorTxt, ctx.measureText(grFmtVolCompacto(Math.abs(d.delta), 0)).width, ctx.measureText(grFmtVolCompacto(d.total, 0)).width);
                 if (p != null) maiorTxt = Math.max(maiorTxt, ctx.measureText(txtPct(p)).width);
             }
             // ZOOM: o número cresce junto com a coluna do candle (antes ficava travado em 7px). Deitado: a maior fonte que cabe
@@ -5948,7 +5963,6 @@ if (fibsParaDesenhar.length > 0) {
                 if (d) {
                     escreve(grFmtVolCompacto(Math.abs(d.delta), 0), x, yC1);
                     escreve(grFmtVolCompacto(d.total, 0), x, yC3);
-                    escreve(txtBidAsk(d), x, yC4);
                 }
                 if (p != null) escreve(txtPct(p), x, yC2);
             }
