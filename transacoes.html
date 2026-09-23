@@ -784,6 +784,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
         <button class="cv-ind-btn med" id="cv-ind-med" onclick="cvToggleMedMenu()"><span class="btn-sigla">EMA</span><span class="btn-nome">Médias</span></button>
       </div>
       <button class="cv-ind-btn rsilevels" id="cv-ind-rsiLevels" onclick="cvToggleInd('rsiLevels')"><span class="btn-sigla">RSI</span><span class="btn-nome">Levels</span></button>
+      <button class="cv-ind-btn rsifib active" id="cv-ind-rsiFib" onclick="cvToggleInd('rsiFib')"><span class="btn-sigla">RSI</span><span class="btn-nome">+ Fibonacci</span></button>
       <button class="cv-ind-btn vol" id="cv-ind-vol" onclick="cvToggleSubInd('vol')">
 <span class="btn-sigla">Vol</span><span class="btn-nome">Volume</span></button>
       <button class="cv-ind-btn macd" id="cv-ind-macd" onclick="cvToggleSubInd('macd')">
@@ -4351,6 +4352,13 @@ function grDrawCandles(candles, emptyRight) {
             rsiLvSup = extrairJanela(grSuavizarSerie(lv.sup, RSI_LEVELS_SUAVIZACAO), 14);
             rsiLvInf = extrairJanela(grSuavizarSerie(lv.inf, RSI_LEVELS_SUAVIZACAO), 14);
         }
+        // RSI + Fibonacci: mesma ideia, mas teto/piso dinâmico (fib do range recente do RSI) — ver grRSIFibLevels
+        let rsiFibSup = null, rsiFibInf = null;
+        if (_indState.rsiFib && !_indOculto.rsiFib) {
+            const lvFib = grRSIFibLevels(allCloses, 14);
+            rsiFibSup = extrairJanela(grSuavizarSerie(lvFib.sup, RSI_LEVELS_SUAVIZACAO), 14);
+            rsiFibInf = extrairJanela(grSuavizarSerie(lvFib.inf, RSI_LEVELS_SUAVIZACAO), 14);
+        }
         // ── Eixo Y FIXO — não recalcula mais a partir dos candles visíveis.
         // Calibra uma vez (a partir do último candle) e só muda por pan
         // vertical manual. Scroll horizontal nunca mexe nisso.
@@ -4521,6 +4529,49 @@ function grDrawCandles(candles, emptyRight) {
                 ctx.textAlign = 'left';
             });
             if (partes.length === 2) window._compValores.rsiLevels = { cor: RSI_COR.sup, valor: partes[0] + ' / ' + partes[1] };
+        }
+        // RSI + Fibonacci — mesmo desenho do RSI Levels fixo acima, cores diferentes (dourado/roxo, tom de
+        // Fibonacci) pra não confundir os dois na tela, e rótulo mostra o retracement (23,6/78,6), não 30/70.
+        if (rsiFibSup && rsiFibInf) {
+            const FIB_COR = { sup: '#F59E0B', inf: '#8B5CF6' };
+            const FIB_SERIES = [['sup', rsiFibSup, '78,6'], ['inf', rsiFibInf, '23,6']];
+            ctx.save();
+            ctx.beginPath(); ctx.rect(PAD.left, PAD.top, chartW, chartH); ctx.clip();
+            FIB_SERIES.forEach(([lado, serie]) => grTracarCurvaSuave(ctx,
+                serie.map((v, i) => v == null ? null : { x: PAD.left + (i / totalSlots) * chartW + cW / 2, y: toY(v) }), FIB_COR[lado], 1.4));
+            FIB_SERIES.forEach(([lado, serie]) => {
+                let iUlt = -1;
+                for (let i = serie.length - 1; i >= 0; i--) if (serie[i] != null) { iUlt = i; break; }
+                if (iUlt < 0) return;
+                const y = toY(serie[iUlt]);
+                ctx.strokeStyle = FIB_COR[lado]; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+                ctx.beginPath(); ctx.moveTo(PAD.left + (iUlt / totalSlots) * chartW + cW / 2, y); ctx.lineTo(PAD.left + chartW, y); ctx.stroke();
+                ctx.setLineDash([]);
+            });
+            ctx.restore();
+            const partesFib = [];
+            FIB_SERIES.forEach(([lado, serie, nivel]) => {
+                let v = null;
+                for (let i = serie.length - 1; i >= 0; i--) if (serie[i] != null) { v = serie[i]; break; }
+                if (v == null) return;
+                partesFib.push(fmtN(v));
+                const y = toY(v), yMin = PAD.top + 9, yMax = PAD.top + chartH - 9;
+                const dentro = y >= yMin && y <= yMax;
+                const yPil = Math.max(yMin, Math.min(yMax, y));
+                if (dentro) {
+                    ctx.font = 'bold 8px -apple-system'; ctx.textAlign = 'right'; ctx.fillStyle = FIB_COR[lado];
+                    ctx.fillText('Fib ' + nivel, PAD.left + chartW - 4, y - 3);
+                }
+                const bH = 16, bW = PAD.left - 4, bX = 3, bY = yPil - bH / 2;
+                ctx.fillStyle = FIB_COR[lado];
+                ctx.beginPath(); ctx.roundRect(bX, bY, bW, bH, 3); ctx.fill();
+                ctx.fillStyle = '#FFFFFF';
+                ctx.font = (dentro ? 'bold 10px' : 'bold 9px') + ' -apple-system';
+                ctx.textAlign = 'right';
+                ctx.fillText((dentro ? '' : (y < yMin ? '▲' : '▼')) + fmtN(v), bX + bW - 3, bY + bH - 4);
+                ctx.textAlign = 'left';
+            });
+            if (partesFib.length === 2) window._compValores.rsiFib = { cor: FIB_COR.sup, valor: partesFib[0] + ' / ' + partesFib[1] };
         }
         // ── EMA 21 Diário (MTF) ───────────────────────────────────────
         if (_indState.ema21d && !_indOculto.ema21d && _grCandlesD.length >= 21) {
@@ -8188,6 +8239,7 @@ const WS_THROTTLE_MS = 1000; // o candle em formação era redesenhado só a cad
 const _indState = {
     bollinger: true,
     rsiLevels: false,
+    rsiFib:    true,   // RSI + Fibonacci (teto/piso dinâmico) — ligado por padrão pra comparar com o RSI Levels fixo
     ema9:      false,
     ema21:     false,
     ema50:     false,
@@ -9773,6 +9825,53 @@ function grRSILevels(closes, periodo = 14, sobrecomprado = 70, sobrevendido = 30
         const d = closes[i] - closes[i - 1];
         ganho = (ganho * (periodo - 1) + (d > 0 ? d : 0)) / periodo;
         perda = (perda * (periodo - 1) + (d < 0 ? -d : 0)) / periodo;
+    }
+    return { sup, inf };
+}
+// ── RSI + Fibonacci (sobrecompra/sobrevenda DINÂMICA) ────────────────────────────────────
+// O RSI 70/30 acima é fixo. Aqui em vez de um teto/piso fixo, pega o próprio range (máx−mín)
+// do RSI(14) numa janela de candles recente e projeta os retracements de Fibonacci DESSE
+// range como novo teto/piso: se o RSI andou "comprimido" ultimamente, o teto/piso fica mais
+// apertado (mais fácil de tocar); se andou esticado, fica mais largo. Reaproveita a MESMA
+// conversão RSI→preço que o RSI 70/30 já usa (grRSIDeltaParaAlvo) — só troca o alvo fixo
+// (70/30) pelo alvo dinâmico (fib do range recente). É por isso que fica embutido no price
+// action, igual ao RSI Levels de cima, e não em painel separado.
+const RSI_FIB_LOOKBACK = 50;   // candles pra achar o topo/fundo recente do RSI
+const RSI_FIB_BAIXO = 0.236;   // retracement de baixo do range do RSI — novo "sobrevendido"
+const RSI_FIB_ALTO = 0.786;    // retracement de cima do range do RSI — novo "sobrecomprado"
+function grRSIFibLevels(closes, periodo = 14, lookback = RSI_FIB_LOOKBACK, ratioBaixo = RSI_FIB_BAIXO, ratioAlto = RSI_FIB_ALTO) {
+    const n = closes.length;
+    const sup = new Array(n).fill(null), inf = new Array(n).fill(null);
+    if (n < periodo + lookback + 2) return { sup, inf };
+    let ganho = 0, perda = 0;
+    for (let i = 1; i <= periodo; i++) {
+        const d = closes[i] - closes[i - 1];
+        if (d > 0) ganho += d; else perda -= d;
+    }
+    ganho /= periodo; perda /= periodo;
+    const rsiSerie = new Array(n).fill(null);
+    rsiSerie[periodo] = perda === 0 ? 100 : 100 - 100 / (1 + ganho / perda);
+    for (let i = periodo + 1; i < n; i++) {
+        // Range do RSI já fechado (até i-1), sem olhar o candle atual — mesmo espírito do "usa o
+        // estado até i-1" do RSI Levels fixo: o teto/piso do candle i é decidido ANTES dele fechar.
+        let rsiMin = Infinity, rsiMax = -Infinity;
+        for (let j = Math.max(periodo, i - lookback); j < i; j++) {
+            if (rsiSerie[j] == null) continue;
+            if (rsiSerie[j] < rsiMin) rsiMin = rsiSerie[j];
+            if (rsiSerie[j] > rsiMax) rsiMax = rsiSerie[j];
+        }
+        if (rsiMin !== Infinity && rsiMax > rsiMin) {
+            const alvoAlto = rsiMin + ratioAlto * (rsiMax - rsiMin);
+            const alvoBaixo = rsiMin + ratioBaixo * (rsiMax - rsiMin);
+            const dUp = grRSIDeltaParaAlvo(ganho, perda, periodo, alvoAlto);
+            const dDn = grRSIDeltaParaAlvo(ganho, perda, periodo, alvoBaixo);
+            if (dUp != null) sup[i] = closes[i - 1] + dUp;
+            if (dDn != null) inf[i] = closes[i - 1] + dDn;
+        }
+        const d = closes[i] - closes[i - 1];
+        ganho = (ganho * (periodo - 1) + (d > 0 ? d : 0)) / periodo;
+        perda = (perda * (periodo - 1) + (d < 0 ? -d : 0)) / periodo;
+        rsiSerie[i] = perda === 0 ? 100 : 100 - 100 / (1 + ganho / perda);
     }
     return { sup, inf };
 }
