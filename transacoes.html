@@ -2514,6 +2514,18 @@ function grConfigBlocoContraste(svg) {
         + grConfigSliderDecimal('cv-cfg-contrasteexpo', 'Contraste superior (expoente)', FOOTPRINT_CONTRASTE_EXPO, 0.5, 6, 0.1, 'grFootprintContrasteExpoSlider')
         + '</div>';
 }
+// Bloco "Marcar os maiores níveis": toggle (liga/desliga) + slider de tolerância (%), que só aparece quando ligado.
+function grConfigBlocoMarcarMaiores(svg) {
+    const extra = FOOTPRINT_MARCAR_MAIORES
+        ? grConfigSliderInt('cv-cfg-marcarmaiorespct', 'Tolerância', FOOTPRINT_MARCAR_MAIORES_PCT, 0, 30, 'grFootprintMarcarMaioresPctSlider', '', '%')
+        : '<div style="font-size:11.5px;color:#8E8E93;margin-top:10px;line-height:1.4;">Pinta de azul o maior nível de bid+ask de todo o período carregado (e os que ficarem perto dele, dentro da tolerância).</div>';
+    return '<div style="padding:12px 2px;border-bottom:1px solid #F2F2F7;">'
+        + '<div style="display:flex;align-items:center;gap:12px;">'
+        + '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;">' + svg + '</svg>'
+        + '<div style="flex:1;min-width:0;"><div style="font-size:14px;font-weight:600;color:#1C1C1E;">Marcar os maiores níveis</div><div style="font-size:11.5px;color:#8E8E93;margin-top:1px;">Destaca em azul o recorde de bid+ask do período</div></div>'
+        + '<button id="cv-cfg-marcarmaiores-value" onclick="grFootprintAlternarMarcarMaiores()" style="border:none;border-radius:8px;padding:7px 14px;font-size:13px;font-weight:700;background:' + (FOOTPRINT_MARCAR_MAIORES ? '#1C1C1E' : '#E5E5EA') + ';color:' + (FOOTPRINT_MARCAR_MAIORES ? '#FFFFFF' : '#1C1C1E') + ';flex-shrink:0;">' + (FOOTPRINT_MARCAR_MAIORES ? 'Ligado' : 'Desligado') + '</button></div>'
+        + extra + '</div>';
+}
 function grConfigVelocidadeBloco(svg) {
     return '<div style="padding:12px 2px;border-bottom:1px solid #F2F2F7;">'
         + '<div style="display:flex;align-items:center;gap:12px;">'
@@ -2571,6 +2583,7 @@ function grConfigRender() {
         + grConfigBlocoContraste(ICO.contraste)
         + grConfigBlocoRefCor(ICO.refcor)
         + R('cv-cfg-poccontorno-value', ICO.contorno, 'Contorno da célula', 'Realce ao redor da linha de maior volume do candle', 'grFootprintAlternarPocContorno()')
+        + grConfigBlocoMarcarMaiores(ICO.refcor)
         + R('cv-cfg-fluxo-value', ICO.atualizar, 'Fluxo', 'Tocar para atualizar agora', 'grFootprintAtualizarSeAtivo()')
         + S('Volume Profile')
         + R('cv-cfg-vplinhas-value', ICO.linhasVp, 'Linhas', null, 'grVpAlternarLinhasModo()')
@@ -3707,7 +3720,14 @@ function grFootprintPrepararClusters(ctx, candles, pxPorUsd, cW) {
     // modo automático, a escala estável de sempre (percentil dos últimos candles fechados); sem histórico, cai no maior
     // nível visível.
     const refCor = (FOOTPRINT_REFCOR_MODO === 'travado' && FOOTPRINT_REFCOR_VALOR) ? FOOTPRINT_REFCOR_VALOR : (grFootprintReferenciaCor(tick) || maxTotal);
-    return { tick, clusters, maxTotal, refCor, nivelTxt, fs, soTotal };
+    // "Marcar os maiores níveis": recorde de bid+ask numa única linha, em TODO o período já carregado (não só os
+    // candles visíveis) — cacheado, só reconta quando os dados mudam.
+    let recordeGlobal = 0, limiteMinimo = Infinity;
+    if (FOOTPRINT_MARCAR_MAIORES) {
+        recordeGlobal = grFootprintRecordeGlobal(tick, getTodos);
+        limiteMinimo = recordeGlobal * (1 - FOOTPRINT_MARCAR_MAIORES_PCT / 100);
+    }
+    return { tick, clusters, maxTotal, refCor, nivelTxt, fs, soTotal, marcarMaiores: FOOTPRINT_MARCAR_MAIORES, recordeGlobal, limiteMinimo };
 }
 // ── Perfil de volume travado: captura o percentil 95 UMA VEZ, sobre uma janela de meses escolhida pelo usuário, e trava
 // esse número até uma nova captura — nenhum recálculo por tique, diferente do modo automático (que já é leve, mas ainda
@@ -3720,6 +3740,45 @@ function grFootprintSetModoRefCor(modo) {
     try { localStorage.setItem('grFootprintRefCorModo', FOOTPRINT_REFCOR_MODO); } catch (e) {}
     grDrawChart();
     grConfigRender();
+}
+// ── Marcar os maiores níveis: acha, em TODO o período já carregado pelo "Dias ao ligar o Fluxo" (não só os candles
+// visíveis na tela), o maior total (bid+ask) de uma única linha do footprint — o "recorde" — e pinta de azul essa
+// célula e as que ficarem dentro da tolerância (%) configurada, em gradiente (mais forte perto do recorde, mais
+// claro perto do limite da tolerância).
+let FOOTPRINT_MARCAR_MAIORES = localStorage.getItem('grFootprintMarcarMaiores') === '1';
+let FOOTPRINT_MARCAR_MAIORES_PCT = parseFloat(localStorage.getItem('grFootprintMarcarMaioresPct'));
+if (!(FOOTPRINT_MARCAR_MAIORES_PCT >= 0)) FOOTPRINT_MARCAR_MAIORES_PCT = 5;
+const FOOTPRINT_COR_AZUL = { base: [191, 219, 254], forte: [30, 64, 175] };
+function grFootprintAlternarMarcarMaiores() {
+    FOOTPRINT_MARCAR_MAIORES = !FOOTPRINT_MARCAR_MAIORES;
+    try { localStorage.setItem('grFootprintMarcarMaiores', FOOTPRINT_MARCAR_MAIORES ? '1' : '0'); } catch (e) {}
+    const el = document.getElementById('cv-cfg-marcarmaiores-value'); if (el) el.textContent = FOOTPRINT_MARCAR_MAIORES ? 'Ligado' : 'Desligado';
+    grDrawChart();
+    grConfigRender();
+}
+function grFootprintMarcarMaioresPctSlider(v) {
+    FOOTPRINT_MARCAR_MAIORES_PCT = Math.max(0, Math.min(30, Math.round(parseFloat(v) || 0)));
+    try { localStorage.setItem('grFootprintMarcarMaioresPct', String(FOOTPRINT_MARCAR_MAIORES_PCT)); } catch (e) {}
+    const txt = document.getElementById('cv-cfg-marcarmaiorespct-txt'); if (txt) txt.textContent = FOOTPRINT_MARCAR_MAIORES_PCT + '%';
+    grDrawChart();
+}
+// Maior total (bid+ask) de uma única linha do footprint entre TODOS os candles já carregados no timeframe atual.
+// Cacheado por tick: só reconta quando o tick, o modo/teto de linhas, ou a quantidade de candles/dados brutos mudam
+// — não a cada quadro desenhado.
+function grFootprintRecordeGlobal(tick, getTodos) {
+    const cs = _grAllCandles;
+    if (!cs || !cs.length) return 0;
+    const chave = FOOTPRINT_LINHAS_MODO + '_' + FOOTPRINT_NIVEIS_MAX + '_' + cs.length + '_' + cs[cs.length - 1].t + '_' + (_grFootprintCandlesRaw ? _grFootprintCandlesRaw.length : 0);
+    window._grRecordeMaioresCache = window._grRecordeMaioresCache || {};
+    const c = window._grRecordeMaioresCache[tick];
+    if (c && c.chave === chave) return c.valor;
+    let maior = 0;
+    for (const cand of cs) {
+        const cl = grFootprintClusterDoCandle(cand, tick, getTodos);
+        if (cl && cl.maxTotal > maior) maior = cl.maxTotal;
+    }
+    window._grRecordeMaioresCache[tick] = { chave, valor: maior };
+    return maior;
 }
 // Varre TODO o bruto que já está carregado (o mesmo período que "Dias ao ligar o Fluxo" trouxe — sem baixar nada a mais
 // do R2 pra essa captura) e calcula o percentil 95 por nível — a mesma conta de grFootprintReferenciaCor, só que na janela
@@ -3869,8 +3928,19 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
         if (yBot < yMin || yTop > yMax || ln.total <= 0) { geo.push(null); return; }
         const y0 = Math.max(yMin, yTop), y1 = Math.min(yMax, yBot);
         geo.push({ y0, y1, pontaCortada });
-        // por linha-base: uma linha agrupada (teto de níveis do modo ATR) soma várias, então divide pelo agrupamento
-        ctx.fillStyle = grFootprintCorCelula(ln.bid / (cl.agrup || 1), ln.ask / (cl.agrup || 1), cfg.refCor);
+        // "Marcar os maiores níveis": essa linha está dentro da tolerância do recorde global (bid+ask)? Pinta de azul,
+        // mais forte quanto mais perto do recorde. Senão, cor normal (por linha-base: uma linha agrupada, teto de
+        // níveis do modo ATR, soma várias, então divide pelo agrupamento).
+        if (cfg.marcarMaiores && cfg.recordeGlobal > 0 && ln.total >= cfg.limiteMinimo) {
+            const faixa = cfg.recordeGlobal - cfg.limiteMinimo;
+            const prox = faixa > 0 ? Math.min(1, Math.max(0, (ln.total - cfg.limiteMinimo) / faixa)) : 1;
+            const r = Math.round(FOOTPRINT_COR_AZUL.base[0] + (FOOTPRINT_COR_AZUL.forte[0] - FOOTPRINT_COR_AZUL.base[0]) * prox);
+            const g = Math.round(FOOTPRINT_COR_AZUL.base[1] + (FOOTPRINT_COR_AZUL.forte[1] - FOOTPRINT_COR_AZUL.base[1]) * prox);
+            const b = Math.round(FOOTPRINT_COR_AZUL.base[2] + (FOOTPRINT_COR_AZUL.forte[2] - FOOTPRINT_COR_AZUL.base[2]) * prox);
+            ctx.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
+        } else {
+            ctx.fillStyle = grFootprintCorCelula(ln.bid / (cl.agrup || 1), ln.ask / (cl.agrup || 1), cfg.refCor);
+        }
         ctx.fillRect(xCel, y0, wCel, Math.max(1, y1 - y0));
     });
     // Contorno ao redor do BLOCO INTEIRO de células (não mais por célula — aquilo criava uma linha divisória entre cada
