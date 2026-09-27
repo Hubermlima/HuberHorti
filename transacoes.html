@@ -1091,9 +1091,9 @@ async function init() {
         } catch(e) {}
         // Inicializa o gráfico diretamente
                 document.getElementById('cv-ticker').textContent = _ticker;
+        try { await grAmbienteCarregar(); } catch(e) {} // restaura o ambiente ANTES de abrir -- 1 render só, já no TF certo
         cvAbrir();
         try { await Promise.all([carregarTransacoes(), fetchFxRate()]); } catch(e) {}
-        grAmbienteCarregar(); // restaura o ambiente (indicadores) da última vez -- sempre roda, mesmo se algo acima falhar
         return;
     }
     // Header
@@ -8728,7 +8728,6 @@ grEmaCustomCarregar();
 // do jeito que você deixou. Grava local na hora (rápido, sem esperar rede) e manda uma cópia pro
 // Supabase em segundo plano (debounced, sem travar nada) — se limpar os dados do navegador ou trocar
 // de aparelho, o ambiente volta de lá.
-const GR_AMBIENTE_KEY = 'gr_ambiente';
 function grAmbienteColetar() {
     return {
         v: 1,
@@ -8744,35 +8743,26 @@ function grAmbienteColetar() {
         emaCustom: _grEmaCustom.map(e => ({ periodo: e.periodo, cor: e.cor })),
     };
 }
-let _grAmbienteSalvarTimer = null;
 let _grAmbienteRestaurando = false; // true enquanto grAmbienteCarregar() está aplicando os campos -- evita gravar o ambiente pela metade
 function grAmbienteSalvar() {
     if (_grAmbienteRestaurando) return; // restauração em andamento -- não regrava por cima do que ainda está sendo aplicado
     const ambiente = grAmbienteColetar();
-    try { localStorage.setItem(GR_AMBIENTE_KEY, JSON.stringify(ambiente)); console.log('[ambiente] salvo no localStorage, tf=' + ambiente.tf); } catch(e) { console.log('[ambiente] ERRO ao salvar no localStorage:', e); }
-    // Backup no Supabase — debounce de 1,5s pra não disparar uma chamada a cada toggle rápido.
-    clearTimeout(_grAmbienteSalvarTimer);
-    _grAmbienteSalvarTimer = setTimeout(async () => {
-        try { await db.from('preferencias').upsert({ id: 1, indicadores: ambiente, updated_at: new Date().toISOString() }); console.log('[ambiente] backup no Supabase OK, tf=' + ambiente.tf); } catch(e) { console.log('[ambiente] ERRO no backup Supabase:', e); }
-    }, 1500);
+    // Só na tabela do Supabase -- sem localStorage e sem debounce, pra não perder nada se fechar rápido.
+    db.from('preferencias').upsert({ id: 1, indicadores: ambiente, updated_at: new Date().toISOString() })
+        .then(() => console.log('[ambiente] salvo no Supabase, tf=' + ambiente.tf))
+        .catch(e => console.log('[ambiente] ERRO ao salvar no Supabase:', e));
 }
 // Roda uma vez ao abrir o app: localStorage primeiro (instantâneo); se estiver vazio, busca a
 // última cópia do Supabase como reserva.
 async function grAmbienteCarregar() {
     let ambiente = null;
+    // Só na tabela do Supabase -- sem localStorage, pra não ter dois lugares divergindo.
     try {
-        const raw = localStorage.getItem(GR_AMBIENTE_KEY);
-        if (raw) ambiente = JSON.parse(raw);
-        console.log('[ambiente] localStorage tinha:', raw);
-    } catch(e) { console.log('[ambiente] ERRO lendo localStorage:', e); }
-    if (!ambiente) {
-        try {
-            const { data, error } = await db.from('preferencias').select('indicadores').single();
-            if (data && data.indicadores) ambiente = data.indicadores;
-            console.log('[ambiente] localStorage vazio, busquei do Supabase:', JSON.stringify(data), error ? ('erro=' + JSON.stringify(error)) : '');
-        } catch(e) { console.log('[ambiente] ERRO buscando do Supabase:', e); }
-    }
-    if (!ambiente) { console.log('[ambiente] NADA encontrado (nem localStorage nem Supabase) -- fica no padrão'); return; }
+        const { data, error } = await db.from('preferencias').select('indicadores').single();
+        if (data && data.indicadores) ambiente = data.indicadores;
+        console.log('[ambiente] busquei do Supabase:', JSON.stringify(data), error ? ('erro=' + JSON.stringify(error)) : '');
+    } catch(e) { console.log('[ambiente] ERRO buscando do Supabase:', e); }
+    if (!ambiente) { console.log('[ambiente] NADA encontrado no Supabase -- fica no padrão'); return; }
     console.log('[ambiente] restaurando tf=' + ambiente.tf + ' (atual antes de restaurar: ' + _grTf + ')');
     _grAmbienteRestaurando = true; // a partir daqui, grAmbienteSalvar() não grava nada até liberar no fim
     // TF: 'custom' já traz amount/unit próprios restaurados do localStorage 'cvTfCustom' antes daqui.
