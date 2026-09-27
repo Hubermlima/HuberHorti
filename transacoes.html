@@ -2685,18 +2685,19 @@ function cvRenderMenuFpCfg() {
                : '<div style="font-size:12px;color:#8E8E93;">Calculando...</div>');
     } else if (_grFpCfgMenuQual === 'rsi') {
         const r = window._compValores && window._compValores.rsi;
+        const valoresR = (r && r.valores) || {};
         menu.innerHTML = '<div style="font-size:13px;font-weight:700;color:#1C1C1E;">RSI (14) — Níveis</div>'
-            + (r ? '<div style="font-size:12px;font-weight:700;color:' + r.cor + ';padding:2px 0 8px;">' + r.valor + '</div>'
-                 : '<div style="font-size:12px;color:#8E8E93;padding-bottom:8px;">Calculando...</div>')
-            + '<div style="font-size:11px;color:#8E8E93;padding-bottom:4px;">Toque pra ligar/desligar cada nível</div>'
-            + '<div style="display:flex;flex-wrap:wrap;gap:6px;max-width:220px;">'
+            + '<div style="font-size:11px;color:#8E8E93;padding:2px 0 8px;">Toque pra ligar/desligar cada nível</div>'
+            + '<div style="display:flex;flex-direction:column;gap:5px;min-width:180px;">'
             + RSI_NIVEIS_DISPONIVEIS.map(nv => {
                 const ativo = _grRsiNiveis.includes(nv);
                 const cor = grRsiCorLinha(nv);
                 const corFundo = ativo ? grHexParaRgba(cor, 0.15) : '#FFFFFF';
                 const corBorda = ativo ? cor : '#D1D1D6';
                 const corTexto = ativo ? cor : '#8E8E93';
-                return '<button onclick="grRsiToggleNivel(' + nv + ');" style="border:1.5px solid ' + corBorda + ';background:' + corFundo + ';border-radius:6px;padding:4px 9px;font-size:12px;font-weight:700;color:' + corTexto + ';cursor:pointer;">' + nv + '</button>';
+                const txtValor = valoresR[nv] != null ? fmtN(valoresR[nv]) : '—';
+                return '<button onclick="grRsiToggleNivel(' + nv + ');" style="border:1.5px solid ' + corBorda + ';background:' + corFundo + ';border-radius:6px;padding:5px 10px;font-size:12px;font-weight:700;color:' + corTexto + ';cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:10px;">'
+                    + '<span>' + nv + '</span><span style="font-weight:600;">' + txtValor + '</span></button>';
               }).join('')
             + '</div>';
     } else if (_grFpCfgMenuQual === 'cvd') {
@@ -3654,7 +3655,7 @@ function grFootprintSetModoLinhas(modo) {
     window._grClusterCache = new Map(); // a grade e o teto de níveis mudam com o modo
     grAmbienteAtualizarRotulos();
     grDrawChart();
-    grConfigRender();
+    cvRenderMenuFpCfg(); // só re-renderiza o popup do chip Fluxo que já está aberto -- não o modal geral antigo
 }
 // Período do ATR (modo ATR): quantos candles fechados o ATR olha pra trás. Maior = degrau mais estável/grosso; menor = mais reativo.
 function grFootprintAtrPeriodoSlider(v) {
@@ -3791,7 +3792,7 @@ function grFootprintSetModoRefCor(modo) {
     FOOTPRINT_REFCOR_MODO = modo === 'travado' ? 'travado' : 'automatico';
     try { localStorage.setItem('grFootprintRefCorModo', FOOTPRINT_REFCOR_MODO); } catch (e) {}
     grDrawChart();
-    grConfigRender();
+    cvRenderMenuFpCfg(); // só re-renderiza o popup do chip Fluxo que já está aberto -- não o modal geral antigo
 }
 // ── Marcar os maiores níveis: acha, dentro da "Janela de dias" (a mesma usada por CVD/delta/zonas de disputa — não
 // mais o "Dias ao ligar o Fluxo"), o maior total (bid+ask) de uma única linha do footprint dentre TODOS os candles
@@ -3806,7 +3807,7 @@ function grFootprintAlternarMarcarMaiores() {
     try { localStorage.setItem('grFootprintMarcarMaiores', FOOTPRINT_MARCAR_MAIORES ? '1' : '0'); } catch (e) {}
     const el = document.getElementById('cv-cfg-marcarmaiores-value'); if (el) el.textContent = FOOTPRINT_MARCAR_MAIORES ? 'Ligado' : 'Desligado';
     grDrawChart();
-    grConfigRender();
+    cvRenderMenuFpCfg(); // só re-renderiza o popup do chip Fluxo que já está aberto -- não o modal geral antigo
 }
 // Maior total (bid+ask) de uma única linha do footprint, dentro da Janela de dias, em TODO o histórico já carregado
 // (não só os candles visíveis na tela). Cacheado: só reconta quando a janela, os candles carregados, ou o modo/teto
@@ -3858,7 +3859,7 @@ function grFootprintCapturarPerfilVolume() {
     try { localStorage.setItem('grFootprintRefCorValor', String(valor)); localStorage.setItem('grFootprintRefCorDiasUsados', String(diasUsados)); } catch (e) {}
     window._grClusterCache = new Map();
     grDrawChart();
-    grConfigRender();
+    cvRenderMenuFpCfg(); // só re-renderiza o popup do chip Fluxo que já está aberto -- não o modal geral antigo
 }
 // Referência ESTÁVEL da intensidade de cor dos níveis. Antes a escala era o maior nível entre os candles VISÍVEIS: mexer no
 // zoom/rolagem mudava a cor de tudo, e o candle em formação (pouco volume acumulado) ficava vermelho claro com os outros
@@ -4407,13 +4408,15 @@ function grDrawCandles(candles, emptyRight) {
             bolUpper = extrairJanela(allBolUpper, period);
             bolLower = extrairJanela(allBolLower, period);
         }
-        // RSI Levels: preço que levaria o fechamento a bater cada nível ativo de _grRsiNiveis (generalizado --
-        // antes eram 2 indicadores separados, um fixo 70/30 e um com teto/piso de Fibonacci dinâmico).
+        // RSI Levels: preço que levaria o fechamento a bater cada nível (generalizado -- antes eram 2
+        // indicadores separados, um fixo 70/30 e um com teto/piso de Fibonacci dinâmico). Calcula os 7
+        // níveis disponíveis sempre (não só os ativos) pra poder mostrar o preço de todos no popup do chip,
+        // mesmo os desligados -- só DESENHA (linha/faixa) os que estão em _grRsiNiveis.
         let rsiNiveisJanela = null; // { nivel: [preço por candle visível] }
-        if (_indState.rsi && _grRsiNiveis.length) {
-            const lv = grRSINiveis(allCloses, 14, _grRsiNiveis);
+        if (_indState.rsi) {
+            const lv = grRSINiveis(allCloses, 14, RSI_NIVEIS_DISPONIVEIS);
             rsiNiveisJanela = {};
-            _grRsiNiveis.forEach(nv => {
+            RSI_NIVEIS_DISPONIVEIS.forEach(nv => {
                 rsiNiveisJanela[nv] = extrairJanela(grSuavizarSerie(lv[nv], RSI_LEVELS_SUAVIZACAO), 14);
             });
         }
@@ -4550,7 +4553,7 @@ function grDrawCandles(candles, emptyRight) {
         // de cima, sobrecomprado) e a 30 (linha de baixo, sobrevendido). Preço acima da de cima = RSI > 70;
         // abaixo da de baixo = RSI < 30. Com o RSI longe dos extremos as linhas ficam longe do preço (fora
         // da tela): a pílula do eixo continua mostrando o valor, com seta na borda.
-        if (rsiNiveisJanela) {
+        if (rsiNiveisJanela && _grRsiNiveis.length) {
             const niveisAtivos = _grRsiNiveis.slice().sort((a, b) => a - b);
             const xs = candles.map((_, i) => PAD.left + (i / totalSlots) * chartW + cW / 2);
             const niveisY = {};
@@ -4583,20 +4586,22 @@ function grDrawCandles(candles, emptyRight) {
                 // na borda direita, que já tem outros badges (alerta, régua etc).
                 if (y >= yMinRotulo && y <= yMaxRotulo) {
                     ctx.font = 'bold 9px -apple-system'; ctx.textAlign = 'left'; ctx.fillStyle = grRsiCorLinha(nv);
-                    ctx.fillText(String(nv), xs[iUlt] + 4, y - 3);
+                    ctx.fillText(String(nv), xs[iUlt] + cW / 2 + 8, y - 3); // xs[iUlt] é o CENTRO do candle -- soma metade da largura + respiro
                 }
             });
             ctx.restore();
-            // Resumo pro popup do chip.
-            const partes = [];
-            niveisAtivos.forEach(nv => {
+        }
+        // Resumo pro popup do chip: preço atual de TODOS os 7 níveis (ativos ou não) -- fora do "if" de cima
+        // porque o popup precisa mostrar o valor de um nível mesmo desligado.
+        if (rsiNiveisJanela) {
+            const valores = {};
+            RSI_NIVEIS_DISPONIVEIS.forEach(nv => {
                 const serie = rsiNiveisJanela[nv];
                 let v = null;
                 for (let i = serie.length - 1; i >= 0; i--) if (serie[i] != null) { v = serie[i]; break; }
-                if (v == null) return;
-                partes.push(nv + ': ' + fmtN(v));
+                if (v != null) valores[nv] = v;
             });
-            if (partes.length) window._compValores.rsi = { cor: grRsiCorLinha(niveisAtivos[niveisAtivos.length - 1] ?? 70), valor: partes.join(' · ') };
+            window._compValores.rsi = { valores };
         }
         // VWAP ancorado — agora vive dentro do framework do footprint, sem
         // indicador/botão próprio: só desenha quando o footprint tá ligado E
