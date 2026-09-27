@@ -712,9 +712,6 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       </button>
       <div class="cv-barra-sep"></div>
       <button class="cv-ind-btn bol active" id="cv-ind-bol" onclick="cvToggleBol()"><span class="btn-sigla">BB</span><span class="btn-nome">Bollinger</span></button>
-      <div style="position:relative;width:100%;">
-        <button class="cv-ind-btn med" id="cv-ind-med" onclick="cvToggleMedMenu()"><span class="btn-sigla">EMA</span><span class="btn-nome">Médias</span></button>
-      </div>
       <button class="cv-ind-btn rsilevels" id="cv-ind-rsiLevels" onclick="cvToggleInd('rsiLevels')"><span class="btn-sigla">RSI</span><span class="btn-nome">Levels</span></button>
       <button class="cv-ind-btn rsifib active" id="cv-ind-rsiFib" onclick="cvToggleInd('rsiFib')"><span class="btn-sigla">RSI</span><span class="btn-nome">+ Fibonacci</span></button>
       <button class="cv-ind-btn vol" id="cv-ind-vol" onclick="cvToggleSubInd('vol')">
@@ -2612,6 +2609,42 @@ function cvFecharMenuTf() {
     const overlay = document.getElementById('cv-tf-menu-overlay'); if (overlay) overlay.remove();
     const menu = document.getElementById('cv-tf-menu'); if (menu) menu.remove();
 }
+// Menu de médias (EMA/SMA): reaproveita o mesmo painel #cv-med-menu que já existia atrás do botão
+// "Médias" da barra lateral (removido) — as opções e o cvToggleMed() continuam os mesmos, só muda
+// COMO o menu abre: agora perto do toque no chip "EMA" desenhado no gráfico (ver _grEmaLabelHit em
+// grDrawCandles), com um overlay transparente que fecha ao tocar fora. Fica aberto entre um toque e
+// outro pra dar pra marcar várias médias — elas se empilham sozinhas no gráfico, cada uma sua linha.
+function cvAbrirMenuEma(clientX, clientY) {
+    const menu = document.getElementById('cv-med-menu');
+    const jaAberto = menu.classList.contains('active');
+    cvFecharMenuEma();
+    if (jaAberto) return; // tocar no chip com o menu já aberto fecha, igual um toggle
+    cvRenderEmaCustomLista();
+    let overlay = document.getElementById('cv-ema-menu-overlay');
+    if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'cv-ema-menu-overlay';
+        overlay.style.cssText = 'position:fixed;inset:0;z-index:499;background:transparent;';
+        overlay.onclick = cvFecharMenuEma;
+        document.body.appendChild(overlay);
+    }
+    menu.style.left = Math.max(8, clientX) + 'px'; // posição provisória (evita flash no canto) — ajustada abaixo
+    menu.style.top = Math.max(8, clientY + 8) + 'px';
+    menu.classList.add('active');
+    requestAnimationFrame(() => {
+        const r = menu.getBoundingClientRect();
+        const W = window.innerWidth, H = window.innerHeight;
+        let x = clientX, y = clientY + 8;
+        if (x + r.width > W - 8) x = W - r.width - 8;
+        if (y + r.height > H - 8) y = clientY - r.height - 8;
+        menu.style.left = Math.max(8, x) + 'px';
+        menu.style.top = Math.max(8, y) + 'px';
+    });
+}
+function cvFecharMenuEma() {
+    const overlay = document.getElementById('cv-ema-menu-overlay'); if (overlay) overlay.remove();
+    const menu = document.getElementById('cv-med-menu'); if (menu) menu.classList.remove('active');
+}
 // Sigla curta do timeframe atualmente selecionado (mesmo texto do menu de TF) — usada no
 // rótulo "CVD/Delta" do Price Action, pra saber de qual timeframe é o CVD/Delta mostrado ali.
 function grTfSiglaAtual() {
@@ -4252,6 +4285,7 @@ function grDrawCandles(candles, emptyRight) {
         emptyRight = emptyRight || 0;
         window._compValores = {};
         window._grTfLabelHit = null; // só fica válido de novo se o rótulo "TF" for redesenhado abaixo (indicador CVD/Delta ligado)
+        window._grEmaLabelHit = null; // idem, pro rótulo "EMA" logo ao lado
         if (candles && candles.length) {
             window._grVisibleTRange = { from: candles[0].t, to: candles[candles.length - 1].t };
         }
@@ -4465,6 +4499,14 @@ function grDrawCandles(candles, emptyRight) {
         if (_indState.ema50 && !_indOculto.ema50)  { desenharLinha(ema50,  '#FF80AB', 1.2); const v = ema50.filter(v=>v!=null).pop(); if (v!=null) window._compValores.ema50 = { cor: '#FF80AB', valor: fmtN(v) }; }
         if (_indState.ema100 && !_indOculto.ema100) { desenharLinha(ema100, '#FFFFFF', 1.2); const v = ema100.filter(v=>v!=null).pop(); if (v!=null) window._compValores.ema100 = { cor: '#FFFFFF', valor: fmtN(v) }; }
         if (_indState.ema200 && !_indOculto.ema200) { desenharLinha(ema200, '#F5A623', 1.5); const v = ema200.filter(v=>v!=null).pop(); if (v!=null) window._compValores.ema200 = { cor: '#F5A623', valor: fmtN(v) }; }
+        // EMAs de período personalizado (adicionadas pelo usuário no menu "EMA" — ver cvAdicionarEmaCustom)
+        _grEmaCustom.forEach(item => {
+            if (!item.ativo) return;
+            const vals = extrairJanela(grEMA(allCloses, item.periodo), item.periodo);
+            desenharLinha(vals, item.cor, 1.2);
+            const v = vals.filter(v=>v!=null).pop();
+            if (v != null) window._compValores['emaCustom' + item.id] = { cor: item.cor, valor: fmtN(v) };
+        });
         // ── RSI Levels ────────────────────────────────────────────────
         // Duas linhas no price action: o preço em que o fechamento do candle leva o RSI(14) a 70 (linha
         // de cima, sobrecomprado) e a 30 (linha de baixo, sobrevendido). Preço acima da de cima = RSI > 70;
@@ -5233,6 +5275,17 @@ if (_grTipoGrafico === 'linha') {
                 const wTf = ctx.measureText(txtTf).width;
                 window._grTfLabelHit = { x: xTf - 4, y: PAD.top + 1, w: wTf + 8, h: 18 };
                 ctx.fillText(txtTf, xTf, PAD.top + 14);
+                // "EMA" vem logo depois do TF, na mesma linha — abre o menu de médias (o mesmo que existia
+                // no botão "Médias" da barra lateral, agora removido). Acende de cor quando alguma média
+                // está ativa, igual o botão antigo fazia com a classe "active".
+                const xEma = xTf + wTf + 10;
+                const anyMedAtiva = _indState.ema9 || _indState.ema21 || _indState.ema50 || _indState.ema100 || _indState.ema200 || _indState.ema21d || _indState.ema21w || _indState.mm3s || _grEmaCustom.some(e => e.ativo);
+                ctx.fillStyle = anyMedAtiva ? '#F5A623' : '#000000';
+                const txtEma = 'EMA';
+                const wEma = ctx.measureText(txtEma).width;
+                window._grEmaLabelHit = { x: xEma - 4, y: PAD.top + 1, w: wEma + 8, h: 18 };
+                ctx.fillText(txtEma, xEma, PAD.top + 14);
+                ctx.fillStyle = '#000000';
 
                 // ── Eficiência Bid/Ask — quem desloca mais preço por unidade de volume, AGORA ──────────
                 // Não é participação de volume (isso já é o Delta ali em cima) — é EFICIÁCIA: quanto de
@@ -6373,41 +6426,47 @@ function grInitTouch() {
     if (window._grTouchInited) return;
     window._grTouchInited = true;
     const canvas = document.getElementById('gr-chart-canvas');
-    // Toque no rótulo "TF ..." (desenhado no canvas, área guardada em _grTfLabelHit) abre o menu de timeframes.
-    // Não dá pra confiar só em 'click': o pan/zoom deste mesmo canvas usa touchstart/touchmove com
-    // preventDefault(), e isso impede o navegador de sintetizar o click depois do toque no celular. Por isso
-    // 'touchend' com limiar de deslocamento (igual ao padrão já usado no footprint), e 'click' só como
-    // fallback pra mouse/desktop.
-    let _grTfTapInicio = null;
+    // Toque nos rótulos "TF ..." / "EMA" (desenhados no canvas, área guardada em _grTfLabelHit / _grEmaLabelHit,
+    // ver grDrawCandles) abre o respectivo menu. Não dá pra confiar só em 'click': o pan/zoom deste mesmo canvas
+    // usa touchstart/touchmove com preventDefault(), e isso impede o navegador de sintetizar o click depois do
+    // toque no celular. Por isso 'touchend' com limiar de deslocamento (igual ao padrão já usado no footprint),
+    // e 'click' só como fallback pra mouse/desktop. Lista genérica: { hit: () => window._algumLabelHit, abrir: fn }
+    // pra dar pra acrescentar novos "chips" clicáveis nessa linha sem duplicar a lógica de novo.
+    const _grChipsClicaveis = [
+        { hit: () => window._grTfLabelHit,  abrir: cvAbrirMenuTf },
+        { hit: () => window._grEmaLabelHit, abrir: cvAbrirMenuEma },
+    ];
+    function _grChipSobToque(x, y) {
+        for (const chip of _grChipsClicaveis) {
+            const hit = chip.hit();
+            if (hit && x >= hit.x && x <= hit.x + hit.w && y >= hit.y && y <= hit.y + hit.h) return chip;
+        }
+        return null;
+    }
+    let _grChipTapInicio = null;
     canvas.addEventListener('touchstart', evt => {
-        if (evt.touches.length !== 1) { _grTfTapInicio = null; return; }
-        const hit = window._grTfLabelHit;
-        if (!hit) { _grTfTapInicio = null; return; }
+        if (evt.touches.length !== 1) { _grChipTapInicio = null; return; }
         const rect = canvas.getBoundingClientRect();
         const x = (evt.touches[0].clientX - rect.left) * (grLW(canvas) / rect.width);
         const y = (evt.touches[0].clientY - rect.top) * (grLH(canvas) / rect.height);
-        _grTfTapInicio = (x >= hit.x && x <= hit.x + hit.w && y >= hit.y && y <= hit.y + hit.h)
-            ? { x: evt.touches[0].clientX, y: evt.touches[0].clientY }
-            : null;
+        const chip = _grChipSobToque(x, y);
+        _grChipTapInicio = chip ? { x: evt.touches[0].clientX, y: evt.touches[0].clientY, chip } : null;
     }, { passive: true });
     canvas.addEventListener('touchend', evt => {
-        if (!_grTfTapInicio) return;
-        const inicio = _grTfTapInicio;
-        _grTfTapInicio = null;
+        if (!_grChipTapInicio) return;
+        const inicio = _grChipTapInicio;
+        _grChipTapInicio = null;
         const touch = evt.changedTouches && evt.changedTouches[0];
         if (!touch) return;
         if (Math.hypot(touch.clientX - inicio.x, touch.clientY - inicio.y) > 12) return; // moveu — foi arrasto, não toque
-        cvAbrirMenuTf(touch.clientX, touch.clientY);
+        inicio.chip.abrir(touch.clientX, touch.clientY);
     }, { passive: true });
     canvas.addEventListener('click', evt => { // fallback desktop/mouse
-        const hit = window._grTfLabelHit;
-        if (!hit) return;
         const rect = canvas.getBoundingClientRect();
         const x = (evt.clientX - rect.left) * (grLW(canvas) / rect.width);
         const y = (evt.clientY - rect.top) * (grLH(canvas) / rect.height);
-        if (x >= hit.x && x <= hit.x + hit.w && y >= hit.y && y <= hit.y + hit.h) {
-            cvAbrirMenuTf(evt.clientX, evt.clientY);
-        }
+        const chip = _grChipSobToque(x, y);
+        if (chip) chip.abrir(evt.clientX, evt.clientY);
     });
     let touchStartX = 0;
     let touchStartY = 0;
@@ -8531,8 +8590,7 @@ function cvToggleSubInd(key) {
     document.getElementById('cv-ind-macd').classList.toggle('active', _indState.subInd === 'macd');
     document.getElementById('cv-ind-stoch').classList.toggle('active', _indState.subInd === 'stoch');
     document.getElementById('cv-ind-absorcao').classList.toggle('active', _indState.subInd === 'absorcao');
-    // Fechar menu EMA se aberto
-    document.getElementById('cv-med-menu').classList.remove('active');
+    cvFecharMenuEma(); // fecha menu EMA se aberto
     grDrawChart();
 }
 let _grTipoGrafico = 'candle';
@@ -9050,14 +9108,6 @@ function cvToggleInd(key) {
     document.getElementById('cv-ind-' + key).classList.toggle('active', _indState[key]);
     grDrawChart();
 }
-function cvToggleMedMenu() {
-    const menu = document.getElementById('cv-med-menu');
-    const isActive = menu.classList.contains('active');
-    if (isActive) { menu.classList.remove('active'); return; }
-    menu.style.top = '30%';
-    menu.style.left = '150px';
-    menu.classList.add('active');
-}
 function cvToggleMed(key) {
     _indState[key] = !_indState[key];
     const chk = document.getElementById('cv-chk-' + key);
@@ -9065,10 +9115,66 @@ function cvToggleMed(key) {
         if (_indState[key]) chk.classList.add('on');
         else chk.classList.remove('on');
     }
-    // Atualiza botão Médias — ativo se qualquer EMA ou MTF ligada
-    const anyMed = _indState.ema9 || _indState.ema21 || _indState.ema50 || _indState.ema100 || _indState.ema200 || _indState.ema21d || _indState.ema21w || _indState.mm3s;
-    document.getElementById('cv-ind-med').classList.toggle('active', anyMed);
+    // O chip "EMA" desenhado no gráfico (ver grDrawCandles) já acende sozinho a cada frame quando
+    // alguma média está ativa — não precisa mais atualizar botão de barra lateral aqui.
     grDrawChart();
+}
+// ── EMAs de período personalizado ───────────────────────────────────
+// O usuário digita qualquer período (ex: 34, 55, 89) e adiciona quantas quiser — cada uma vira uma
+// linha própria no gráfico, empilhando com as EMAs padrão (9/21/50/100/200) e entre si. Não persiste
+// entre recarregamentos de página (igual o resto de _indState) — é estado de sessão.
+let _grEmaCustom = []; // { id, periodo, ativo, cor }
+let _grEmaCustomSeq = 0;
+const _grEmaCustomCores = ['#4CAF50', '#FF5722', '#3F51B5', '#8BC34A', '#E040FB', '#00E5FF', '#FFEB3B', '#795548'];
+function cvAdicionarEmaCustom() {
+    const input = document.getElementById('cv-med-custom-input');
+    const periodo = parseInt(input.value, 10);
+    if (!periodo || periodo < 1 || periodo > 999) return; // silencioso — campo inválido/vazio, não é erro do usuário
+    if (_grEmaCustom.some(e => e.periodo === periodo)) { input.value = ''; return; } // já existe essa mesma EMA
+    const cor = _grEmaCustomCores[_grEmaCustomSeq % _grEmaCustomCores.length];
+    _grEmaCustom.push({ id: _grEmaCustomSeq++, periodo, ativo: true, cor });
+    input.value = '';
+    cvRenderEmaCustomLista();
+    grDrawChart();
+}
+function cvToggleEmaCustom(id) {
+    const item = _grEmaCustom.find(e => e.id === id);
+    if (!item) return;
+    item.ativo = !item.ativo;
+    cvRenderEmaCustomLista();
+    grDrawChart();
+}
+function cvRemoverEmaCustom(id) {
+    _grEmaCustom = _grEmaCustom.filter(e => e.id !== id);
+    cvRenderEmaCustomLista();
+    grDrawChart();
+}
+function cvRenderEmaCustomLista() {
+    const wrap = document.getElementById('cv-med-custom-lista');
+    if (!wrap) return;
+    wrap.innerHTML = '';
+    _grEmaCustom.forEach(item => {
+        const linha = document.createElement('div');
+        linha.className = 'cv-med-item';
+        linha.style.justifyContent = 'space-between';
+        linha.onclick = e => { e.stopPropagation(); cvToggleEmaCustom(item.id); };
+        const esq = document.createElement('div');
+        esq.style.cssText = 'display:flex;align-items:center;gap:6px;';
+        const chk = document.createElement('div');
+        chk.className = 'cv-med-check' + (item.ativo ? ' on' : '');
+        chk.style.color = item.cor;
+        const lbl = document.createElement('span');
+        lbl.className = 'cv-med-lbl';
+        lbl.style.color = item.cor;
+        lbl.textContent = item.periodo + ' Períodos';
+        esq.appendChild(chk); esq.appendChild(lbl);
+        const rm = document.createElement('span');
+        rm.textContent = '✕';
+        rm.style.cssText = 'color:rgba(255,255,255,0.4);font-size:12px;padding:2px 6px;';
+        rm.onclick = e => { e.stopPropagation(); cvRemoverEmaCustom(item.id); };
+        linha.appendChild(esq); linha.appendChild(rm);
+        wrap.appendChild(linha);
+    });
 }
 // ── Análise Técnica ───────────────────────────────────────────────
 // Indicadores
@@ -11308,6 +11414,16 @@ init();
   <div class="cv-med-item" onclick="cvToggleMed('mm3s')">
     <div class="cv-med-check" style="color:#4FC3F7;" id="cv-chk-mm3s"></div>
     <span class="cv-med-lbl" style="color:#4FC3F7;">SMA 250/300/350 Semanal</span>
+  </div>
+  <div style="height:0.5px;background:rgba(255,255,255,0.1);margin:4px 0;"></div>
+  <!-- EMAs de período personalizado — adicionadas dinamicamente pelo usuário (ver cvAdicionarEmaCustom) -->
+  <div id="cv-med-custom-lista"></div>
+  <div style="display:flex;align-items:center;gap:6px;padding:4px 8px 0 8px;">
+    <input type="number" id="cv-med-custom-input" placeholder="Período" min="1" max="999"
+           style="width:64px;background:rgba(255,255,255,0.08);border:0.5px solid rgba(255,255,255,0.15);border-radius:6px;color:#FFF;font-size:12px;padding:4px 6px;font-family:-apple-system,sans-serif;"
+           onclick="event.stopPropagation()" onkeydown="if(event.key==='Enter'){event.stopPropagation();cvAdicionarEmaCustom();}">
+    <button type="button" onclick="event.stopPropagation();cvAdicionarEmaCustom();"
+            style="background:#2F6FED;border:none;border-radius:6px;color:#FFF;font-size:12px;font-weight:700;padding:5px 10px;cursor:pointer;">+ EMA</button>
   </div>
 </div>
 <!-- Overlay -->
