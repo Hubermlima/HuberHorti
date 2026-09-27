@@ -3416,15 +3416,16 @@ let _grPxPerDollarReferencia = null;
 // mexer na largura. O fator vale por timeframe, fica salvo no aparelho e continua valendo quando o zoom horizontal muda
 // (é multiplicado por cima da escala automática).
 let _grYFator = 1;
+let _grYFatorMapa = {}; // { chaveDoTf: fator } -- substitui o localStorage por tf; persiste no ambiente (Supabase)
 function _grYFatorKey() { return 'gr_yfator_' + _grTf + (_grTf === 'custom' ? '_' + _grTfCustomUnit + _grTfCustomAmount : ''); }
 function grYFatorCarregar() {
-    let v = NaN;
-    try { v = parseFloat(localStorage.getItem(_grYFatorKey())); } catch (err) {}
+    const v = _grYFatorMapa[_grYFatorKey()];
     _grYFator = (v >= 0.02 && v <= 100) ? v : 1;
     if (typeof grAmbienteAtualizarRotulos === 'function') grAmbienteAtualizarRotulos();
 }
 function grYFatorSalvar() {
-    try { localStorage.setItem(_grYFatorKey(), String(_grYFator)); } catch (err) {}
+    _grYFatorMapa[_grYFatorKey()] = _grYFator;
+    grAmbienteSalvar(); // só na tabela -- sem localStorage
     if (typeof grAmbienteAtualizarRotulos === 'function') grAmbienteAtualizarRotulos();
 }
 function grYFatorResetar() { _grYFator = 1; grYFatorSalvar(); grAtualizarPxPerDollar(); grDrawChart(); grAmbienteAtualizarRotulos(); }
@@ -4432,6 +4433,7 @@ function grDrawCandles(candles, emptyRight) {
         const toY = p => PAD.top + chartH - ((p - minP) / priceRange) * chartH;
         const totalSlots = candles.length + emptyRight;
         const cW = Math.max(2, Math.floor(chartW / Math.max(totalSlots, 1)) - 1);
+        grAtualizarTipoGraficoAuto(chartW / Math.max(totalSlots, 1)); // largura bruta, sem o clamp acima -- detecta zoom out extremo
         // Salva geometria para conversão x<->índice de candle (usado por trendlines)
         window._grPADLeft = PAD.left;
         window._grChartW = chartW;
@@ -8101,11 +8103,29 @@ function cvToggleSubInd(key) {
     grDrawChart();
 }
 let _grTipoGrafico = 'candle';
+let _grTipoGraficoAuto = false; // true quando a troca pra linha foi automática (zoom out extremo) -- não escolha do usuário
 function cvSetTipoGrafico(tipo) {
     _grTipoGrafico = tipo;
+    _grTipoGraficoAuto = false; // escolha manual sempre limpa a flag automática
     document.getElementById('cv-ind-tipo-candle').classList.toggle('active', tipo === 'candle');
     document.getElementById('cv-ind-tipo-linha').classList.toggle('active',  tipo === 'linha');
     grDrawChart();
+}
+// Zoom out extremo (candle mais estreito que o limiar) troca pro modo Linha sozinho, e o botão da barra
+// reflete isso. Só volta pro Candle sozinho se foi ESSA função que ligou o modo Linha -- uma escolha manual
+// do usuário no botão nunca é desfeita por zoom.
+const GR_TIPO_LINHA_AUTO_CW_MIN = 3; // px por candle (sem o clamp de largura mínima) abaixo disso vira linha
+function grAtualizarTipoGraficoAuto(cWBruto) {
+    if (cWBruto < GR_TIPO_LINHA_AUTO_CW_MIN && _grTipoGrafico === 'candle') {
+        _grTipoGrafico = 'linha';
+        _grTipoGraficoAuto = true;
+    } else if (cWBruto >= GR_TIPO_LINHA_AUTO_CW_MIN && _grTipoGrafico === 'linha' && _grTipoGraficoAuto) {
+        _grTipoGrafico = 'candle';
+        _grTipoGraficoAuto = false;
+    }
+    const btnC = document.getElementById('cv-ind-tipo-candle'), btnL = document.getElementById('cv-ind-tipo-linha');
+    if (btnC) btnC.classList.toggle('active', _grTipoGrafico === 'candle');
+    if (btnL) btnL.classList.toggle('active', _grTipoGrafico === 'linha');
 }
 function cvToggleBol() {
     _indState.bollinger = !_indState.bollinger;
@@ -8743,6 +8763,8 @@ function grAmbienteColetar() {
         reguaLockS: _grReguaLock.S,
         reguaLockA: _grReguaLock.A,
         emaCustom: _grEmaCustom.map(e => ({ periodo: e.periodo, cor: e.cor })),
+        zoom: _grZoom,
+        yFatorMapa: _grYFatorMapa,
     };
 }
 let _grAmbienteRestaurando = false; // true enquanto grAmbienteCarregar() está aplicando os campos -- evita gravar o ambiente pela metade
@@ -8767,6 +8789,12 @@ async function grAmbienteCarregar() {
     if (!ambiente) { console.log('[ambiente] NADA encontrado no Supabase -- fica no padrão'); return; }
     console.log('[ambiente] restaurando tf=' + ambiente.tf + ' (atual antes de restaurar: ' + _grTf + ')');
     _grAmbienteRestaurando = true; // a partir daqui, grAmbienteSalvar() não grava nada até liberar no fim
+    // Zoom horizontal e fator de escala vertical (por tf) -- restaura ANTES do cvSetTf/carregamento de candles usá-los.
+    if (ambiente.yFatorMapa && typeof ambiente.yFatorMapa === 'object') _grYFatorMapa = ambiente.yFatorMapa;
+    if (typeof ambiente.zoom === 'number' && ambiente.zoom >= 1 && ambiente.zoom <= 500) {
+        _grZoom = Math.round(ambiente.zoom);
+        _grZoomAcumulado = _grZoom;
+    }
     // TF: 'custom' já traz amount/unit próprios restaurados do localStorage 'cvTfCustom' antes daqui.
     if (ambiente.tf && ambiente.tf !== _grTf) cvSetTf(ambiente.tf);
     if (!!ambiente.bollinger !== _indState.bollinger) cvToggleBol();
