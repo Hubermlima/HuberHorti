@@ -2693,7 +2693,7 @@ function cvRenderMenuFpCfg() {
             + RSI_NIVEIS_DISPONIVEIS.map(nv => {
                 const ativo = _grRsiNiveis.includes(nv);
                 const cor = grRsiCorLinha(nv);
-                const corFundo = ativo ? cor.replace('0.9', '0.15') : '#FFFFFF';
+                const corFundo = ativo ? grHexParaRgba(cor, 0.15) : '#FFFFFF';
                 const corBorda = ativo ? cor : '#D1D1D6';
                 const corTexto = ativo ? cor : '#8E8E93';
                 return '<button onclick="grRsiToggleNivel(' + nv + ');" style="border:1.5px solid ' + corBorda + ';background:' + corFundo + ';border-radius:6px;padding:4px 9px;font-size:12px;font-weight:700;color:' + corTexto + ';cursor:pointer;">' + nv + '</button>';
@@ -4569,18 +4569,20 @@ function grDrawCandles(candles, emptyRight) {
                 grPreencherFaixaRSI(ctx, niveisY[maisBaixo], baseChart, xs, grRsiCorFaixa(maisBaixo, maisBaixo, 1.3));
             }
             // Linha tracejada de cada nível ativo
-            niveisAtivos.forEach(nv => grTracarCurvaSuave(ctx, xs.map((x, i) => niveisY[nv][i] == null ? null : { x, y: niveisY[nv][i] }), grRsiCorLinha(nv), 1.2));
+            niveisAtivos.forEach(nv => grTracarCurvaSuave(ctx, xs.map((x, i) => niveisY[nv][i] == null ? null : { x, y: niveisY[nv][i] }), grRsiCorLinha(nv), 1.6));
             niveisAtivos.forEach(nv => {
                 let iUlt = -1;
                 for (let i = niveisY[nv].length - 1; i >= 0; i--) if (niveisY[nv][i] != null) { iUlt = i; break; }
                 if (iUlt < 0) return;
                 const y = niveisY[nv][iUlt]; // prolonga o último nível (tracejado) até a borda direita
-                ctx.strokeStyle = grRsiCorLinha(nv); ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+                ctx.strokeStyle = grRsiCorLinha(nv); ctx.lineWidth = 1.4; ctx.setLineDash([4, 3]);
                 ctx.beginPath(); ctx.moveTo(xs[iUlt], y); ctx.lineTo(PAD.left + chartW, y); ctx.stroke();
                 ctx.setLineDash([]);
             });
             ctx.restore();
             // Rótulo pequeno colado em cada linha (dentro da área visível) + resumo pro popup do chip.
+            // Rótulo "RSI NN" colado na linha removido (poluía com vários níveis ligados) -- só o resumo
+            // pro popup do chip agora; a cor de cada linha já diferencia o nível no próprio gráfico.
             const partes = [];
             niveisAtivos.forEach(nv => {
                 const serie = rsiNiveisJanela[nv];
@@ -4588,12 +4590,6 @@ function grDrawCandles(candles, emptyRight) {
                 for (let i = serie.length - 1; i >= 0; i--) if (serie[i] != null) { v = serie[i]; break; }
                 if (v == null) return;
                 partes.push(nv + ': ' + fmtN(v));
-                const y = niveisY[nv][serie.length - 1] ?? toY(v), yMin = PAD.top + 9, yMax = PAD.top + chartH - 9;
-                if (y >= yMin && y <= yMax) {
-                    ctx.font = 'bold 8px -apple-system'; ctx.textAlign = 'right'; ctx.fillStyle = grRsiCorLinha(nv);
-                    ctx.fillText('RSI ' + nv, PAD.left + chartW - 4, y - 3);
-                    ctx.textAlign = 'left';
-                }
             });
             if (partes.length) window._compValores.rsi = { cor: grRsiCorLinha(niveisAtivos[niveisAtivos.length - 1] ?? 70), valor: partes.join(' · ') };
         }
@@ -9013,19 +9009,29 @@ function grRSINiveis(closes, periodo, niveis) {
     }
     return resultado;
 }
-// Cor da linha de um nível: abaixo de 50 (lado de sobrevenda) vermelho, acima (sobrecompra) verde, 50 neutro.
+// Uma cor própria por nível (não só vermelho/verde por lado) -- mais fácil de diferenciar quando vários
+// níveis estão ativos ao mesmo tempo. Ordem: vermelho forte (extremo baixo) -> laranja -> cinza (50, neutro)
+// -> verde -> azul (extremo alto).
+const RSI_CORES_NIVEL = { 20: '#B71C1C', 30: '#E53935', 40: '#FB8C00', 50: '#757575', 60: '#7CB342', 70: '#00897B', 80: '#1565C0' };
 function grRsiCorLinha(nivel) {
-    if (nivel === 50) return 'rgba(142,142,147,0.9)';
-    return nivel < 50 ? 'rgba(239,83,80,0.9)' : 'rgba(38,166,154,0.9)';
+    return RSI_CORES_NIVEL[nivel] || (nivel < 50 ? '#E53935' : nivel > 50 ? '#00897B' : '#757575');
 }
-// Cor da faixa entre dois níveis (ou de uma faixa aberta, passando o mesmo nível duas vezes): usa o ponto
-// médio do intervalo -- quanto mais longe de 50, mais forte a cor (vermelho pro lado de baixo, verde pro de cima).
+function grHexParaRgba(hex, alfa) {
+    const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+    return 'rgba(' + r + ',' + g + ',' + b + ',' + alfa.toFixed(3) + ')';
+}
+// Cor da faixa entre dois níveis (ou de uma faixa aberta, passando o mesmo nível duas vezes): mistura a cor
+// dos dois níveis-limite, com opacidade crescendo conforme o intervalo fica mais longe do meio (50) --
+// alfa mais alto que antes pra dar mais contraste nas faixas.
 function grRsiCorFaixa(nivelBaixo, nivelAlto, alfaBase) {
     const meio = (nivelBaixo + nivelAlto) / 2;
     const intens = Math.min(1, Math.abs(meio - 50) / 50);
-    const alfa = (0.05 + intens * 0.28) * alfaBase;
-    if (meio === 50) return 'rgba(142,142,147,' + alfa.toFixed(3) + ')';
-    return meio < 50 ? 'rgba(239,83,80,' + alfa.toFixed(3) + ')' : 'rgba(38,166,154,' + alfa.toFixed(3) + ')';
+    const alfa = (0.12 + intens * 0.45) * alfaBase;
+    const c1 = grRsiCorLinha(nivelBaixo), c2 = grRsiCorLinha(nivelAlto);
+    const r = Math.round((parseInt(c1.slice(1, 3), 16) + parseInt(c2.slice(1, 3), 16)) / 2);
+    const g = Math.round((parseInt(c1.slice(3, 5), 16) + parseInt(c2.slice(3, 5), 16)) / 2);
+    const b = Math.round((parseInt(c1.slice(5, 7), 16) + parseInt(c2.slice(5, 7), 16)) / 2);
+    return 'rgba(' + r + ',' + g + ',' + b + ',' + alfa.toFixed(3) + ')';
 }
 // Preenche a faixa entre duas séries de Y (topo/base, em pixels) só nos trechos contínuos onde as duas têm
 // valor -- evita "colar" o preenchimento através de gaps nulos (nível fora do alcance calculável).
