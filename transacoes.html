@@ -1092,8 +1092,8 @@ async function init() {
         // Inicializa o gráfico diretamente
                 document.getElementById('cv-ticker').textContent = _ticker;
         cvAbrir();
-        await Promise.all([carregarTransacoes(), fetchFxRate()]);
-        grAmbienteCarregar(); // restaura o ambiente (indicadores) da última vez
+        try { await Promise.all([carregarTransacoes(), fetchFxRate()]); } catch(e) {}
+        grAmbienteCarregar(); // restaura o ambiente (indicadores) da última vez -- sempre roda, mesmo se algo acima falhar
         return;
     }
     // Header
@@ -1109,24 +1109,26 @@ async function init() {
     const aa = hoje.getFullYear(), mm = String(hoje.getMonth()+1).padStart(2,'0'), dd = String(hoje.getDate()).padStart(2,'0');
     document.getElementById('nova-data').value = `${aa}-${mm}-${dd}`;
     // Busca saldo da corretora
-    if (_ativoId) {
-        const { data: ativo } = await db.from('ativos').select('corretora_id').eq('id', _ativoId).single();
-        if (ativo?.corretora_id) {
-            const { data: transfs } = await db.from('transferencias').select('tipo, valor_origem, valor_destino').eq('corretora_id', ativo.corretora_id);
-            const { data: txs } = await db.from('transacoes').select('tipo_operacao, valor_total_usd, ativos!inner(corretora_id)').eq('ativos.corretora_id', ativo.corretora_id);
-            let saldo = 0;
-            (transfs||[]).forEach(t => { saldo += t.tipo === 'D' ? parseFloat(t.valor_destino)||0 : -(parseFloat(t.valor_origem)||0); });
-            (txs||[]).forEach(t => {
-                const v = parseFloat(t.valor_total_usd)||0;
-                // Só LA/LF mexem no saldo; SA/SF usam margem já na conta futuros
-if (t.tipo_operacao === 'LA') saldo -= v;
-else if (t.tipo_operacao === 'LF') saldo += v;
-            });
-            _saldoCorretora = Math.max(0, saldo);
+    try {
+        if (_ativoId) {
+            const { data: ativo } = await db.from('ativos').select('corretora_id').eq('id', _ativoId).single();
+            if (ativo?.corretora_id) {
+                const { data: transfs } = await db.from('transferencias').select('tipo, valor_origem, valor_destino').eq('corretora_id', ativo.corretora_id);
+                const { data: txs } = await db.from('transacoes').select('tipo_operacao, valor_total_usd, ativos!inner(corretora_id)').eq('ativos.corretora_id', ativo.corretora_id);
+                let saldo = 0;
+                (transfs||[]).forEach(t => { saldo += t.tipo === 'D' ? parseFloat(t.valor_destino)||0 : -(parseFloat(t.valor_origem)||0); });
+                (txs||[]).forEach(t => {
+                    const v = parseFloat(t.valor_total_usd)||0;
+                    // Só LA/LF mexem no saldo; SA/SF usam margem já na conta futuros
+    if (t.tipo_operacao === 'LA') saldo -= v;
+    else if (t.tipo_operacao === 'LF') saldo += v;
+                });
+                _saldoCorretora = Math.max(0, saldo);
+            }
         }
-    }
-    await carregarTransacoes();
-    grAmbienteCarregar(); // restaura o ambiente (TF etc.) também neste ramo (ativo_id já vinha na URL)
+    } catch(e) {}
+    try { await carregarTransacoes(); } catch(e) {}
+    grAmbienteCarregar(); // restaura o ambiente (TF etc.) também neste ramo -- sempre roda, mesmo se saldo/transações falharem acima
 }
 async function carregarTransacoes() {
     if (!_ativoId) return;
@@ -2562,6 +2564,7 @@ function cvAbrirMenuEma(clientX, clientY) {
     const jaAberto = menu.classList.contains('active');
     cvFecharMenuEma();
     if (jaAberto) return; // tocar no chip com o menu já aberto fecha, igual um toggle
+    document.body.appendChild(menu); // sai de dentro de #cv-screen pro <body> -- mesmo contexto de empilhamento do overlay (ver nota acima)
     cvRenderEmaCustomLista();
     let overlay = document.getElementById('cv-ema-menu-overlay');
     if (!overlay) {
@@ -2597,6 +2600,7 @@ function cvAbrirMenuFpCfg(qual, clientX, clientY) {
     const jaAberto = menu.classList.contains('active') && _grFpCfgMenuQual === qual;
     cvFecharMenuFpCfg();
     if (jaAberto) return; // tocar no chip com o popup já aberto fecha, igual um toggle
+    document.body.appendChild(menu); // sai de dentro de #cv-screen pro <body> -- mesmo contexto de empilhamento do overlay (ver nota acima)
     _grFpCfgMenuQual = qual;
     cvRenderMenuFpCfg();
     let overlay = document.getElementById('cv-fp-cfg-overlay');
