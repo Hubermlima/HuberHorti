@@ -176,7 +176,8 @@ function chaveCiclo(date) {
   return d0DoCiclo(date).toISOString().slice(0,10);
 }
 
-let _candles = []; // um por ciclo, autossuficiente: {d0, d7, vendasBrutas, bruto, despesas, liquido}
+let _candles = [];        // todos os ciclos com atividade (mantém a cadeia acumulada certa)
+let _candlesVisiveis = []; // só os que entram no desenho (tem venda e não passam do ciclo atual)
 
 async function carregarDados() {
   const { data: contas } = await db.from('contas_contabeis').select('id, is_despesa');
@@ -226,6 +227,10 @@ async function carregarDados() {
     const close = acumulado;
     return { chave, d0, d7, vendasBrutas, bruto, despesas, liquido, open, close };
   });
+
+  // Só desenha ciclos com venda e que não passem do ciclo atual (evita ciclo futuro/sem movimento)
+  const d0Atual = d0DoCiclo(new Date());
+  _candlesVisiveis = _candles.filter(c => c.vendasBrutas > 0 && c.d0 <= d0Atual);
 }
 
 // ── Monta os segmentos de um candle encadeado ──
@@ -256,12 +261,12 @@ const PAD = { top: 24, bottom: 34, left: 10, right: 64 };
 
 function desenharGrafico() {
   const scrollEl = document.getElementById('chart-scroll');
-  if (_candles.length === 0) {
-    scrollEl.innerHTML = '<div class="empty-state">Sem ciclos com movimento pra montar candles.</div>';
+  if (_candlesVisiveis.length === 0) {
+    scrollEl.innerHTML = '<div class="empty-state">Sem ciclos com venda pra montar candles.</div>';
     return;
   }
 
-  const larguraTotal = Math.max(scrollEl.clientWidth, PAD.left + PAD.right + _candles.length * SLOT);
+  const larguraTotal = Math.max(scrollEl.clientWidth, PAD.left + PAD.right + _candlesVisiveis.length * SLOT);
   const altura = scrollEl.clientHeight || 300;
 
   scrollEl.innerHTML = '<div class="chart-inner" style="width:' + larguraTotal + 'px;"><canvas id="candle-canvas"></canvas></div>';
@@ -278,7 +283,7 @@ function desenharGrafico() {
 
   // Domínio vertical: cobre corpo + pavio de todos os candles, com folga
   let vMin = Infinity, vMax = -Infinity;
-  _candles.forEach(c => {
+  _candlesVisiveis.forEach(c => {
     const seg = segmentosCandle(c);
     [...seg.corpo, ...seg.pavio].forEach(v => {
       if (v < vMin) vMin = v;
@@ -320,7 +325,7 @@ function desenharGrafico() {
   ctx.stroke();
 
   // Candles
-  _candles.forEach((c, idx) => {
+  _candlesVisiveis.forEach((c, idx) => {
     const xCentro = PAD.left + idx * SLOT + SLOT/2;
     const seg = segmentosCandle(c);
     const corCorpo = seg.cor === 'lucro' ? pal.corpoLucro : pal.corpoPrejuizo;
@@ -361,7 +366,7 @@ function desenharGrafico() {
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const idx = Math.floor((x - PAD.left) / SLOT);
-    if (idx >= 0 && idx < _candles.length) abrirDetalhe(idx);
+    if (idx >= 0 && idx < _candlesVisiveis.length) abrirDetalhe(idx);
   };
 }
 
@@ -372,7 +377,7 @@ function fmtCompacto(v) {
 }
 
 function abrirDetalhe(idx) {
-  const c = _candles[idx];
+  const c = _candlesVisiveis[idx];
   const d0Str = c.d0.toLocaleDateString('pt-BR');
   const d7Str = new Date(c.d7.getTime() - 86400000).toLocaleDateString('pt-BR');
   document.getElementById('detalhe-title').textContent = `${d0Str} — ${d7Str}`;
@@ -397,10 +402,10 @@ function fecharDetalhe() {
 }
 
 function atualizarResumo() {
-  if (_candles.length === 0) return;
-  const ultimo = _candles[_candles.length - 1];
+  if (_candlesVisiveis.length === 0) return;
+  const ultimo = _candlesVisiveis[_candlesVisiveis.length - 1];
   document.getElementById('topbar-sub').textContent =
-    `${_candles.length} ciclo${_candles.length !== 1 ? 's' : ''} · até ${ultimo.d0.toLocaleDateString('pt-BR')}`;
+    `${_candlesVisiveis.length} ciclo${_candlesVisiveis.length !== 1 ? 's' : ''} · até ${ultimo.d0.toLocaleDateString('pt-BR')}`;
 }
 
 async function init() {
@@ -417,7 +422,7 @@ async function init() {
   }
 }
 
-window.addEventListener('resize', () => { if (_candles.length) desenharGrafico(); });
+window.addEventListener('resize', () => { if (_candlesVisiveis.length) desenharGrafico(); });
 
 db.auth.getSession().then(({ data }) => {
   if (!data.session) { window.location.href = 'index.html'; return; }
