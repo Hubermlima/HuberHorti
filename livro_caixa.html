@@ -503,8 +503,8 @@ async function carregarDados() {
   const d7 = `${_d7Str}T23:59:59-04:00`;
 
   const [{ data: movsClientes }, { data: movsFornecedores }, { data: manuais }] = await Promise.all([
-    window.db.from('movimentos_clientes').select('id, cliente_id, data, forma, tipo, valor').eq('status', 0).not('data', 'is', null).gte('data', d0).lt('data', d7),
-    window.db.from('movimentos_fornecedores').select('id, fornecedor_id, data, forma, valor').eq('status', 0).not('data', 'is', null).gte('data', d0).lt('data', d7),
+    window.db.from('movimentos_clientes').select('id, cliente_id, data, forma, tipo, valor').not('data', 'is', null).gte('data', d0).lt('data', d7),
+    window.db.from('movimentos_fornecedores').select('id, fornecedor_id, data, forma, valor').not('data', 'is', null).gte('data', d0).lt('data', d7),
     window.db.from('livro_caixa').select('*, contas_contabeis(codigo, descricao)').gte('data', d0).lt('data', d7)
   ]);
 
@@ -1203,15 +1203,34 @@ document.addEventListener('DOMContentLoaded', () => { fixHeight(); init(); });
 
 
 
+// Busca todas as linhas de uma tabela em blocos de 1000, contornando o limite
+// padrão do Supabase (que corta silenciosamente em 1000 registros por consulta).
+async function fetchTodasLinhas(tabela, colunas, aplicarFiltros) {
+  const TAMANHO_PAGINA = 1000;
+  let todos = [];
+  let pagina = 0;
+  while (true) {
+    let q = window.db.from(tabela).select(colunas);
+    q = aplicarFiltros(q);
+    q = q.range(pagina * TAMANHO_PAGINA, pagina * TAMANHO_PAGINA + TAMANHO_PAGINA - 1);
+    const { data, error } = await q;
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    todos = todos.concat(data);
+    if (data.length < TAMANHO_PAGINA) break;
+    pagina++;
+  }
+  return todos;
+}
+
 async function carregarSaldosIniciais() {
   try {
     const d0ISO = `${_d0Str}T00:00:00-04:00`;
 
-    const [{ data: movsC }, { data: movsF }, { data: manuais }] = await Promise.all([
-      window.db.from('movimentos_clientes').select('forma, tipo, valor').not('data','is',null).lt('data', d0ISO),
-window.db.from('movimentos_fornecedores').select('forma, valor').not('data','is',null).lt('data', d0ISO),
-
-      window.db.from('livro_caixa').select('tipo, forma, valor').lt('data', d0ISO)
+    const [movsC, movsF, manuais] = await Promise.all([
+      fetchTodasLinhas('movimentos_clientes', 'forma, tipo, valor', q => q.not('data','is',null).lt('data', d0ISO)),
+      fetchTodasLinhas('movimentos_fornecedores', 'forma, valor', q => q.not('data','is',null).lt('data', d0ISO)),
+      fetchTodasLinhas('livro_caixa', 'tipo, forma, valor', q => q.lt('data', d0ISO))
     ]);
 
     let banco = 0, dinheiro = 0;
