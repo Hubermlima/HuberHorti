@@ -21,6 +21,7 @@
   --grid:rgba(0,0,0,0.06);
   --axis-text:#8E8E93;
   --wick:#B0B0B6;
+  --wick-aplicacao:#5E8BFF;
   --corpo-lucro:#FFFFFF;
   --corpo-lucro-borda:#1C1C1E;
   --corpo-prejuizo:#1C1C1E;
@@ -39,6 +40,7 @@
     --grid:rgba(255,255,255,0.07);
     --axis-text:#8E8E93;
     --wick:#5A5A60;
+    --wick-aplicacao:#5E8BFF;
     --corpo-lucro:#22C55E;
     --corpo-lucro-borda:#22C55E;
     --corpo-prejuizo:#F87171;
@@ -99,6 +101,7 @@ canvas#candle-canvas{display:block;height:100%;touch-action:pan-x;}
   <div class="legenda">
     <div class="legenda-item"><span class="legenda-dot" style="background:var(--corpo-lucro);"></span>Lucro</div>
     <div class="legenda-item"><span class="legenda-dot" style="background:var(--corpo-prejuizo);"></span>Prejuízo</div>
+    <div class="legenda-item"><span class="legenda-dot" style="background:var(--wick-aplicacao);"></span>Aplicação</div>
     <div class="legenda-item" style="margin-left:auto;">Toque num candle pra detalhes</div>
   </div>
   <div class="chart-scroll" id="chart-scroll">
@@ -117,6 +120,7 @@ canvas#candle-canvas{display:block;height:100%;touch-action:pan-x;}
     <div class="detalhe-row"><span class="detalhe-label">Vendas Brutas</span><span class="detalhe-val" id="d-vendas"></span></div>
     <div class="detalhe-row"><span class="detalhe-label">Lucro Bruto</span><span class="detalhe-val" id="d-bruto"></span></div>
     <div class="detalhe-row"><span class="detalhe-label">Despesas</span><span class="detalhe-val" id="d-despesas"></span></div>
+    <div class="detalhe-row"><span class="detalhe-label">Aplicação</span><span class="detalhe-val" id="d-aplicacao"></span></div>
     <div class="detalhe-row"><span class="detalhe-label">Lucro Líquido</span><span class="detalhe-val" id="d-liquido"></span></div>
     <div class="detalhe-row"><span class="detalhe-label">Líquido / Vendas</span><span class="detalhe-val" id="d-liquido-pct"></span></div>
   </div>
@@ -137,6 +141,7 @@ function paleta() {
     axisText: cs.getPropertyValue('--axis-text').trim(),
     text: cs.getPropertyValue('--text').trim(),
     wick: cs.getPropertyValue('--wick').trim(),
+    wickAplicacao: cs.getPropertyValue('--wick-aplicacao').trim(),
     corpoLucro: cs.getPropertyValue('--corpo-lucro').trim(),
     corpoLucroBorda: cs.getPropertyValue('--corpo-lucro-borda').trim(),
     corpoPrejuizo: cs.getPropertyValue('--corpo-prejuizo').trim(),
@@ -181,8 +186,9 @@ let _candles = [];        // todos os ciclos com atividade (mantém a cadeia acu
 let _candlesVisiveis = []; // só os que entram no desenho (tem venda e não passam do ciclo atual)
 
 async function carregarDados() {
-  const { data: contas } = await db.from('contas_contabeis').select('id, is_despesa');
+  const { data: contas } = await db.from('contas_contabeis').select('id, nome, is_despesa');
   const despesaIds = new Set((contas || []).filter(c => c.is_despesa).map(c => c.id));
+  const aplicacaoIds = new Set((contas || []).filter(c => (c.nome || '').trim().toLowerCase() === 'aplicação').map(c => c.id));
 
   const [vendas, compras, lancamentos] = await Promise.all([
     fetchTodasLinhas('pedidos_vendas', 'data, total_venda, total_lucro', q => q.not('data','is',null)),
@@ -190,9 +196,9 @@ async function carregarDados() {
     fetchTodasLinhas('livro_caixa', 'data, valor, tipo, conta_id', q => q.not('data','is',null))
   ]);
 
-  const mapa = {}; // chave -> {vendasBrutas, bruto, despesas}
+  const mapa = {}; // chave -> {vendasBrutas, bruto, despesas, aplicacao}
   function garantir(chave) {
-    if (!mapa[chave]) mapa[chave] = { vendasBrutas: 0, bruto: 0, despesas: 0 };
+    if (!mapa[chave]) mapa[chave] = { vendasBrutas: 0, bruto: 0, despesas: 0, aplicacao: 0 };
     return mapa[chave];
   }
 
@@ -210,10 +216,12 @@ async function carregarDados() {
   });
 
   lancamentos.forEach(l => {
-    if (!l.data) return;
-    const isDespesa = l.tipo === 'saida' && l.conta_id && despesaIds.has(l.conta_id);
-    if (!isDespesa) return;
-    garantir(chaveCiclo(new Date(l.data))).despesas += parseFloat(l.valor) || 0;
+    if (!l.data || l.tipo !== 'saida' || !l.conta_id) return;
+    if (despesaIds.has(l.conta_id)) {
+      garantir(chaveCiclo(new Date(l.data))).despesas += parseFloat(l.valor) || 0;
+    } else if (aplicacaoIds.has(l.conta_id)) {
+      garantir(chaveCiclo(new Date(l.data))).aplicacao += parseFloat(l.valor) || 0;
+    }
   });
 
   const chaves = Object.keys(mapa).sort();
@@ -221,12 +229,12 @@ async function carregarDados() {
   _candles = chaves.map(chave => {
     const d0 = new Date(chave + 'T00:00:00');
     const d7 = new Date(d0.getTime() + 7*86400000);
-    const { vendasBrutas, bruto, despesas } = mapa[chave];
+    const { vendasBrutas, bruto, despesas, aplicacao } = mapa[chave];
     const liquido = bruto - despesas;
     const open = acumulado;
     acumulado += liquido;
     const close = acumulado;
-    return { chave, d0, d7, vendasBrutas, bruto, despesas, liquido, open, close };
+    return { chave, d0, d7, vendasBrutas, bruto, despesas, aplicacao, liquido, open, close };
   });
 
   // Só desenha ciclos com venda e que não passem do ciclo atual (evita ciclo futuro/sem movimento)
@@ -239,17 +247,20 @@ async function carregarDados() {
 // Pavio: tamanho da despesa do ciclo, grudado embaixo do corpo se foi lucro, em cima se foi prejuízo
 function segmentosCandle(c) {
   const desp = Math.max(c.despesas, 0);
+  const apl = Math.max(c.aplicacao, 0);
   if (c.liquido >= 0) {
     return {
       cor: 'lucro',
       corpo: [c.open, c.close],
-      pavio: [c.open - desp, c.open]
+      pavio: [c.open - desp, c.open],           // despesa: embaixo do corpo
+      pavioAplicacao: [c.close, c.close + apl]   // aplicação: sentido oposto (em cima)
     };
   } else {
     return {
       cor: 'prejuizo',
       corpo: [c.close, c.open],
-      pavio: [c.open, c.open + desp]
+      pavio: [c.open, c.open + desp],            // despesa: em cima do corpo
+      pavioAplicacao: [c.close - apl, c.close]   // aplicação: sentido oposto (embaixo)
     };
   }
 }
@@ -258,7 +269,7 @@ function segmentosCandle(c) {
 const LARGURA_CANDLE = 10;
 const GAP_CANDLE = 8;
 const SLOT = LARGURA_CANDLE + GAP_CANDLE;
-const PAD = { top: 24, bottom: 34, left: 10, right: 64 };
+const PAD = { top: 24, bottom: 34, left: 60, right: 14 };
 
 function desenharGrafico() {
   const scrollEl = document.getElementById('chart-scroll');
@@ -286,7 +297,7 @@ function desenharGrafico() {
   let vMin = Infinity, vMax = -Infinity;
   _candlesVisiveis.forEach(c => {
     const seg = segmentosCandle(c);
-    [...seg.corpo, ...seg.pavio].forEach(v => {
+    [...seg.corpo, ...seg.pavio, ...seg.pavioAplicacao].forEach(v => {
       if (v < vMin) vMin = v;
       if (v > vMax) vMax = v;
     });
@@ -301,28 +312,31 @@ function desenharGrafico() {
 
   ctx.clearRect(0, 0, larguraTotal, altura);
 
-  // Grade horizontal + rótulos do eixo Y
+  // Grade horizontal + rótulos do eixo Y (à esquerda)
   const NUM_LINHAS = 6;
   ctx.font = '600 10px Inter, sans-serif';
-  ctx.textAlign = 'left';
+  ctx.textAlign = 'right';
   for (let i = 0; i <= NUM_LINHAS; i++) {
     const v = vMin + (vMax - vMin) * (i / NUM_LINHAS);
     const y = yParaPx(v);
     ctx.strokeStyle = pal.grid;
-    ctx.lineWidth = 1;
+    ctx.lineWidth = i === 0 || i === NUM_LINHAS ? 1 : 0.75;
+    ctx.setLineDash(i === 0 || i === NUM_LINHAS ? [] : [3, 3]);
     ctx.beginPath();
     ctx.moveTo(PAD.left, y);
     ctx.lineTo(PAD.left + chartW, y);
     ctx.stroke();
+    ctx.setLineDash([]);
     ctx.fillStyle = pal.axisText;
-    ctx.fillText(fmtCompacto(v), PAD.left + chartW + 8, y + 3);
+    ctx.fillText(fmtCompacto(v), PAD.left - 8, y + 3);
   }
 
-  // linha vertical separando o gráfico dos rótulos
+  // linha vertical separando os rótulos do gráfico
   ctx.strokeStyle = pal.grid;
+  ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(PAD.left + chartW, PAD.top - 8);
-  ctx.lineTo(PAD.left + chartW, altura - PAD.bottom + 8);
+  ctx.moveTo(PAD.left, PAD.top - 8);
+  ctx.lineTo(PAD.left, altura - PAD.bottom + 8);
   ctx.stroke();
 
   // Candles
@@ -340,6 +354,17 @@ function desenharGrafico() {
       ctx.beginPath();
       ctx.moveTo(xCentro, yParaPx(pDe));
       ctx.lineTo(xCentro, yParaPx(pAte));
+      ctx.stroke();
+    }
+
+    // pavio de aplicação (azul, sentido oposto ao da despesa)
+    const [aDe, aAte] = seg.pavioAplicacao;
+    if (aAte - aDe > 0.01) {
+      ctx.strokeStyle = pal.wickAplicacao;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(xCentro, yParaPx(aDe));
+      ctx.lineTo(xCentro, yParaPx(aAte));
       ctx.stroke();
     }
 
@@ -391,6 +416,7 @@ function abrirDetalhe(idx) {
   setVal('d-vendas', c.vendasBrutas, false);
   setVal('d-bruto', c.bruto, false);
   setVal('d-despesas', c.despesas, false);
+  setVal('d-aplicacao', c.aplicacao, false);
   setVal('d-liquido', c.liquido, true);
 
   const liquidoPct = c.vendasBrutas !== 0 ? (c.liquido / c.vendasBrutas) * 100 : null;
