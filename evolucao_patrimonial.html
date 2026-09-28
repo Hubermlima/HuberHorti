@@ -224,28 +224,31 @@ async function carregarDados() {
   });
 }
 
-// ── Monta os segmentos verticais de um candle (tudo dentro de 0..vendasBrutas) ──
+// ── Monta os segmentos verticais de um candle, NORMALIZADO em % da venda bruta do próprio ciclo ──
+// Eixo sempre 0..100 (100 = venda bruta do ciclo). Assim todo candle tem a mesma altura,
+// e despesa/líquido aparecem como fatia proporcional, não valor absoluto.
 // Lucro: encaixe pela base (despesa embaixo, líquido em cima dela, sobra no topo)
 // Prejuízo: espelhado, encaixe pelo topo (despesa em cima, |líquido| embaixo dela, sobra na base)
 function segmentosCandle(c) {
-  const eixo = Math.max(c.vendasBrutas, 0);
-  const desp = Math.max(Math.min(c.despesas, eixo), 0);
+  const eixo = 100;
+  const vendas = c.vendasBrutas > 0 ? c.vendasBrutas : 1;
+  const despPct = Math.max(Math.min((c.despesas / vendas) * 100, eixo), 0);
   if (c.liquido >= 0) {
-    const liq = Math.max(Math.min(c.liquido, eixo - desp), 0);
+    const liqPct = Math.max(Math.min((c.liquido / vendas) * 100, eixo - despPct), 0);
     return {
       cor: 'lucro',
-      pavioInf: [0, desp],
-      corpo: [desp, desp + liq],
-      pavioSup: [desp + liq, eixo]
+      pavioInf: [0, despPct],
+      corpo: [despPct, despPct + liqPct],
+      pavioSup: [despPct + liqPct, eixo]
     };
   } else {
-    const liqAbs = Math.max(Math.min(-c.liquido, eixo - desp), 0);
-    const topoDesp = eixo - desp;
+    const liqAbsPct = Math.max(Math.min((-c.liquido / vendas) * 100, eixo - despPct), 0);
+    const topoDesp = eixo - despPct;
     return {
       cor: 'prejuizo',
       pavioSup: [topoDesp, eixo],
-      corpo: [topoDesp - liqAbs, topoDesp],
-      pavioInf: [0, topoDesp - liqAbs]
+      corpo: [topoDesp - liqAbsPct, topoDesp],
+      pavioInf: [0, topoDesp - liqAbsPct]
     };
   }
 }
@@ -278,18 +281,12 @@ function desenharGrafico() {
 
   const pal = paleta();
 
-  // Domínio vertical: 0 até a maior vendasBrutas, com folga em cima
-  let vMax = 0;
-  _candles.forEach(c => { if (c.vendasBrutas > vMax) vMax = c.vendasBrutas; });
-  if (vMax === 0) vMax = 1;
-  vMax *= 1.08;
+  // Domínio vertical fixo: 0% a 100% da venda bruta de cada ciclo (candle normalizado)
+  const vMin = 0, vMax = 100;
 
   const chartH = altura - PAD.top - PAD.bottom;
   const chartW = larguraTotal - PAD.left - PAD.right;
-  // escala em raiz quadrada: dá mais espaço visual pra faixa baixa (onde fica o corpo)
-  // sem distorcer a ordem/proporção real dos valores
-  const raizMax = Math.sqrt(vMax);
-  const yParaPx = v => PAD.top + chartH - (Math.sqrt(Math.max(v, 0)) / raizMax) * chartH;
+  const yParaPx = v => PAD.top + chartH - ((v - vMin) / (vMax - vMin)) * chartH;
 
   ctx.clearRect(0, 0, larguraTotal, altura);
 
@@ -298,8 +295,7 @@ function desenharGrafico() {
   ctx.font = '600 10px Inter, sans-serif';
   ctx.textAlign = 'left';
   for (let i = 0; i <= NUM_LINHAS; i++) {
-    const t = i / NUM_LINHAS;
-    const v = (t * raizMax) * (t * raizMax); // inverso da raiz, pra distribuir os rótulos igual na tela
+    const v = vMin + (vMax - vMin) * (i / NUM_LINHAS);
     const y = yParaPx(v);
     ctx.strokeStyle = pal.grid;
     ctx.lineWidth = 1;
@@ -308,7 +304,7 @@ function desenharGrafico() {
     ctx.lineTo(PAD.left + chartW, y);
     ctx.stroke();
     ctx.fillStyle = pal.axisText;
-    ctx.fillText(fmtCompacto(v), PAD.left + chartW + 8, y + 3);
+    ctx.fillText(v.toFixed(0) + '%', PAD.left + chartW + 8, y + 3);
   }
 
   // linha vertical separando o gráfico dos rótulos
