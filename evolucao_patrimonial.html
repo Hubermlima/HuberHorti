@@ -59,6 +59,9 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);heigh
 .ios-btn{width:38px;height:38px;border-radius:50%;border:none;background:var(--card);display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,0.06);cursor:pointer;}
 
 .card-wrap{flex:1;margin:12px 16px 12px;background:var(--card);border-radius:20px;border:0.5px solid var(--border);display:flex;flex-direction:column;min-height:0;overflow:hidden;}
+.filtro-periodo{display:flex;gap:6px;padding:10px 14px 0;flex-shrink:0;}
+.filtro-btn{border:none;background:var(--bg);color:var(--muted);font-family:'Inter',sans-serif;font-size:11px;font-weight:600;padding:6px 14px;border-radius:20px;cursor:pointer;}
+.filtro-btn.active{background:var(--text);color:var(--card);}
 .legenda{display:flex;gap:14px;align-items:center;padding:10px 14px;border-bottom:0.5px solid var(--border2);flex-shrink:0;}
 .legenda-item{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--muted);}
 .legenda-dot{width:8px;height:8px;border-radius:2px;border:1px solid var(--border2);}
@@ -100,6 +103,10 @@ canvas#candle-canvas{display:block;height:100%;touch-action:pan-x;}
 </div>
 
 <div class="card-wrap">
+  <div class="filtro-periodo">
+    <button class="filtro-btn active" id="btn-ciclo" onclick="mudarModo('ciclo')">Ciclo</button>
+    <button class="filtro-btn" id="btn-mensal" onclick="mudarModo('mensal')">Mensal</button>
+  </div>
   <div class="legenda">
     <div class="legenda-item"><span class="legenda-dot" style="background:var(--corpo-lucro);"></span>Lucro</div>
     <div class="legenda-item"><span class="legenda-dot" style="background:var(--corpo-prejuizo);"></span>Prejuízo</div>
@@ -189,6 +196,21 @@ function chaveCiclo(dataLike) {
 
 let _candles = [];        // todos os ciclos com atividade (mantém a cadeia acumulada certa)
 let _candlesVisiveis = []; // só os que entram no desenho (tem venda e não passam do ciclo atual)
+let _candlesMensais = [];
+let _candlesMensaisVisiveis = [];
+let modoVisualizacao = 'ciclo'; // 'ciclo' | 'mensal'
+function candlesAtivos() { return modoVisualizacao === 'mensal' ? _candlesMensaisVisiveis : _candlesVisiveis; }
+
+function mudarModo(modo) {
+  if (modo === modoVisualizacao) return;
+  modoVisualizacao = modo;
+  document.getElementById('btn-ciclo').classList.toggle('active', modo === 'ciclo');
+  document.getElementById('btn-mensal').classList.toggle('active', modo === 'mensal');
+  atualizarResumo();
+  desenharGrafico();
+  const scrollEl = document.getElementById('chart-scroll');
+  scrollEl.scrollLeft = scrollEl.scrollWidth;
+}
 
 async function carregarDados() {
   const { data: contas, error: erroContas } = await db.from('contas_contabeis').select('id, descricao, is_despesa');
@@ -246,6 +268,41 @@ async function carregarDados() {
   // Só desenha ciclos com venda e que não passem do ciclo atual (evita ciclo futuro/sem movimento)
   const chaveAtual = chaveCiclo(new Date());
   _candlesVisiveis = _candles.filter(c => c.vendasBrutas > 0 && c.chave <= chaveAtual);
+
+  montarCandlesMensais(chaveAtual);
+}
+
+// ── Agrupa os mesmos dados por mês-calendário (pelo mês do início do ciclo) ──
+function montarCandlesMensais(chaveAtual) {
+  const mapaMes = {};
+  function garantirMes(mesKey) {
+    if (!mapaMes[mesKey]) mapaMes[mesKey] = { vendasBrutas: 0, bruto: 0, despesas: 0, aplicacao: 0 };
+    return mapaMes[mesKey];
+  }
+  _candles.forEach(c => {
+    const mesKey = c.chave.slice(0, 7); // 'YYYY-MM'
+    const g = garantirMes(mesKey);
+    g.vendasBrutas += c.vendasBrutas;
+    g.bruto += c.bruto;
+    g.despesas += c.despesas;
+    g.aplicacao += c.aplicacao;
+  });
+
+  const meses = Object.keys(mapaMes).sort();
+  let acumulado = 0;
+  _candlesMensais = meses.map(mesKey => {
+    const [ano, mes] = mesKey.split('-').map(Number);
+    const d0 = new Date(Date.UTC(ano, mes - 1, 1));
+    const { vendasBrutas, bruto, despesas, aplicacao } = mapaMes[mesKey];
+    const liquido = bruto - despesas;
+    const open = acumulado;
+    acumulado += liquido;
+    const close = acumulado;
+    return { chave: mesKey, d0, vendasBrutas, bruto, despesas, aplicacao, liquido, open, close };
+  });
+
+  const mesAtual = chaveAtual.slice(0, 7);
+  _candlesMensaisVisiveis = _candlesMensais.filter(c => c.vendasBrutas > 0 && c.chave <= mesAtual);
 }
 
 // ── Monta os segmentos de um candle encadeado ──
@@ -276,25 +333,26 @@ const LARGURA_CANDLE = 10;
 const GAP_CANDLE = 8;
 const SLOT = LARGURA_CANDLE + GAP_CANDLE;
 const LARGURA_EIXO = 64;
-const PAD = { top: 24, bottom: 34, left: 10, right: 14 };
+const PAD = { top: 24, bottom: 46, left: 10, right: 14 };
 
 function desenharGrafico() {
   const scrollEl = document.getElementById('chart-scroll');
   const axisCanvas = document.getElementById('axis-canvas');
-  if (_candlesVisiveis.length === 0) {
-    scrollEl.innerHTML = '<div class="empty-state">Sem ciclos com venda pra montar candles.</div>';
+  const candles = candlesAtivos();
+  if (candles.length === 0) {
+    scrollEl.innerHTML = '<div class="empty-state">Sem dados pra montar candles.</div>';
     axisCanvas.style.display = 'none';
     return;
   }
   axisCanvas.style.display = 'block';
 
   const altura = scrollEl.clientHeight || 300;
-  const larguraTotal = Math.max(scrollEl.clientWidth, PAD.left + PAD.right + _candlesVisiveis.length * SLOT);
+  const larguraTotal = Math.max(scrollEl.clientWidth, PAD.left + PAD.right + candles.length * SLOT);
   const dpr = window.devicePixelRatio || 1;
 
   // Domínio vertical: cobre corpo + pavio de todos os candles, com folga
   let vMin = Infinity, vMax = -Infinity;
-  _candlesVisiveis.forEach(c => {
+  candles.forEach(c => {
     const seg = segmentosCandle(c);
     [...seg.corpo, ...seg.pavio, ...seg.pavioAplicacao].forEach(v => {
       if (v < vMin) vMin = v;
@@ -363,7 +421,7 @@ function desenharGrafico() {
   }
 
   // Candles
-  _candlesVisiveis.forEach((c, idx) => {
+  candles.forEach((c, idx) => {
     const xCentro = PAD.left + idx * SLOT + SLOT/2;
     const seg = segmentosCandle(c);
     const corCorpo = seg.cor === 'lucro' ? pal.corpoLucro : pal.corpoPrejuizo;
@@ -402,12 +460,20 @@ function desenharGrafico() {
     ctx.lineWidth = 1;
     ctx.strokeRect(xCentro - LARGURA_CANDLE/2, yTopo, LARGURA_CANDLE, altCorpo);
 
-    // rótulo de data (dd/mm) embaixo
+    // rótulo de data (dd/mm) embaixo, na vertical
     ctx.fillStyle = pal.axisText;
     ctx.font = '9px Inter, sans-serif';
-    ctx.textAlign = 'center';
-    const dataLabel = c.d0.toLocaleDateString('pt-BR', {day:'2-digit', month:'2-digit'});
-    ctx.fillText(dataLabel, xCentro, altura - PAD.bottom + 16);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    const dataLabel = modoVisualizacao === 'mensal'
+      ? c.d0.toLocaleDateString('pt-BR', {month:'short', year:'2-digit', timeZone:'UTC'}).replace('.', '')
+      : c.d0.toLocaleDateString('pt-BR', {day:'2-digit', month:'2-digit'});
+    ctx.save();
+    ctx.translate(xCentro + 3, altura - PAD.bottom + 14);
+    ctx.rotate(Math.PI / 2);
+    ctx.fillText(dataLabel, 0, 0);
+    ctx.restore();
+    ctx.textBaseline = 'alphabetic';
   });
 
   // Interação: toque/clique num candle
@@ -415,7 +481,7 @@ function desenharGrafico() {
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const idx = Math.floor((x - PAD.left) / SLOT);
-    if (idx >= 0 && idx < _candlesVisiveis.length) abrirDetalhe(idx);
+    if (idx >= 0 && idx < candles.length) abrirDetalhe(idx);
   };
 }
 
@@ -426,10 +492,17 @@ function fmtCompacto(v) {
 }
 
 function abrirDetalhe(idx) {
-  const c = _candlesVisiveis[idx];
-  const d0Str = c.d0.toLocaleDateString('pt-BR');
-  const d7Str = new Date(c.d7.getTime() - 86400000).toLocaleDateString('pt-BR');
-  document.getElementById('detalhe-title').textContent = `${d0Str} — ${d7Str}`;
+  const c = candlesAtivos()[idx];
+  let titulo;
+  if (modoVisualizacao === 'mensal') {
+    titulo = c.d0.toLocaleDateString('pt-BR', {month:'long', year:'numeric', timeZone:'UTC'});
+    titulo = titulo.charAt(0).toUpperCase() + titulo.slice(1);
+  } else {
+    const d0Str = c.d0.toLocaleDateString('pt-BR');
+    const d7Str = new Date(c.d7.getTime() - 86400000).toLocaleDateString('pt-BR');
+    titulo = `${d0Str} — ${d7Str}`;
+  }
+  document.getElementById('detalhe-title').textContent = titulo;
 
   const setVal = (id, valor, comCor) => {
     const el = document.getElementById(id);
@@ -452,10 +525,13 @@ function fecharDetalhe() {
 }
 
 function atualizarResumo() {
-  if (_candlesVisiveis.length === 0) return;
-  const ultimo = _candlesVisiveis[_candlesVisiveis.length - 1];
+  const candles = candlesAtivos();
+  if (candles.length === 0) return;
+  const ultimo = candles[candles.length - 1];
+  const unidade = modoVisualizacao === 'mensal' ? 'mês' : 'ciclo';
+  const unidadePl = modoVisualizacao === 'mensal' ? 'meses' : 'ciclos';
   document.getElementById('topbar-sub').textContent =
-    `${_candlesVisiveis.length} ciclo${_candlesVisiveis.length !== 1 ? 's' : ''} · até ${ultimo.d0.toLocaleDateString('pt-BR')}`;
+    `${candles.length} ${candles.length !== 1 ? unidadePl : unidade} · até ${ultimo.d0.toLocaleDateString('pt-BR', modoVisualizacao === 'mensal' ? {month:'2-digit', year:'numeric', timeZone:'UTC'} : undefined)}`;
 }
 
 async function init() {
@@ -472,7 +548,7 @@ async function init() {
   }
 }
 
-window.addEventListener('resize', () => { if (_candlesVisiveis.length) desenharGrafico(); });
+window.addEventListener('resize', () => { if (candlesAtivos().length) desenharGrafico(); });
 
 db.auth.getSession().then(({ data }) => {
   if (!data.session) { window.location.href = 'index.html'; return; }
