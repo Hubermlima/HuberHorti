@@ -3896,14 +3896,26 @@ function grFootprintReferenciaCor(tick) {
 // 10% do maior volume a linha fica no cinza-base e acima disso escurece linearmente (15% → 100%),
 // como na referência: só os níveis realmente disputados ganham tom.
 function grFootprintCorCelula(bid, ask, maxTotal) {
-    const t = Math.min(1, (bid + ask) / maxTotal);
-    if (t < FOOTPRINT_CONTRASTE_PISO) return '#FFFFFF'; // abaixo do piso: branco puro, nenhum tom, nas duas skins
+    const total = bid + ask;
+    const tBase = Math.min(1, total / maxTotal);
+    if (tBase < FOOTPRINT_CONTRASTE_PISO) return { cor: '#FFFFFF', escura: false }; // abaixo do piso: branco puro, nenhum tom, nas duas skins
     const pal = FOOTPRINT_SKIN === 'cinza' ? FOOTPRINT_COR_CINZA : (ask >= bid ? FOOTPRINT_COR_VERDE : FOOTPRINT_COR_VERMELHO);
-    const k = Math.pow(t, FOOTPRINT_CONTRASTE_EXPO);
-    const r = Math.round(pal.base[0] + (pal.forte[0] - pal.base[0]) * k);
-    const g = Math.round(pal.base[1] + (pal.forte[1] - pal.base[1]) * k);
-    const b = Math.round(pal.base[2] + (pal.forte[2] - pal.base[2]) * k);
-    return 'rgb(' + r + ',' + g + ',' + b + ')';
+    const k = Math.pow(tBase, FOOTPRINT_CONTRASTE_EXPO);
+    let r = Math.round(pal.base[0] + (pal.forte[0] - pal.base[0]) * k);
+    let g = Math.round(pal.base[1] + (pal.forte[1] - pal.base[1]) * k);
+    let b = Math.round(pal.base[2] + (pal.forte[2] - pal.base[2]) * k);
+    // Além da referência (nó de volume MUITO fora da curva, tipo outlier institucional): não satura mais em "forte",
+    // continua escurecendo rumo ao preto puro -- é o que dá o "black node" gritante do TradingView. Sem isso, um nó
+    // 3x maior que os vizinhos ficava com a MESMA cor "forte" de qualquer célula já no p95, sem contraste nenhum.
+    const razaoBruta = total / maxTotal; // sem clamp -- o quanto o nó passa da referência
+    if (razaoBruta > 1) {
+        const kExtra = 1 - Math.exp(-(razaoBruta - 1) * 1.2); // 2x ref ≈ 70% pro preto · 3x ≈ 91% · 4x+ ≈ quase 100%
+        r = Math.round(r + (8 - r) * kExtra);
+        g = Math.round(g + (8 - g) * kExtra);
+        b = Math.round(b + (8 - b) * kExtra);
+    }
+    const luminancia = 0.299 * r + 0.587 * g + 0.114 * b;
+    return { cor: 'rgb(' + r + ',' + g + ',' + b + ')', escura: luminancia < 130 };
 }
 // Volume compacto (células do footprint e rótulos do painel Delta/Total), em 3 níveis de
 // compactação (o mais preciso que caiba): acima de 1.000 vira "1,23k"; de 10 a 999 inteiro; abaixo de 10 uma casa.
@@ -3984,9 +3996,10 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
         if (yBot < yTop) { geo.push(null); return; }
         if (yBot < yMin || yTop > yMax || ln.total <= 0) { geo.push(null); return; }
         const y0 = Math.max(yMin, yTop), y1 = Math.min(yMax, yBot);
-        geo.push({ y0, y1, pontaCortada });
         // por linha-base: uma linha agrupada (teto de níveis do modo ATR) soma várias, então divide pelo agrupamento
-        ctx.fillStyle = grFootprintCorCelula(ln.bid / (cl.agrup || 1), ln.ask / (cl.agrup || 1), cfg.refCor);
+        const corCel = grFootprintCorCelula(ln.bid / (cl.agrup || 1), ln.ask / (cl.agrup || 1), cfg.refCor);
+        geo.push({ y0, y1, pontaCortada, escura: corCel.escura });
+        ctx.fillStyle = corCel.cor;
         ctx.fillRect(xCel, y0, wCel, Math.max(1, y1 - y0));
     });
     // Contorno ao redor do BLOCO INTEIRO de células (não mais por célula — aquilo criava uma linha divisória entre cada
@@ -4024,7 +4037,7 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
             if (g.y1 - g.y0 < 8 && !g.pontaCortada) return; // fininha E não é a ponta cortada: some, como sempre
             const imb = ln.imbAsk || ln.imbBid;
             ctx.font = imb ? fonteNegrito : fonteNormal;
-            ctx.fillStyle = imb ? '#1A2BD8' : '#000000';
+            ctx.fillStyle = imb ? (g.escura ? '#8FA5FF' : '#1A2BD8') : (g.escura ? '#FFFFFF' : '#000000');
             ctx.fillText(grFmtVolCompacto(ln.total, nivelTxt), xCel + wCel - 3, (g.y0 + g.y1) / 2 + fs * 0.35);
         });
         ctx.textAlign = 'left';
@@ -4036,15 +4049,17 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
             const g = geo[i];
             if (!g) return;
             if (g.y1 - g.y0 < 8 && !g.pontaCortada) return; // fininha E não é a ponta cortada: some, como sempre
+            const corTxt = g.escura ? '#FFFFFF' : '#000000';
+            const corImb = g.escura ? '#8FA5FF' : '#1A2BD8';
             const a = grFmtVolCompacto(ln.bid, nivelTxt), b = grFmtVolCompacto(ln.ask, nivelTxt);
             ctx.font = ln.imbBid ? fonteNegrito : fonteNormal; const wa = ctx.measureText(a).width;
             ctx.font = fonteNormal;                             const wx = ctx.measureText(' x ').width;
             ctx.font = ln.imbAsk ? fonteNegrito : fonteNormal; const wb = ctx.measureText(b).width;
             let x = xCel + (wCel - (wa + wx + wb)) / 2;
             const y = (g.y0 + g.y1) / 2 + fs * 0.35;
-            ctx.font = ln.imbBid ? fonteNegrito : fonteNormal; ctx.fillStyle = ln.imbBid ? '#1A2BD8' : '#000000'; ctx.fillText(a, x, y); x += wa;
-            ctx.font = fonteNormal;                             ctx.fillStyle = '#000000';                          ctx.fillText(' x ', x, y); x += wx;
-            ctx.font = ln.imbAsk ? fonteNegrito : fonteNormal; ctx.fillStyle = ln.imbAsk ? '#1A2BD8' : '#000000'; ctx.fillText(b, x, y);
+            ctx.font = ln.imbBid ? fonteNegrito : fonteNormal; ctx.fillStyle = ln.imbBid ? corImb : corTxt; ctx.fillText(a, x, y); x += wa;
+            ctx.font = fonteNormal;                             ctx.fillStyle = corTxt;                          ctx.fillText(' x ', x, y); x += wx;
+            ctx.font = ln.imbAsk ? fonteNegrito : fonteNormal; ctx.fillStyle = ln.imbAsk ? corImb : corTxt; ctx.fillText(b, x, y);
         });
     }
     // Total do candle inteiro, uma linha só, logo ABAIXO do bloco de células — não é célula nem abre nada, é só a
