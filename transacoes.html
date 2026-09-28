@@ -3631,7 +3631,7 @@ function grDeltaPorFaixaATR(tick) {
     const chave = tick + '_' + janelaDias + '_' + Math.floor(Date.now() / 60000) + '_' + _grFootprintCandlesRaw.length + '_' + _grFootprintDiasAvulsos.size;
     window._grDeltaAtrCache = window._grDeltaAtrCache || {};
     const cache = window._grDeltaAtrCache[tick];
-    if (cache && cache.chave === chave) return cache.mapa;
+    if (cache && cache.chave === chave) return cache.resultado;
     const inicio = Date.now() - janelaDias * 24 * 60 * 60 * 1000;
     const mapa = new Map(); // chave: Math.round(preco / tick) -> delta (compra - venda) acumulado na faixa
     grFootprintParaCadaMinuto(inicio, Date.now(), m => {
@@ -3640,8 +3640,11 @@ function grDeltaPorFaixaATR(tick) {
             mapa.set(k, (mapa.get(k) || 0) + (n.c - n.v));
         });
     });
-    window._grDeltaAtrCache[tick] = { chave, mapa };
-    return mapa;
+    let maxAbs = 0;
+    mapa.forEach(v => { const a = Math.abs(v); if (a > maxAbs) maxAbs = a; });
+    const resultado = { mapa, maxAbs };
+    window._grDeltaAtrCache[tick] = { chave, resultado };
+    return resultado;
 }
 // Altura da linha (USD) do footprint dos candles, conforme o modo escolhido em Configurações Ambiente:
 //  - 'atr'  → tick do ATR (pra refinar um nível, desce um timeframe). Candle muito alto ainda ganha o teto
@@ -4412,7 +4415,7 @@ function grDrawCandles(candles, emptyRight) {
         const PAD = { ..._grPAD };
         const _altPan = grAlturasPaineis(H);
         if (_altPan.total > 0) PAD.bottom = _altPan.total + _grPAD.bottom;
-        if (_indState.deltaAtr) PAD.right += 32; // regua de Delta ATR: eixo dedicado, bem fino -- so cabe o numero
+        if (_indState.deltaAtr) PAD.right += 24; // regua de Delta ATR: eixo dedicado, o mais fino possivel
         let chartW = W - PAD.left - PAD.right;
         const chartH = H - PAD.top - PAD.bottom;
         // ── Calcula indicadores sobre todos os candles ───────────────
@@ -4536,23 +4539,28 @@ function grDrawCandles(candles, emptyRight) {
         // ver se ajuda a enxergar onde a pressao liquida se concentrou, faixa por faixa.
         if (_indState.deltaAtr && _grFootprintAtivo) {
             const tickDA = grFootprintTickDaGrade(chartH / priceRange, true);
-            const mapaDA = grDeltaPorFaixaATR(tickDA);
+            const resultadoDA = grDeltaPorFaixaATR(tickDA);
+            const mapaDA = resultadoDA ? resultadoDA.mapa : null;
+            const maxAbsDA = resultadoDA ? (resultadoDA.maxAbs || 1) : 1;
             const rowHDA = (chartH / priceRange) * tickDA;
             if (mapaDA && rowHDA >= 8) {
-                ctx.font = '700 8px -apple-system';
+                ctx.font = '700 7.5px -apple-system';
                 ctx.textAlign = 'right';
-                const xDA = W - 3;
-                const larguraFaixaDA = PAD.right - 2; // faixa reservada pro indicador -- o fundo colorido cobre ela inteira
+                const xDA = W - 2;
+                const larguraFaixaDA = PAD.right - 1; // faixa reservada pro indicador -- o fundo colorido cobre ela inteira
                 const kIni = Math.floor(minP / tickDA), kFim = Math.ceil(maxP / tickDA);
                 for (let k = kIni; k <= kFim; k++) {
                     const deltaFaixa = mapaDA.get(k);
                     if (deltaFaixa === undefined) continue; // sem negocio nessa faixa na janela -- nao desenha nada
                     const y = toY(k * tickDA);
                     if (y < PAD.top || y > PAD.top + chartH) continue;
-                    // O FUNDO (verde/vermelho) já diz o sinal -- o número fica sempre preto, sem +/-.
-                    ctx.fillStyle = deltaFaixa >= 0 ? 'rgba(38,166,154,0.30)' : 'rgba(239,83,80,0.30)';
+                    // Mesma gradacao de cor do footprint (piso/expoente/extremo, todos ajustaveis em Configurações):
+                    // delta negativo entra como "bid", positivo como "ask" -- fundo pálido→forte→quase preto conforme
+                    // o tamanho em relação ao maior |delta| das faixas visíveis agora.
+                    const corInfoDA = grFootprintCorCelula(deltaFaixa < 0 ? -deltaFaixa : 0, deltaFaixa > 0 ? deltaFaixa : 0, maxAbsDA);
+                    ctx.fillStyle = corInfoDA.cor;
                     ctx.fillRect(W - PAD.right, y - rowHDA / 2, larguraFaixaDA, rowHDA);
-                    ctx.fillStyle = '#000000';
+                    ctx.fillStyle = corInfoDA.escura ? '#FFFFFF' : '#000000';
                     ctx.fillText(grFmtVolCompacto(Math.abs(deltaFaixa), 0), xDA, y + 3);
                 }
                 ctx.textAlign = 'left';
