@@ -2394,6 +2394,7 @@ function grConfigBlocoContraste(svg) {
         + '<div style="flex:1;min-width:0;"><div style="font-size:14px;font-weight:600;color:#1C1C1E;">Contraste</div><div style="font-size:11.5px;color:#8E8E93;margin-top:1px;">Realça as células mais negociadas, nas duas skins</div></div></div>'
         + grConfigSliderInt('cv-cfg-contrastepiso', 'Contraste inferior (piso)', Math.round(FOOTPRINT_CONTRASTE_PISO * 100), 0, 40, 'grFootprintContrastePisoSlider', '', '%')
         + grConfigSliderDecimal('cv-cfg-contrasteexpo', 'Contraste superior (expoente)', FOOTPRINT_CONTRASTE_EXPO, 0.5, 6, 0.1, 'grFootprintContrasteExpoSlider')
+        + grConfigSliderDecimal('cv-cfg-contrasteextremo', 'Contraste dos outliers (acima da referência)', FOOTPRINT_CONTRASTE_EXTREMO, 0.5, 12, 0.1, 'grFootprintContrasteExtremoSlider')
         + '</div>';
 }
 // Bloco "Marcar os maiores níveis": toggle (liga/desliga) + slider de tolerância (%), que só aparece quando ligado.
@@ -3546,6 +3547,10 @@ let FOOTPRINT_CONTRASTE_PISO = parseFloat(localStorage.getItem('grFootprintContr
 if (!(FOOTPRINT_CONTRASTE_PISO >= 0 && FOOTPRINT_CONTRASTE_PISO <= 0.4)) FOOTPRINT_CONTRASTE_PISO = 0;
 let FOOTPRINT_CONTRASTE_EXPO = parseFloat(localStorage.getItem('grFootprintContrasteExpo'));
 if (!(FOOTPRINT_CONTRASTE_EXPO >= 0.5 && FOOTPRINT_CONTRASTE_EXPO <= 6)) FOOTPRINT_CONTRASTE_EXPO = 0.7;
+// Quão rápido um nó ACIMA da referência (outlier de verdade) escurece rumo ao preto -- valor alto = já escurece
+// bastante com pouco excesso sobre a referência; valor baixo = precisa passar muito da referência pra escurecer.
+let FOOTPRINT_CONTRASTE_EXTREMO = parseFloat(localStorage.getItem('grFootprintContrasteExtremo'));
+if (!(FOOTPRINT_CONTRASTE_EXTREMO >= 0.5 && FOOTPRINT_CONTRASTE_EXTREMO <= 12)) FOOTPRINT_CONTRASTE_EXTREMO = 3.5;
 function grFootprintContrastePisoSlider(v) {
     const piso = Math.max(0, Math.min(40, Math.round(parseFloat(v) || 0)));
     FOOTPRINT_CONTRASTE_PISO = piso / 100;
@@ -3558,6 +3563,13 @@ function grFootprintContrasteExpoSlider(v) {
     FOOTPRINT_CONTRASTE_EXPO = expo;
     try { localStorage.setItem('grFootprintContrasteExpo', String(expo)); } catch (e) {}
     const txt = document.getElementById('cv-cfg-contrasteexpo-txt'); if (txt) txt.textContent = expo.toFixed(1).replace('.', ',');
+    grDrawChart();
+}
+function grFootprintContrasteExtremoSlider(v) {
+    const extremo = Math.max(0.5, Math.min(12, Math.round((parseFloat(v) || 3.5) * 10) / 10));
+    FOOTPRINT_CONTRASTE_EXTREMO = extremo;
+    try { localStorage.setItem('grFootprintContrasteExtremo', String(extremo)); } catch (e) {}
+    const txt = document.getElementById('cv-cfg-contrasteextremo-txt'); if (txt) txt.textContent = extremo.toFixed(1).replace('.', ',');
     grDrawChart();
 }
 // Contorno na célula de maior negociação do candle (o POC dele): liga/desliga. Persistido.
@@ -3909,7 +3921,7 @@ function grFootprintCorCelula(bid, ask, maxTotal) {
     // 3x maior que os vizinhos ficava com a MESMA cor "forte" de qualquer célula já no p95, sem contraste nenhum.
     const razaoBruta = total / maxTotal; // sem clamp -- o quanto o nó passa da referência
     if (razaoBruta > 1) {
-        const kExtra = 1 - Math.exp(-(razaoBruta - 1) * 3.5); // 1.2x ref ≈ 50% pro preto · 1.5x ≈ 83% · 2x+ ≈ quase 100%
+        const kExtra = 1 - Math.exp(-(razaoBruta - 1) * FOOTPRINT_CONTRASTE_EXTREMO); // maior o valor, menos excesso sobre a referência já basta pra escurecer
         r = Math.round(r + (8 - r) * kExtra);
         g = Math.round(g + (8 - g) * kExtra);
         b = Math.round(b + (8 - b) * kExtra);
@@ -4595,8 +4607,9 @@ function grDrawCandles(candles, emptyRight) {
                 }
                 grPreencherFaixaRSI(ctx, niveisY[maisBaixo], baseChart, xs, grRsiCorFaixa(maisBaixo, maisBaixo, 1.3));
             }
-            // Linha tracejada de cada nível ativo
-            niveisAtivos.forEach(nv => grTracarCurvaSuave(ctx, xs.map((x, i) => niveisY[nv][i] == null ? null : { x, y: niveisY[nv][i] }), grRsiCorLinha(nv), 1.6));
+            // Linha cheia de cada nível ao longo dos candles foi tirada -- eram muitas linhas atravessando o gráfico
+            // e confundiam com as EMAs. Fica só a faixa colorida (o preenchimento já mostra a zona) mais o traço
+            // tracejado curto + número no canto direito, abaixo.
             const yMinRotulo = PAD.top + 9, yMaxRotulo = PAD.top + chartH - 9;
             niveisAtivos.forEach(nv => {
                 let iUlt = -1;
