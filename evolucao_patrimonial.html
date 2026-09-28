@@ -63,6 +63,8 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);heigh
 .legenda-item{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--muted);}
 .legenda-dot{width:8px;height:8px;border-radius:2px;border:1px solid var(--border2);}
 
+.chart-row{flex:1;display:flex;min-height:0;}
+canvas#axis-canvas{flex-shrink:0;display:block;height:100%;}
 .chart-scroll{flex:1;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;min-height:0;position:relative;}
 .chart-inner{height:100%;position:relative;}
 canvas#candle-canvas{display:block;height:100%;touch-action:pan-x;}
@@ -104,8 +106,11 @@ canvas#candle-canvas{display:block;height:100%;touch-action:pan-x;}
     <div class="legenda-item"><span class="legenda-dot" style="background:var(--wick-aplicacao);"></span>Aplicação</div>
     <div class="legenda-item" style="margin-left:auto;">Toque num candle pra detalhes</div>
   </div>
-  <div class="chart-scroll" id="chart-scroll">
-    <div class="loading" id="loading-msg">Carregando dados...</div>
+  <div class="chart-row" id="chart-row">
+    <canvas id="axis-canvas"></canvas>
+    <div class="chart-scroll" id="chart-scroll">
+      <div class="loading" id="loading-msg">Carregando dados...</div>
+    </div>
   </div>
 </div>
 
@@ -186,9 +191,10 @@ let _candles = [];        // todos os ciclos com atividade (mantém a cadeia acu
 let _candlesVisiveis = []; // só os que entram no desenho (tem venda e não passam do ciclo atual)
 
 async function carregarDados() {
-  const { data: contas } = await db.from('contas_contabeis').select('id, nome, is_despesa');
+  const { data: contas, error: erroContas } = await db.from('contas_contabeis').select('id, descricao, is_despesa');
+  if (erroContas) throw erroContas;
   const despesaIds = new Set((contas || []).filter(c => c.is_despesa).map(c => c.id));
-  const aplicacaoIds = new Set((contas || []).filter(c => (c.nome || '').trim().toLowerCase() === 'aplicação').map(c => c.id));
+  const aplicacaoIds = new Set((contas || []).filter(c => (c.descricao || '').trim().toLowerCase() === 'aplicação').map(c => c.id));
 
   const [vendas, compras, lancamentos] = await Promise.all([
     fetchTodasLinhas('pedidos_vendas', 'data, total_venda, total_lucro', q => q.not('data','is',null)),
@@ -269,29 +275,22 @@ function segmentosCandle(c) {
 const LARGURA_CANDLE = 10;
 const GAP_CANDLE = 8;
 const SLOT = LARGURA_CANDLE + GAP_CANDLE;
-const PAD = { top: 24, bottom: 34, left: 60, right: 14 };
+const LARGURA_EIXO = 64;
+const PAD = { top: 24, bottom: 34, left: 10, right: 14 };
 
 function desenharGrafico() {
   const scrollEl = document.getElementById('chart-scroll');
+  const axisCanvas = document.getElementById('axis-canvas');
   if (_candlesVisiveis.length === 0) {
     scrollEl.innerHTML = '<div class="empty-state">Sem ciclos com venda pra montar candles.</div>';
+    axisCanvas.style.display = 'none';
     return;
   }
+  axisCanvas.style.display = 'block';
 
-  const larguraTotal = Math.max(scrollEl.clientWidth, PAD.left + PAD.right + _candlesVisiveis.length * SLOT);
   const altura = scrollEl.clientHeight || 300;
-
-  scrollEl.innerHTML = '<div class="chart-inner" style="width:' + larguraTotal + 'px;"><canvas id="candle-canvas"></canvas></div>';
-  const canvas = document.getElementById('candle-canvas');
+  const larguraTotal = Math.max(scrollEl.clientWidth, PAD.left + PAD.right + _candlesVisiveis.length * SLOT);
   const dpr = window.devicePixelRatio || 1;
-  canvas.width = larguraTotal * dpr;
-  canvas.height = altura * dpr;
-  canvas.style.width = larguraTotal + 'px';
-  canvas.style.height = altura + 'px';
-  const ctx = canvas.getContext('2d');
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-  const pal = paleta();
 
   // Domínio vertical: cobre corpo + pavio de todos os candles, com folga
   let vMin = Infinity, vMax = -Infinity;
@@ -310,12 +309,46 @@ function desenharGrafico() {
   const chartW = larguraTotal - PAD.left - PAD.right;
   const yParaPx = v => PAD.top + chartH - ((v - vMin) / (vMax - vMin)) * chartH;
 
+  const pal = paleta();
+
+  // ── Canvas do eixo Y (fixo, não rola) ──
+  axisCanvas.width = LARGURA_EIXO * dpr;
+  axisCanvas.height = altura * dpr;
+  axisCanvas.style.width = LARGURA_EIXO + 'px';
+  axisCanvas.style.height = altura + 'px';
+  const actx = axisCanvas.getContext('2d');
+  actx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  actx.clearRect(0, 0, LARGURA_EIXO, altura);
+
+  // mais linhas quanto maior a altura disponível
+  const NUM_LINHAS = Math.max(8, Math.round(chartH / 42));
+  actx.font = '600 10px Inter, sans-serif';
+  actx.textAlign = 'right';
+  for (let i = 0; i <= NUM_LINHAS; i++) {
+    const v = vMin + (vMax - vMin) * (i / NUM_LINHAS);
+    const y = yParaPx(v);
+    actx.fillStyle = pal.axisText;
+    actx.fillText(fmtCompacto(v), LARGURA_EIXO - 10, y + 3);
+  }
+  actx.strokeStyle = pal.grid;
+  actx.lineWidth = 1;
+  actx.beginPath();
+  actx.moveTo(LARGURA_EIXO - 0.5, PAD.top - 8);
+  actx.lineTo(LARGURA_EIXO - 0.5, altura - PAD.bottom + 8);
+  actx.stroke();
+
+  // ── Canvas do priceaction (rola horizontalmente) ──
+  scrollEl.innerHTML = '<div class="chart-inner" style="width:' + larguraTotal + 'px;"><canvas id="candle-canvas"></canvas></div>';
+  const canvas = document.getElementById('candle-canvas');
+  canvas.width = larguraTotal * dpr;
+  canvas.height = altura * dpr;
+  canvas.style.width = larguraTotal + 'px';
+  canvas.style.height = altura + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, larguraTotal, altura);
 
-  // Grade horizontal + rótulos do eixo Y (à esquerda)
-  const NUM_LINHAS = 6;
-  ctx.font = '600 10px Inter, sans-serif';
-  ctx.textAlign = 'right';
+  // Grade horizontal (mesmas linhas do eixo, sem os números, pra alinhar visualmente)
   for (let i = 0; i <= NUM_LINHAS; i++) {
     const v = vMin + (vMax - vMin) * (i / NUM_LINHAS);
     const y = yParaPx(v);
@@ -327,17 +360,7 @@ function desenharGrafico() {
     ctx.lineTo(PAD.left + chartW, y);
     ctx.stroke();
     ctx.setLineDash([]);
-    ctx.fillStyle = pal.axisText;
-    ctx.fillText(fmtCompacto(v), PAD.left - 8, y + 3);
   }
-
-  // linha vertical separando os rótulos do gráfico
-  ctx.strokeStyle = pal.grid;
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(PAD.left, PAD.top - 8);
-  ctx.lineTo(PAD.left, altura - PAD.bottom + 8);
-  ctx.stroke();
 
   // Candles
   _candlesVisiveis.forEach((c, idx) => {
