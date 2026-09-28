@@ -215,40 +215,35 @@ async function carregarDados() {
   });
 
   const chaves = Object.keys(mapa).sort();
+  let acumulado = 0;
   _candles = chaves.map(chave => {
     const d0 = new Date(chave + 'T00:00:00');
     const d7 = new Date(d0.getTime() + 7*86400000);
     const { vendasBrutas, bruto, despesas } = mapa[chave];
     const liquido = bruto - despesas;
-    return { chave, d0, d7, vendasBrutas, bruto, despesas, liquido };
+    const open = acumulado;
+    acumulado += liquido;
+    const close = acumulado;
+    return { chave, d0, d7, vendasBrutas, bruto, despesas, liquido, open, close };
   });
 }
 
-// ── Monta os segmentos verticais de um candle, NORMALIZADO em % da venda bruta do próprio ciclo ──
-// Eixo sempre 0..100 (100 = venda bruta do ciclo). Assim todo candle tem a mesma altura,
-// e despesa/líquido aparecem como fatia proporcional, não valor absoluto.
-// Lucro: encaixe pela base (despesa embaixo, líquido em cima dela, sobra no topo)
-// Prejuízo: espelhado, encaixe pelo topo (despesa em cima, |líquido| embaixo dela, sobra na base)
+// ── Monta os segmentos de um candle encadeado ──
+// Corpo: abertura (acumulado até o ciclo anterior) até fechamento (abertura + líquido do ciclo)
+// Pavio: mesma amplitude do líquido, grudado embaixo do corpo se foi lucro, em cima se foi prejuízo
 function segmentosCandle(c) {
-  const eixo = 100;
-  const vendas = c.vendasBrutas > 0 ? c.vendasBrutas : 1;
-  const despPct = Math.max(Math.min((c.despesas / vendas) * 100, eixo), 0);
+  const liqAbs = Math.abs(c.liquido);
   if (c.liquido >= 0) {
-    const liqPct = Math.max(Math.min((c.liquido / vendas) * 100, eixo - despPct), 0);
     return {
       cor: 'lucro',
-      pavioInf: [0, despPct],
-      corpo: [despPct, despPct + liqPct],
-      pavioSup: [despPct + liqPct, eixo]
+      corpo: [c.open, c.close],
+      pavio: [c.open - liqAbs, c.open]
     };
   } else {
-    const liqAbsPct = Math.max(Math.min((-c.liquido / vendas) * 100, eixo - despPct), 0);
-    const topoDesp = eixo - despPct;
     return {
       cor: 'prejuizo',
-      pavioSup: [topoDesp, eixo],
-      corpo: [topoDesp - liqAbsPct, topoDesp],
-      pavioInf: [0, topoDesp - liqAbsPct]
+      corpo: [c.close, c.open],
+      pavio: [c.open, c.open + liqAbs]
     };
   }
 }
@@ -281,8 +276,18 @@ function desenharGrafico() {
 
   const pal = paleta();
 
-  // Domínio vertical fixo: 0% a 100% da venda bruta de cada ciclo (candle normalizado)
-  const vMin = 0, vMax = 100;
+  // Domínio vertical: cobre corpo + pavio de todos os candles, com folga
+  let vMin = Infinity, vMax = -Infinity;
+  _candles.forEach(c => {
+    const seg = segmentosCandle(c);
+    [...seg.corpo, ...seg.pavio].forEach(v => {
+      if (v < vMin) vMin = v;
+      if (v > vMax) vMax = v;
+    });
+  });
+  if (!isFinite(vMin) || !isFinite(vMax) || vMin === vMax) { vMin = 0; vMax = 1; }
+  const folga = (vMax - vMin) * 0.08;
+  vMin -= folga; vMax += folga;
 
   const chartH = altura - PAD.top - PAD.bottom;
   const chartW = larguraTotal - PAD.left - PAD.right;
@@ -304,7 +309,7 @@ function desenharGrafico() {
     ctx.lineTo(PAD.left + chartW, y);
     ctx.stroke();
     ctx.fillStyle = pal.axisText;
-    ctx.fillText(v.toFixed(0) + '%', PAD.left + chartW + 8, y + 3);
+    ctx.fillText(fmtCompacto(v), PAD.left + chartW + 8, y + 3);
   }
 
   // linha vertical separando o gráfico dos rótulos
@@ -321,16 +326,16 @@ function desenharGrafico() {
     const corCorpo = seg.cor === 'lucro' ? pal.corpoLucro : pal.corpoPrejuizo;
     const corBorda = seg.cor === 'lucro' ? pal.corpoLucroBorda : pal.corpoPrejuizoBorda;
 
-    // pavio inferior + superior (linha fina neutra)
-    ctx.strokeStyle = pal.wick;
-    ctx.lineWidth = 2;
-    [seg.pavioInf, seg.pavioSup].forEach(([de, ate]) => {
-      if (ate - de < 0.01) return;
+    // pavio (linha fina neutra, representa a despesa)
+    const [pDe, pAte] = seg.pavio;
+    if (pAte - pDe > 0.01) {
+      ctx.strokeStyle = pal.wick;
+      ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.moveTo(xCentro, yParaPx(de));
-      ctx.lineTo(xCentro, yParaPx(ate));
+      ctx.moveTo(xCentro, yParaPx(pDe));
+      ctx.lineTo(xCentro, yParaPx(pAte));
       ctx.stroke();
-    });
+    }
 
     // corpo
     const [cDe, cAte] = seg.corpo;
