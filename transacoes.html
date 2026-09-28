@@ -762,6 +762,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <button class="cv-ind-btn cvdpa" id="cv-ind-cvdPA" onclick="cvToggleInd('cvdPA')">
 <span class="btn-sigla">CVD</span><span class="btn-nome">CVD</span></button>
       <button class="cv-ind-btn" id="cv-ind-deltaAtr" onclick="cvToggleInd('deltaAtr')"><span class="btn-sigla">DA</span><span class="btn-nome">Delta ATR</span></button>
+      <button class="cv-ind-btn" id="cv-ind-oiPA" onclick="cvToggleInd('oiPA')"><span class="btn-sigla">OI</span><span class="btn-nome">Open Interest</span></button>
       <button class="cv-ind-btn absorcao" id="cv-ind-absorcao" onclick="cvToggleSubInd('absorcao')"><span class="btn-sigla">Abs</span><span class="btn-nome">Absorção</span></button>
     </div>
     <!-- Modal sucesso boleta -->
@@ -2707,6 +2708,11 @@ function cvRenderMenuFpCfg() {
         menu.innerHTML = '<div style="font-size:13px;font-weight:700;color:#1C1C1E;">CVD / Delta</div>'
             + '<div style="font-size:12px;color:#8E8E93;max-width:200px;padding-bottom:4px;">CVD (linha grossa) x Delta (linha fina) sobrepostos no preço.</div>'
             + (c ? '<div style="font-size:13px;font-weight:700;color:' + c.cor + ';">' + c.valor + '</div>' : '');
+    } else if (_grFpCfgMenuQual === 'oi') {
+        const o = window._compValores && window._compValores.oiPA;
+        menu.innerHTML = '<div style="font-size:13px;font-weight:700;color:#1C1C1E;">Open Interest</div>'
+            + '<div style="font-size:12px;color:#8E8E93;max-width:200px;padding-bottom:4px;">Nível acumulado (linha grossa) x variação por candle (linha fina), sobrepostos ao preço. Dado do mercado inteiro (Binance Futures) — não é por faixa de preço.</div>'
+            + (o ? '<div style="font-size:13px;font-weight:700;color:' + o.cor + ';">' + o.valor + '</div>' : '');
     }
 }
 // Liga/desliga um nível de RSI direto no popup do chip -- sem precisar ir em Configurações.
@@ -3620,6 +3626,46 @@ function grTickImparPorPx(minPx, pxPorUsd) {
 // múltiplo de 10 (resolução dos dados no R2). Filtra e aglutina os níveis e não muda com o zoom.
 function grTickAtr() {
     return Math.max(10, Math.round(grCalcularTickATR() / 10) * 10);
+}
+// ── Open Interest (Binance Futures) -- so tem granularidade por TEMPO, nao por preco: um numero so por
+// periodo, do mercado inteiro. Mapeia o TF atual pro period valido mais proximo aceito pela API (5m e o
+// minimo -- TF menor que isso usa o period de 5m mesmo, mais "grosso" que o candle).
+const GR_OI_PERIODOS_VALIDOS = ['5m', '15m', '30m', '1h', '2h', '4h', '6h', '12h', '1d'];
+const GR_OI_PERIODO_MS = { '5m': 300000, '15m': 900000, '30m': 1800000, '1h': 3600000, '2h': 7200000, '4h': 14400000, '6h': 21600000, '12h': 43200000, '1d': 86400000 };
+function grOiPeriodoParaTf() {
+    const msCandle = (typeof grFootprintMsPorCandle === 'function') ? grFootprintMsPorCandle() : 3600000;
+    let melhor = GR_OI_PERIODOS_VALIDOS[0], menorDif = Infinity;
+    GR_OI_PERIODOS_VALIDOS.forEach(p => {
+        const dif = Math.abs(GR_OI_PERIODO_MS[p] - msCandle);
+        if (dif < menorDif) { menorDif = dif; melhor = p; }
+    });
+    return melhor;
+}
+// Cache por period -- atualiza no máximo 1x por minuto (o OI não muda tão rápido a ponto de precisar mais que isso,
+// e evita bater na API a cada quadro). limit=500 é o máximo por chamada da Binance.
+window._grOiCache = window._grOiCache || {};
+function grOiGarantirDados(periodo) {
+    const c = window._grOiCache[periodo];
+    if (c && (c.carregando || Date.now() - c.ts < 60000)) return;
+    window._grOiCache[periodo] = Object.assign({}, c, { carregando: true });
+    fetch('https://fapi.binance.com/futures/data/openInterestHist?symbol=BTCUSDT&period=' + periodo + '&limit=500')
+        .then(r => r.json())
+        .then(arr => {
+            const dados = (Array.isArray(arr) ? arr : []).map(o => ({ t: o.timestamp, oi: parseFloat(o.sumOpenInterest || 0) })).sort((a, b) => a.t - b.t);
+            window._grOiCache[periodo] = { ts: Date.now(), dados, carregando: false };
+            if (typeof grDrawChart === 'function') grDrawChart();
+        })
+        .catch(() => { if (window._grOiCache[periodo]) window._grOiCache[periodo].carregando = false; });
+}
+// Valor do OI mais recente NAO POSTERIOR a `ts` -- o candle não pode "ver" OI do futuro. Busca binária.
+function grOiValorEm(dados, ts) {
+    if (!dados || !dados.length) return null;
+    let lo = 0, hi = dados.length - 1, res = -1;
+    while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (dados[mid].t <= ts) { res = mid; lo = mid + 1; } else hi = mid - 1;
+    }
+    return res >= 0 ? dados[res].oi : null;
 }
 // Regua de Delta por faixa de ATR -- indicador NOVO, dentro do framework do Footprint: mesma grade de faixas
 // dos clusters (grFootprintTickDaGrade) e mesma "Janela de Dias" do Fluxo (_grFootprintLookbackDias). Sem
@@ -5201,6 +5247,86 @@ if (_grTipoGrafico === 'linha') {
                     }
                     const rotuloCvd = 'CVD' + (idxUltCvd >= 0 ? ' ' + (cvdVals[idxUltCvd] >= 0 ? '+' : '-') + grFmtVolCompacto(Math.abs(cvdVals[idxUltCvd]), 0) : '') + setaCvdTopo;
                     window._compValores.cvdPA = { cor: '#1565C0', valor: rotuloCvd }; grBarraChip(rotuloCvd, '#000000', (cx, cy) => cvAbrirMenuFpCfg('cvd', cx, cy));
+                }
+
+                // ── Open Interest -- mesmo framework do CVD (nivel acumulado + variacao por candle, sobrepostos
+                // ao preco na mesma banda normalizada). Diferenca: o dado nao vem do footprint (e do mercado
+                // inteiro via API da Binance, por TEMPO, nao por faixa de preco) -- mas herda a mesma "Janela de
+                // Dias" (inicioJanelaPA) e so aparece com o Fluxo ativo, igual o CVD.
+                if (_indState.oiPA) {
+                    const periodoOi = grOiPeriodoParaTf();
+                    grOiGarantirDados(periodoOi);
+                    const cacheOi = window._grOiCache[periodoOi];
+                    const dadosOi = cacheOi && cacheOi.dados;
+                    if (dadosOi && dadosOi.length >= 2) {
+                        const oiAllPA = new Array(_grAllCandles.length).fill(null);
+                        const oiDeltaAllPA = new Array(_grAllCandles.length).fill(null);
+                        let oiAnteriorPA = null;
+                        for (let i = 0; i < _grAllCandles.length; i++) {
+                            const c = _grAllCandles[i];
+                            if (c.t < inicioJanelaPA) continue;
+                            const v = grOiValorEm(dadosOi, c.t);
+                            if (v == null) continue;
+                            oiAllPA[i] = v;
+                            oiDeltaAllPA[i] = oiAnteriorPA != null ? v - oiAnteriorPA : 0;
+                            oiAnteriorPA = v;
+                        }
+                        const oiVals = [], oiDeltaVals = [];
+                        for (let i = 0; i < visible; i++) {
+                            const idx = startIdx + i;
+                            oiVals.push(idx >= 0 && idx < oiAllPA.length ? oiAllPA[idx] : null);
+                            oiDeltaVals.push(idx >= 0 && idx < oiDeltaAllPA.length ? oiDeltaAllPA[idx] : null);
+                        }
+                        const yCandleHiOi = toY(window._grVisibleHigh);
+                        const yCandleLoOi = toY(window._grVisibleLow);
+                        const zeroYoi = (yCandleHiOi + yCandleLoOi) / 2;
+                        const alturaCandlesPxOi = Math.max(20, Math.abs(yCandleLoOi - yCandleHiOi));
+                        const xDoIdxOi = i => PAD.left + (i / totalSlots) * chartW + cW / 2;
+                        function calcularRangeOi(vals) {
+                            const validos = vals.filter(v => v != null);
+                            if (!validos.length) return null;
+                            const minV = Math.min(...validos), maxV = Math.max(...validos);
+                            return { minV, maxV: Math.max(maxV, minV + 0.001) };
+                        }
+                        function construirPontosNormalizadosOi(vals, range) {
+                            if (!range) return vals.map(() => null);
+                            const { minV, maxV } = range;
+                            const rangeVal = maxV - minV;
+                            const bandTop = zeroYoi - alturaCandlesPxOi * 0.3;
+                            const bandBottom = zeroYoi + alturaCandlesPxOi * 0.3;
+                            return vals.map((v, i) => v == null ? null : {
+                                x: xDoIdxOi(i),
+                                y: bandBottom - ((v - minV) / rangeVal) * (bandBottom - bandTop)
+                            });
+                        }
+                        function grTracarSuaveOi(pts, cor, lw) {
+                            ctx.strokeStyle = cor; ctx.lineWidth = lw; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+                            let run = [];
+                            const flush = () => {
+                                if (run.length >= 2) {
+                                    ctx.beginPath(); ctx.moveTo(run[0].x, run[0].y);
+                                    for (let i = 1; i < run.length - 1; i++) {
+                                        const mx = (run[i].x + run[i + 1].x) / 2, my = (run[i].y + run[i + 1].y) / 2;
+                                        ctx.quadraticCurveTo(run[i].x, run[i].y, mx, my);
+                                    }
+                                    ctx.lineTo(run[run.length - 1].x, run[run.length - 1].y);
+                                    ctx.stroke();
+                                }
+                                run = [];
+                            };
+                            pts.forEach(p => { if (p == null) flush(); else run.push(p); });
+                            flush();
+                        }
+                        const oiPts = construirPontosNormalizadosOi(oiVals, calcularRangeOi(oiVals));
+                        const oiDeltaPts = construirPontosNormalizadosOi(oiDeltaVals, calcularRangeOi(oiDeltaVals));
+                        grTracarSuaveOi(oiPts, '#FF6D00', 2.2);      // OI acumulado -- linha grossa
+                        grTracarSuaveOi(oiDeltaPts, '#8E24AA', 1.2); // variação por candle -- linha fina
+                        let idxUltOi = -1;
+                        for (let i = oiVals.length - 1; i >= 0; i--) { if (oiVals[i] != null) { idxUltOi = i; break; } }
+                        const rotuloOi = 'OI' + (idxUltOi >= 0 ? ' ' + grFmtVolCompacto(oiVals[idxUltOi], 0) : '');
+                        window._compValores.oiPA = { cor: '#FF6D00', valor: rotuloOi };
+                        grBarraChip(rotuloOi, '#000000', (cx, cy) => cvAbrirMenuFpCfg('oi', cx, cy));
+                    }
                 }
 
                 // ── Eficiência Bid/Ask — quem desloca mais preço por unidade de volume, AGORA ──────────
@@ -8127,6 +8253,7 @@ const _indState = {
     subInd:    null,
     cvdPA:     false, // CVD + Delta sobrepostos no painel de preço (segunda camada, em cima dos candles)
     deltaAtr:  false, // Regua de delta por faixa de ATR, eixo dedicado no canto direito (experimental)
+    oiPA:      false, // Open Interest (nivel + variacao por candle) sobreposto ao preco, igual o CVD
     fib:       false,
     trend:     false,
     bandeira:  false,
@@ -8891,6 +9018,7 @@ function grAmbienteColetar() {
         rsiNiveis: _grRsiNiveis,
         subInd: _indState.subInd,
         cvdPA: _indState.cvdPA,
+        oiPA: _indState.oiPA,
         deltaAtr: _indState.deltaAtr,
         footprint: _grFootprintAtivo,
         reguaLockS: _grReguaLock.S,
@@ -8935,6 +9063,7 @@ async function grAmbienteCarregar() {
     if (!!ambiente.rsi !== _indState.rsi) cvToggleInd('rsi');
     if ((ambiente.subInd || null) !== _indState.subInd) cvToggleSubInd(ambiente.subInd || _indState.subInd || 'macd');
     if (!!ambiente.cvdPA !== _indState.cvdPA) cvToggleInd('cvdPA');
+    if (!!ambiente.oiPA !== _indState.oiPA) cvToggleInd('oiPA');
     if (!!ambiente.deltaAtr !== _indState.deltaAtr) cvToggleInd('deltaAtr');
     if (ambiente.footprint === true && !_grFootprintAtivo) grFootprintAtivar(); // roda em 2º plano; ver "libera a trava" abaixo
     _grReguaLock.S = ambiente.reguaLockS === true;
