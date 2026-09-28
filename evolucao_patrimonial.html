@@ -218,10 +218,12 @@ async function carregarDados() {
   const despesaIds = new Set((contas || []).filter(c => c.is_despesa).map(c => c.id));
   const aplicacaoIds = new Set((contas || []).filter(c => (c.descricao || '').trim().toLowerCase() === 'aplicação').map(c => c.id));
 
-  const [vendas, compras, lancamentos] = await Promise.all([
+  const [vendas, compras, lancamentos, consumos] = await Promise.all([
     fetchTodasLinhas('pedidos_vendas', 'data, total_venda, total_lucro', q => q.not('data','is',null)),
     fetchTodasLinhas('pedidos_compras', 'data, itens_pedidos_compras(ganho)', q => q.not('data','is',null)),
-    fetchTodasLinhas('livro_caixa', 'data, valor, tipo, conta_id', q => q.not('data','is',null))
+    fetchTodasLinhas('livro_caixa', 'data, valor, tipo, conta_id', q => q.not('data','is',null)),
+    // "Consumo" não fica no livro_caixa: é gerado a partir de movimentos_clientes e entra como despesa (conta Alimentação)
+    fetchTodasLinhas('movimentos_clientes', 'data, valor, tipo', q => q.eq('status', 0).eq('tipo', 'Consumo').not('data','is',null))
   ]);
 
   const mapa = {}; // chave -> {vendasBrutas, bruto, despesas, aplicacao}
@@ -250,6 +252,12 @@ async function carregarDados() {
     } else if (aplicacaoIds.has(l.conta_id)) {
       garantir(chaveCiclo(new Date(l.data))).aplicacao += parseFloat(l.valor) || 0;
     }
+  });
+
+  // Consumo de cliente conta como despesa (Alimentação), mesmo não estando no livro_caixa
+  consumos.forEach(m => {
+    if (!m.data) return;
+    garantir(chaveCiclo(new Date(m.data))).despesas += parseFloat(m.valor) || 0;
   });
 
   const chaves = Object.keys(mapa).sort();
