@@ -11861,14 +11861,39 @@ function grFetchTimeout(url, opts, ms) {
 }
 // Baixa UM dia do R2 com até 3 tentativas (espera 0,8 s e 3,2 s entre elas). Devolve { dia, candles, estado, motivo }:
 //   'ok' (tem dado) | 'vazio' (o R2 respondeu, mas sem nenhum minuto nesse dia) | 'falhou' (não deu pra baixar).
+// ── Cache no aparelho (IndexedDB) dos dias JÁ FECHADOS: um dia que passou não muda, então baixa do R2 uma vez só e nas próximas vezes
+//    (ligar o Fluxo, abrir o Backtest, recarregar o app) lê do aparelho. Hoje e ontem nunca entram (ainda podem receber minutos).
+let _grFpDbP = null;
+function grFpDb() {
+    if (_grFpDbP) return _grFpDbP;
+    _grFpDbP = new Promise(res => {
+        try {
+            const rq = indexedDB.open('huberhorti_fp', 1);
+            rq.onupgradeneeded = () => { try { rq.result.createObjectStore('dias'); } catch (e) {} };
+            rq.onsuccess = () => res(rq.result); rq.onerror = () => res(null); rq.onblocked = () => res(null);
+        } catch (e) { res(null); }
+    });
+    return _grFpDbP;
+}
+function grFpCacheavel(dia) { return dia <= new Date(Date.now() - 2 * 86400000).toISOString().slice(0, 10); }
+async function grFpCacheLer(dia) {
+    const db = await grFpDb(); if (!db) return null;
+    return new Promise(res => { try { const rq = db.transaction('dias', 'readonly').objectStore('dias').get(dia); rq.onsuccess = () => res(rq.result || null); rq.onerror = () => res(null); } catch (e) { res(null); } });
+}
+function grFpCacheGravar(dia, candles) {
+    grFpDb().then(db => { if (!db) return; try { db.transaction('dias', 'readwrite').objectStore('dias').put({ candles, ts: Date.now() }, dia); } catch (e) {} });
+}
 async function grFootprintBaixarDia(dia) {
     let motivo = '';
+    const cacheavel = grFpCacheavel(dia);
+    if (cacheavel) { const hit = await grFpCacheLer(dia); if (hit && Array.isArray(hit.candles)) return { dia, candles: hit.candles, estado: hit.candles.length ? 'ok' : 'vazio', motivo: '' }; }
     for (let t = 0; t < 3; t++) {
         try {
             const r = await grFetchTimeout(grFootprintUrlDia(dia), {}, 25000);
             if (!r.ok) throw new Error('HTTP ' + r.status);
             const dados = await r.json();
             const candles = Object.values(dados.candles || {});
+            if (cacheavel) grFpCacheGravar(dia, candles);
             return { dia, candles, estado: candles.length ? 'ok' : 'vazio', motivo: '' };
         } catch (err) {
             motivo = err && err.message ? err.message : 'sem rede';
