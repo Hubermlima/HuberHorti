@@ -12816,7 +12816,7 @@ function grMetricasCalcular(candle) {
     const fech = candle.c;
     const minutos = [];
     let sessC = 0, sessV = 0;
-    let cTot = 0, cPx = 0, cSob = 0, vTot = 0, vPx = 0, vSob = 0; // preços da compra/venda agressora (pra achar quem está no prejuízo)
+    let cTot = 0, cPx = 0, cSob = 0, vTot = 0, vPx = 0, vSob = 0, cPerda = 0, vPerda = 0; // preços da compra/venda agressora (pra achar quem está no prejuízo)
     // referência dos presos = fechamento de até GR_PRESO_K candles à direita (só os que já existem); sem nenhum à direita = ainda não dá pra dizer
     const idxC = _grAllCandles.findIndex(c => c.t === candle.t);
     const kPreso = idxC < 0 ? 0 : Math.min(GR_PRESO_K, _grAllCandles.length - 1 - idxC);
@@ -12827,8 +12827,8 @@ function grMetricasCalcular(candle) {
             const nC = n.c || 0, nV = n.v || 0;
             c += nC; v += nV; nc += (n.nc || 0); nv += (n.nv || 0);
             if (m.ts >= de) {
-                cTot += nC; cPx += n.p * nC; if (ref != null && n.p > ref) cSob += nC;   // comprou acima de onde o preço está depois = preso
-                vTot += nV; vPx += n.p * nV; if (ref != null && n.p < ref) vSob += nV;   // vendeu abaixo de onde o preço está depois = preso
+                cTot += nC; cPx += n.p * nC; if (ref != null && n.p > ref) { cSob += nC; cPerda += nC * (n.p - ref) / n.p; }   // comprou acima de onde o preço está depois = preso
+                vTot += nV; vPx += n.p * nV; if (ref != null && n.p < ref) { vSob += nV; vPerda += nV * (ref - n.p) / n.p; }   // vendeu abaixo de onde o preço está depois = preso
             }
         });
         if (m.ts >= sessIni) { sessC += c; sessV += v; }
@@ -12879,8 +12879,8 @@ function grMetricasCalcular(candle) {
         volSeg: total / (durMs / 1000), volRel, alturaRel, trades: nc + nv,
         // presos: parcela do volume de cada lado que está no prejuízo em relação ao fechamento (+ preço médio do lado)
         presoK: kPreso, presoRef: ref,
-        presoC: { pct: ref == null ? null : (cTot > 0 ? cSob / cTot : 0), vol: cSob, med: cTot > 0 ? cPx / cTot : null },
-        presoV: { pct: ref == null ? null : (vTot > 0 ? vSob / vTot : 0), vol: vSob, med: vTot > 0 ? vPx / vTot : null },
+        presoC: { pct: ref == null ? null : (cTot > 0 ? cSob / cTot : 0), vol: cSob, perda: cSob > 0 ? cPerda / cSob : 0, med: cTot > 0 ? cPx / cTot : null },
+        presoV: { pct: ref == null ? null : (vTot > 0 ? vSob / vTot : 0), vol: vSob, perda: vSob > 0 ? vPerda / vSob : 0, med: vTot > 0 ? vPx / vTot : null },
     };
 }
 // ── Intérprete: UM veredito com nome próprio (ou nenhum, quando não há nada a dizer). Regras da sua cartilha: preço e delta em
@@ -12965,8 +12965,8 @@ const GR_MET_ITENS = [
     ['Δ vs anterior', 'Delta deste candle menos o do anterior: a pressão acelerou ou virou de lado.'],
     ['Volume', 'Volume agredido total e quantas vezes ele é a média dos 20 candles anteriores (a partir de 1,5×, em âmbar, é candle relevante).'],
     ['Exaustão', 'EC (compra esgotada no topo) ou EV (venda esgotada no fundo), conforme os parâmetros do Fluxo. Se não marcou, mostra o filtro que reprovou o candle.'],
-    ['Compra presa', '% da compra agressora feita ACIMA do fechamento do 3º candle à direita (ou do último que já existe) e o preço médio de compra. Comprou e o preço ficou abaixo = preso. A partir de 60% o veredito diz compradores encurralados. Sem candle à direita, não dá pra dizer.'],
-    ['Venda presa', '% da venda agressora feita ABAIXO do fechamento do 3º candle à direita (ou do último que já existe) e o preço médio de venda. Vendeu e o preço ficou acima = preso. A partir de 60% o veredito diz vendedores encurralados.'],
+    ['Compra presa', '% da compra agressora feita ACIMA do fechamento do 3º candle à direita (ou do último que já existe) e o preço médio de compra. Comprou e o preço ficou abaixo = preso. O −X,XX% é o prejuízo médio desses compradores presos em relação à referência. A partir de 60% o veredito diz compradores encurralados. Sem candle à direita, não dá pra dizer.'],
+    ['Venda presa', '% da venda agressora feita ABAIXO do fechamento do 3º candle à direita (ou do último que já existe) e o preço médio de venda. Vendeu e o preço ficou acima = preso. O −X,XX% é o prejuízo médio desses vendedores presos em relação à referência. A partir de 60% o veredito diz vendedores encurralados.'],
     ['méd', 'Verde: o fechamento está acima da média daquele lado; vermelho: abaixo. É exposição provável: o footprint não sabe quem já zerou.'],
 ];
 function grMetricasTextoVeredito(t) {
@@ -13235,6 +13235,7 @@ function grMetricasDesenhar(ctx, g) {
         if (lado.pct == null) return '— aguarda candle à direita';
         fech = m.presoRef;
         const segs = [{ t: (lado.pct * 100).toFixed(2).replace('.', ',') + '%', c: lado.pct >= GR_MET.PRESO_PCT ? corPreso : TX }];
+        if (lado.pct > 0) segs.push({ t: '  −' + (lado.perda * 100).toFixed(2).replace('.', ',') + '%', c: corPreso });
         if (lado.med != null) segs.push({ t: '  méd ', c: TX }, { t: nf0(lado.med), c: fech > lado.med ? VERDE : (fech < lado.med ? VERM : TX) });
         return segs;
     };
