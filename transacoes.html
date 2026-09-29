@@ -6374,6 +6374,15 @@ function grInitTouch() {
                     return;
                 }
             }
+            // Toque no botão "Ver Métricas" da janela do crosshair
+            if (window._longPressActive && window._grCrosshairMetricasBtnArea) {
+                const tm = window._grCrosshairMetricasBtnArea;
+                if (ex2 >= tm.x && ex2 <= tm.x + tm.w && ey2 >= tm.y && ey2 <= tm.y + tm.h) {
+                    if (window._grCrosshairCandleAtual) grMetricasAbrir(window._grCrosshairCandleAtual);
+                    e.preventDefault();
+                    return;
+                }
+            }
             // Toque no botão "⚓ Ancorar" / "✕ Remover Âncora" da janela do crosshair
             if (window._longPressActive && window._grCrosshairAncorarBtnArea) {
                 const ta = window._grCrosshairAncorarBtnArea;
@@ -8021,6 +8030,7 @@ function grDrawChartWithCrosshair(yInterno) {
         ctx.restore();
         ctx.setLineDash([]);
         window._grCrosshairFootprintBtnArea = null; window._grCrosshairAncorarBtnArea = null; window._grCrosshairValueAreaBtnArea = null;
+        window._grCrosshairMetricasBtnArea = null;
         window._grCrosshairVpBtnArea = null; window._grCrosshairAreaBtnArea = null; window._grCrosshairToggleBtnArea = null;
     }
     if (candle && !areaArrastando) {
@@ -8089,6 +8099,7 @@ function grDrawChartWithCrosshair(yInterno) {
             const jaEAncoraVA = _grValueAreaAncoraTs != null && _grValueAreaAncoraTs === candle.t;
             const jaEAncoraVP = _grVpAncoraTs != null && _grVpAncoraTs === candle.t;
             botoes.push({ chave: 'footprint', txt: 'Ver Footprint', icone: HEROICON_CHART_BAR });
+            botoes.push({ chave: 'metricas', txt: 'Ver Métricas', icone: HEROICON_CHART_BAR });
             botoes.push({ chave: 'vwap', txt: jaEAncora ? 'Remover VWAP' : 'Ancorar VWAP', icone: jaEAncora ? HEROICON_XMARK : HEROICON_BOOKMARK });
             botoes.push({ chave: 'va', txt: jaEAncoraVA ? 'Remover Value Area' : 'Ancorar Value Area', icone: jaEAncoraVA ? HEROICON_XMARK : HEROICON_BOOKMARK });
             botoes.push({ chave: 'vp', txt: jaEAncoraVP ? 'Remover Volume Profile' : 'Ancorar Volume Profile', icone: jaEAncoraVP ? HEROICON_XMARK : HEROICON_CHART_BAR });
@@ -8148,6 +8159,7 @@ function grDrawChartWithCrosshair(yInterno) {
         // Botões: fundo cinza padrão + label escuro + ícone Heroicon. Cada um registra a sua área de toque (window._grCrosshair*).
         window._grCrosshairFootprintBtnArea = null; window._grCrosshairAncorarBtnArea = null;
         window._grCrosshairValueAreaBtnArea = null; window._grCrosshairVpBtnArea = null; window._grCrosshairAreaBtnArea = null;
+        window._grCrosshairMetricasBtnArea = null;
         window._grCrosshairCandleAtual = candle;
         botoes.forEach((b, i) => {
             const y = by + boxH - (botoes.length - i) * BTN_H - 4;
@@ -8160,6 +8172,7 @@ function grDrawChartWithCrosshair(yInterno) {
             ctx.fillStyle = '#1C1C1E';
             ctx.fillText(b.txt, rect.x + 22, y + rect.h / 2 + 4);
             if (b.chave === 'footprint') window._grCrosshairFootprintBtnArea = rect;
+            else if (b.chave === 'metricas') window._grCrosshairMetricasBtnArea = rect;
             else if (b.chave === 'vwap') { window._grCrosshairAncorarBtnArea = rect; window._grCrosshairAncorarIdx = idxCandleCrosshair; }
             else if (b.chave === 'va') { window._grCrosshairValueAreaBtnArea = rect; window._grCrosshairValueAreaIdx = idxCandleCrosshair; }
             else if (b.chave === 'vp') { window._grCrosshairVpBtnArea = rect; window._grCrosshairVpIdx = idxCandleCrosshair; }
@@ -12700,6 +12713,150 @@ function grFootprintCandleNavegar(direcao) {
     if (novoIdx < 0 || novoIdx >= _grAllCandles.length) return; // não tem vizinho nessa direção
     grFootprintAbrirCandleModal(_grAllCandles[novoIdx]);
 }
+// ══ MÉTRICAS DO CANDLE (modal aberto pelo botão "Ver Métricas" da janela do crosshair) ═══════════════════════════════
+// Tabela por candle no estilo "Cluster Statistics" do ATAS, calculada a partir do footprint bruto por minuto (c = compra
+// agressora, v = venda agressora, nc/nv = nº de negócios de cada lado). Só existe com o Fluxo ligado.
+// Sessão = dia UTC (o cripto não fecha; é a mesma fronteira usada pelos candles diários do app).
+// Max/Min Delta: o footprint guarda os negócios AGRUPADOS POR MINUTO, então o delta corrente é amostrado ao fim de cada minuto do candle
+// (começa em 0). Em candle de poucos minutos o máximo/mínimo é grosseiro; no candle em formação a resolução é a mesma (1 min).
+let _grMetricasCandle = null; // candle aberto no modal (pra navegar com ‹ ›)
+function grMetricasCalcular(candle) {
+    if (!_grFootprintAtivo || !_grFootprintCandlesRaw) return null;
+    const ms = grFootprintMsPorCandle();
+    const de = candle.t, ate = candle.t + ms;
+    const sessIni = Math.floor(de / 86400000) * 86400000;
+    const minutos = [];
+    let sessC = 0, sessV = 0;
+    grFootprintParaCadaMinuto(Math.min(sessIni, de), ate, m => {
+        let c = 0, v = 0, nc = 0, nv = 0;
+        (m.niveis || []).forEach(n => { c += (n.c || 0); v += (n.v || 0); nc += (n.nc || 0); nv += (n.nv || 0); });
+        if (m.ts >= sessIni) { sessC += c; sessV += v; }
+        if (m.ts >= de) minutos.push({ ts: m.ts, c, v, nc, nv });
+    });
+    if (minutos.length === 0) return null;
+    minutos.sort((a, b) => a.ts - b.ts);
+    let compra = 0, venda = 0, nc = 0, nv = 0, corrente = 0, maxD = 0, minD = 0;
+    minutos.forEach(m => {
+        compra += m.c; venda += m.v; nc += m.nc; nv += m.nv;
+        corrente += m.c - m.v;
+        if (corrente > maxD) maxD = corrente;
+        if (corrente < minD) minD = corrente;
+    });
+    const total = compra + venda, delta = compra - venda;
+    // Delta do candle anterior (pra Delta Change)
+    const idx = _grAllCandles.findIndex(c => c.t === candle.t);
+    let deltaAnt = null;
+    if (idx > 0) {
+        const ant = _grAllCandles[idx - 1];
+        let dc = 0, achou = false;
+        grFootprintParaCadaMinuto(ant.t, ant.t + ms, m => { achou = true; (m.niveis || []).forEach(n => { dc += (n.c || 0) - (n.v || 0); }); });
+        if (achou) deltaAnt = dc;
+    }
+    // Volume relativo: volume do candle ÷ média dos 20 candles anteriores (volume total dos klines)
+    let volRel = null;
+    if (idx >= 5 && candle.v > 0) {
+        const ini = Math.max(0, idx - 20);
+        let soma = 0, n = 0;
+        for (let i = ini; i < idx; i++) { if (_grAllCandles[i].v > 0) { soma += _grAllCandles[i].v; n++; } }
+        if (n > 0 && soma > 0) volRel = candle.v / (soma / n);
+    }
+    const emFormacao = Date.now() < ate;
+    const durMs = emFormacao ? Math.max(1000, Date.now() - de) : ms;
+    const sessTotal = sessC + sessV;
+    return {
+        de, ate, ms, emFormacao, durMs, nMin: minutos.length,
+        compra, venda, delta, total, dvol: total > 0 ? delta / total : 0,
+        maxD, minD, deltaChange: deltaAnt == null ? null : delta - deltaAnt,
+        sessDelta: sessC - sessV, sessTotal, sessDvol: sessTotal > 0 ? (sessC - sessV) / sessTotal : 0,
+        volSeg: total / (durMs / 1000), volRel,
+        nc, nv, trades: nc + nv,
+        medC: nc > 0 ? compra / nc : null, medV: nv > 0 ? venda / nv : null,
+        altura: candle.h - candle.l, alturaPct: candle.o > 0 ? (candle.h - candle.l) / candle.o * 100 : null,
+        dPrecoPct: candle.o > 0 ? (candle.c - candle.o) / candle.o * 100 : null,
+    };
+}
+function grMetricasAbrir(candle) {
+    const m = grMetricasCalcular(candle);
+    if (!m) { alert('Sem footprint carregado para esse candle. Ligue o Fluxo (FX) ou abra "Ver Footprint" para carregar o dia.'); return; }
+    _grMetricasCandle = candle;
+    const nf = (v, d) => Number(v).toLocaleString('pt-BR', { minimumFractionDigits: d, maximumFractionDigits: d });
+    const sg = (v, d) => (v >= 0 ? '+' : '−') + nf(Math.abs(v), d);
+    const pc = (v, d) => (v >= 0 ? '+' : '−') + nf(Math.abs(v) * 100, d) + '%';
+    const VERDE = '#16A34A', VERM = '#DC2626', CINZA = '#8E8E93';
+    const cor = v => v > 0 ? VERDE : (v < 0 ? VERM : '#1C1C1E');
+    const tv = t => t < 1000 ? nf(t, 2) : nf(t, 0);
+    const soData = _grTf === '1day' || _grTf === '1week' || _grTf === '1month' || (_grTf === 'custom' && (_grTfCustomUnit === 'dia' || _grTfCustomUnit === 'mes'));
+    const hora = ts => soData ? new Date(ts).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: '2-digit', timeZone: 'UTC' })
+        : new Date(ts).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const durTxt = ms => { const s = Math.round(ms / 1000); return s >= 3600 ? Math.floor(s / 3600) + 'h ' + Math.round((s % 3600) / 60) + 'min' : (s >= 60 ? Math.floor(s / 60) + 'min ' + (s % 60) + 's' : s + 's'); };
+    // Leitura em 1 olhada
+    const lado = Math.abs(m.dvol) < 0.03 ? 'Equilibrado' : (m.delta > 0 ? 'Compradores dominaram' : 'Vendedores dominaram');
+    const corLado = Math.abs(m.dvol) < 0.03 ? CINZA : (m.delta > 0 ? VERDE : VERM);
+    const faixaD = m.maxD - m.minD;
+    let devolveu = '';
+    if (faixaD > 0 && m.nMin >= 3) {
+        // quanto do extremo a favor do lado dominante o delta devolveu até o fechamento (0% = fechou no extremo, 100% = devolveu tudo)
+        const dev = m.delta >= 0 ? (m.maxD - m.delta) / faixaD : (m.delta - m.minD) / faixaD;
+        devolveu = dev >= 0.5 ? 'Devolveu ' + nf(dev * 100, 0) + '% do delta no fim — força perdendo fôlego' : (dev <= 0.15 ? 'Fechou perto do extremo do delta — força até o fim' : 'Devolveu ' + nf(dev * 100, 0) + '% do extremo do delta');
+    }
+    const leitura = '<div style="padding:12px 14px;border-radius:12px;background:#F2F2F7;margin-bottom:6px;">'
+        + '<div style="font-size:18px;font-weight:800;color:' + corLado + ';">' + lado + ' · Δ/Vol ' + pc(m.dvol, 1) + '</div>'
+        + '<div style="font-size:13px;color:#6B7280;margin-top:3px;line-height:1.4;">' + (devolveu ? devolveu + '. ' : '')
+        + (m.volRel != null ? 'Volume ' + nf(m.volRel, 1) + '× a média dos 20 candles anteriores.' : '') + '</div></div>';
+    const sec = t => '<div style="font-size:11px;font-weight:800;color:' + CINZA + ';letter-spacing:.6px;margin:16px 0 4px;">' + t + '</div>';
+    const lin = (rot, val, dica, c) => '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:8px 0;border-bottom:1px solid #F2F2F7;">'
+        + '<div style="min-width:0;"><div style="font-size:14px;font-weight:700;">' + rot + '</div><div style="font-size:11.5px;color:' + CINZA + ';line-height:1.35;margin-top:1px;">' + dica + '</div></div>'
+        + '<div style="font-size:15px;font-weight:800;white-space:nowrap;color:' + (c || '#1C1C1E') + ';">' + val + '</div></div>';
+    const aprox = m.nMin < 5 ? ' (amostra de ' + m.nMin + ' min: aproximado)' : '';
+    const corpo = leitura
+        + sec('AGRESSÃO')
+        + lin('Ask · compra', tv(m.compra) + ' btc', 'Compras a mercado (agressor comprador)', VERDE)
+        + lin('Bid · venda', tv(m.venda) + ' btc', 'Vendas a mercado (agressor vendedor)', VERM)
+        + lin('Delta', sg(m.delta, 1) + ' btc', 'Ask − Bid: quem agrediu mais', cor(m.delta))
+        + lin('Delta/Volume', pc(m.dvol, 1), 'Convicção: perto de 0 = equilíbrio, alto = um lado mandou', cor(m.dvol))
+        + lin('Max. Delta', sg(m.maxD, 1) + ' btc', 'Pico do delta dentro do candle' + aprox, cor(m.maxD))
+        + lin('Min. Delta', sg(m.minD, 1) + ' btc', 'Fundo do delta dentro do candle' + aprox, cor(m.minD))
+        + lin('Delta Change', m.deltaChange == null ? '—' : sg(m.deltaChange, 1) + ' btc', 'Delta deste candle − delta do anterior: pressão acelerando ou não', m.deltaChange == null ? CINZA : cor(m.deltaChange))
+        + sec('SESSÃO (DIA UTC)')
+        + lin('Session Delta', sg(m.sessDelta, 1) + ' btc', 'Delta acumulado desde 00:00 UTC até o fim do candle (CVD do dia)', cor(m.sessDelta))
+        + lin('Session Delta/Volume', pc(m.sessDvol, 1), 'Convicção do dia até aqui', cor(m.sessDvol))
+        + lin('Session Volume', tv(m.sessTotal) + ' btc', 'Volume do dia até o fim do candle')
+        + sec('ATIVIDADE')
+        + lin('Volume', tv(m.total) + ' btc', 'Compra + venda agressoras do candle')
+        + lin('Volume relativo', m.volRel == null ? '—' : nf(m.volRel, 2) + '×', 'Volume ÷ média dos 20 candles anteriores: acima de 1,5× costuma ser candle relevante', m.volRel == null ? CINZA : undefined)
+        + lin('Volume/seg', nf(m.volSeg, 3) + ' btc/s', 'Velocidade do fluxo: picos = pressa e agressividade')
+        + lin('Trades', m.trades > 0 ? nf(m.trades, 0) : '—', 'Nº de negócios' + (m.trades > 0 ? '' : ' (sem contagem nesse trecho do histórico)'))
+        + lin('Tamanho médio', m.medC == null && m.medV == null ? '—' : 'C ' + (m.medC == null ? '—' : nf(m.medC, 3)) + ' · V ' + (m.medV == null ? '—' : nf(m.medV, 3)), 'btc por negócio de cada lado: poucos e grandes = player grande; muitos e pequenos = varejo')
+        + sec('CANDLE')
+        + lin('Height', nf(m.altura, 2) + (m.alturaPct != null ? ' (' + nf(m.alturaPct, 2) + '%)' : ''), 'Máxima − mínima. Volume alto + altura pequena = absorção')
+        + lin('Δ preço', m.dPrecoPct == null ? '—' : (m.dPrecoPct >= 0 ? '+' : '−') + nf(Math.abs(m.dPrecoPct), 2) + '%', 'Fechamento vs abertura: compare com o sinal do delta (divergência)', m.dPrecoPct == null ? CINZA : cor(m.dPrecoPct))
+        + lin('Abertura', hora(m.de), 'Início do candle')
+        + lin('Duração', durTxt(m.durMs) + (m.emFormacao ? ' (em formação)' : ''), 'Tempo que o candle levou');
+    let ov = document.getElementById('metricas-overlay');
+    if (!ov) {
+        ov = document.createElement('div');
+        ov.id = 'metricas-overlay';
+        ov.style.cssText = 'display:none;position:fixed;inset:0;z-index:9650;background:rgba(0,0,0,0.5);align-items:stretch;justify-content:center;';
+        ov.onclick = e => { if (e.target === ov) grMetricasFechar(); };
+        document.body.appendChild(ov);
+    }
+    const btnNav = (dir, txt) => '<button onclick="grMetricasNavegar(' + dir + ')" style="border:none;background:#E5E5EA;color:#1C1C1E;border-radius:8px;width:34px;height:30px;font-size:16px;font-weight:800;">' + txt + '</button>';
+    ov.innerHTML = '<div style="background:#FFFFFF;width:100%;max-width:560px;display:flex;flex-direction:column;font-family:-apple-system,sans-serif;color:#1C1C1E;box-sizing:border-box;">'
+        + '<div style="flex:none;display:flex;justify-content:space-between;align-items:center;gap:8px;padding:calc(12px + env(safe-area-inset-top)) 16px 10px;border-bottom:1px solid #F2F2F7;background:#FFFFFF;">'
+        + '<div style="min-width:0;"><div style="font-size:17px;font-weight:800;">Métricas do candle</div><div style="font-size:12px;color:' + CINZA + ';">' + hora(m.de) + '</div></div>'
+        + '<div style="display:flex;gap:6px;align-items:center;">' + btnNav(-1, '‹') + btnNav(1, '›')
+        + '<button onclick="grMetricasFechar()" style="border:none;background:#1C1C1E;color:#FFFFFF;border-radius:8px;padding:6px 12px;font-size:13px;font-weight:700;">Fechar</button></div></div>'
+        + '<div style="flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px 16px calc(32px + env(safe-area-inset-bottom));">' + corpo + '</div></div>';
+    ov.style.display = 'flex';
+}
+function grMetricasNavegar(dir) {
+    if (!_grMetricasCandle) return;
+    const i = _grAllCandles.findIndex(c => c.t === _grMetricasCandle.t) + dir;
+    if (i < 0 || i >= _grAllCandles.length) return;
+    grMetricasAbrir(_grAllCandles[i]);
+}
+function grMetricasFechar() { const ov = document.getElementById('metricas-overlay'); if (ov) ov.style.display = 'none'; }
+
 // Agrega os candles brutos (1min) de todas as fontes que caem dentro do
 // período do candle tocado (candle.t até candle.t + duração do timeframe atual).
 function grFootprintAbrirCandleModal(candle) {
