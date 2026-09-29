@@ -13156,7 +13156,7 @@ function grBacktestHtml(R) {
         });
         return h + '</table>';
     };
-    let h = '<div style="font-size:12px;color:#1C1C1E;margin-top:6px;">' + R.sinais.length + (R.sinais.length === 1 ? ' sinal em ' : ' sinais em ') + Math.round(R.dias) + ' dias, de ' + grBtFmtData(_grAllCandles[R.i0].t) + ' a ' + grBtFmtData(_grAllCandles[_grAllCandles.length - 1].t) + ' (~' + (R.sinais.length / (R.dias / 30)).toFixed(2).replace('.', ',') + ' por mês). Acerto verde = ganhou da base (o acaso).</div>';
+    let h = '<div style="font-size:12px;font-weight:700;color:#1C1C1E;margin-top:6px;">Timeframe: ' + grTfSiglaAtual() + '</div><div style="font-size:12px;color:#1C1C1E;margin-top:2px;">' + R.sinais.length + (R.sinais.length === 1 ? ' sinal em ' : ' sinais em ') + Math.round(R.dias) + ' dias, de ' + grBtFmtData(_grAllCandles[R.i0].t) + ' a ' + grBtFmtData(_grAllCandles[_grAllCandles.length - 1].t) + ' (~' + (R.sinais.length / (R.dias / 30)).toFixed(2).replace('.', ',') + ' por mês). Acerto verde = ganhou da base (o acaso).</div>';
     h += tab('EV', 'EV (compra)', '#16A34A') + tab('EC', 'EC (venda)', '#DC2626');
     h += '<div style="margin-top:16px;font-size:13px;font-weight:700;color:#1C1C1E;">Sinais (mais recentes primeiro)</div>';
     h += '<table style="width:100%;border-collapse:collapse;margin-top:4px;font-size:12px;color:#1C1C1E;"><tr style="font-weight:700;"><td>Data</td><td>Lado</td><td align="right">Preço</td>' + GR_BT_H.map(k => '<td align="right">+' + k + '</td>').join('') + '</tr>';
@@ -13169,10 +13169,26 @@ function grBacktestHtml(R) {
 }
 let _grBtTimer = null;
 function grBacktestAgendar() { clearTimeout(_grBtTimer); _grBtTimer = setTimeout(grBacktestRender, 200); }
+// ── Timeframe PRÓPRIO do backtest: ele baixa os candles do TF escolhido e roda o cálculo com eles, sem trocar o TF do gráfico nem
+//  redesenhar. Como o cálculo lê as variáveis do gráfico (_grAllCandles, _grTf), elas são trocadas só DURANTE o cálculo (síncrono, sem
+//  await no meio) e devolvidas no finally; os caches do EC/EV (chaveados por horário do candle) são zerados antes e depois.
+const GR_BT_TFS = [['15m', '15m'], ['1h', '1H'], ['4h', '4H'], ['1day', '1D']];
+const GR_BT_INTERVALO = { '15m': '15m', '1h': '1h', '4h': '4h', '1day': '1d' };
+let _grBtTf = null; let _grBtCandles = {}; const _grBtCarregandoTf = {};
+function grBtTfPadrao() { return GR_BT_INTERVALO[_grTf] ? _grTf : '1day'; }
+function grBtComTf(tf, fn) {
+    const cs = _grBtCandles[tf]; if (!cs || !cs.length) return null;
+    const sv = { a: _grAllCandles, tf: _grTf, u: _grTfCustomUnit, m: _grTfCustomAmount };
+    _grExCache.clear(); _grExDeltaCache.clear();
+    try { _grAllCandles = cs; _grTf = tf; _grTfCustomUnit = null; _grTfCustomAmount = null; return fn(); }
+    finally { _grAllCandles = sv.a; _grTf = sv.tf; _grTfCustomUnit = sv.u; _grTfCustomAmount = sv.m; _grExCache.clear(); _grExDeltaCache.clear(); }
+}
 function grBacktestRender() {
     const el = document.getElementById('gr-bt-resultado'); if (!el) return;
-    let R = null; try { R = grBacktestCalcular(); } catch (e) { el.innerHTML = '<div style="font-size:12px;color:#DC2626;">Erro: ' + e.message + '</div>'; return; }
-    el.innerHTML = grBacktestHtml(R);
+    const tf = _grBtTf || grBtTfPadrao();
+    if (!_grBtCandles[tf] || !_grBtCandles[tf].length) { el.innerHTML = '<div style="padding:16px 0;font-size:13px;">Carregando candles…</div>'; return; }
+    try { el.innerHTML = grBtComTf(tf, () => grBacktestHtml(grBacktestCalcular())); }
+    catch (e) { el.innerHTML = '<div style="font-size:12px;color:#DC2626;">Erro: ' + e.message + '</div>'; }
 }
 // O backtest cobre o período do "Dias ao ligar o Fluxo": começa há N dias e vai até o último candle. Se os candles desse período ainda
 // não estão no gráfico, carrega os anteriores sozinho (+30 dias de contexto, para os filtros do "extremo" e do "movimento").
@@ -13180,15 +13196,41 @@ let _grBtWatch = null;
 function grBtCarregando() { return (window._grFluxoDias || []).filter(d => d.estado === 'carregando').length; }
 function grBtStatus(txt) { const el = document.getElementById('gr-bt-hist-status'); if (el) el.textContent = txt || ''; }
 async function grBtGarantirCandles() {
-    const alvo = FOOTPRINT_DIAS_AO_ATIVAR >= 36500 ? 0 : Date.now() - (FOOTPRINT_DIAS_AO_ATIVAR + 30) * 86400000;
-    let guarda = 0;
-    while (_grAllCandles.length && _grAllCandles[0].t > alvo && !window._grHistFim && guarda++ < 80) {
-        grBtStatus('Carregando candles antigos…');
-        const antes = _grAllCandles.length;
-        try { await grCarregarHistoricoAnterior(); } catch (e) { break; }
-        if (_grAllCandles.length === antes) break;
-    }
+    const tf = _grBtTf || grBtTfPadrao(), interv = GR_BT_INTERVALO[tf], sym = grBinSymbolAtual();
+    if (_grBtCarregandoTf[tf]) return; _grBtCarregandoTf[tf] = true;
+    try {
+        // até onde precisa voltar: início do período (+30 dias de contexto), sem passar do começo do footprint disponível
+        let alvo = FOOTPRINT_DIAS_AO_ATIVAR >= 36500 ? 0 : Date.now() - (FOOTPRINT_DIAS_AO_ATIVAR + 30) * 86400000;
+        const raw = _grFootprintCandlesRaw; if (raw && raw.length) alvo = Math.max(alvo, raw[0].ts - 30 * 86400000);
+        let cs = _grBtCandles[tf];
+        if (!cs || !cs.length) {
+            grBtStatus('Carregando candles ' + grBtRot(tf) + '…');
+            const d = await grBuscarKlines(sym, interv, 1000);
+            cs = d.map(grMapearKline); _grBtCandles[tf] = cs; grBacktestRender();
+        }
+        let guarda = 0;
+        while (cs.length && cs[0].t > alvo && guarda++ < 80) {
+            grBtStatus('Carregando candles ' + grBtRot(tf) + ' antigos… (' + cs.length + ')');
+            const d = await grBuscarKlines(sym, interv, 1000, cs[0].t - 1);
+            if (!d.length) break;
+            cs = d.map(grMapearKline).concat(cs); _grBtCandles[tf] = cs;
+        }
+    } catch (e) { grBtStatus('Sem rede para baixar candles.'); return; }
+    finally { _grBtCarregandoTf[tf] = false; }
     grBtStatus('');
+}
+function grBtRot(tf) { const r = GR_BT_TFS.find(x => x[0] === tf); return r ? r[1] : tf; }
+function grBtTfBotoes() {
+    const tf = _grBtTf || grBtTfPadrao();
+    return GR_BT_TFS.map(x => '<button onclick="grBtEscolherTf(\'' + x[0] + '\')" style="flex:1;border:none;border-radius:8px;padding:9px 0;font-size:13px;font-weight:700;'
+        + (x[0] === tf ? 'background:#1C1C1E;color:#FFFFFF;' : 'background:#F2F2F7;color:#1C1C1E;') + '">' + x[1] + '</button>').join('');
+}
+async function grBtEscolherTf(tf) {
+    if (!document.getElementById('gr-bt-overlay')) return;
+    _grBtTf = tf;
+    const box = document.getElementById('gr-bt-tf'); if (box) box.innerHTML = grBtTfBotoes();
+    grBacktestRender();
+    await grBtGarantirCandles(); grBacktestRender();
 }
 function grBtVigiarFootprint() {   // se ainda há dias de footprint baixando, refaz o backtest a cada 3 s até terminar
     clearInterval(_grBtWatch);
@@ -13196,17 +13238,18 @@ function grBtVigiarFootprint() {   // se ainda há dias de footprint baixando, r
     _grBtWatch = setInterval(() => {
         if (!document.getElementById('gr-bt-overlay')) { clearInterval(_grBtWatch); return; }
         const n = grBtCarregando(); grBtStatus(n > 0 ? 'Baixando ' + n + ' dia' + (n === 1 ? '' : 's') + ' de footprint…' : '');
-        grBacktestRender(); if (n === 0) clearInterval(_grBtWatch);
+        grBacktestRender(); if (n === 0) { clearInterval(_grBtWatch); grBtGarantirCandles().then(grBacktestRender); }
     }, 3000);
 }
 function grBacktestFechar() { clearInterval(_grBtWatch); const o = document.getElementById('gr-bt-overlay'); if (o) o.remove(); }
 function grBacktestAbrir() {
     try { cvFecharMenuFpCfg(); } catch (e) {}
+    _grBtCandles = {}; _grBtTf = grBtTfPadrao();
     grBacktestFechar();
     const o = document.createElement('div'); o.id = 'gr-bt-overlay';
     o.style.cssText = 'position:fixed;inset:0;z-index:9999;background:#FFFFFF;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 14px 40px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;color:#1C1C1E;';
     o.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;"><div style="font-size:16px;font-weight:700;">Backtest EC / EV</div><button onclick="grBacktestFechar()" style="border:none;background:#F2F2F7;border-radius:8px;width:34px;height:34px;font-size:18px;color:#1C1C1E;">✕</button></div>'
-        + '<div style="font-size:12px;margin-top:6px;">Período: ' + (FOOTPRINT_DIAS_AO_ATIVAR >= 36500 ? 'todo o histórico disponível' : 'últimos ' + FOOTPRINT_DIAS_AO_ATIVAR + ' dias') + ' ("Dias ao ligar o Fluxo")</div><div id="gr-bt-hist-status" style="font-size:12px;margin-top:2px;"></div><div id="gr-bt-ajustes" style="margin-top:8px;"></div><div id="gr-bt-resultado"><div style="padding:16px 0;font-size:13px;">Calculando…</div></div>';
+        + '<div style="font-size:12px;margin-top:6px;">Período: ' + (FOOTPRINT_DIAS_AO_ATIVAR >= 36500 ? 'todo o histórico disponível' : 'últimos ' + FOOTPRINT_DIAS_AO_ATIVAR + ' dias') + ' ("Dias ao ligar o Fluxo")</div><div id="gr-bt-tf" style="display:flex;gap:6px;margin-top:10px;">' + grBtTfBotoes() + '</div><div id="gr-bt-hist-status" style="font-size:12px;margin-top:6px;"></div><div id="gr-bt-ajustes" style="margin-top:8px;"></div><div id="gr-bt-resultado"><div style="padding:16px 0;font-size:13px;">Calculando…</div></div>';
     document.body.appendChild(o);
     try { const aj = document.getElementById('gr-bt-ajustes'); aj.innerHTML = '<div data-fx-sec="exaustao">' + grConfigBlocoExaustao(ICO_FLUXO.refcor, false) + '</div>'; grFluxoSecoesAplicar(aj); } catch (e) {}
     (async () => { await grBtGarantirCandles(); grBacktestRender(); grBtVigiarFootprint(); })();
