@@ -4463,6 +4463,7 @@ function grDrawCandles(candles, emptyRight) {
         window._grTotalSlots = totalSlots;
         window._grCW = cW;
         window._grStartIdx = startIdx;
+        window._grCandlesDesenhados = candles;   // os candles que estão de fato nos slots deste desenho (o crosshair escolhe daqui, sem refazer a conta)
         window._grVisCount = candles.length; // candles reais visíveis (sem o espaço vazio à direita)
         ctx.clearRect(0, 0, W, H);
         // Fundo — escuro ou claro, conforme o tema escolhido
@@ -8031,7 +8032,11 @@ function grDrawChartWithCrosshair(yInterno) {
     const _padL2 = window._grPADLeft != null ? window._grPADLeft : _grPAD.left;
     const _slotW2 = (window._grChartW && window._grTotalSlots) ? window._grChartW / window._grTotalSlots : chartW2 / Math.max(totalSlots2, 1);
     const rawIdx = Math.floor((_grCrosshairX - _padL2) / _slotW2);
-    const candleIdx = startIdx + Math.min(rawIdx, cc2.length - 1);
+    let candleIdx = startIdx + Math.min(rawIdx, cc2.length - 1);
+    { // fonte da verdade: o array que o grDrawCandles acabou de desenhar (slot i = candle i). Evita qualquer diferença de startIdx/zoom entre as contas.
+        const dz = window._grCandlesDesenhados;
+        if (dz && dz.length) { const d = dz[Math.max(0, Math.min(dz.length - 1, rawIdx))]; const k = _grAllCandles.indexOf(d); if (k >= 0) candleIdx = k; }
+    }
     const candle = _grAllCandles[Math.max(0, Math.min(total - 1, candleIdx))];
     const idxCandleCrosshair = Math.max(0, Math.min(total - 1, candleIdx));
     // Ferramenta Área com o 1º canto marcado: retângulo AO VIVO do 1º canto até o crosshair (onde soltar = 2º canto). A janelinha
@@ -12937,14 +12942,14 @@ const GR_EX_CFG = {   // chave: [padrão, mín, máx, passo, rótulo]
     grExMov:   [2,  0, 10, 0.5, 'Movimento prévio (× faixa média, 0 = ignora)'],
     grExPres:  [1,  0, 5,  1,   'Pressão prévia a favor (candles, 0 = ignora)'],
     grExDevol: [50, 10, 100, 1, 'Delta devolvido (% do pico)'],
+    grExPico:  [5,  0, 20, 0.5, 'Pico mínimo do delta (% do volume, 0 = ignora)'],
     grExVol:   [1,  0, 3,  0.1, 'Volume mínimo (× média, 0 = ignora)'],
     grExFech:  [50, 10, 100, 1, 'Fechamento no lado oposto (% do candle)'],
     grExConf:  [1,  0, 3,  1,   'Confirmação (candles seguintes sem romper, 0 = ignora)']
 };
 const EX = {}; Object.keys(GR_EX_CFG).forEach(k => { EX[k] = grExLer(k, GR_EX_CFG[k][0]); });
-const EX_PICO_MIN = 0.05;                   // o pico do delta precisa valer ao menos 5% do volume do candle (filtra ruído)
 let _grExVersao = 0; const _grExCache = new Map(), _grExDeltaCache = new Map();
-function grExFmt(k, v) { return k === 'grExDevol' || k === 'grExFech' ? v + '%' : (k === 'grExVol' || k === 'grExMov') ? v.toFixed(1).replace('.', ',') + '×' : String(v); }
+function grExFmt(k, v) { return k === 'grExDevol' || k === 'grExFech' ? v + '%' : k === 'grExPico' ? v.toFixed(1).replace('.', ',') + '%' : (k === 'grExVol' || k === 'grExMov') ? v.toFixed(1).replace('.', ',') + '×' : String(v); }
 function grExAplicar(k, v) {
     const c = GR_EX_CFG[k]; v = Math.max(c[1], Math.min(c[2], parseFloat(v) || 0));
     v = c[3] < 1 ? Math.round(v / c[3]) * c[3] : Math.round(v);
@@ -12954,7 +12959,7 @@ function grExAplicar(k, v) {
     grDrawChart();
 }
 function grExN(v) { grExAplicar('grExN', v); } function grExMov(v) { grExAplicar('grExMov', v); } function grExPres(v) { grExAplicar('grExPres', v); }
-function grExDevol(v) { grExAplicar('grExDevol', v); } function grExVol(v) { grExAplicar('grExVol', v); } function grExFech(v) { grExAplicar('grExFech', v); } function grExConf(v) { grExAplicar('grExConf', v); }
+function grExDevol(v) { grExAplicar('grExDevol', v); } function grExPico(v) { grExAplicar('grExPico', v); } function grExVol(v) { grExAplicar('grExVol', v); } function grExFech(v) { grExAplicar('grExFech', v); } function grExConf(v) { grExAplicar('grExConf', v); }
 function grConfigBlocoExaustao(svg) {
     let s = '<div style="padding:12px 2px;border-bottom:1px solid #F2F2F7;">'
         + '<div style="display:flex;align-items:center;gap:12px;">'
@@ -13019,11 +13024,11 @@ function grExaustaoBase(idx, cd, N, ms) {
     }
     const dev = EX.grExDevol / 100, fe = EX.grExFech / 100;
     let r = null;
-    if (topo && maxD >= tot * EX_PICO_MIN && delta <= maxD * (1 - dev) && cd.c <= cd.l + rng * fe) r = 'EC';
-    else if (fundo && -minD >= tot * EX_PICO_MIN && delta >= minD * (1 - dev) && cd.c >= cd.h - rng * fe) r = 'EV';
+    if (topo && maxD >= tot * (EX.grExPico / 100) && delta <= maxD * (1 - dev) && cd.c <= cd.l + rng * fe) r = 'EC';
+    else if (fundo && -minD >= tot * (EX.grExPico / 100) && delta >= minD * (1 - dev) && cd.c >= cd.h - rng * fe) r = 'EV';
     if (!r) {   // por que o delta/fechamento não passou (olha o lado do extremo)
         const lado = topo ? 'EC' : 'EV', pico = topo ? maxD : -minD, dl = topo ? delta : -delta;
-        if (pico < tot * EX_PICO_MIN) return grExFalha('sem pico de delta');
+        if (pico < tot * (EX.grExPico / 100)) return grExFalha('sem pico de delta');
         if (dl > pico * (1 - dev)) return grExFalha('delta não devolveu');
         return grExFalha('fechou no extremo');
     }
