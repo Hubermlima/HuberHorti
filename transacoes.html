@@ -6980,7 +6980,7 @@ function grInitTouch() {
     let _lastTapTime = 0;
     let _lastTapTarget = null;
     canvas.addEventListener('touchend', e => {
-    if (window._grMetricasDrag) { window._grMetricasDrag = null; isDragging = false; return; } // soltou a tabela de métricas
+    if (window._grMetricasDrag) { grMetricasToqueFim(); isDragging = false; return; } // soltou a tabela de métricas (ou tocou num ⓘ/✕)
     if (window._grPincaY && e.touches.length < 2) { window._grPincaY = null; grYFatorSalvar(); } // fim da pinça no eixo Y: guarda o fator
     if (window._grPincaX && e.touches.length < 2) { window._grPincaX = null; grYFatorSalvar(); } // fim da pinça no eixo X: guarda o fator (compensado)
     isDragging = false;
@@ -12875,15 +12875,56 @@ function grMetricasVeredito(m, candle) {
     return null; // nada a dizer: a tabela fica só com os números
 }
 // ── liga/desliga ──────────────────────────────────────────────────────────────────────────────────────────
+// ── explicações (ícone ⓘ ao lado de cada item: toque abre o texto, ✕ fecha) ─────────────────────────────────────────
+let _grMetricasInfo = null; // chave do item cuja explicação está aberta ('veredito' ou a chave da linha)
+const GR_MET_ITENS = [
+    ['Ask / Bid', 'Compras e vendas a mercado no candle (Ask verde, Bid vermelho): quem agrediu mais.'],
+    ['Delta', 'Ask menos Bid. Positivo: compradores agrediram mais; negativo: vendedores.'],
+    ['Delta/Volume', 'Delta em % do volume do candle: a convicção. Perto de 0% é equilíbrio; quanto maior, mais um lado mandou.'],
+    ['Máx / Mín Δ', 'Pico e fundo que o delta atingiu dentro do candle (amostrado por minuto). Fechar longe do pico = aquele lado perdeu força no fim.'],
+    ['Δ vs anterior', 'Delta deste candle menos o do anterior: a pressão acelerou ou virou de lado.'],
+    ['Δ sessão', 'Delta acumulado do dia (desde 00:00 UTC) até o fim do candle: o CVD do dia.'],
+    ['Delta/Vol sessão', 'Delta do dia em % do volume do dia: quem mandou na sessão até aqui.'],
+    ['Volume', 'Volume agredido total e quantas vezes ele é a média dos 20 candles anteriores (a partir de 1,5×, em âmbar, é candle relevante).'],
+    ['Vol/s', 'Volume por segundo: a velocidade do fluxo. Pico = pressa e agressividade; baixo = mercado parado.'],
+    ['Compra no prejuízo', '% da compra agressora feita acima do fechamento e o preço médio de compra. A partir de 60% o veredito diz compradores encurralados.'],
+    ['Venda no prejuízo', '% da venda agressora feita abaixo do fechamento e o preço médio de venda. A partir de 60% o veredito diz vendedores encurralados.'],
+    ['méd', 'Verde: o fechamento está acima da média daquele lado; vermelho: abaixo. É exposição provável: o footprint não sabe quem já zerou.'],
+];
+function grMetricasTextoVeredito(t) {
+    const M = {
+        'Compradores encurralados': 'O comprador foi o lado que mais agrediu, mas o preço fechou longe da média de compra dele: a maior parte da compra está no prejuízo e pode virar pressão de venda.',
+        'Vendedores encurralados': 'O vendedor foi o lado que mais agrediu, mas o preço fechou longe da média de venda dele: a maior parte da venda está no prejuízo e pode virar pressão de compra.',
+        'Compra escondida': 'O preço subiu mesmo com delta vendedor: o comprador passivo absorveu a venda. Confirme se o próximo candle segue para cima.',
+        'Venda escondida': 'O preço caiu mesmo com delta comprador: o vendedor passivo absorveu a compra. Confirme se o próximo candle segue para baixo.',
+        'Vendedor segurando o preço': 'Houve delta comprador relevante e o preço não saiu do lugar: alguém vendeu de forma passiva e segurou.',
+        'Comprador segurando o preço': 'Houve delta vendedor relevante e o preço não saiu do lugar: alguém comprou de forma passiva e segurou.',
+        'Vendedores viraram o jogo': 'O delta do candle anterior era comprador e agora é vendedor, os dois com peso relevante: o fluxo virou de lado.',
+        'Compradores assumiram o comando': 'O delta do candle anterior era vendedor e agora é comprador, os dois com peso relevante: o fluxo virou de lado.',
+        'Alta perdendo o gás': 'Preço e delta subiram juntos, mas o delta devolveu mais da metade do pico no fim do candle.',
+        'Queda perdendo o gás': 'Preço e delta caíram juntos, mas o delta devolveu mais da metade do fundo no fim do candle.',
+        'Parede no preço': 'Volume alto em faixa curta com delta equilibrado: alguém grande travando o preço. O lado só aparece no candle seguinte.',
+        'Andou sem esforço': 'O candle andou muito além do normal com volume fraco: movimento sem participação.',
+        'Compradores no comando': 'O delta ficou comprador durante 90% ou mais do candle, com volume e convicção acima do fraco.',
+        'Vendedores no comando': 'O delta ficou vendedor durante 90% ou mais do candle, com volume e convicção acima do fraco.',
+        'Alta sem convicção': 'Preço e delta subiram juntos, mas o delta é pequeno e o volume está perto da média.',
+        'Queda sem convicção': 'Preço e delta caíram juntos, mas o delta é pequeno e o volume está perto da média.',
+        'Alta sem fluxo comprador': 'O preço subiu, mas o delta ficou equilibrado: o movimento não veio de agressão de um lado só.',
+        'Queda sem fluxo vendedor': 'O preço caiu, mas o delta ficou equilibrado: o movimento não veio de agressão de um lado só.',
+    };
+    return (M[t] || '') + ' Leitura automática por heurística: mostra o que foi negociado, não a intenção de quem estava passivo.';
+}
+let _grMetricasInfoScroll = 0; // rolagem do texto de ajuda (quando não cabe inteiro)
+function grMetricasInfoAlternar() { _grMetricasInfo = _grMetricasInfo ? null : true; _grMetricasInfoScroll = 0; grDrawChart(); }
 function grMetricasAlternar(candle) {
     if (!candle) return;
     _grMetricasTabTs = (_grMetricasTabTs === candle.t) ? null : candle.t;
-    _grMetricasCache = null; _grMetricasOff = { dx: 0, dy: 0 };
+    _grMetricasCache = null; _grMetricasOff = { dx: 0, dy: 0 }; _grMetricasInfo = null;
 }
-function grMetricasFecharTabela() { _grMetricasTabTs = null; _grMetricasCache = null; window._grMetricasRect = null; grDrawChart(); }
+function grMetricasFecharTabela() { _grMetricasTabTs = null; _grMetricasCache = null; _grMetricasInfo = null; window._grMetricasRect = null; window._grMetricasHits = null; window._grMetricasNoteRect = null; grDrawChart(); }
 // ── desenho (chamado por grDrawCandles, por cima dos candles; g = { PAD, W, chartW, chartH, toY, slotW, xLeft(ts) }) ──
 function grMetricasDesenhar(ctx, g) {
-    window._grMetricasRect = null;
+    window._grMetricasRect = null; window._grMetricasHits = null; window._grMetricasNoteRect = null;
     const ts = _grMetricasTabTs;
     if (ts == null || !_grFootprintAtivo || !_grFootprintCandlesRaw || !_grAllCandles.length) return;
     let lo = 0, hi = _grAllCandles.length - 1, candle = null;
@@ -12921,15 +12962,17 @@ function grMetricasDesenhar(ctx, g) {
         return segs;
     };
     const linhas = [
-        ['Ask / Bid', [{ t: fk(m.compra), c: VERDE }, { t: ' / ', c: TX }, { t: fk(m.venda), c: VERM }], TX],   // Ask verde, Bid vermelho
-        ['Delta', sg(m.delta) + '  ' + pc(m.dvol), cd(m.delta)],
-        ['Máx / Mín Δ', [{ t: sg(m.maxD), c: cd(m.maxD) }, { t: ' / ', c: TX }, { t: sg(m.minD), c: cd(m.minD) }], TX],   // pico verde, fundo vermelho
-        ['Δ vs anterior', m.deltaChange == null ? '—' : sg(m.deltaChange), m.deltaChange == null ? TX : cd(m.deltaChange)],
-        ['Δ sessão', sg(m.sessDelta), cd(m.sessDelta)],
-        ['Volume', m.volRel != null ? [{ t: fk(m.total) + '  ', c: TX }, { t: m.volRel.toFixed(1).replace('.', ',') + '×', c: m.volRel >= GR_MET.VOL_ALTO ? AMBAR : TX }] : fk(m.total), TX],   // múltiplo em destaque a partir de 1,5×
-        ['Vol/s', m.volSeg >= 10 ? Math.round(m.volSeg) + '' : m.volSeg.toFixed(2).replace('.', ','), TX],
-        ['Compra no prejuízo', grMetPreso(m.presoC, candle.c, VERM), TX],
-        ['Venda no prejuízo', grMetPreso(m.presoV, candle.c, VERDE), TX],
+        ['Ask / Bid', [{ t: fk(m.compra), c: VERDE }, { t: ' / ', c: TX }, { t: fk(m.venda), c: VERM }], TX, 'ask_bid'],   // Ask verde, Bid vermelho
+        ['Delta', sg(m.delta), cd(m.delta), 'delta'],
+        ['Delta/Volume', pc(m.dvol), cd(m.dvol), 'dvol'],
+        ['Máx / Mín Δ', [{ t: sg(m.maxD), c: cd(m.maxD) }, { t: ' / ', c: TX }, { t: sg(m.minD), c: cd(m.minD) }], TX, 'maxmin'],   // pico verde, fundo vermelho
+        ['Δ vs anterior', m.deltaChange == null ? '—' : sg(m.deltaChange), m.deltaChange == null ? TX : cd(m.deltaChange), 'dant'],
+        ['Δ sessão', sg(m.sessDelta), cd(m.sessDelta), 'dsess'],
+        ['Delta/Vol sessão', pc(m.sessDvol), cd(m.sessDvol), 'dvolsess'],
+        ['Volume', m.volRel != null ? [{ t: fk(m.total) + '  ', c: TX }, { t: m.volRel.toFixed(1).replace('.', ',') + '×', c: m.volRel >= GR_MET.VOL_ALTO ? AMBAR : TX }] : fk(m.total), TX, 'volume'],   // múltiplo em destaque a partir de 1,5×
+        ['Vol/s', m.volSeg >= 10 ? Math.round(m.volSeg) + '' : m.volSeg.toFixed(2).replace('.', ','), TX, 'vols'],
+        ['Compra no prejuízo', grMetPreso(m.presoC, candle.c, VERM), TX, 'compra_prej'],
+        ['Venda no prejuízo', grMetPreso(m.presoV, candle.c, VERDE), TX, 'venda_prej'],
     ];
     const PADX = 8, HH = vd ? 30 : 22, RH = 13.5;
     const titulo = vd ? vd.titulo : dataTxt, sub = vd ? vd.sub : '';
@@ -12938,7 +12981,7 @@ function grMetricasDesenhar(ctx, g) {
     ctx.font = '10px -apple-system'; const wSub = ctx.measureText(sub).width;
     ctx.font = '10.5px -apple-system'; const wVal = v => Array.isArray(v) ? v.reduce((s, x) => s + ctx.measureText(x.t).width, 0) : ctx.measureText(v).width; const wLinhas = Math.max(...linhas.map(l => ctx.measureText(l[0]).width + 14 + wVal(l[1])));
     ctx.restore();
-    const W_T = Math.ceil(Math.max(150, wTitulo + PADX + 30, wSub + PADX * 2, wLinhas + PADX * 2));
+    const W_T = Math.ceil(Math.max(150, wTitulo + PADX + 46, wSub + PADX * 2, wLinhas + PADX * 2));
     const H_T = HH + linhas.length * RH + 8;
     // posição padrão: embaixo do candle (ou em cima, se não couber); depois o deslocamento do arrasto, sempre dentro da área do gráfico
     const bx0 = Math.max(g.PAD.left + 2, Math.min(g.W - g.PAD.right - W_T - 2, cx - W_T / 2));
@@ -12967,14 +13010,26 @@ function grMetricasDesenhar(ctx, g) {
     // cabeçalho: veredito (única linha em negrito) + a frase curta com o número que o sustenta
     ctx.textAlign = 'left'; ctx.font = 'bold 11px -apple-system';
     ctx.fillStyle = cor; ctx.fillText(titulo, bx + PADX, by + 14);
+    const hits = []; window._grMetricasHits = hits;
+    // ícone ⓘ pequeno (círculo com "i"): não ocupa linha, fica logo depois do rótulo; ativo = preenchido
+    const icone = (ix, iy, ativo, corI) => {
+        ctx.save(); ctx.lineWidth = 1; ctx.strokeStyle = corI; ctx.fillStyle = corI; ctx.setLineDash([]);
+        ctx.beginPath(); ctx.arc(ix, iy, 4.3, 0, Math.PI * 2);
+        if (ativo) { ctx.fill(); ctx.fillStyle = BG; ctx.strokeStyle = BG; } else ctx.stroke();
+        ctx.beginPath(); ctx.arc(ix, iy - 1.8, 0.55, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.moveTo(ix, iy - 0.4); ctx.lineTo(ix, iy + 2.1); ctx.stroke();
+        ctx.restore();
+    };
     if (sub) { ctx.font = '10px -apple-system'; ctx.fillStyle = TX; ctx.fillText(sub, bx + PADX, by + 26); }
     // ✕ (apaga a tabela)
     const xs = 9, xc = bx + W_T - 13, yc = by + 12;
     ctx.strokeStyle = TX; ctx.lineWidth = 1.3;
     ctx.beginPath(); ctx.moveTo(xc - xs / 2, yc - xs / 2); ctx.lineTo(xc + xs / 2, yc + xs / 2); ctx.moveTo(xc + xs / 2, yc - xs / 2); ctx.lineTo(xc - xs / 2, yc + xs / 2); ctx.stroke();
     const xbtn = { x: xc - 14, y: yc - 14, w: 28, h: 28 };
+    { const ix = xc - 23; icone(ix, yc, !!_grMetricasInfo, TX); hits.push({ x: ix - 10, y: yc - 10, w: 20, h: 20, key: 'info', fn: () => grMetricasInfoAlternar() }); } // ⓘ único: explica veredito e todos os itens
     if (window._grBarraSuperiorChips) window._grBarraSuperiorChips.push({ x: xbtn.x, y: xbtn.y, w: xbtn.w, h: xbtn.h, abrir: () => grMetricasFecharTabela() });
     window._grMetricasRect = { x: bx, y: by, w: W_T, h: H_T, xb: xbtn };
+    hits.push({ x: xbtn.x, y: xbtn.y, w: xbtn.w, h: xbtn.h, key: 'x', fn: () => grMetricasFecharTabela() });
     // linhas
     ctx.lineWidth = 1; ctx.strokeStyle = claro ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.16)';
     ctx.beginPath(); ctx.moveTo(bx + PADX, by + HH - 1.5); ctx.lineTo(bx + W_T - PADX, by + HH - 1.5); ctx.stroke();
@@ -12988,21 +13043,81 @@ function grMetricasDesenhar(ctx, g) {
             l[1].forEach(sg2 => { ctx.fillStyle = sg2.c; ctx.fillText(sg2.t, xs2, y); xs2 += ctx.measureText(sg2.t).width; });
         } else { ctx.textAlign = 'right'; ctx.fillStyle = l[2]; ctx.fillText(l[1], bx + W_T - PADX, y); }
     });
+    // caixa de ajuda (toque no ⓘ do cabeçalho): explica o veredito atual e todos os itens; ✕ fecha; se não couber, rola com o dedo
+    if (_grMetricasInfo) {
+        const WN = Math.min(g.W - 8, 300), larg = WN - PADX * 2 - 6;
+        const ws = t => t.split(' ').filter(Boolean).map(w => ({ t: w + ' ', b: false }));
+        const paras = [];
+        paras.push([{ t: 'Veredito ', b: true }].concat(ws(vd ? grMetricasTextoVeredito(vd.titulo) : 'Sem padrão claro neste candle: só os números.')));
+        GR_MET_ITENS.forEach(it => paras.push([{ t: it[0] + ' ', b: true }].concat(ws(it[1]))));
+        const ops = []; let yy = 13;
+        paras.forEach(pp => {
+            let xx = 0;
+            pp.forEach(tok => {
+                ctx.font = (tok.b ? 'bold ' : '') + '10.5px -apple-system';
+                const w = ctx.measureText(tok.t).width;
+                if (xx + w > larg + 2 && xx > 0) { xx = 0; yy += 13; }
+                ops.push({ t: tok.t, x: xx, y: yy, b: tok.b }); xx += w;
+            });
+            yy += 17;
+        });
+        const contentH = yy - 4, HEAD = 24;
+        const HN = Math.min(HEAD + contentH + 6, yBot - yTop);
+        const visH = HN - HEAD - 6, maxScroll = Math.max(0, contentH - visH);
+        _grMetricasInfoScroll = Math.max(0, Math.min(maxScroll, _grMetricasInfoScroll));
+        const nx = Math.max(2, Math.min(g.W - WN - 2, bx));
+        let ny = by + H_T + 4;                                   // embaixo da tabela; se não couber, em cima; senão, por cima dela
+        if (ny + HN > yBot + 4) ny = by - HN - 4;
+        if (ny < yTop) ny = Math.max(yTop, yBot - HN);
+        ctx.fillStyle = BG; ctx.globalAlpha = 0.98; ctx.beginPath(); ctx.roundRect(nx, ny, WN, HN, 6); ctx.fill();
+        ctx.globalAlpha = 1; ctx.lineWidth = 1; ctx.strokeStyle = cor; ctx.beginPath(); ctx.roundRect(nx + 0.5, ny + 0.5, WN - 1, HN - 1, 6); ctx.stroke();
+        ctx.textAlign = 'left'; ctx.font = 'bold 11px -apple-system'; ctx.fillStyle = TX; ctx.fillText('Como ler', nx + PADX, ny + 15);
+        ctx.save();
+        ctx.beginPath(); ctx.rect(nx + 1, ny + HEAD, WN - 2, visH + 4); ctx.clip();
+        ops.forEach(o => { ctx.font = (o.b ? 'bold ' : '') + '10.5px -apple-system'; ctx.fillStyle = TX; ctx.fillText(o.t, nx + PADX + o.x, ny + HEAD + o.y - _grMetricasInfoScroll); });
+        ctx.restore();
+        if (maxScroll > 0) { // barrinha de rolagem
+            const th = Math.max(16, visH * visH / contentH), ty = ny + HEAD + (visH - th) * (_grMetricasInfoScroll / maxScroll);
+            ctx.fillStyle = TX; ctx.globalAlpha = 0.35; ctx.beginPath(); ctx.roundRect(nx + WN - 5, ty, 2.5, th, 1.2); ctx.fill(); ctx.globalAlpha = 1;
+        }
+        const nxc = nx + WN - 13, nyc = ny + 12;
+        ctx.strokeStyle = TX; ctx.lineWidth = 1.3;
+        ctx.beginPath(); ctx.moveTo(nxc - 4.5, nyc - 4.5); ctx.lineTo(nxc + 4.5, nyc + 4.5); ctx.moveTo(nxc + 4.5, nyc - 4.5); ctx.lineTo(nxc - 4.5, nyc + 4.5); ctx.stroke();
+        hits.push({ x: nxc - 14, y: nyc - 14, w: 28, h: 28, key: 'nx', fn: () => grMetricasInfoAlternar() });
+        window._grMetricasNoteRect = { x: nx, y: ny, w: WN, h: HN, max: maxScroll };
+    }
     ctx.restore();
 }
 // ── arrasto da janela (chamado pelos handlers de toque do canvas; devolvem true quando consumiram o toque) ──────────
 function grMetricasToqueInicio(x, y) {
+    // 1) ⓘ, ✕ da caixa e ✕ da tabela: só toque (o mais próximo do dedo), nunca arrasto
+    let melhor = null, dm = 1e9;
+    (window._grMetricasHits || []).forEach(t => {
+        const cx = t.x + t.w / 2, cy = t.y + t.h / 2;
+        if (Math.abs(x - cx) <= t.w / 2 && Math.abs(y - cy) <= t.h / 2) { const d = Math.hypot(x - cx, y - cy); if (d < dm) { dm = d; melhor = t; } }
+    });
+    if (melhor) { window._grMetricasDrag = { x0: x, y0: y, moved: false, noDrag: true, tap: melhor.fn }; return true; }
+    // 2) toque na caixa de ajuda: rola o texto (e não passa pro gráfico)
+    const nr = window._grMetricasNoteRect;
+    if (nr && x >= nr.x && x <= nr.x + nr.w && y >= nr.y && y <= nr.y + nr.h) { window._grMetricasDrag = { x0: x, y0: y, s0: _grMetricasInfoScroll, moved: false, noDrag: true, rolar: true, tap: null }; return true; }
+    // 3) toque no corpo da tabela: arrasta a janela
     const r = window._grMetricasRect;
     if (!r || x < r.x || x > r.x + r.w || y < r.y || y > r.y + r.h) return false;
-    const b = r.xb; if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return false; // o ✕ é toque, não arrasto
-    window._grMetricasDrag = { x0: x, y0: y, dx0: _grMetricasOff.dx, dy0: _grMetricasOff.dy };
+    window._grMetricasDrag = { x0: x, y0: y, dx0: _grMetricasOff.dx, dy0: _grMetricasOff.dy, moved: false, noDrag: false, tap: null };
     return true;
 }
 function grMetricasToqueMove(x, y) {
     const d = window._grMetricasDrag; if (!d) return false;
+    if (Math.hypot(x - d.x0, y - d.y0) > 8) d.moved = true;
+    if (d.rolar) { _grMetricasInfoScroll = d.s0 + (d.y0 - y); grDrawChart(); return true; } // rola o texto de ajuda
+    if (d.noDrag) return true;
     _grMetricasOff.dx = d.dx0 + (x - d.x0); _grMetricasOff.dy = d.dy0 + (y - d.y0);
     grDrawChart();
     return true;
+}
+function grMetricasToqueFim() { // soltou: se foi um toque (sem mover) num ⓘ/✕, executa
+    const d = window._grMetricasDrag; window._grMetricasDrag = null;
+    if (d && d.tap && !d.moved) d.tap();
 }
 
 // Agrega os candles brutos (1min) de todas as fontes que caem dentro do
