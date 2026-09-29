@@ -6358,6 +6358,8 @@ function grInitTouch() {
             _liveTouchY = e.touches[0].clientY;
             const ex2 = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (grLW(canvas) / canvas.getBoundingClientRect().width);
             const ey2 = (e.touches[0].clientY - canvas.getBoundingClientRect().top) * (grLH(canvas) / canvas.getBoundingClientRect().height);
+            // Tabela de métricas: tocar e arrastar por cima dela move a janela (o ✕ é tratado como toque, pelos chips)
+            if (grMetricasToqueInicio(ex2, ey2)) { e.preventDefault(); return; }
             // Janela do crosshair: UM botão alterna □ (expande) ↔ — (recolhe); o crosshair continua aberto
             if (window._longPressActive) {
                 const tb = window._grCrosshairToggleBtnArea;
@@ -6699,6 +6701,12 @@ function grInitTouch() {
         if (e.touches.length === 1) {
             _liveTouchX = e.touches[0].clientX;
             _liveTouchY = e.touches[0].clientY;
+            if (window._grMetricasDrag) { // arrastando a tabela de métricas
+                const rc = canvas.getBoundingClientRect();
+                grMetricasToqueMove((e.touches[0].clientX - rc.left) * (grLW(canvas) / rc.width), (e.touches[0].clientY - rc.top) * (grLH(canvas) / rc.height));
+                e.preventDefault();
+                return;
+            }
             if (_medidaDrawing && _medidaAtual) {
                 const xc = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (grLW(canvas) / canvas.getBoundingClientRect().width);
                 const yc = toCanvasY(e.touches[0].clientY);
@@ -6972,6 +6980,7 @@ function grInitTouch() {
     let _lastTapTime = 0;
     let _lastTapTarget = null;
     canvas.addEventListener('touchend', e => {
+    if (window._grMetricasDrag) { window._grMetricasDrag = null; isDragging = false; return; } // soltou a tabela de métricas
     if (window._grPincaY && e.touches.length < 2) { window._grPincaY = null; grYFatorSalvar(); } // fim da pinça no eixo Y: guarda o fator
     if (window._grPincaX && e.touches.length < 2) { window._grPincaX = null; grYFatorSalvar(); } // fim da pinça no eixo X: guarda o fator (compensado)
     isDragging = false;
@@ -12717,42 +12726,57 @@ function grFootprintCandleNavegar(direcao) {
     grFootprintAbrirCandleModal(_grAllCandles[novoIdx]);
 }
 // ══ MÉTRICAS DO CANDLE — tabelinha minimalista desenhada no canvas, embaixo do candle escolhido ═════════════════════
-// Botão "Ver Métricas" da janela do crosshair liga/desliga a tabela daquele candle; o ✕ da tabela apaga. Só com o Fluxo ligado.
-// Dados: footprint bruto por minuto (c = compra agressora, v = venda agressora, nc/nv = nº de negócios).
-// Sessão = dia UTC. Máx/Mín Δ: delta corrente amostrado ao fim de cada minuto do candle (o footprint guarda por minuto),
-// então em candle de poucos minutos é aproximado.
+// Botão "Ver Métricas" da janela do crosshair liga/desliga a tabela daquele candle; o ✕ da tabela apaga; arrastando a tabela
+// ela muda de lugar (fica presa ao candle, acompanha o gráfico). Só com o Fluxo ligado.
+// Dados: footprint bruto por minuto (c = compra agressora, v = venda agressora, nc/nv = nº de negócios, p = preço do nível).
+// Sessão = dia UTC. Máx/Mín Δ e "domínio": delta corrente amostrado ao fim de cada minuto do candle (o footprint guarda por minuto).
 let _grMetricasTabTs = null;   // t do candle com tabela aberta (null = nenhuma)
 let _grMetricasCache = null;   // { t, raw, quando, m, vd }
+let _grMetricasOff = { dx: 0, dy: 0 }; // deslocamento da janela em relação ao ponto padrão (embaixo do candle)
+window._grMetricasRect = null; window._grMetricasDrag = null;
 function grMetricasCalcular(candle) {
     if (!_grFootprintAtivo || !_grFootprintCandlesRaw) return null;
     const ms = grFootprintMsPorCandle();
     const de = candle.t, ate = candle.t + ms;
     const sessIni = Math.floor(de / 86400000) * 86400000;
+    const fech = candle.c;
     const minutos = [];
     let sessC = 0, sessV = 0;
+    let cTot = 0, cPx = 0, cSob = 0, vTot = 0, vPx = 0, vSob = 0; // preços da compra/venda agressora (pra achar quem está no prejuízo)
     grFootprintParaCadaMinuto(Math.min(sessIni, de), ate, m => {
         let c = 0, v = 0, nc = 0, nv = 0;
-        (m.niveis || []).forEach(n => { c += (n.c || 0); v += (n.v || 0); nc += (n.nc || 0); nv += (n.nv || 0); });
+        (m.niveis || []).forEach(n => {
+            const nC = n.c || 0, nV = n.v || 0;
+            c += nC; v += nV; nc += (n.nc || 0); nv += (n.nv || 0);
+            if (m.ts >= de) {
+                cTot += nC; cPx += n.p * nC; if (n.p > fech) cSob += nC;   // comprou acima do fechamento = no prejuízo
+                vTot += nV; vPx += n.p * nV; if (n.p < fech) vSob += nV;   // vendeu abaixo do fechamento = no prejuízo
+            }
+        });
         if (m.ts >= sessIni) { sessC += c; sessV += v; }
         if (m.ts >= de) minutos.push({ ts: m.ts, c, v, nc, nv });
     });
     if (minutos.length === 0) return null;
     minutos.sort((a, b) => a.ts - b.ts);
     let compra = 0, venda = 0, nc = 0, nv = 0, corrente = 0, maxD = 0, minD = 0;
+    const correntes = [];
     minutos.forEach(m => {
         compra += m.c; venda += m.v; nc += m.nc; nv += m.nv;
-        corrente += m.c - m.v;
+        corrente += m.c - m.v; correntes.push(corrente);
         if (corrente > maxD) maxD = corrente;
         if (corrente < minD) minD = corrente;
     });
     const total = compra + venda, delta = compra - venda;
+    // domínio: em que fração dos minutos o delta corrente esteve do mesmo lado do delta final
+    let consist = null;
+    if (minutos.length >= 3 && delta !== 0) { const fs = Math.sign(delta); consist = correntes.filter(x => Math.sign(x) === fs).length / correntes.length; }
     const idx = _grAllCandles.findIndex(c => c.t === candle.t);
-    let deltaAnt = null;
+    let deltaAnt = null, prevDvol = null;
     if (idx > 0) {
         const ant = _grAllCandles[idx - 1];
-        let dc = 0, achou = false;
-        grFootprintParaCadaMinuto(ant.t, ant.t + ms, m => { achou = true; (m.niveis || []).forEach(n => { dc += (n.c || 0) - (n.v || 0); }); });
-        if (achou) deltaAnt = dc;
+        let dc = 0, tc = 0, achou = false;
+        grFootprintParaCadaMinuto(ant.t, ant.t + ms, m => { achou = true; (m.niveis || []).forEach(n => { dc += (n.c || 0) - (n.v || 0); tc += (n.c || 0) + (n.v || 0); }); });
+        if (achou) { deltaAnt = dc; prevDvol = tc > 0 ? dc / tc : null; }
     }
     let volRel = null;
     if (idx >= 5 && candle.v > 0) {
@@ -12772,62 +12796,94 @@ function grMetricasCalcular(candle) {
     return {
         nMin: minutos.length, emFormacao,
         compra, venda, delta, total, dvol: total > 0 ? delta / total : 0,
-        maxD, minD, deltaChange: deltaAnt == null ? null : delta - deltaAnt,
+        maxD, minD, consist, deltaChange: deltaAnt == null ? null : delta - deltaAnt, prevDelta: deltaAnt, prevDvol,
         sessDelta: sessC - sessV, sessTotal, sessDvol: sessTotal > 0 ? (sessC - sessV) / sessTotal : 0,
         volSeg: total / (durMs / 1000), volRel, alturaRel, trades: nc + nv,
-        alturaPct: candle.o > 0 ? (candle.h - candle.l) / candle.o * 100 : null,
+        // presos: parcela do volume de cada lado que está no prejuízo em relação ao fechamento (+ preço médio do lado)
+        presoC: { pct: cTot > 0 ? cSob / cTot : 0, vol: cSob, med: cTot > 0 ? cPx / cTot : null },
+        presoV: { pct: vTot > 0 ? vSob / vTot : 0, vol: vSob, med: vTot > 0 ? vPx / vTot : null },
     };
 }
-// ── Intérprete: UM veredito + motivo curto + tags. Regras da sua cartilha: preço e delta em sentidos opostos = absorção;
-// mesmo sentido = movimento limpo; volume alto em faixa curta com delta equilibrado = travamento. Heurística sobre o footprint.
-const GR_MET = { EQUIL: 0.02, CORPO_MIN: 0.15, VOL_ALTO: 1.5, VOL_BAIXO: 0.7, ALT_CURTA: 0.8, ALT_LONGA: 1.5, DEVOLVEU: 0.5 };
+// ── Intérprete: UM veredito com nome próprio (ou nenhum, quando não há nada a dizer). Regras da sua cartilha: preço e delta em
+// sentidos opostos = absorção ("força escondida"); lado agressor que fechou no prejuízo = encurralado; mesmo sentido = movimento
+// limpo. Heurística sobre o footprint: mostra o que foi negociado, não a intenção de quem estava passivo.
+const GR_MET = { EQUIL: 0.02, CORPO_MIN: 0.15, VOL_ALTO: 1.5, ALT_CURTA: 0.8, ALT_LONGA: 1.5, DEVOLVEU: 0.5, PRESO_PCT: 0.6, PRESO_GAP: 0.35, VIRADA: 0.04, DOMINIO: 0.9 };
 function grMetricasVeredito(m, candle) {
+    const fk = v => { const a = Math.abs(v); return a >= 1e6 ? (a / 1e6).toFixed(2).replace('.', ',') + 'M' : (a >= 1e5 ? Math.round(a / 1e3) + 'k' : (a >= 1e3 ? (a / 1e3).toFixed(1).replace('.', ',') + 'k' : (a >= 10 ? String(Math.round(a)) : a.toFixed(1).replace('.', ',')))); };
+    const sg = v => (v >= 0 ? '+' : '−') + fk(v);
     const rng = candle.h - candle.l;
     const corpo = rng > 0 ? Math.abs(candle.c - candle.o) / rng : 0;
-    const sd = Math.abs(m.dvol) < GR_MET.EQUIL ? 0 : (m.delta > 0 ? 1 : -1);
-    const sp = (corpo < GR_MET.CORPO_MIN || candle.c === candle.o) ? 0 : (candle.c > candle.o ? 1 : -1);
+    const sd = Math.abs(m.dvol) < GR_MET.EQUIL ? 0 : (m.delta > 0 ? 1 : -1);      // lado do delta
+    const sp = (corpo < GR_MET.CORPO_MIN || candle.c === candle.o) ? 0 : (candle.c > candle.o ? 1 : -1); // lado do preço
     const pts = (Math.abs(m.dvol) >= 0.10 ? 2 : (Math.abs(m.dvol) >= 0.05 ? 1 : 0)) + (m.volRel != null ? (m.volRel >= GR_MET.VOL_ALTO ? 2 : (m.volRel >= 1.1 ? 1 : 0)) : 0);
-    const forca = pts >= 3 ? 'forte' : (pts === 2 ? 'moderada' : 'fraca');
     const faixaD = m.maxD - m.minD;
     let dev = null;
     if (faixaD > 0 && m.nMin >= 3 && m.delta !== 0) dev = m.delta > 0 ? (m.maxD - m.delta) / faixaD : (m.delta - m.minD) / faixaD;
-    const seta = v => v > 0 ? '↑' : '↓';
-    const V = '#16A34A', R = '#DC2626', N = '#8E8E93', A = '#D97706';
-    let titulo, cor, motivo;
+    const V = '#16A34A', R = '#DC2626', A = '#D97706';
+    const pcs = v => Math.round(v * 100) + '%';
+    const pcd = v => (v >= 0 ? '+' : '−') + (Math.abs(v) * 100).toFixed(1).replace('.', ',') + '%';
+    // 1) lado agressor encurralado: o delta mostra quem agrediu; se o preço fechou longe do preço médio dele, ele está no prejuízo
+    if (sd !== 0 && rng > 0) {
+        const lado = sd > 0 ? m.presoC : m.presoV;
+        const gap = lado.med == null ? 0 : (sd > 0 ? lado.med - candle.c : candle.c - lado.med) / rng;
+        if (lado.pct >= GR_MET.PRESO_PCT && gap >= GR_MET.PRESO_GAP) {
+            return sd > 0
+                ? { titulo: 'Compradores encurralados', sub: pcs(lado.pct) + ' da compra no prejuízo', cor: R }
+                : { titulo: 'Vendedores encurralados', sub: pcs(lado.pct) + ' da venda no prejuízo', cor: V };
+        }
+    }
+    // 2) força escondida: preço contra o delta (absorção) ou delta forte sem o preço sair do lugar
     if (sd !== 0 && sp !== 0 && sd !== sp) {
-        titulo = sp > 0 ? 'Absorção compradora' : 'Absorção vendedora'; cor = sp > 0 ? V : R;
-        motivo = 'preço ' + seta(sp) + ' delta ' + seta(sd);
-    } else if (sd !== 0 && sp !== 0) {
-        titulo = sp > 0 ? 'Alta com fluxo comprador' : 'Queda com fluxo vendedor'; cor = sp > 0 ? V : R;
-        motivo = 'preço e delta ' + seta(sp);
-    } else if (sd !== 0) {
-        titulo = sd > 0 ? 'Absorção vendedora provável' : 'Absorção compradora provável'; cor = sd > 0 ? R : V;
-        motivo = 'preço parado · delta ' + seta(sd);
-    } else if (m.volRel != null && m.volRel >= GR_MET.VOL_ALTO && m.alturaRel != null && m.alturaRel <= GR_MET.ALT_CURTA) {
-        titulo = 'Travamento'; cor = A; motivo = 'volume alto · faixa curta';
-    } else {
-        titulo = 'Sem lado claro'; cor = N; motivo = 'delta ≈ 0';
+        return sp > 0
+            ? { titulo: 'Compra escondida', sub: 'preço sobe com delta ' + sg(m.delta), cor: V }
+            : { titulo: 'Venda escondida', sub: 'preço cai com delta ' + sg(m.delta), cor: R };
     }
-    const tags = [];
-    if (dev != null && dev >= GR_MET.DEVOLVEU) tags.push('fôlego −' + Math.round(dev * 100) + '%');
-    if (m.deltaChange != null) {
-        const ant = m.delta - m.deltaChange;
-        if (ant * m.delta < 0 && Math.abs(ant) >= 0.02 * m.total && Math.abs(m.delta) >= 0.02 * m.total) tags.push('virou vs anterior');
+    if (sd !== 0 && sp === 0) {
+        return sd > 0
+            ? { titulo: 'Vendedor segurando o preço', sub: 'delta ' + sg(m.delta) + ' e o preço não saiu do lugar', cor: R }
+            : { titulo: 'Comprador segurando o preço', sub: 'delta ' + sg(m.delta) + ' e o preço não saiu do lugar', cor: V };
     }
-    if (m.alturaRel != null && m.volRel != null && m.alturaRel >= GR_MET.ALT_LONGA && m.volRel < 1) tags.push('sem esforço');
-    if (m.volRel != null) { if (m.volRel >= GR_MET.VOL_ALTO) tags.push('vol alto'); else if (m.volRel <= GR_MET.VOL_BAIXO) tags.push('vol fraco'); }
-    if (sd !== 0 && Math.abs(m.sessDvol) >= GR_MET.EQUIL && Math.sign(m.sessDelta) !== sd) tags.push('contra o dia');
-    return { titulo, cor, forca: titulo === 'Sem lado claro' ? '' : forca, motivo, tags: tags.slice(0, 3) };
+    // 3) virada de fluxo em relação ao candle anterior
+    if (m.prevDelta != null && m.prevDvol != null && Math.sign(m.prevDvol) !== Math.sign(m.dvol) && Math.abs(m.prevDvol) >= GR_MET.VIRADA && Math.abs(m.dvol) >= GR_MET.VIRADA) {
+        return m.dvol < 0
+            ? { titulo: 'Vendedores viraram o jogo', sub: 'antes ' + sg(m.prevDelta) + ' → agora ' + sg(m.delta), cor: R }
+            : { titulo: 'Compradores assumiram o comando', sub: 'antes ' + sg(m.prevDelta) + ' → agora ' + sg(m.delta), cor: V };
+    }
+    // 4) movimento a favor do delta, mas sem gás no fim
+    if (sd !== 0 && sp === sd && dev != null && dev >= GR_MET.DEVOLVEU) {
+        return { titulo: sp > 0 ? 'Alta perdendo o gás' : 'Queda perdendo o gás', sub: 'devolveu ' + pcs(dev) + ' do pico do delta', cor: A };
+    }
+    // 5) travamento e movimento sem esforço
+    if (sd === 0 && m.volRel != null && m.volRel >= GR_MET.VOL_ALTO && m.alturaRel != null && m.alturaRel <= GR_MET.ALT_CURTA) {
+        return { titulo: 'Parede no preço', sub: 'volume ' + m.volRel.toFixed(1).replace('.', ',') + '× em faixa curta, delta ≈ 0', cor: A };
+    }
+    if (m.alturaRel != null && m.volRel != null && m.alturaRel >= GR_MET.ALT_LONGA && m.volRel < 1) {
+        return { titulo: 'Andou sem esforço', sub: 'faixa ' + m.alturaRel.toFixed(1).replace('.', ',') + '× o normal com volume fraco', cor: A };
+    }
+    // 6) movimento limpo: quem mandou e com que convicção
+    if (sd !== 0 && sp === sd) {
+        if (m.consist != null && m.consist >= GR_MET.DOMINIO && pts >= 2) {
+            return { titulo: sp > 0 ? 'Compradores no comando' : 'Vendedores no comando', sub: 'delta a favor em ' + pcs(m.consist) + ' do candle', cor: sp > 0 ? V : R };
+        }
+        if (pts <= 1) {
+            return { titulo: sp > 0 ? 'Alta sem convicção' : 'Queda sem convicção', sub: 'Δ/Vol só ' + pcd(m.dvol) + (m.volRel != null ? ' · vol ' + m.volRel.toFixed(1).replace('.', ',') + '×' : ''), cor: A };
+        }
+    }
+    if (sd === 0 && sp !== 0) {
+        return { titulo: sp > 0 ? 'Alta sem fluxo comprador' : 'Queda sem fluxo vendedor', sub: 'delta só ' + pcd(m.dvol), cor: A };
+    }
+    return null; // nada a dizer: a tabela fica só com os números
 }
 // ── liga/desliga ──────────────────────────────────────────────────────────────────────────────────────────
 function grMetricasAlternar(candle) {
     if (!candle) return;
     _grMetricasTabTs = (_grMetricasTabTs === candle.t) ? null : candle.t;
-    _grMetricasCache = null;
+    _grMetricasCache = null; _grMetricasOff = { dx: 0, dy: 0 };
 }
-function grMetricasFecharTabela() { _grMetricasTabTs = null; _grMetricasCache = null; grDrawChart(); }
+function grMetricasFecharTabela() { _grMetricasTabTs = null; _grMetricasCache = null; window._grMetricasRect = null; grDrawChart(); }
 // ── desenho (chamado por grDrawCandles, por cima dos candles; g = { PAD, W, chartW, chartH, toY, slotW, xLeft(ts) }) ──
 function grMetricasDesenhar(ctx, g) {
+    window._grMetricasRect = null;
     const ts = _grMetricasTabTs;
     if (ts == null || !_grFootprintAtivo || !_grFootprintCandlesRaw || !_grAllCandles.length) return;
     let lo = 0, hi = _grAllCandles.length - 1, candle = null;
@@ -12848,60 +12904,93 @@ function grMetricasDesenhar(ctx, g) {
     const fk = v => { const a = Math.abs(v); return a >= 1e6 ? (a / 1e6).toFixed(2).replace('.', ',') + 'M' : (a >= 1e5 ? Math.round(a / 1e3) + 'k' : (a >= 1e3 ? (a / 1e3).toFixed(1).replace('.', ',') + 'k' : (a >= 10 ? String(Math.round(a)) : a.toFixed(1).replace('.', ',')))); };
     const sg = v => (v >= 0 ? '+' : '−') + fk(v);
     const pc = v => (v >= 0 ? '+' : '−') + (Math.abs(v) * 100).toFixed(1).replace('.', ',') + '%';
+    const nf0 = v => Math.round(v).toLocaleString('pt-BR');
     const claro = _grTemaClaro;
-    const BG = claro ? '#FFFFFF' : '#131722', TX = claro ? '#1C1C1E' : '#D1D4DC', CZ = claro ? '#8E8E93' : '#787B86';
+    const BG = claro ? '#FFFFFF' : '#131722', TX = claro ? '#1C1C1E' : '#E5E7EB';   // sem cinza: rótulos e textos na cor do texto
     const VERDE = '#16A34A', VERM = '#DC2626';
     const cd = v => v > 0 ? VERDE : (v < 0 ? VERM : TX);
+    const soData = _grTf === '1day' || _grTf === '1week' || _grTf === '1month' || (_grTf === 'custom' && (_grTfCustomUnit === 'dia' || _grTfCustomUnit === 'mes'));
+    const dataTxt = soData ? new Date(ts).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', timeZone: 'UTC' })
+        : new Date(ts).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
     const linhas = [
         ['Ask / Bid', fk(m.compra) + ' / ' + fk(m.venda), TX],
         ['Delta', sg(m.delta) + '  ' + pc(m.dvol), cd(m.delta)],
         ['Máx / Mín Δ', sg(m.maxD) + ' / ' + sg(m.minD), TX],
-        ['Δ vs anterior', m.deltaChange == null ? '—' : sg(m.deltaChange), m.deltaChange == null ? CZ : cd(m.deltaChange)],
+        ['Δ vs anterior', m.deltaChange == null ? '—' : sg(m.deltaChange), m.deltaChange == null ? TX : cd(m.deltaChange)],
         ['Δ sessão', sg(m.sessDelta), cd(m.sessDelta)],
         ['Volume', fk(m.total) + (m.volRel != null ? '  ' + m.volRel.toFixed(1).replace('.', ',') + '×' : ''), TX],
         ['Vol/s', m.volSeg >= 10 ? Math.round(m.volSeg) + '' : m.volSeg.toFixed(2).replace('.', ','), TX],
+        ['Compra no prejuízo', Math.round(m.presoC.pct * 100) + '%' + (m.presoC.med != null ? '  méd ' + nf0(m.presoC.med) : ''), m.presoC.pct >= GR_MET.PRESO_PCT ? VERM : TX],
+        ['Venda no prejuízo', Math.round(m.presoV.pct * 100) + '%' + (m.presoV.med != null ? '  méd ' + nf0(m.presoV.med) : ''), m.presoV.pct >= GR_MET.PRESO_PCT ? VERDE : TX],
     ];
-    const PADX = 8, HH = 30, RH = 13.5;
+    const PADX = 8, HH = vd ? 30 : 22, RH = 13.5;
+    const titulo = vd ? vd.titulo : dataTxt, sub = vd ? vd.sub : '';
     ctx.save();
-    ctx.font = 'bold 11px -apple-system'; const wTitulo = ctx.measureText(vd.titulo).width;
-    ctx.font = '10px -apple-system'; const wMotivo = ctx.measureText((vd.forca ? vd.forca + ' · ' : '') + vd.motivo).width;
-    ctx.font = '9.5px -apple-system'; const wTags = ctx.measureText(vd.tags.join(' · ')).width;
+    ctx.font = 'bold 11px -apple-system'; const wTitulo = ctx.measureText(titulo).width;
+    ctx.font = '10px -apple-system'; const wSub = ctx.measureText(sub).width;
+    ctx.font = '10.5px -apple-system'; const wLinhas = Math.max(...linhas.map(l => ctx.measureText(l[0]).width + 14 + ctx.measureText(l[1]).width));
     ctx.restore();
-    const W_T = Math.ceil(Math.max(158, wTitulo + PADX + 30, wMotivo + PADX * 2, wTags + PADX * 2));
-    const tagsTxt = vd.tags.join(' · ');
-    const H_T = HH + linhas.length * RH + (tagsTxt ? 16 : 6) + 4;
-    let bx = Math.max(g.PAD.left + 2, Math.min(g.W - g.PAD.right - W_T - 2, cx - W_T / 2));
+    const W_T = Math.ceil(Math.max(150, wTitulo + PADX + 30, wSub + PADX * 2, wLinhas + PADX * 2));
+    const H_T = HH + linhas.length * RH + 8;
+    // posição padrão: embaixo do candle (ou em cima, se não couber); depois o deslocamento do arrasto, sempre dentro da área do gráfico
+    const bx0 = Math.max(g.PAD.left + 2, Math.min(g.W - g.PAD.right - W_T - 2, cx - W_T / 2));
     const yTop = g.PAD.top + 2, yBot = g.PAD.top + g.chartH - 2;
-    let by = g.toY(candle.l) + 8;                               // embaixo do candle
-    if (by + H_T > yBot) by = g.toY(candle.h) - 8 - H_T;        // sem espaço: em cima
-    by = Math.max(yTop, Math.min(yBot - H_T, by));
+    let by0 = g.toY(candle.l) + 8;
+    if (by0 + H_T > yBot) by0 = g.toY(candle.h) - 8 - H_T;
+    by0 = Math.max(yTop, Math.min(yBot - H_T, by0));
+    const bx = Math.max(2, Math.min(g.W - W_T - 2, bx0 + _grMetricasOff.dx));
+    const by = Math.max(yTop, Math.min(yBot - H_T, by0 + _grMetricasOff.dy));
+    _grMetricasOff.dx = bx - bx0; _grMetricasOff.dy = by - by0;   // não deixa o deslocamento passar do limite
+    const cor = vd ? vd.cor : TX;
     ctx.save();
     ctx.setLineDash([]);
+    // fio ligando a tabela ao candle quando ela foi arrastada pra longe
+    if (Math.abs(_grMetricasOff.dx) > 4 || Math.abs(_grMetricasOff.dy) > 4) {
+        const yCand = by + H_T / 2 > g.toY(candle.l) ? g.toY(candle.l) : g.toY(candle.h);
+        const xAlvo = Math.max(bx, Math.min(bx + W_T, cx)), yAlvo = by > yCand ? by : by + H_T;
+        ctx.strokeStyle = cor; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+        ctx.beginPath(); ctx.moveTo(cx, yCand); ctx.lineTo(xAlvo, yAlvo); ctx.stroke();
+        ctx.setLineDash([]);
+    }
     ctx.fillStyle = BG; ctx.globalAlpha = 0.96;
     ctx.beginPath(); ctx.roundRect(bx, by, W_T, H_T, 6); ctx.fill();
-    ctx.globalAlpha = 1; ctx.lineWidth = 1; ctx.strokeStyle = vd.cor;
+    ctx.globalAlpha = 1; ctx.lineWidth = 1; ctx.strokeStyle = cor;
     ctx.beginPath(); ctx.roundRect(bx + 0.5, by + 0.5, W_T - 1, H_T - 1, 6); ctx.stroke();
-    // cabeçalho: veredito (única linha em negrito) + força · motivo
+    // cabeçalho: veredito (única linha em negrito) + a frase curta com o número que o sustenta
     ctx.textAlign = 'left'; ctx.font = 'bold 11px -apple-system';
-    ctx.fillStyle = vd.cor; ctx.fillText(vd.titulo, bx + PADX, by + 14);
-    ctx.font = '10px -apple-system'; ctx.fillStyle = CZ;
-    ctx.fillText((vd.forca ? vd.forca + ' · ' : '') + vd.motivo, bx + PADX, by + 26);
+    ctx.fillStyle = cor; ctx.fillText(titulo, bx + PADX, by + 14);
+    if (sub) { ctx.font = '10px -apple-system'; ctx.fillStyle = TX; ctx.fillText(sub, bx + PADX, by + 26); }
     // ✕ (apaga a tabela)
     const xs = 9, xc = bx + W_T - 13, yc = by + 12;
-    ctx.strokeStyle = CZ; ctx.lineWidth = 1.3;
+    ctx.strokeStyle = TX; ctx.lineWidth = 1.3;
     ctx.beginPath(); ctx.moveTo(xc - xs / 2, yc - xs / 2); ctx.lineTo(xc + xs / 2, yc + xs / 2); ctx.moveTo(xc + xs / 2, yc - xs / 2); ctx.lineTo(xc - xs / 2, yc + xs / 2); ctx.stroke();
-    if (window._grBarraSuperiorChips) window._grBarraSuperiorChips.push({ x: xc - 14, y: yc - 14, w: 28, h: 28, abrir: () => grMetricasFecharTabela() });
+    const xbtn = { x: xc - 14, y: yc - 14, w: 28, h: 28 };
+    if (window._grBarraSuperiorChips) window._grBarraSuperiorChips.push({ x: xbtn.x, y: xbtn.y, w: xbtn.w, h: xbtn.h, abrir: () => grMetricasFecharTabela() });
+    window._grMetricasRect = { x: bx, y: by, w: W_T, h: H_T, xb: xbtn };
     // linhas
-    ctx.lineWidth = 1; ctx.strokeStyle = claro ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.10)';
+    ctx.lineWidth = 1; ctx.strokeStyle = claro ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.16)';
     ctx.beginPath(); ctx.moveTo(bx + PADX, by + HH - 1.5); ctx.lineTo(bx + W_T - PADX, by + HH - 1.5); ctx.stroke();
     ctx.font = '10.5px -apple-system';
     linhas.forEach((l, i) => {
         const y = by + HH + 10 + i * RH;
-        ctx.textAlign = 'left'; ctx.fillStyle = CZ; ctx.fillText(l[0], bx + PADX, y);
+        ctx.textAlign = 'left'; ctx.fillStyle = TX; ctx.fillText(l[0], bx + PADX, y);
         ctx.textAlign = 'right'; ctx.fillStyle = l[2]; ctx.fillText(l[1], bx + W_T - PADX, y);
     });
-    if (tagsTxt) { ctx.textAlign = 'left'; ctx.font = '9.5px -apple-system'; ctx.fillStyle = CZ; ctx.fillText(tagsTxt, bx + PADX, by + H_T - 6); }
     ctx.restore();
+}
+// ── arrasto da janela (chamado pelos handlers de toque do canvas; devolvem true quando consumiram o toque) ──────────
+function grMetricasToqueInicio(x, y) {
+    const r = window._grMetricasRect;
+    if (!r || x < r.x || x > r.x + r.w || y < r.y || y > r.y + r.h) return false;
+    const b = r.xb; if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return false; // o ✕ é toque, não arrasto
+    window._grMetricasDrag = { x0: x, y0: y, dx0: _grMetricasOff.dx, dy0: _grMetricasOff.dy };
+    return true;
+}
+function grMetricasToqueMove(x, y) {
+    const d = window._grMetricasDrag; if (!d) return false;
+    _grMetricasOff.dx = d.dx0 + (x - d.x0); _grMetricasOff.dy = d.dy0 + (y - d.y0);
+    grDrawChart();
+    return true;
 }
 
 // Agrega os candles brutos (1min) de todas as fontes que caem dentro do
