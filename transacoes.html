@@ -2596,7 +2596,7 @@ function cvRenderMenuFpCfg() {
             + SEC('refcor', grConfigBlocoRefCor(ICO.refcor))
             + R('cv-cfg-poccontorno-value', ICO.contorno, 'Contorno da célula', 'Realce ao redor da linha de maior volume do candle', 'grFootprintAlternarPocContorno()')
             + SEC('maiores', grConfigBlocoMarcarMaiores(ICO.refcor))
-            + SEC('exaustao', grConfigBlocoExaustao(ICO.refcor))
+            + SEC('exaustao', grConfigBlocoExaustao(ICO.refcor, true))
             + R('cv-cfg-fluxo-value', ICO.atualizar, 'Fluxo', 'Tocar para atualizar agora', 'grFootprintAtualizarSeAtivo()');
         grFluxoSecoesAplicar(menu);
         grFootprintSkinAtualizarRotulo();
@@ -12981,14 +12981,16 @@ function grExAplicar(k, v) {
     _grExVersao++; _grExCache.clear();
     const el = document.getElementById('cv-cfg-' + k.toLowerCase() + '-txt'); if (el) el.textContent = grExFmt(k, v);
     grDrawChart();
+    if (document.getElementById('gr-bt-overlay')) grBacktestAgendar();
 }
 function grExN(v) { grExAplicar('grExN', v); } function grExMov(v) { grExAplicar('grExMov', v); } function grExPres(v) { grExAplicar('grExPres', v); }
 function grExDevol(v) { grExAplicar('grExDevol', v); } function grExPico(v) { grExAplicar('grExPico', v); } function grExVol(v) { grExAplicar('grExVol', v); } function grExFech(v) { grExAplicar('grExFech', v); } function grExConf(v) { grExAplicar('grExConf', v); }
-function grConfigBlocoExaustao(svg) {
+function grConfigBlocoExaustao(svg, comBotao) {
     let s = '<div style="padding:12px 2px;border-bottom:1px solid #F2F2F7;">'
         + '<div style="display:flex;align-items:center;gap:12px;">'
         + '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;">' + svg + '</svg>'
         + '<div style="flex:1;min-width:0;"><div style="font-size:14px;font-weight:600;color:#1C1C1E;">Exaustão (EC / EV)</div><div style="font-size:11.5px;color:#8E8E93;margin-top:1px;">EC: compra esgotada no topo · EV: venda esgotada no fundo</div></div></div>';
+    if (comBotao) s += '<button onclick="grBacktestAbrir()" style="width:100%;margin-top:10px;border:none;border-radius:8px;padding:10px 0;font-size:13px;font-weight:700;background:#1C1C1E;color:#FFFFFF;">Backtest dos sinais</button>';
     Object.keys(GR_EX_CFG).forEach(k => {
         const c = GR_EX_CFG[k], id = 'cv-cfg-' + k.toLowerCase();
         s += c[3] < 1 ? grConfigSliderDecimal(id, c[4], EX[k], c[1], c[2], c[3], k)
@@ -13079,6 +13081,116 @@ function grExaustaoDiag(idx) {
         if (r === 'EC' ? nx.h > cd.h : nx.l < cd.l) return { r: null, motivo: 'rompeu no seguinte' };
     }
     return { r, motivo: '' };
+}
+// ══ BACKTEST DO EC / EV — lista todos os sinais do histórico com footprint e mede o que o preço fez depois ═════════════════
+//  Acerto: o fechamento N candles depois ficou a favor do sinal (EV: acima do fechamento do sinal; EC: abaixo). "Base" = a mesma conta
+//  para TODOS os candles (o acaso): o sinal só vale se ganhar da base. Favor/Contra = média do maior movimento a favor e contra nos N candles.
+const GR_BT_H = [5, 10, 20];
+function grBacktestCalcular() {
+    const cs = _grAllCandles, n = cs.length;
+    if (!n || !_grFootprintAtivo || !_grFootprintCandlesRaw || !_grFootprintCandlesRaw.length) return null;
+    let t0 = Infinity; _grFootprintCandlesRaw.forEach(m => { if (m.ts < t0) t0 = m.ts; });
+    const tIni = Date.now() - FOOTPRINT_DIAS_AO_ATIVAR * 86400000;
+    let i0 = cs.findIndex(c => c.t >= Math.max(t0, tIni)); if (i0 < 0) return null;
+    i0 = Math.max(i0, EX.grExN, n - 3000);
+    const sinais = [];
+    for (let i = i0; i < n; i++) { const r = grExaustaoDe(i); if (r) sinais.push({ i, r, t: cs[i].t, p: cs[i].c }); }
+    const base = {};
+    GR_BT_H.forEach(h => { let up = 0, tot = 0; for (let i = i0; i + h < n; i++) { tot++; if (cs[i + h].c > cs[i].c) up++; } base[h] = tot ? up / tot : null; });
+    const stats = lado => {
+        const ev = lado === 'EV', ss = sinais.filter(s => s.r === lado), out = { n: ss.length, h: {} };
+        GR_BT_H.forEach(h => {
+            let acertos = 0, tot = 0, soma = 0, fav = 0, con = 0;
+            ss.forEach(s => {
+                if (s.i + h >= n) return;
+                const c0 = s.p, ret = (cs[s.i + h].c / c0 - 1) * (ev ? 1 : -1);
+                let hi = -Infinity, lo = Infinity; for (let k = s.i + 1; k <= s.i + h; k++) { if (cs[k].h > hi) hi = cs[k].h; if (cs[k].l < lo) lo = cs[k].l; }
+                const up = hi / c0 - 1, dn = lo / c0 - 1;
+                tot++; soma += ret; if (ret > 0) acertos++; fav += ev ? up : -dn; con += ev ? dn : -up;
+            });
+            const b = base[h]; out.h[h] = { n: tot, acerto: tot ? acertos / tot : null, media: tot ? soma / tot : null, fav: tot ? fav / tot : null, con: tot ? con / tot : null, base: b == null ? null : (ev ? b : 1 - b) };
+        });
+        return out;
+    };
+    const dias = Math.max(1, (cs[n - 1].t - cs[i0].t) / 86400000);
+    return { sinais, EV: stats('EV'), EC: stats('EC'), i0, dias, n };
+}
+function grBtFmtData(t) {
+    const d = new Date(t);
+    const soData = _grTf === '1day' || _grTf === '1week' || _grTf === '1month' || (_grTf === 'custom' && (_grTfCustomUnit === 'dia' || _grTfCustomUnit === 'mes'));
+    return soData ? d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', timeZone: 'UTC' })
+        : d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }) + ' ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+}
+function grBacktestHtml(R) {
+    const pc = v => v == null ? '—' : (v * 100).toFixed(2).replace('.', ',') + '%';
+    const sg = v => v == null ? '—' : (v >= 0 ? '+' : '−') + (Math.abs(v) * 100).toFixed(2).replace('.', ',') + '%';
+    const cor = v => v == null ? '#1C1C1E' : (v > 0 ? '#16A34A' : v < 0 ? '#DC2626' : '#1C1C1E');
+    if (!R) return '<div style="padding:16px 0;font-size:13px;color:#1C1C1E;">Sem footprint carregado. Ligue o Fluxo e aumente "Dias ao ligar o Fluxo".</div>';
+    const tab = (lado, nome, corLado) => {
+        const S = R[lado];
+        let h = '<div style="margin-top:14px;font-size:13px;font-weight:700;color:' + corLado + ';">' + nome + ' · ' + S.n + (S.n === 1 ? ' sinal' : ' sinais') + '</div>';
+        if (S.n === 0) return h + '<div style="font-size:12px;color:#1C1C1E;margin-top:4px;">Nenhum sinal com os filtros atuais.</div>';
+        h += '<table style="width:100%;border-collapse:collapse;margin-top:4px;font-size:12px;color:#1C1C1E;"><tr style="font-weight:700;"><td>Candles</td><td align="right">Acerto</td><td align="right">Base</td><td align="right">Média</td><td align="right">Favor</td><td align="right">Contra</td></tr>';
+        GR_BT_H.forEach(k => {
+            const x = S.h[k], bate = x.acerto != null && x.base != null && x.acerto > x.base;
+            h += '<tr><td>+' + k + '</td><td align="right" style="font-weight:700;color:' + (x.acerto == null ? '#1C1C1E' : bate ? '#16A34A' : '#DC2626') + ';">' + pc(x.acerto) + '</td><td align="right">' + pc(x.base) + '</td><td align="right" style="color:' + cor(x.media) + ';">' + sg(x.media) + '</td><td align="right" style="color:#16A34A;">' + sg(x.fav) + '</td><td align="right" style="color:#DC2626;">' + sg(x.con) + '</td></tr>';
+        });
+        return h + '</table>';
+    };
+    let h = '<div style="font-size:12px;color:#1C1C1E;margin-top:6px;">' + R.sinais.length + (R.sinais.length === 1 ? ' sinal em ' : ' sinais em ') + Math.round(R.dias) + ' dias, de ' + grBtFmtData(_grAllCandles[R.i0].t) + ' a ' + grBtFmtData(_grAllCandles[_grAllCandles.length - 1].t) + ' (~' + (R.sinais.length / (R.dias / 30)).toFixed(2).replace('.', ',') + ' por mês). Acerto verde = ganhou da base (o acaso).</div>';
+    h += tab('EV', 'EV (compra)', '#16A34A') + tab('EC', 'EC (venda)', '#DC2626');
+    h += '<div style="margin-top:16px;font-size:13px;font-weight:700;color:#1C1C1E;">Sinais (mais recentes primeiro)</div>';
+    h += '<table style="width:100%;border-collapse:collapse;margin-top:4px;font-size:12px;color:#1C1C1E;"><tr style="font-weight:700;"><td>Data</td><td>Lado</td><td align="right">Preço</td>' + GR_BT_H.map(k => '<td align="right">+' + k + '</td>').join('') + '</tr>';
+    R.sinais.slice().reverse().slice(0, 80).forEach(s => {
+        const ev = s.r === 'EV', cs = _grAllCandles;
+        h += '<tr style="border-top:1px solid #F2F2F7;"><td>' + grBtFmtData(s.t) + '</td><td style="font-weight:700;color:' + (ev ? '#16A34A' : '#DC2626') + ';">' + s.r + '</td><td align="right">' + s.p.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '</td>'
+            + GR_BT_H.map(k => { if (s.i + k >= cs.length) return '<td align="right">—</td>'; const rt = (cs[s.i + k].c / s.p - 1) * (ev ? 1 : -1); return '<td align="right" style="color:' + cor(rt) + ';">' + sg(rt) + '</td>'; }).join('') + '</tr>';
+    });
+    return h + '</table><div style="font-size:11px;color:#1C1C1E;margin-top:8px;">Retornos já ajustados ao lado do sinal: positivo = o preço andou a favor.</div>';
+}
+let _grBtTimer = null;
+function grBacktestAgendar() { clearTimeout(_grBtTimer); _grBtTimer = setTimeout(grBacktestRender, 200); }
+function grBacktestRender() {
+    const el = document.getElementById('gr-bt-resultado'); if (!el) return;
+    let R = null; try { R = grBacktestCalcular(); } catch (e) { el.innerHTML = '<div style="font-size:12px;color:#DC2626;">Erro: ' + e.message + '</div>'; return; }
+    el.innerHTML = grBacktestHtml(R);
+}
+// O backtest cobre o período do "Dias ao ligar o Fluxo": começa há N dias e vai até o último candle. Se os candles desse período ainda
+// não estão no gráfico, carrega os anteriores sozinho (+30 dias de contexto, para os filtros do "extremo" e do "movimento").
+let _grBtWatch = null;
+function grBtCarregando() { return (window._grFluxoDias || []).filter(d => d.estado === 'carregando').length; }
+function grBtStatus(txt) { const el = document.getElementById('gr-bt-hist-status'); if (el) el.textContent = txt || ''; }
+async function grBtGarantirCandles() {
+    const alvo = Date.now() - (FOOTPRINT_DIAS_AO_ATIVAR + 30) * 86400000;
+    let guarda = 0;
+    while (_grAllCandles.length && _grAllCandles[0].t > alvo && !window._grHistFim && guarda++ < 15) {
+        grBtStatus('Carregando candles antigos…');
+        const antes = _grAllCandles.length;
+        try { await grCarregarHistoricoAnterior(); } catch (e) { break; }
+        if (_grAllCandles.length === antes) break;
+    }
+    grBtStatus('');
+}
+function grBtVigiarFootprint() {   // se ainda há dias de footprint baixando, refaz o backtest a cada 3 s até terminar
+    clearInterval(_grBtWatch);
+    if (grBtCarregando() === 0) return;
+    _grBtWatch = setInterval(() => {
+        if (!document.getElementById('gr-bt-overlay')) { clearInterval(_grBtWatch); return; }
+        const n = grBtCarregando(); grBtStatus(n > 0 ? 'Baixando ' + n + ' dia' + (n === 1 ? '' : 's') + ' de footprint…' : '');
+        grBacktestRender(); if (n === 0) clearInterval(_grBtWatch);
+    }, 3000);
+}
+function grBacktestFechar() { clearInterval(_grBtWatch); const o = document.getElementById('gr-bt-overlay'); if (o) o.remove(); }
+function grBacktestAbrir() {
+    try { cvFecharMenuFpCfg(); } catch (e) {}
+    grBacktestFechar();
+    const o = document.createElement('div'); o.id = 'gr-bt-overlay';
+    o.style.cssText = 'position:fixed;inset:0;z-index:9999;background:#FFFFFF;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 14px 40px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;color:#1C1C1E;';
+    o.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;"><div style="font-size:16px;font-weight:700;">Backtest EC / EV</div><button onclick="grBacktestFechar()" style="border:none;background:#F2F2F7;border-radius:8px;width:34px;height:34px;font-size:18px;color:#1C1C1E;">✕</button></div>'
+        + '<div style="font-size:12px;margin-top:6px;">Período: últimos ' + FOOTPRINT_DIAS_AO_ATIVAR + ' dias ("Dias ao ligar o Fluxo")</div><div id="gr-bt-hist-status" style="font-size:12px;margin-top:2px;"></div><div id="gr-bt-ajustes" style="margin-top:8px;"></div><div id="gr-bt-resultado"><div style="padding:16px 0;font-size:13px;">Calculando…</div></div>';
+    document.body.appendChild(o);
+    try { const aj = document.getElementById('gr-bt-ajustes'); aj.innerHTML = '<div data-fx-sec="exaustao">' + grConfigBlocoExaustao(ICO_FLUXO.refcor, false) + '</div>'; grFluxoSecoesAplicar(aj); } catch (e) {}
+    (async () => { await grBtGarantirCandles(); grBacktestRender(); grBtVigiarFootprint(); })();
 }
 function grExaustaoDesenhar(ctx, g) {
     if (!_grFootprintAtivo || !_grFootprintCandlesRaw || !_grAllCandles.length) return;
