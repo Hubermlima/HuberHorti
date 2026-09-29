@@ -12887,6 +12887,7 @@ const GR_MET_ITENS = [
     ['Máx / Mín Δ', 'Pico e fundo que o delta atingiu dentro do candle (amostrado por minuto). Fechar longe do pico = aquele lado perdeu força no fim.'],
     ['Δ vs anterior', 'Delta deste candle menos o do anterior: a pressão acelerou ou virou de lado.'],
     ['Volume', 'Volume agredido total e quantas vezes ele é a média dos 20 candles anteriores (a partir de 1,5×, em âmbar, é candle relevante).'],
+    ['Exaustão', 'EC (compra esgotada no topo) ou EV (venda esgotada no fundo), conforme os parâmetros do Fluxo. Se não marcou, mostra o filtro que reprovou o candle.'],
     ['Compra no prejuízo', '% da compra agressora feita acima do fechamento e o preço médio de compra. A partir de 60% o veredito diz compradores encurralados.'],
     ['Venda no prejuízo', '% da venda agressora feita abaixo do fechamento e o preço médio de venda. A partir de 60% o veredito diz vendedores encurralados.'],
     ['méd', 'Verde: o fechamento está acima da média daquele lado; vermelho: abaixo. É exposição provável: o footprint não sabe quem já zerou.'],
@@ -12985,41 +12986,66 @@ function grExaustaoDe(idx) {
     }
     return r;
 }
+let _grExMotivo = '';
+function grExFalha(m) { _grExMotivo = m; return null; }
 function grExaustaoBase(idx, cd, N, ms) {
-    const rng = cd.h - cd.l; if (rng <= 0) return null;
+    const rng = cd.h - cd.l; if (rng <= 0) return grExFalha('sem faixa');
     let maxAnt = -Infinity, minAnt = Infinity;
     for (let i = idx - N; i < idx; i++) { const a = _grAllCandles[i]; if (a.h > maxAnt) maxAnt = a.h; if (a.l < minAnt) minAnt = a.l; }
     const topo = cd.h >= maxAnt, fundo = cd.l <= minAnt;
-    if (!topo && !fundo) return null;
+    if (!topo && !fundo) return grExFalha('não é extremo');
     // movimento prévio: o preço veio andando até o extremo (subida até o topo / queda até o fundo), medido em faixas médias de candle
     if (EX.grExMov > 0) {
         let s = 0, n = 0; for (let i = Math.max(0, idx - 20); i < idx; i++) { const a = _grAllCandles[i]; if (a.h > a.l) { s += a.h - a.l; n++; } }
-        if (n === 0) return null;
+        if (n === 0) return grExFalha('sem histórico');
         const faixa = s / n;
         const subiu = topo && (cd.h - minAnt) >= EX.grExMov * faixa, caiu = fundo && (maxAnt - cd.l) >= EX.grExMov * faixa;
-        if (!subiu && !caiu) return null;
+        if (!subiu && !caiu) return grExFalha('movimento curto');
     }
     const min = []; grFootprintParaCadaMinuto(cd.t, cd.t + ms, m => { let c = 0, v = 0; (m.niveis || []).forEach(n => { c += n.c || 0; v += n.v || 0; }); min.push({ ts: m.ts, c, v }); });
-    if (min.length < 2) return null;
+    if (min.length < 2) return grExFalha('sem footprint');
     min.sort((a, b) => a.ts - b.ts);
     let cor = 0, maxD = 0, minD = 0, tot = 0;
     min.forEach(m => { cor += m.c - m.v; tot += m.c + m.v; if (cor > maxD) maxD = cor; if (cor < minD) minD = cor; });
-    const delta = cor; if (tot <= 0) return null;
+    const delta = cor; if (tot <= 0) return grExFalha('sem footprint');
     if (EX.grExVol > 0) {
         let ok = false;
         if (idx >= 5 && cd.v > 0) { let s = 0, n = 0; for (let i = Math.max(0, idx - 20); i < idx; i++) if (_grAllCandles[i].v > 0) { s += _grAllCandles[i].v; n++; } if (n > 0 && s > 0) ok = cd.v / (s / n) >= EX.grExVol; }
-        if (!ok) return null;
+        if (!ok) return grExFalha('volume baixo');
     }
     const dev = EX.grExDevol / 100, fe = EX.grExFech / 100;
     let r = null;
     if (topo && maxD >= tot * EX_PICO_MIN && delta <= maxD * (1 - dev) && cd.c <= cd.l + rng * fe) r = 'EC';
     else if (fundo && -minD >= tot * EX_PICO_MIN && delta >= minD * (1 - dev) && cd.c >= cd.h - rng * fe) r = 'EV';
+    if (!r) {   // por que o delta/fechamento não passou (olha o lado do extremo)
+        const lado = topo ? 'EC' : 'EV', pico = topo ? maxD : -minD, dl = topo ? delta : -delta;
+        if (pico < tot * EX_PICO_MIN) return grExFalha('sem pico de delta');
+        if (dl > pico * (1 - dev)) return grExFalha('delta não devolveu');
+        return grExFalha('fechou no extremo');
+    }
     if (r && EX.grExPres > 0) {   // pressão prévia: nos candles anteriores o lado que "cansou" vinha dominando o delta
         let soma = 0, achou = false;
         for (let i = Math.max(0, idx - EX.grExPres); i < idx; i++) { const d = grExDeltaCandle(_grAllCandles[i]); if (d != null) { soma += d; achou = true; } }
-        if (!achou || (r === 'EC' ? soma <= 0 : soma >= 0)) return null;
+        if (!achou || (r === 'EC' ? soma <= 0 : soma >= 0)) return grExFalha('pressão contrária');
     }
     return r;
+}
+// diagnóstico de um candle: { r: 'EC'|'EV'|null, motivo } (mesma regra do gráfico, sem cache)
+function grExaustaoDiag(idx) {
+    const cd = _grAllCandles[idx], N = EX.grExN;
+    if (!cd || !_grFootprintAtivo || !_grFootprintCandlesRaw) return null;
+    if (idx < N) return { r: null, motivo: 'poucos candles antes' };
+    const ms = grFootprintMsPorCandle();
+    if (Date.now() < cd.t + ms) return { r: null, motivo: 'em formação' };
+    _grExMotivo = '';
+    const r = grExaustaoBase(idx, cd, N, ms);
+    if (!r) return { r: null, motivo: _grExMotivo || 'sem sinal' };
+    for (let j = 1; j <= EX.grExConf; j++) {
+        const nx = _grAllCandles[idx + j];
+        if (!nx) return { r: null, motivo: 'aguarda candle seguinte' };
+        if (r === 'EC' ? nx.h > cd.h : nx.l < cd.l) return { r: null, motivo: 'rompeu no seguinte' };
+    }
+    return { r, motivo: '' };
 }
 function grExaustaoDesenhar(ctx, g) {
     if (!_grFootprintAtivo || !_grFootprintCandlesRaw || !_grAllCandles.length) return;
@@ -13060,7 +13086,7 @@ function grMetricasDesenhar(ctx, g) {
     const emForm = agora < candle.t + grFootprintMsPorCandle();
     if (!c0 || c0.t !== ts || c0.raw !== _grFootprintCandlesRaw.length || (emForm && agora - c0.quando > 1000)) {
         const m = grMetricasCalcular(candle);
-        _grMetricasCache = { t: ts, raw: _grFootprintCandlesRaw.length, quando: agora, m, vd: m ? grMetricasVeredito(m, candle) : null };
+        _grMetricasCache = { t: ts, raw: _grFootprintCandlesRaw.length, quando: agora, m, vd: m ? grMetricasVeredito(m, candle) : null, ex: (function () { try { return grExaustaoDiag(_grAllCandles.findIndex(c => c.t === ts)); } catch (e) { return null; } })() };
     }
     const { m, vd } = _grMetricasCache;
     if (!m) return;
@@ -13091,6 +13117,7 @@ function grMetricasDesenhar(ctx, g) {
         ['Máx / Mín Δ', [{ t: sg(m.maxD), c: cd(m.maxD) }, { t: ' / ', c: TX }, { t: sg(m.minD), c: cd(m.minD) }], TX, 'maxmin'],   // pico verde, fundo vermelho
         ['Δ vs anterior', m.deltaChange == null ? '—' : sg(m.deltaChange), m.deltaChange == null ? TX : cd(m.deltaChange), 'dant'],
         ['Volume', m.volRel != null ? [{ t: fk(m.total) + '  ', c: TX }, { t: m.volRel.toFixed(2).replace('.', ',') + '×', c: m.volRel >= GR_MET.VOL_ALTO ? AMBAR : TX }] : fk(m.total), TX, 'volume'],   // múltiplo em destaque a partir de 1,5×
+        ['Exaustão', (function () { const e = _grMetricasCache.ex; if (!e) return '—'; if (e.r) return [{ t: e.r, c: e.r === 'EC' ? VERM : VERDE }]; return '— ' + e.motivo; })(), TX, 'exaustao'],
         ['Compra no prejuízo', grMetPreso(m.presoC, candle.c, VERM), TX, 'compra_prej'],
         ['Venda no prejuízo', grMetPreso(m.presoV, candle.c, VERDE), TX, 'venda_prej'],
     ];
