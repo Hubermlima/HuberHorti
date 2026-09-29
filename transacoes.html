@@ -12760,6 +12760,14 @@ function grMetricasCalcular(candle) {
         for (let i = ini; i < idx; i++) { if (_grAllCandles[i].v > 0) { soma += _grAllCandles[i].v; n++; } }
         if (n > 0 && soma > 0) volRel = candle.v / (soma / n);
     }
+    // Altura relativa: range % do candle ÷ média do range % dos 20 anteriores (pra achar "volume alto em faixa curta")
+    let alturaRel = null;
+    if (idx >= 5 && candle.o > 0) {
+        const ini = Math.max(0, idx - 20);
+        let soma = 0, n = 0;
+        for (let i = ini; i < idx; i++) { const c = _grAllCandles[i]; if (c.o > 0 && c.h > c.l) { soma += (c.h - c.l) / c.o; n++; } }
+        if (n > 0 && soma > 0) alturaRel = ((candle.h - candle.l) / candle.o) / (soma / n);
+    }
     const emFormacao = Date.now() < ate;
     const durMs = emFormacao ? Math.max(1000, Date.now() - de) : ms;
     const sessTotal = sessC + sessV;
@@ -12768,12 +12776,70 @@ function grMetricasCalcular(candle) {
         compra, venda, delta, total, dvol: total > 0 ? delta / total : 0,
         maxD, minD, deltaChange: deltaAnt == null ? null : delta - deltaAnt,
         sessDelta: sessC - sessV, sessTotal, sessDvol: sessTotal > 0 ? (sessC - sessV) / sessTotal : 0,
-        volSeg: total / (durMs / 1000), volRel,
+        volSeg: total / (durMs / 1000), volRel, alturaRel,
         nc, nv, trades: nc + nv,
         medC: nc > 0 ? compra / nc : null, medV: nv > 0 ? venda / nv : null,
         altura: candle.h - candle.l, alturaPct: candle.o > 0 ? (candle.h - candle.l) / candle.o * 100 : null,
         dPrecoPct: candle.o > 0 ? (candle.c - candle.o) / candle.o * 100 : null,
     };
+}
+
+// ── Intérprete: transforma os números em UM veredito + até 3 observações. Regras da sua cartilha de delta/absorção:
+// preço e delta em sentidos opostos = absorção; mesmo sentido = movimento limpo; volume alto com faixa curta = travamento.
+// É heurística sobre o footprint (mostra o que foi negociado, não a intenção). Limiares ajustáveis aqui.
+const GR_MET = { EQUIL: 0.02, CORPO_MIN: 0.15, VOL_ALTO: 1.5, VOL_BAIXO: 0.7, ALT_CURTA: 0.8, ALT_LONGA: 1.5, DEVOLVEU: 0.5 };
+function grMetricasVeredito(m, candle) {
+    const nf = (v, d) => Number(v).toLocaleString('pt-BR', { minimumFractionDigits: d, maximumFractionDigits: d });
+    const rng = candle.h - candle.l;
+    const corpo = rng > 0 ? Math.abs(candle.c - candle.o) / rng : 0;
+    const sd = Math.abs(m.dvol) < GR_MET.EQUIL ? 0 : (m.delta > 0 ? 1 : -1);
+    const sp = (corpo < GR_MET.CORPO_MIN || candle.c === candle.o) ? 0 : (candle.c > candle.o ? 1 : -1);
+    const pts = (Math.abs(m.dvol) >= 0.10 ? 2 : (Math.abs(m.dvol) >= 0.05 ? 1 : 0)) + (m.volRel != null ? (m.volRel >= GR_MET.VOL_ALTO ? 2 : (m.volRel >= 1.1 ? 1 : 0)) : 0);
+    const forca = pts >= 3 ? 'forte' : (pts === 2 ? 'moderada' : 'fraca');
+    const V = '#16A34A', R = '#DC2626', N = '#6B7280', A = '#B45309';
+    const faixaD = m.maxD - m.minD;
+    let dev = null;
+    if (faixaD > 0 && m.nMin >= 3 && m.delta !== 0) dev = m.delta > 0 ? (m.maxD - m.delta) / faixaD : (m.delta - m.minD) / faixaD;
+    const perdeuFolego = dev != null && dev >= GR_MET.DEVOLVEU;
+    let titulo, cor, bg, expl, obs;
+    if (sd !== 0 && sp !== 0 && sd !== sp) {
+        if (sp > 0) { titulo = 'Absorção compradora'; cor = V; bg = '#DCFCE7'; expl = 'O preço subiu, mas a agressão foi vendedora: o comprador passivo absorveu a venda.'; }
+        else { titulo = 'Absorção vendedora'; cor = R; bg = '#FDE4E4'; expl = 'O preço caiu, mas a agressão foi compradora: o vendedor passivo absorveu a compra.'; }
+        obs = 'Não opere só nisso: espere o próximo candle andar no sentido da absorção.';
+    } else if (sd !== 0 && sp !== 0) {
+        titulo = sp > 0 ? 'Alta com fluxo comprador' : 'Queda com fluxo vendedor';
+        cor = sp > 0 ? V : R; bg = sp > 0 ? '#DCFCE7' : '#FDE4E4';
+        expl = 'Preço e delta no mesmo sentido: movimento limpo, sem sinal de absorção.' + (forca === 'fraca' ? ' Mas a convicção é fraca (Δ/Vol ' + nf(m.dvol * 100, 1) + '%, volume perto da média).' : '');
+        obs = perdeuFolego ? 'Movimento limpo, mas o fôlego caiu no fim: se o próximo candle não renovar o extremo, a força pode estar acabando.' : 'Sem divergência: o fluxo confirma o preço.';
+    } else if (sd !== 0 && sp === 0) {
+        titulo = sd > 0 ? 'Absorção vendedora provável' : 'Absorção compradora provável';
+        cor = sd > 0 ? R : V; bg = sd > 0 ? '#FDE4E4' : '#DCFCE7';
+        expl = (sd > 0 ? 'Houve agressão compradora, mas o preço não andou: o vendedor segurou.' : 'Houve agressão vendedora, mas o preço não andou: o comprador segurou.');
+        obs = 'O candle seguinte confirma: se expandir contra a agressão, a absorção venceu.';
+    } else if (m.volRel != null && m.volRel >= GR_MET.VOL_ALTO && m.alturaRel != null && m.alturaRel <= GR_MET.ALT_CURTA) {
+        titulo = 'Travamento (lado indefinido)'; cor = A; bg = '#FEF3C7';
+        expl = 'Volume alto em faixa curta com delta equilibrado: alguém grande travando o preço.';
+        obs = 'O lado só aparece no candle seguinte: para onde ele expandir, esse lado venceu.';
+    } else {
+        titulo = 'Sem lado claro'; cor = N; bg = '#F2F2F7';
+        expl = sp !== 0 ? 'Delta equilibrado e o preço andou sem fluxo de um lado só: movimento sem convicção.' : 'Compra e venda equilibradas e preço sem direção.';
+        obs = 'Nada a ler isoladamente: use o contexto (zonas e footprint).';
+    }
+    const forcaTxt = titulo === 'Sem lado claro' ? '' : forca;
+    // observações (até 3), por ordem de importância
+    const notas = [];
+    if (perdeuFolego) notas.push('Devolveu ' + nf(dev * 100, 0) + '% do extremo do delta no fim: força perdendo fôlego (possível exaustão).');
+    if (m.deltaChange != null) {
+        const ant = m.delta - m.deltaChange;
+        if (ant * m.delta < 0 && Math.abs(ant) >= 0.02 * m.total && Math.abs(m.delta) >= 0.02 * m.total) notas.push('Pressão virou contra o candle anterior (delta ' + (ant > 0 ? 'comprador' : 'vendedor') + ' → ' + (m.delta > 0 ? 'comprador' : 'vendedor') + ').');
+    }
+    if (m.alturaRel != null && m.volRel != null && m.alturaRel >= GR_MET.ALT_LONGA && m.volRel < 1) notas.push('Faixa ' + nf(m.alturaRel, 1) + '× o normal com volume fraco: movimento sem esforço.');
+    if (m.volRel != null) {
+        if (m.volRel >= GR_MET.VOL_ALTO) notas.push('Volume ' + nf(m.volRel, 1) + '× a média: candle relevante.');
+        else if (m.volRel <= GR_MET.VOL_BAIXO) notas.push('Volume fraco (' + nf(m.volRel, 1) + '× a média): pouca convicção.');
+    }
+    if (sd !== 0 && Math.abs(m.sessDvol) >= GR_MET.EQUIL && Math.sign(m.sessDelta) !== sd && notas.length < 3) notas.push('O delta do dia (' + (m.sessDelta > 0 ? 'comprador' : 'vendedor') + ') está contra o deste candle.');
+    return { titulo, forcaTxt, cor, bg, expl, obs, notas: notas.slice(0, 3) };
 }
 function grMetricasAbrir(candle) {
     const m = grMetricasCalcular(candle);
@@ -12789,27 +12855,21 @@ function grMetricasAbrir(candle) {
     const hora = ts => soData ? new Date(ts).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: '2-digit', timeZone: 'UTC' })
         : new Date(ts).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
     const durTxt = ms => { const s = Math.round(ms / 1000); return s >= 3600 ? Math.floor(s / 3600) + 'h ' + Math.round((s % 3600) / 60) + 'min' : (s >= 60 ? Math.floor(s / 60) + 'min ' + (s % 60) + 's' : s + 's'); };
-    // Leitura em 1 olhada
-    const lado = Math.abs(m.dvol) < 0.03 ? 'Equilibrado' : (m.delta > 0 ? 'Compradores dominaram' : 'Vendedores dominaram');
-    const corLado = Math.abs(m.dvol) < 0.03 ? CINZA : (m.delta > 0 ? VERDE : VERM);
-    const faixaD = m.maxD - m.minD;
-    let devolveu = '';
-    if (faixaD > 0 && m.nMin >= 3) {
-        // quanto do extremo a favor do lado dominante o delta devolveu até o fechamento (0% = fechou no extremo, 100% = devolveu tudo)
-        const dev = m.delta >= 0 ? (m.maxD - m.delta) / faixaD : (m.delta - m.minD) / faixaD;
-        devolveu = dev >= 0.5 ? 'Devolveu ' + nf(dev * 100, 0) + '% do delta no fim — força perdendo fôlego' : (dev <= 0.15 ? 'Fechou perto do extremo do delta — força até o fim' : 'Devolveu ' + nf(dev * 100, 0) + '% do extremo do delta');
-    }
-    const leitura = '<div style="padding:12px 14px;border-radius:12px;background:#F2F2F7;margin-bottom:6px;">'
-        + '<div style="font-size:18px;font-weight:800;color:' + corLado + ';">' + lado + ' · Δ/Vol ' + pc(m.dvol, 1) + '</div>'
-        + '<div style="font-size:13px;color:#6B7280;margin-top:3px;line-height:1.4;">' + (devolveu ? devolveu + '. ' : '')
-        + (m.volRel != null ? 'Volume ' + nf(m.volRel, 1) + '× a média dos 20 candles anteriores.' : '') + '</div></div>';
+    // Veredito em 1 olhada (o intérprete) — os números completos ficam recolhidos embaixo
+    const vd = grMetricasVeredito(m, candle);
+    const leitura = '<div style="padding:14px;border-radius:14px;background:' + vd.bg + ';">'
+        + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;"><div style="font-size:21px;font-weight:900;color:' + vd.cor + ';">' + vd.titulo + '</div>'
+        + (vd.forcaTxt ? '<div style="font-size:11px;font-weight:800;color:#FFFFFF;background:' + vd.cor + ';border-radius:6px;padding:2px 8px;">' + vd.forcaTxt.toUpperCase() + '</div>' : '') + '</div>'
+        + '<div style="font-size:14px;line-height:1.45;margin-top:6px;">' + vd.expl + '</div>'
+        + '<div style="font-size:13px;line-height:1.45;margin-top:8px;color:#374151;font-weight:700;">' + vd.obs + '</div>'
+        + (vd.notas.length ? '<div style="margin-top:10px;padding-top:8px;border-top:1px solid rgba(0,0,0,0.08);">' + vd.notas.map(n => '<div style="font-size:12.5px;line-height:1.45;color:#4B5563;padding:2px 0;">• ' + n + '</div>').join('') + '</div>' : '')
+        + '<div style="font-size:11px;color:#8E8E93;margin-top:8px;">Leitura automática (heurística): mostra o que foi negociado, não a intenção de quem estava passivo.</div></div>';
     const sec = t => '<div style="font-size:11px;font-weight:800;color:' + CINZA + ';letter-spacing:.6px;margin:16px 0 4px;">' + t + '</div>';
     const lin = (rot, val, dica, c) => '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:8px 0;border-bottom:1px solid #F2F2F7;">'
         + '<div style="min-width:0;"><div style="font-size:14px;font-weight:700;">' + rot + '</div><div style="font-size:11.5px;color:' + CINZA + ';line-height:1.35;margin-top:1px;">' + dica + '</div></div>'
         + '<div style="font-size:15px;font-weight:800;white-space:nowrap;color:' + (c || '#1C1C1E') + ';">' + val + '</div></div>';
     const aprox = m.nMin < 5 ? ' (amostra de ' + m.nMin + ' min: aproximado)' : '';
-    const corpo = leitura
-        + sec('AGRESSÃO')
+    const tabela = sec('AGRESSÃO')
         + lin('Ask · compra', tv(m.compra) + ' btc', 'Compras a mercado (agressor comprador)', VERDE)
         + lin('Bid · venda', tv(m.venda) + ' btc', 'Vendas a mercado (agressor vendedor)', VERM)
         + lin('Delta', sg(m.delta, 1) + ' btc', 'Ask − Bid: quem agrediu mais', cor(m.delta))
@@ -12832,6 +12892,7 @@ function grMetricasAbrir(candle) {
         + lin('Δ preço', m.dPrecoPct == null ? '—' : (m.dPrecoPct >= 0 ? '+' : '−') + nf(Math.abs(m.dPrecoPct), 2) + '%', 'Fechamento vs abertura: compare com o sinal do delta (divergência)', m.dPrecoPct == null ? CINZA : cor(m.dPrecoPct))
         + lin('Abertura', hora(m.de), 'Início do candle')
         + lin('Duração', durTxt(m.durMs) + (m.emFormacao ? ' (em formação)' : ''), 'Tempo que o candle levou');
+    const corpo = leitura + '<details style="margin-top:14px;"><summary style="font-size:14px;font-weight:800;color:#1C1C1E;padding:10px 0;cursor:pointer;">Ver números</summary>' + tabela + '</details>';
     let ov = document.getElementById('metricas-overlay');
     if (!ov) {
         ov = document.createElement('div');
