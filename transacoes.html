@@ -12912,23 +12912,31 @@ function grMetricasDesenhar(ctx, g) {
     const soData = _grTf === '1day' || _grTf === '1week' || _grTf === '1month' || (_grTf === 'custom' && (_grTfCustomUnit === 'dia' || _grTfCustomUnit === 'mes'));
     const dataTxt = soData ? new Date(ts).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', timeZone: 'UTC' })
         : new Date(ts).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const AMBAR = '#D97706';
+    // % do lado no prejuízo (colorida quando passa do limite: comprador preso = vermelho, vendedor preso = verde) + preço médio do lado,
+    // verde se o fechamento ficou ACIMA dessa média e vermelho se ficou ABAIXO (acima favorece a alta, abaixo favorece a queda).
+    const grMetPreso = (lado, fech, corPreso) => {
+        const segs = [{ t: Math.round(lado.pct * 100) + '%', c: lado.pct >= GR_MET.PRESO_PCT ? corPreso : TX }];
+        if (lado.med != null) segs.push({ t: '  méd ', c: TX }, { t: nf0(lado.med), c: fech > lado.med ? VERDE : (fech < lado.med ? VERM : TX) });
+        return segs;
+    };
     const linhas = [
-        ['Ask / Bid', fk(m.compra) + ' / ' + fk(m.venda), TX],
+        ['Ask / Bid', [{ t: fk(m.compra), c: VERDE }, { t: ' / ', c: TX }, { t: fk(m.venda), c: VERM }], TX],   // Ask verde, Bid vermelho
         ['Delta', sg(m.delta) + '  ' + pc(m.dvol), cd(m.delta)],
-        ['Máx / Mín Δ', sg(m.maxD) + ' / ' + sg(m.minD), TX],
+        ['Máx / Mín Δ', [{ t: sg(m.maxD), c: cd(m.maxD) }, { t: ' / ', c: TX }, { t: sg(m.minD), c: cd(m.minD) }], TX],   // pico verde, fundo vermelho
         ['Δ vs anterior', m.deltaChange == null ? '—' : sg(m.deltaChange), m.deltaChange == null ? TX : cd(m.deltaChange)],
         ['Δ sessão', sg(m.sessDelta), cd(m.sessDelta)],
-        ['Volume', fk(m.total) + (m.volRel != null ? '  ' + m.volRel.toFixed(1).replace('.', ',') + '×' : ''), TX],
+        ['Volume', m.volRel != null ? [{ t: fk(m.total) + '  ', c: TX }, { t: m.volRel.toFixed(1).replace('.', ',') + '×', c: m.volRel >= GR_MET.VOL_ALTO ? AMBAR : TX }] : fk(m.total), TX],   // múltiplo em destaque a partir de 1,5×
         ['Vol/s', m.volSeg >= 10 ? Math.round(m.volSeg) + '' : m.volSeg.toFixed(2).replace('.', ','), TX],
-        ['Compra no prejuízo', Math.round(m.presoC.pct * 100) + '%' + (m.presoC.med != null ? '  méd ' + nf0(m.presoC.med) : ''), m.presoC.pct >= GR_MET.PRESO_PCT ? VERM : TX],
-        ['Venda no prejuízo', Math.round(m.presoV.pct * 100) + '%' + (m.presoV.med != null ? '  méd ' + nf0(m.presoV.med) : ''), m.presoV.pct >= GR_MET.PRESO_PCT ? VERDE : TX],
+        ['Compra no prejuízo', grMetPreso(m.presoC, candle.c, VERM), TX],
+        ['Venda no prejuízo', grMetPreso(m.presoV, candle.c, VERDE), TX],
     ];
     const PADX = 8, HH = vd ? 30 : 22, RH = 13.5;
     const titulo = vd ? vd.titulo : dataTxt, sub = vd ? vd.sub : '';
     ctx.save();
     ctx.font = 'bold 11px -apple-system'; const wTitulo = ctx.measureText(titulo).width;
     ctx.font = '10px -apple-system'; const wSub = ctx.measureText(sub).width;
-    ctx.font = '10.5px -apple-system'; const wLinhas = Math.max(...linhas.map(l => ctx.measureText(l[0]).width + 14 + ctx.measureText(l[1]).width));
+    ctx.font = '10.5px -apple-system'; const wVal = v => Array.isArray(v) ? v.reduce((s, x) => s + ctx.measureText(x.t).width, 0) : ctx.measureText(v).width; const wLinhas = Math.max(...linhas.map(l => ctx.measureText(l[0]).width + 14 + wVal(l[1])));
     ctx.restore();
     const W_T = Math.ceil(Math.max(150, wTitulo + PADX + 30, wSub + PADX * 2, wLinhas + PADX * 2));
     const H_T = HH + linhas.length * RH + 8;
@@ -12974,7 +12982,11 @@ function grMetricasDesenhar(ctx, g) {
     linhas.forEach((l, i) => {
         const y = by + HH + 10 + i * RH;
         ctx.textAlign = 'left'; ctx.fillStyle = TX; ctx.fillText(l[0], bx + PADX, y);
-        ctx.textAlign = 'right'; ctx.fillStyle = l[2]; ctx.fillText(l[1], bx + W_T - PADX, y);
+        if (Array.isArray(l[1])) { // valor em segmentos coloridos, alinhado à direita
+            let xs2 = bx + W_T - PADX - wVal(l[1]);
+            ctx.textAlign = 'left';
+            l[1].forEach(sg2 => { ctx.fillStyle = sg2.c; ctx.fillText(sg2.t, xs2, y); xs2 += ctx.measureText(sg2.t).width; });
+        } else { ctx.textAlign = 'right'; ctx.fillStyle = l[2]; ctx.fillText(l[1], bx + W_T - PADX, y); }
     });
     ctx.restore();
 }
