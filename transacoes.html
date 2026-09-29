@@ -7743,7 +7743,7 @@ function grAreaAbrirRelatorio() {
     ov.innerHTML = '<div style="background:#FFFFFF;width:100%;max-width:560px;display:flex;flex-direction:column;font-family:-apple-system,sans-serif;color:#1C1C1E;box-sizing:border-box;">'
         + '<div style="flex:none;display:flex;justify-content:space-between;align-items:center;padding:calc(12px + env(safe-area-inset-top)) 16px 10px;border-bottom:1px solid #F2F2F7;background:#FFFFFF;">'
         + '<div style="font-size:17px;font-weight:800;">Relatório da área</div>'
-        + '<div style="display:flex;gap:8px;"><button onclick="grAreaCopiarRelatorio()" style="border:none;background:#E5E5EA;color:#1C1C1E;border-radius:8px;padding:6px 12px;font-size:13px;font-weight:700;">Copiar</button>'
+        + '<div style="display:flex;gap:8px;"><button onclick="grAreaApagar()" style="border:none;background:#FDECEC;color:#DC2626;border-radius:8px;padding:6px 12px;font-size:13px;font-weight:700;">Apagar</button><button onclick="grAreaCopiarRelatorio()" style="border:none;background:#E5E5EA;color:#1C1C1E;border-radius:8px;padding:6px 12px;font-size:13px;font-weight:700;">Copiar</button>'
         + '<button onclick="grAreaFecharRelatorio()" style="border:none;background:#1C1C1E;color:#FFFFFF;border-radius:8px;padding:6px 12px;font-size:13px;font-weight:700;">Fechar</button></div></div>'
         + '<div style="flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px 16px calc(32px + env(safe-area-inset-bottom));">' + r.html + '</div></div>';
     ov.style.display = 'flex';
@@ -7922,6 +7922,16 @@ function grTradeRender() {
 function grTradeAbrir(zona) { zona = zona === 'normal' ? 'normal' : 'refinada'; _grTradeS = grTradeCarregar(zona) || grTradeNovo(zona); grTradeRender(); }
 function grTradeNovoClick() { _grTradeS = grTradeNovo(_grTradeS.zona); grTradeSalvar(); grTradeRender(); }
 function grTradeFechar() { const ov = document.getElementById('trade-overlay'); if (ov) ov.style.display = 'none'; }
+// Apaga a área marcada (retângulo + zonas desenhadas) e fecha o relatório. Os trades já salvos das faixas não são mexidos.
+function grAreaApagar() {
+    if (!_grAreaMarcada) { grAreaFecharRelatorio(); return; }
+    if (!confirm('Apagar a área marcada?')) return;
+    _grAreaMarcada = null; _grAreaZii = null; _grAreaP1 = null; window._grAreaArrastando = false; window._grAreaTextoRelatorio = '';
+    grAreaSalvar();
+    grAreaFecharRelatorio();
+    try { grAreaAtualizarMenu(); } catch (e) {}
+    grDrawChart();
+}
 function grAreaFecharRelatorio() {
     const ov = document.getElementById('area-relatorio-overlay');
     if (ov) ov.style.display = 'none';
@@ -13053,8 +13063,6 @@ function grConfigBlocoExaustao(svg, comBotao) {
         + '<div style="display:flex;align-items:center;gap:12px;">'
         + '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;">' + svg + '</svg>'
         + '<div style="flex:1;min-width:0;"><div style="font-size:14px;font-weight:600;color:#1C1C1E;">Exaustão (EC / EV)</div><div style="font-size:11.5px;color:#8E8E93;margin-top:1px;">EC: compra esgotada no topo · EV: venda esgotada no fundo</div></div></div>';
-    if (comBotao) s += '<button onclick="grEmaAbrir()" style="width:100%;margin-top:10px;border:none;border-radius:8px;padding:10px 0;font-size:13px;font-weight:700;background:#1C1C1E;color:#FFFFFF;">Backtest da EMA 200</button>';
-    if (comBotao) s += '<button onclick="grAbtAbrir()" style="width:100%;margin-top:10px;border:none;border-radius:8px;padding:10px 0;font-size:13px;font-weight:700;background:#1C1C1E;color:#FFFFFF;">Backtest da Absorção (AV / AC)</button>';
     s += '<div class="gr-ex-sl">' + grExSlidersHtml() + '</div>';
     return s + '</div>';
 }
@@ -13175,183 +13183,6 @@ function grExaustaoDiag(idx) {
         if (r === 'EC' ? nx.h > cd.h : nx.l < cd.l) return { r: null, motivo: 'rompeu no seguinte' };
     }
     return { r, motivo: '' };
-}
-// ══ BACKTEST DA ABSORÇÃO (AV / AC) — quanto de "excesso de absorção" e quanto o preço andou depois ═══════════════════════
-//  AV (absorção vendedora) = o mesmo candle que ganha o losango azul no gráfico: FECHOU EM QUEDA com delta COMPRADOR e absorção (volume ÷ faixa) acima da média de 20.
-//  AC (absorção compradora) = o inverso: fechou em alta com delta vendedor. O número do losango ("AV 18,84%") é o EXCESSO da absorção sobre a média:
-//  aqui os sinais são agrupados por faixas desse excesso e medimos o que o preço fez nos candles seguintes (fechamento +1, +3, +5, +10 contra o fechamento do sinal).
-//  "Base" = a mesma conta para TODOS os candles. Verde/vermelho na % de alta = diferença da base com z ≥ 2 (nas faixas com pouca amostra, ignore).
-const GR_ABT_H = [1, 3, 5, 10];
-const GR_ABT_FAIXAS = [[0, 10], [10, 20], [20, 30], [30, 40], [40, 50], [50, 60], [60, 80], [80, 100], [100, Infinity]];
-let _grAbtLado = 'AV', _grAbtWatch = null;
-function grAbtCalcular(lado) {
-    const cs = _grAllCandles, n = cs.length;
-    if (!n || !_grFootprintAtivo || !_grFootprintCandlesRaw || !_grFootprintCandlesRaw.length) return null;
-    const ms = grFootprintMsPorCandle(), agora = Date.now();
-    let t0 = Infinity; _grFootprintCandlesRaw.forEach(m => { if (m.ts < t0) t0 = m.ts; });
-    const tIni = agora - FOOTPRINT_DIAS_AO_ATIVAR * 86400000;
-    let i0 = cs.findIndex(c => c.t >= Math.max(t0, tIni)); if (i0 < 0) return null;
-    i0 = Math.max(i0, 20, n - 20000);
-    const novo = () => ({ n: 0, h: GR_ABT_H.map(() => ({ tot: 0, up: 0, sum: 0 })) });
-    const linhas = [novo()].concat(GR_ABT_FAIXAS.map(novo)), base = novo();   // linhas[0] = divergência SEM absorção acima da média
-    const fechado = j => j < n && agora >= cs[j].t + ms;
-    for (let i = i0; i < n; i++) {
-        const cd = cs[i]; if (!fechado(i)) continue;
-        const d = grExDeltaCandle(cd); if (d == null) continue;
-        const soma = (alvo, k) => { const h = GR_ABT_H[k], j = i + h; if (!fechado(j)) return; const r = cs[j].c / cd.c - 1, a = alvo.h[k]; a.tot++; if (r > 0) a.up++; a.sum += r; };
-        base.n++; GR_ABT_H.forEach((h, k) => soma(base, k));
-        const sobe = cd.c >= cd.o;
-        if (lado === 'AV' ? (sobe || !(d > 0)) : (!sobe || !(d < 0))) continue;
-        const ex = grAbsorcaoExcessoPct(cd);
-        let bi = 0; if (ex != null) { bi = 1 + GR_ABT_FAIXAS.findIndex(f => ex >= f[0] && ex < f[1]); if (bi < 1) continue; }
-        const L = linhas[bi]; L.n++; GR_ABT_H.forEach((h, k) => soma(L, k));
-    }
-    const dias = Math.max(1, (cs[n - 1].t - cs[i0].t) / 86400000);
-    return { linhas, base, dias, i0, n, lado };
-}
-function grAbtHtml(R) {
-    if (!R) return '<div style="padding:16px 0;font-size:13px;color:#1C1C1E;">Sem footprint carregado. Ligue o Fluxo e aumente "Dias ao ligar o Fluxo".</div>';
-    const sg = v => (v >= 0 ? '+' : '−') + (Math.abs(v) * 100).toFixed(2).replace('.', ',') + '%';
-    const pc = v => (v * 100).toFixed(0) + '%';
-    const nomes = ['Sem absorção (abaixo da média)'].concat(GR_ABT_FAIXAS.map(f => f[1] === Infinity ? 'Excesso ≥ ' + f[0] + '%' : 'Excesso ' + f[0] + ' a ' + f[1] + '%'));
-    const cel = (L, k) => {
-        const a = L.h[k]; if (!a.tot) return '<td align="right">—</td>';
-        const b = R.base.h[k], bp = b.tot ? b.up / b.tot : 0.5, p = a.up / a.tot, se = Math.sqrt(Math.max(bp * (1 - bp), 1e-9) / a.tot), z = (p - bp) / se;
-        const corP = z >= 2 ? '#16A34A' : z <= -2 ? '#DC2626' : '#1C1C1E', m = a.sum / a.tot;
-        return '<td align="right"><span style="color:' + (m > 0 ? '#16A34A' : m < 0 ? '#DC2626' : '#1C1C1E') + ';">' + sg(m) + '</span> <span style="font-weight:700;color:' + corP + ';">' + pc(p) + '</span></td>';
-    };
-    const tit = R.lado === 'AV' ? 'AV — absorção vendedora (caiu com delta comprador)' : 'AC — absorção compradora (subiu com delta vendedor)';
-    let h = '<div style="font-size:12px;font-weight:700;color:#1C1C1E;margin-top:6px;">Timeframe: ' + grTfSiglaAtual() + ' · ' + Math.round(R.dias) + ' dias com footprint</div>';
-    h += '<div style="font-size:13px;font-weight:700;color:' + (R.lado === 'AV' ? '#2563EB' : '#7C3AED') + ';margin-top:10px;">' + tit + '</div>';
-    h += '<div style="font-size:12px;color:#1C1C1E;margin-top:2px;">Cada célula: variação média do preço · % das vezes que o preço ficou ACIMA do fechamento do sinal. Verde/vermelho = diferente da base (z ≥ 2).</div>';
-    h += '<table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:12px;color:#1C1C1E;"><tr style="font-weight:700;"><td>Faixa</td><td align="right">Sinais</td>' + GR_ABT_H.map(x => '<td align="right">+' + x + '</td>').join('') + '</tr>';
-    R.linhas.forEach((L, i) => {
-        h += '<tr style="border-top:1px solid #F2F2F7;"><td>' + nomes[i] + '</td><td align="right">' + L.n + (L.n > 0 && L.n < 20 ? '*' : '') + '</td>' + (L.n ? GR_ABT_H.map((x, k) => cel(L, k)).join('') : GR_ABT_H.map(() => '<td align="right">—</td>').join('')) + '</tr>';
-    });
-    h += '<tr style="border-top:2px solid #1C1C1E;font-weight:700;"><td>Base (todos os candles)</td><td align="right">' + R.base.n + '</td>' + GR_ABT_H.map((x, k) => { const a = R.base.h[k]; return a.tot ? '<td align="right">' + sg(a.sum / a.tot) + ' ' + pc(a.up / a.tot) + '</td>' : '<td align="right">—</td>'; }).join('') + '</tr></table>';
-    h += '<div style="font-size:11.5px;color:#1C1C1E;margin-top:8px;">* menos de 20 sinais: amostra pequena, não conclua nada. Testar muitas faixas e prazos sempre acha alguma "sorte": só vale se aparecer em faixas vizinhas e em mais de um timeframe.</div>';
-    return h;
-}
-function grAbtRender() {
-    const el = document.getElementById('gr-abt-corpo'); if (!el) return;
-    const dl = (window._grFluxoDias || []).filter(d => d.estado === 'carregando').length;
-    if (dl > 0 && !el.dataset.pronto) { el.innerHTML = '<div style="padding:16px 0;font-size:13px;">Baixando o footprint (' + dl + ' dias restantes)... o resultado aparece quando terminar.</div>'; const b0 = document.getElementById('gr-abt-lados'); if (b0) b0.innerHTML = ''; return; }
-    el.dataset.pronto = '1';
-    let R = null; try { R = grAbtCalcular(_grAbtLado); } catch (e) {}
-    el.innerHTML = grAbtHtml(R);
-    const b = document.getElementById('gr-abt-lados');
-    if (b) b.innerHTML = ['AV', 'AC'].map(l => '<button onclick="grAbtLado(\'' + l + '\')" style="flex:1;border:none;border-radius:8px;padding:9px 0;font-size:13px;font-weight:700;'
-        + (l === _grAbtLado ? 'background:#1C1C1E;color:#FFFFFF;' : 'background:#F2F2F7;color:#1C1C1E;') + '">' + (l === 'AV' ? 'AV (vendedora)' : 'AC (compradora)') + '</button>').join('');
-}
-function grAbtLado(l) { _grAbtLado = l; grAbtRender(); }
-function grAbtFechar() { clearInterval(_grAbtWatch); const o = document.getElementById('gr-abt-overlay'); if (o) o.remove(); }
-function grAbtAbrir() {
-    try { cvFecharMenuFpCfg(); } catch (e) {}
-    grAbtFechar();
-    const o = document.createElement('div'); o.id = 'gr-abt-overlay';
-    o.style.cssText = 'position:fixed;inset:0;z-index:9999;background:#FFFFFF;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 16px 40px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;color:#1C1C1E;';
-    o.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;"><div style="font-size:16px;font-weight:700;">Backtest da Absorção</div><button onclick="grAbtFechar()" style="border:none;background:#F2F2F7;border-radius:8px;padding:8px 14px;font-size:14px;font-weight:700;color:#1C1C1E;">Fechar</button></div>'
-        + '<div style="font-size:12px;margin-top:6px;">Período: ' + (FOOTPRINT_DIAS_AO_ATIVAR >= 36500 ? 'todo o histórico disponível' : FOOTPRINT_DIAS_AO_ATIVAR + ' dias') + '. Usa o timeframe do gráfico.</div>'
-        + '<div id="gr-abt-lados" style="display:flex;gap:6px;margin-top:10px;"></div><div id="gr-abt-corpo"></div>';
-    document.body.appendChild(o);
-    grAbtRender();
-    let ult = _grFootprintCandlesRaw ? _grFootprintCandlesRaw.length : 0;
-    // footprint ainda baixando: NÃO recalcula a cada dia que chega (travava o celular). Espera terminar e refaz uma vez.
-    _grAbtWatch = setInterval(() => {
-        if ((window._grFluxoDias || []).some(d => d.estado === 'carregando')) return;
-        const q = _grFootprintCandlesRaw ? _grFootprintCandlesRaw.length : 0;
-        const el = document.getElementById('gr-abt-corpo');
-        if (q !== ult || (el && !el.dataset.pronto)) { ult = q; grAbtRender(); }
-    }, 4000);
-}
-// ══ BACKTEST DA EMA 200 — só a média: o preço acima/abaixo dela, os cruzamentos e uma estratégia simples ═════════════════════
-//  Não usa footprint: roda nos candles que já estão no gráfico (no timeframe dele). Sem olhar o futuro: o estado é lido no FECHAMENTO do candle i e só vale para o retorno
-//  do candle i+1 em diante. "Base" = todos os candles. Estratégia: comprado quando o último fechamento está acima da EMA 200 (fora quando abaixo) e a versão comprado/vendido,
-//  contra comprar e segurar; cada troca de posição paga o custo abaixo.
-const GR_EMA_PER = 200, GR_EMA_H = [1, 5, 10, 20], GR_EMA_CUSTO = 0.001;
-function grEmaSerie(cs, per) {
-    const n = cs.length, e = new Array(n).fill(null); if (n < per) return e;
-    let s = 0; for (let i = 0; i < per; i++) s += cs[i].c; e[per - 1] = s / per;
-    const k = 2 / (per + 1); for (let i = per; i < n; i++) e[i] = cs[i].c * k + e[i - 1] * (1 - k);
-    return e;
-}
-function grEmaCalcular() {
-    const cs = _grAllCandles, ms = grFootprintMsPorCandle(), agora = Date.now();
-    let n = cs.length; if (n && agora < cs[n - 1].t + ms) n--;   // o candle em formação não conta
-    if (n < GR_EMA_PER + 30) return { erro: true, n };
-    const E = grEmaSerie(cs.slice(0, n), GR_EMA_PER), i0 = GR_EMA_PER - 1;
-    const est = i => cs[i].c > E[i];
-    const novo = () => ({ n: 0, h: GR_EMA_H.map(() => ({ tot: 0, up: 0, sum: 0 })) });
-    const acima = novo(), abaixo = novo(), base = novo(), cUp = novo(), cDn = novo();
-    for (let i = i0; i < n; i++) {
-        const al = [base, est(i) ? acima : abaixo];
-        if (i > i0) { const a = est(i), b = est(i - 1); if (a && !b) al.push(cUp); else if (!a && b) al.push(cDn); }
-        al.forEach(L => { L.n++; GR_EMA_H.forEach((h, k) => { const j = i + h; if (j >= n) return; const r = cs[j].c / cs[i].c - 1, a = L.h[k]; a.tot++; if (r > 0) a.up++; a.sum += r; }); });
-    }
-    // estratégias: posição (0, +1, −1) decidida no fechamento de i, vale para o retorno de i+1
-    const sim = modo => {
-        let eq = 1, pico = 1, dd = 0, pos = 0, entradas = 0, ganhos = 0, fechadas = 0, eqEntrada = 1, noMercado = 0;
-        for (let i = i0; i < n - 1; i++) {
-            const nova = modo === 'bh' ? 1 : (est(i) ? 1 : (modo === 'ls' ? -1 : 0));
-            if (nova !== pos) {
-                if (pos !== 0 && modo !== 'bh') { fechadas++; if (eq / eqEntrada > 1) ganhos++; }
-                if (nova !== 0 && modo !== 'bh') { entradas++; eqEntrada = eq; }
-                eq *= 1 - GR_EMA_CUSTO * Math.abs(nova - pos);
-                pos = nova;
-            }
-            if (pos !== 0) noMercado++;
-            eq *= 1 + pos * (cs[i + 1].c / cs[i].c - 1);
-            if (eq > pico) pico = eq; if (pico > 0 && (pico - eq) / pico > dd) dd = (pico - eq) / pico;
-        }
-        if (pos !== 0 && modo !== 'bh') { fechadas++; if (eq / eqEntrada > 1) ganhos++; }
-        return { ret: eq - 1, dd, entradas, ganhos, fechadas, tempo: (n - 1 - i0) > 0 ? noMercado / (n - 1 - i0) : 0 };
-    };
-    return { n, i0, ultimaEma: E[n - 1], ultimoC: cs[n - 1].c, acima, abaixo, base, cUp, cDn, longo: sim('long'), ls: sim('ls'), bh: sim('bh'), t0: cs[i0].t, t1: cs[n - 1].t };
-}
-function grEmaHtml(R) {
-    if (R.erro) return '<div style="padding:16px 0;font-size:13px;color:#1C1C1E;">Só há ' + R.n + ' candles carregados neste timeframe; a EMA 200 precisa de pelo menos ' + (GR_EMA_PER + 30) + '. Toque em "Carregar mais histórico" ou role o gráfico para a esquerda.</div>';
-    const sg = v => (v >= 0 ? '+' : '−') + (Math.abs(v) * 100).toFixed(2).replace('.', ',') + '%';
-    const pc = v => (v * 100).toFixed(0) + '%', pc2 = v => (v * 100).toFixed(2).replace('.', ',') + '%';
-    const cel = (L, k, semZ) => {
-        const a = L.h[k]; if (!a.tot) return '<td align="right">—</td>';
-        const b = R.base.h[k], bp = b.up / b.tot, p = a.up / a.tot, z = (p - bp) / Math.sqrt(Math.max(bp * (1 - bp), 1e-9) / a.tot), m = a.sum / a.tot;
-        const cp = (!semZ && z >= 2) ? '#16A34A' : (!semZ && z <= -2) ? '#DC2626' : '#1C1C1E';
-        return '<td align="right"><span style="color:' + (m > 0 ? '#16A34A' : m < 0 ? '#DC2626' : '#1C1C1E') + ';">' + sg(m) + '</span> <span style="font-weight:700;color:' + cp + ';">' + pc(p) + '</span></td>';
-    };
-    const cab = '<tr style="font-weight:700;"><td>Situação</td><td align="right">Candles</td>' + GR_EMA_H.map(x => '<td align="right">+' + x + '</td>').join('') + '</tr>';
-    const lin = (nome, L, semZ) => '<tr style="border-top:1px solid #F2F2F7;"><td>' + nome + '</td><td align="right">' + L.n + (L.n < 20 ? '*' : '') + '</td>' + GR_EMA_H.map((x, k) => cel(L, k, semZ)).join('') + '</tr>';
-    let h = '<div style="font-size:12px;font-weight:700;margin-top:6px;">Timeframe: ' + grTfSiglaAtual() + ' · ' + R.n + ' candles · ' + grBtFmtDataEma(R.t0) + ' a ' + grBtFmtDataEma(R.t1) + '</div>';
-    h += '<div style="font-size:12px;margin-top:2px;">EMA 200 agora: ' + R.ultimaEma.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' · preço ' + R.ultimoC.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' (' + (R.ultimoC > R.ultimaEma ? 'ACIMA' : 'ABAIXO') + ')</div>';
-    h += '<div style="font-size:13px;font-weight:700;margin-top:14px;">1. Onde o preço fecha em relação à EMA 200</div><div style="font-size:12px;margin-top:2px;">Cada célula: variação média do preço · % das vezes que ficou ACIMA do fechamento daquele candle, N candles depois. Verde/vermelho = diferente da base (z ≥ 2).</div>';
-    h += '<table style="width:100%;border-collapse:collapse;margin-top:6px;font-size:12px;">' + cab + lin('Fechou ACIMA', R.acima) + lin('Fechou ABAIXO', R.abaixo) + '<tr style="border-top:2px solid #1C1C1E;font-weight:700;"><td>Base (todos)</td><td align="right">' + R.base.n + '</td>' + GR_EMA_H.map((x, k) => cel(R.base, k, true)).join('') + '</tr></table>';
-    h += '<div style="font-size:13px;font-weight:700;margin-top:14px;">2. Cruzamentos</div>';
-    h += '<table style="width:100%;border-collapse:collapse;margin-top:6px;font-size:12px;">' + cab + lin('Cruzou PARA CIMA', R.cUp) + lin('Cruzou PARA BAIXO', R.cDn) + '</table>';
-    h += '<div style="font-size:13px;font-weight:700;margin-top:14px;">3. Estratégia simples (custo ' + pc2(GR_EMA_CUSTO) + ' por troca, sem juros)</div>';
-    const eL = (nome, S, bh) => '<tr style="border-top:1px solid #F2F2F7;"><td>' + nome + '</td><td align="right" style="font-weight:700;color:' + (S.ret >= 0 ? '#16A34A' : '#DC2626') + ';">' + sg(S.ret) + '</td><td align="right" style="color:#DC2626;">−' + pc2(S.dd) + '</td><td align="right">' + (bh ? '—' : S.entradas) + '</td><td align="right">' + (bh || !S.fechadas ? '—' : pc(S.ganhos / S.fechadas)) + '</td><td align="right">' + pc(S.tempo) + '</td></tr>';
-    h += '<table style="width:100%;border-collapse:collapse;margin-top:6px;font-size:12px;"><tr style="font-weight:700;"><td>Estratégia</td><td align="right">Retorno</td><td align="right">Queda máx.</td><td align="right">Operações</td><td align="right">Acertos</td><td align="right">No mercado</td></tr>'
-        + eL('Comprado só acima da EMA', R.longo) + eL('Comprado acima, vendido abaixo', R.ls) + eL('Comprar e segurar', R.bh, true) + '</table>';
-    h += '<div style="font-size:11.5px;margin-top:8px;">Os candles seguidos se sobrepõem, então o "z" das tabelas 1 e 2 é otimista. * menos de 20 ocorrências. Um período só, sem separar treino e teste: é uma amostra do passado, não uma promessa.</div>';
-    return h;
-}
-function grBtFmtDataEma(t) { return new Date(t).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', timeZone: 'UTC' }); }
-function grEmaRender() { const el = document.getElementById('gr-ema-corpo'); if (!el) return; let R; try { R = grEmaCalcular(); } catch (e) { R = { erro: true, n: (_grAllCandles || []).length }; } el.innerHTML = grEmaHtml(R); }
-async function grEmaMaisHistorico() {
-    const b = document.getElementById('gr-ema-mais'); if (b) { b.disabled = true; b.textContent = 'Carregando...'; }
-    try { for (let k = 0; k < 5 && !window._grHistFim; k++) { const antes = _grAllCandles.length; window._grHistCarregando = false; await grCarregarHistoricoAnterior(); if (_grAllCandles.length === antes) break; } } catch (e) {}
-    if (b) { b.disabled = false; b.textContent = 'Carregar mais histórico'; }
-    grEmaRender();
-}
-function grEmaFechar() { const o = document.getElementById('gr-ema-overlay'); if (o) o.remove(); }
-function grEmaAbrir() {
-    try { cvFecharMenuFpCfg(); } catch (e) {}
-    grEmaFechar();
-    const o = document.createElement('div'); o.id = 'gr-ema-overlay';
-    o.style.cssText = 'position:fixed;inset:0;z-index:9999;background:#FFFFFF;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 16px 40px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;color:#1C1C1E;';
-    o.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;"><div style="font-size:16px;font-weight:700;">Backtest da EMA 200</div><button onclick="grEmaFechar()" style="border:none;background:#F2F2F7;border-radius:8px;padding:8px 14px;font-size:14px;font-weight:700;color:#1C1C1E;">Fechar</button></div>'
-        + '<div style="font-size:12px;margin-top:6px;">Usa o timeframe e os candles que já estão no gráfico (não precisa de Fluxo).</div>'
-        + '<button id="gr-ema-mais" onclick="grEmaMaisHistorico()" style="width:100%;margin-top:10px;border:none;border-radius:8px;padding:9px 0;font-size:13px;font-weight:700;background:#F2F2F7;color:#1C1C1E;">Carregar mais histórico</button><div id="gr-ema-corpo"></div>';
-    document.body.appendChild(o);
-    grEmaRender();
 }
 function grExaustaoDesenhar(ctx, g) {
     if (!_grFootprintAtivo || !_grFootprintCandlesRaw || !_grAllCandles.length) return;
