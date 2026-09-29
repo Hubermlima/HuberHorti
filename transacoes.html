@@ -2707,12 +2707,18 @@ function cvRenderMenuFpCfg() {
         const c = window._compValores && window._compValores.cvdPA;
         menu.innerHTML = '<div style="font-size:13px;font-weight:700;color:#1C1C1E;">CVD / Delta</div>'
             + '<div style="font-size:12px;color:#8E8E93;max-width:200px;padding-bottom:4px;">CVD (linha grossa) x Delta (linha fina) sobrepostos no preço.</div>'
-            + (c ? '<div style="font-size:13px;font-weight:700;color:' + c.cor + ';">' + c.valor + '</div>' : '');
+            + (c ? '<div style="font-size:13px;font-weight:700;color:' + c.cor + ';">' + c.valor + '</div>' : '')
+            + (window._compValores.conclusaoOiCvd
+                ? '<div style="margin-top:8px;padding-top:8px;border-top:1px solid #F2F2F7;"><div style="font-size:12.5px;font-weight:700;color:#1C1C1E;">' + window._compValores.conclusaoOiCvd.titulo + '</div><div style="font-size:11.5px;color:#8E8E93;margin-top:2px;">' + window._compValores.conclusaoOiCvd.texto + '</div><div style="font-size:11px;color:#AEAEB2;margin-top:4px;font-style:italic;">' + window._compValores.conclusaoOiCvd.nota + '</div></div>'
+                : '');
     } else if (_grFpCfgMenuQual === 'oi') {
         const o = window._compValores && window._compValores.oiPA;
         menu.innerHTML = '<div style="font-size:13px;font-weight:700;color:#1C1C1E;">Open Interest</div>'
             + '<div style="font-size:12px;color:#8E8E93;max-width:200px;padding-bottom:4px;">Nível acumulado (linha grossa) x variação por candle (linha fina), sobrepostos ao preço. Dado do mercado inteiro (Binance Futures) — não é por faixa de preço.</div>'
-            + (o ? '<div style="font-size:13px;font-weight:700;color:' + o.cor + ';">' + o.valor + '</div>' : '');
+            + (o ? '<div style="font-size:13px;font-weight:700;color:' + o.cor + ';">' + o.valor + '</div>' : '')
+            + (window._compValores.conclusaoOiCvd
+                ? '<div style="margin-top:8px;padding-top:8px;border-top:1px solid #F2F2F7;"><div style="font-size:12.5px;font-weight:700;color:#1C1C1E;">' + window._compValores.conclusaoOiCvd.titulo + '</div><div style="font-size:11.5px;color:#8E8E93;margin-top:2px;">' + window._compValores.conclusaoOiCvd.texto + '</div><div style="font-size:11px;color:#AEAEB2;margin-top:4px;font-style:italic;">' + window._compValores.conclusaoOiCvd.nota + '</div></div>'
+                : '');
     }
 }
 // Liga/desliga um nível de RSI direto no popup do chip -- sem precisar ir em Configurações.
@@ -5151,6 +5157,48 @@ if (_grTipoGrafico === 'linha') {
                 // Delta de cada candle vem do cache (grObterDeltaTotalPorCandle: varredura única, refeita só quando o
                 // dado do R2 muda). Antes isso era um laço candles × TODOS os minutos, refeito a cada quadro do arrasto.
                 const dtMapaPA = grObterDeltaTotalPorCandle(_grAllCandles);
+
+                // ── Leitura resumida Preço x OI x CVD -- sempre calculada (não depende de CVD nem OI estarem com o
+                // desenho ligado), pra alimentar a mesma conclusão nos dois modais. Base é o quadro clássico preço x OI
+                // (comprador/vendedor novo vs. fechamento de posição); o CVD (fluxo agressor líquido na mesma janela)
+                // entra como segunda camada, confirmando ou divergindo da leitura do OI.
+                window._compValores.conclusaoOiCvd = null;
+                {
+                    let cvdTotalConcl = 0, precoInicioConcl = null;
+                    for (let i = 0; i < _grAllCandles.length; i++) {
+                        const c = _grAllCandles[i];
+                        if (c.t < inicioJanelaPA) continue;
+                        if (precoInicioConcl == null) precoInicioConcl = c.o;
+                        const dConcl = dtMapaPA ? dtMapaPA.get(c.t) : null;
+                        cvdTotalConcl += dConcl ? dConcl.delta : 0;
+                    }
+                    const periodoOiConcl = grOiPeriodoParaTf();
+                    grOiGarantirDados(periodoOiConcl);
+                    const cacheOiConcl = window._grOiCache[periodoOiConcl];
+                    const dadosOiConcl = cacheOiConcl && cacheOiConcl.dados;
+                    const oiInicioConcl = dadosOiConcl ? grOiValorEm(dadosOiConcl, inicioJanelaPA) : null;
+                    const oiFimConcl = dadosOiConcl ? grOiValorEm(dadosOiConcl, Date.now()) : null;
+                    if (precoInicioConcl != null && oiInicioConcl != null && oiFimConcl != null && _precoAtual > 0) {
+                        const precoSobeConcl = _precoAtual >= precoInicioConcl;
+                        const oiSobeConcl = oiFimConcl >= oiInicioConcl;
+                        const cvdPosConcl = cvdTotalConcl >= 0;
+                        let tituloConcl, textoConcl, notaConcl;
+                        if (precoSobeConcl && oiSobeConcl) {
+                            tituloConcl = 'Continuação de alta'; textoConcl = 'Comprador novo entrando — alta com força.';
+                            notaConcl = cvdPosConcl ? 'Fluxo agressor também comprador — confirma a força.' : 'Fluxo agressor foi vendedor líquido — força mais fraca do que o OI sugere.';
+                        } else if (precoSobeConcl && !oiSobeConcl) {
+                            tituloConcl = 'Alta por fechamento de vendido'; textoConcl = 'Sinal de exaustão da alta, não de continuação.';
+                            notaConcl = !cvdPosConcl ? 'Fluxo agressor também vendedor — reforça a leitura de exaustão.' : 'Fluxo agressor ainda comprador, apesar do OI caindo — exaustão menos clara.';
+                        } else if (!precoSobeConcl && oiSobeConcl) {
+                            tituloConcl = 'Continuação de baixa'; textoConcl = 'Vendedor novo entrando — queda com força.';
+                            notaConcl = !cvdPosConcl ? 'Fluxo agressor também vendedor — confirma a força.' : 'Fluxo agressor foi comprador líquido — força mais fraca do que o OI sugere.';
+                        } else {
+                            tituloConcl = 'Baixa por fechamento de comprado'; textoConcl = 'Sinal de exaustão da baixa, não de continuação.';
+                            notaConcl = cvdPosConcl ? 'Fluxo agressor também comprador — reforça a leitura de exaustão.' : 'Fluxo agressor ainda vendedor, apesar do OI caindo — exaustão menos clara.';
+                        }
+                        window._compValores.conclusaoOiCvd = { titulo: tituloConcl, texto: textoConcl, nota: notaConcl };
+                    }
+                }
 
                 if (_indState.cvdPA) {
                     const cvdAllPA = new Array(_grAllCandles.length).fill(null);
