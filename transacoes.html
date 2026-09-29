@@ -2599,6 +2599,7 @@ function cvRenderMenuFpCfg() {
             + R('cv-cfg-poccontorno-value', ICO.contorno, 'Contorno da célula', 'Realce ao redor da linha de maior volume do candle', 'grFootprintAlternarPocContorno()')
             + SEC('maiores', grConfigBlocoMarcarMaiores(ICO.refcor))
             + SEC('exaustao', grConfigBlocoExaustao(ICO.refcor, true))
+            + SEC('rsicv', grConfigBlocoRsiCV(ICO.refcor))
             + R('cv-cfg-fluxo-value', ICO.atualizar, 'Fluxo', 'Tocar para atualizar agora', 'grFootprintAtualizarSeAtivo()');
         grFluxoSecoesAplicar(menu);
         grFootprintSkinAtualizarRotulo();
@@ -13184,6 +13185,94 @@ function grExaustaoDiag(idx) {
     }
     return { r, motivo: '' };
 }
+// ══ SINAIS C / V DO RSI — legendas no price action, calculadas com o RSI(14) (o mesmo do RSI Levels), com ele ligado ou não ═════════════
+//  C (compra, verde, abaixo do candle) = o candle FECHADO em que o RSI passa a ficar em GR_RSICV.c ou menos (marca só a entrada na zona; só marca de novo depois que o RSI sair dela).
+//  V (venda, vermelho, acima do candle) = o candle fechado em que o RSI passa a ficar em GR_RSICV.v ou mais. Ligar/desligar e os dois níveis: popup do Fluxo, seção "Sinais C / V (RSI)".
+const GR_RSICV = (function () {
+    const ler = (k, pad) => { try { const v = parseFloat(localStorage.getItem(k)); return isFinite(v) ? v : pad; } catch (e) { return pad; } };
+    return { on: ler('grRsiCV_on', 1) === 1, c: ler('grRsiCV_c', 30), v: ler('grRsiCV_v', 40) };
+})();
+let _grRsiCVCache = null;
+function grRsiCVSinais() {
+    const cs = _grAllCandles, n = cs.length;
+    if (n < 20) return new Map();
+    const ult = cs[n - 1], chave = n + '|' + ult.t + '|' + ult.c + '|' + GR_RSICV.c + '|' + GR_RSICV.v;
+    if (_grRsiCVCache && _grRsiCVCache.chave === chave) return _grRsiCVCache.mapa;
+    const closes = cs.map(c => c.c), r = grRSI(closes, 14), off = 14, mapa = new Map();
+    // força da tendência = distância do fechamento até a EMA 200, em % (sem EMA ainda, nos primeiros 200 candles: tom cheio)
+    const ema = new Array(n).fill(null);
+    if (n >= 200) { let sm = 0; for (let i = 0; i < 200; i++) sm += closes[i]; ema[199] = sm / 200; const kk = 2 / 201; for (let i = 200; i < n; i++) ema[i] = closes[i] * kk + ema[i - 1] * (1 - kk); }
+    const dist = i => ema[i] ? Math.abs(closes[i] / ema[i] - 1) : null;
+    // sem faixas fixas: t = posição da distância entre TODAS as distâncias do histórico carregado (0 = a mais colada na EMA, 1 = a mais esticada)
+    const todas = []; for (let i = 0; i < n; i++) { const d = dist(i); if (d != null) todas.push(d); }
+    todas.sort((x, y) => x - y);
+    const rank = d => { if (d == null || todas.length < 2) return null; let lo = 0, hi = todas.length; while (lo < hi) { const md = (lo + hi) >> 1; if (todas[md] < d) lo = md + 1; else hi = md; } return lo / (todas.length - 1); };
+    const ms = grFootprintMsPorCandle(), agora = Date.now();
+    let ultS = null, ultT = null;
+    for (let k = 1; k < r.length; k++) {
+        const i = k + off; if (i >= n) break;
+        if (agora < cs[i].t + ms) continue;   // candle em formação: não marca
+        let s = null;
+        if (r[k] <= GR_RSICV.c && r[k - 1] > GR_RSICV.c) s = 'C';
+        else if (r[k] >= GR_RSICV.v && r[k - 1] < GR_RSICV.v) s = 'V';
+        if (!s) continue;
+        // sequência do mesmo lado (sem o lado oposto no meio): só a última legenda fica, as anteriores somem
+        if (ultS === s && ultT != null) mapa.delete(ultT);
+        mapa.set(cs[i].t, { s, t: rank(dist(i)) }); ultS = s; ultT = cs[i].t;
+    }
+    _grRsiCVCache = { chave, mapa };
+    return mapa;
+}
+// Cor em função contínua da distância até a EMA 200, SEM faixas nem porcentagens fixas: t = posição da distância deste sinal entre todas as distâncias do histórico
+// carregado (0 = colado na EMA → tom claro; 1 = o mais esticado que o gráfico já teve → tom forte). A cor é a mistura linear do tom claro com o forte.
+// Como é relativo ao histórico, vale igual em qualquer timeframe.
+const GR_RSICV_CLARO = { C: [167, 227, 184], V: [245, 180, 180] }, GR_RSICV_FORTE = { C: [15, 107, 50], V: [153, 27, 27] };
+function grRsiCVTom(compra, t) {   // [cor do círculo, cor da letra]
+    const k = compra ? 'C' : 'V', u = t == null ? 0.6 : Math.max(0, Math.min(1, t)), a = GR_RSICV_CLARO[k], f = GR_RSICV_FORTE[k];
+    const m = a.map((x, i) => Math.round(x + (f[i] - x) * u));
+    return ['rgb(' + m[0] + ',' + m[1] + ',' + m[2] + ')', u < 0.4 ? (compra ? '#14532D' : '#7F1D1D') : '#FFFFFF'];
+}
+function grRsiCVDesenhar(ctx, g) {
+    if (!GR_RSICV.on || !_grAllCandles.length) return;
+    const sin = grRsiCVSinais(); if (!sin.size) return;
+    const xmin = g.PAD.left - g.slotW, xmax = g.W - g.PAD.right + g.slotW, temFp = _grFootprintAtivo && _grFootprintCandlesRaw;
+    ctx.save();
+    ctx.font = 'bold 9px -apple-system'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    for (let i = _grAllCandles.length - 1; i >= 0; i--) {
+        const cd = _grAllCandles[i], x0 = g.xLeft(cd.t);
+        if (x0 > xmax) continue; if (x0 < xmin) break;
+        const sg = sin.get(cd.t); if (!sg) continue; const s = sg.s;
+        const cx = x0 + g.slotW / 2; if (cx < g.PAD.left || cx > g.W - g.PAD.right) continue;
+        const compra = s === 'C', R = 7;
+        let ex = null; if (temFp) { try { ex = grExaustaoDe(i); } catch (e) {} }
+        let y = compra ? g.toY(cd.l) + R + 3 : g.toY(cd.h) - R - 3;
+        if (compra && ex === 'EV') y += 15; if (!compra && ex === 'EC') y -= 15;   // não cobre o EC / EV do mesmo candle
+        y = Math.max(g.PAD.top + R, Math.min(g.PAD.top + g.chartH - R, y));
+        const tom = grRsiCVTom(compra, sg.t);
+        ctx.fillStyle = tom[0]; ctx.beginPath(); ctx.arc(cx, y, R, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = tom[1]; ctx.fillText(s, cx, y + 0.5);
+    }
+    ctx.restore();
+}
+function grRsiCVSalvar(k, v) { try { localStorage.setItem('grRsiCV_' + k, String(v)); } catch (e) {} }
+function grRsiCVLigar() {
+    GR_RSICV.on = !GR_RSICV.on; grRsiCVSalvar('on', GR_RSICV.on ? 1 : 0);
+    document.querySelectorAll('[data-rsicv-tog]').forEach(b => { b.textContent = GR_RSICV.on ? 'Ligado' : 'Desligado'; b.style.background = GR_RSICV.on ? '#1C1C1E' : '#F2F2F7'; b.style.color = GR_RSICV.on ? '#FFFFFF' : '#1C1C1E'; });
+    grDrawChart();
+}
+window.grRsiCV_c = v => { GR_RSICV.c = Math.max(10, Math.min(50, Math.round(+v || 30))); grRsiCVSalvar('c', GR_RSICV.c); document.querySelectorAll('[id="cv-cfg-rsicvc-txt"]').forEach(e => { e.textContent = GR_RSICV.c; }); grRsiCVSub(); grDrawChart(); };
+window.grRsiCV_v = v => { GR_RSICV.v = Math.max(30, Math.min(90, Math.round(+v || 40))); grRsiCVSalvar('v', GR_RSICV.v); document.querySelectorAll('[id="cv-cfg-rsicvv-txt"]').forEach(e => { e.textContent = GR_RSICV.v; }); grRsiCVSub(); grDrawChart(); };
+function grRsiCVSub() { document.querySelectorAll('[data-rsicv-sub]').forEach(e => { e.textContent = 'C: RSI ≤ ' + GR_RSICV.c + ' · V: RSI ≥ ' + GR_RSICV.v; }); }
+function grConfigBlocoRsiCV(svg) {
+    return '<div style="padding:12px 2px;border-bottom:1px solid #F2F2F7;">'
+        + '<div style="display:flex;align-items:center;gap:12px;">'
+        + '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;">' + svg + '</svg>'
+        + '<div style="flex:1;min-width:0;"><div style="font-size:14px;font-weight:600;color:#1C1C1E;">Sinais C / V (RSI)</div><div data-rsicv-sub="1" style="font-size:11.5px;color:#8E8E93;margin-top:1px;">C: RSI ≤ ' + GR_RSICV.c + ' · V: RSI ≥ ' + GR_RSICV.v + '</div></div></div>'
+        + '<button data-rsicv-tog="1" onclick="grRsiCVLigar()" style="width:100%;margin-top:10px;border:none;border-radius:8px;padding:10px 0;font-size:13px;font-weight:700;background:' + (GR_RSICV.on ? '#1C1C1E' : '#F2F2F7') + ';color:' + (GR_RSICV.on ? '#FFFFFF' : '#1C1C1E') + ';">' + (GR_RSICV.on ? 'Ligado' : 'Desligado') + '</button>'
+        + grConfigSliderInt('cv-cfg-rsicvc', 'C: RSI de entrada na zona de compra (≤)', GR_RSICV.c, 10, 50, 'grRsiCV_c')
+        + grConfigSliderInt('cv-cfg-rsicvv', 'V: RSI de entrada na zona de venda (≥)', GR_RSICV.v, 30, 90, 'grRsiCV_v')
+        + '</div>';
+}
 function grExaustaoDesenhar(ctx, g) {
     if (!_grFootprintAtivo || !_grFootprintCandlesRaw || !_grAllCandles.length) return;
     const xmin = g.PAD.left - g.slotW, xmax = g.W - g.PAD.right + g.slotW;
@@ -13209,6 +13298,7 @@ function grMetricasDesenhar(ctx, g) {
         if (cvM && cvP) { grDimensionarCanvas(cvM, grLW(cvP), grLH(cvP)); ctx = grPrepararCtx(cvM); ctx.clearRect(0, 0, grLW(cvM), grLH(cvM)); }
     }
     try { grExaustaoDesenhar(ctx, g); } catch (e) {}
+    try { grRsiCVDesenhar(ctx, g); } catch (e) {}
     window._grMetricasRect = null; window._grMetricasHits = null; window._grMetricasNoteRect = null;
     const ts = _grMetricasTabTs;
     if (ts == null || !_grFootprintAtivo || !_grFootprintCandlesRaw || !_grAllCandles.length) return;
