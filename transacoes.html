@@ -2573,6 +2573,7 @@ function cvRenderMenuFpCfg() {
             + grConfigBlocoRefCor(ICO.refcor)
             + R('cv-cfg-poccontorno-value', ICO.contorno, 'Contorno da célula', 'Realce ao redor da linha de maior volume do candle', 'grFootprintAlternarPocContorno()')
             + grConfigBlocoMarcarMaiores(ICO.refcor)
+            + grConfigBlocoExaustao(ICO.refcor)
             + R('cv-cfg-fluxo-value', ICO.atualizar, 'Fluxo', 'Tocar para atualizar agora', 'grFootprintAtualizarSeAtivo()');
         grFootprintSkinAtualizarRotulo();
         grFluxoStatusAtualizar();
@@ -12921,12 +12922,130 @@ function grMetricasAlternar(candle) {
     _grMetricasCache = null; _grMetricasOff = { dx: 0, dy: 0 }; _grMetricasInfo = null;
 }
 function grMetricasFecharTabela() { _grMetricasTabTs = null; _grMetricasCache = null; _grMetricasInfo = null; window._grMetricasRect = null; window._grMetricasHits = null; window._grMetricasNoteRect = null; grDrawChart(); }
+// ══ EXAUSTÃO (EC / EV) — sigla no gráfico, nos candles FECHADOS em que um lado tentou empurrar o preço no extremo e perdeu força ══
+//  EC (vermelho, acima do candle) = exaustão de compra: máxima dos últimos N candles, movimento prévio relevante, pressão compradora nos candles anteriores,
+//  delta que chegou a subir e devolveu boa parte, fechou na parte de baixo, volume relevante e os candles seguintes não superaram a máxima.
+//  EV (verde, abaixo do candle)  = exaustão de venda: o espelho, no fundo. Cada contexto é ajustável na configuração do Fluxo (0 = ignora).
+function grExLer(k, pad) { try { const v = parseFloat(localStorage.getItem(k)); return isFinite(v) ? v : pad; } catch (e) { return pad; } }
+const GR_EX_CFG = {   // chave: [padrão, mín, máx, passo, rótulo]
+    grExN:     [10, 3, 50, 1,   'Extremo dos últimos (candles)'],
+    grExMov:   [2,  0, 10, 0.5, 'Movimento prévio (× faixa média, 0 = ignora)'],
+    grExPres:  [1,  0, 5,  1,   'Pressão prévia a favor (candles, 0 = ignora)'],
+    grExDevol: [50, 10, 100, 1, 'Delta devolvido (% do pico)'],
+    grExVol:   [1,  0, 3,  0.1, 'Volume mínimo (× média, 0 = ignora)'],
+    grExFech:  [50, 10, 100, 1, 'Fechamento no lado oposto (% do candle)'],
+    grExConf:  [1,  0, 3,  1,   'Confirmação (candles seguintes sem romper, 0 = ignora)']
+};
+const EX = {}; Object.keys(GR_EX_CFG).forEach(k => { EX[k] = grExLer(k, GR_EX_CFG[k][0]); });
+const EX_PICO_MIN = 0.05;                   // o pico do delta precisa valer ao menos 5% do volume do candle (filtra ruído)
+let _grExVersao = 0; const _grExCache = new Map(), _grExDeltaCache = new Map();
+function grExFmt(k, v) { return k === 'grExDevol' || k === 'grExFech' ? v + '%' : (k === 'grExVol' || k === 'grExMov') ? v.toFixed(1).replace('.', ',') + '×' : String(v); }
+function grExAplicar(k, v) {
+    const c = GR_EX_CFG[k]; v = Math.max(c[1], Math.min(c[2], parseFloat(v) || 0));
+    v = c[3] < 1 ? Math.round(v / c[3]) * c[3] : Math.round(v);
+    EX[k] = v; try { localStorage.setItem(k, String(v)); } catch (e) {}
+    _grExVersao++; _grExCache.clear();
+    const el = document.getElementById('cv-cfg-' + k.toLowerCase() + '-txt'); if (el) el.textContent = grExFmt(k, v);
+    grDrawChart();
+}
+function grExN(v) { grExAplicar('grExN', v); } function grExMov(v) { grExAplicar('grExMov', v); } function grExPres(v) { grExAplicar('grExPres', v); }
+function grExDevol(v) { grExAplicar('grExDevol', v); } function grExVol(v) { grExAplicar('grExVol', v); } function grExFech(v) { grExAplicar('grExFech', v); } function grExConf(v) { grExAplicar('grExConf', v); }
+function grConfigBlocoExaustao(svg) {
+    let s = '<div style="padding:12px 2px;border-bottom:1px solid #F2F2F7;">'
+        + '<div style="display:flex;align-items:center;gap:12px;">'
+        + '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;">' + svg + '</svg>'
+        + '<div style="flex:1;min-width:0;"><div style="font-size:14px;font-weight:600;color:#1C1C1E;">Exaustão (EC / EV)</div><div style="font-size:11.5px;color:#8E8E93;margin-top:1px;">EC: compra esgotada no topo · EV: venda esgotada no fundo</div></div></div>';
+    Object.keys(GR_EX_CFG).forEach(k => {
+        const c = GR_EX_CFG[k], id = 'cv-cfg-' + k.toLowerCase();
+        s += c[3] < 1 ? grConfigSliderDecimal(id, c[4], EX[k], c[1], c[2], c[3], k)
+            : grConfigSliderInt(id, c[4], EX[k], c[1], c[2], k, '', (k === 'grExDevol' || k === 'grExFech') ? '%' : '');
+    });
+    return s + '</div>';
+}
+function grExDeltaCandle(cd) { // delta (compra − venda) do candle, com cache
+    const raw = _grFootprintCandlesRaw.length, c0 = _grExDeltaCache.get(cd.t);
+    if (c0 && c0.raw === raw) return c0.d;
+    let d = null; grFootprintParaCadaMinuto(cd.t, cd.t + grFootprintMsPorCandle(), m => { d = d || 0; (m.niveis || []).forEach(n => { d += (n.c || 0) - (n.v || 0); }); });
+    _grExDeltaCache.set(cd.t, { raw, d }); return d;
+}
+// 'EC' | 'EV' | null para o candle de índice idx (só candles fechados, com footprint)
+function grExaustaoDe(idx) {
+    const cd = _grAllCandles[idx], N = EX.grExN; if (!cd || idx < N) return null;
+    const ms = grFootprintMsPorCandle(); if (Date.now() < cd.t + ms) return null;      // em formação: não marca
+    const raw = _grFootprintCandlesRaw.length;
+    let c0 = _grExCache.get(cd.t), r;
+    if (c0 && c0.raw === raw && c0.v === _grExVersao) r = c0.r;
+    else { r = grExaustaoBase(idx, cd, N, ms); _grExCache.set(cd.t, { raw, v: _grExVersao, r }); }
+    if (r && EX.grExConf > 0) {   // confirmação: os próximos candles não podem romper o extremo (e precisam existir)
+        for (let j = 1; j <= EX.grExConf; j++) {
+            const nx = _grAllCandles[idx + j];
+            if (!nx) return null;
+            if (r === 'EC' ? nx.h > cd.h : nx.l < cd.l) return null;
+        }
+    }
+    return r;
+}
+function grExaustaoBase(idx, cd, N, ms) {
+    const rng = cd.h - cd.l; if (rng <= 0) return null;
+    let maxAnt = -Infinity, minAnt = Infinity;
+    for (let i = idx - N; i < idx; i++) { const a = _grAllCandles[i]; if (a.h > maxAnt) maxAnt = a.h; if (a.l < minAnt) minAnt = a.l; }
+    const topo = cd.h >= maxAnt, fundo = cd.l <= minAnt;
+    if (!topo && !fundo) return null;
+    // movimento prévio: o preço veio andando até o extremo (subida até o topo / queda até o fundo), medido em faixas médias de candle
+    if (EX.grExMov > 0) {
+        let s = 0, n = 0; for (let i = Math.max(0, idx - 20); i < idx; i++) { const a = _grAllCandles[i]; if (a.h > a.l) { s += a.h - a.l; n++; } }
+        if (n === 0) return null;
+        const faixa = s / n;
+        const subiu = topo && (cd.h - minAnt) >= EX.grExMov * faixa, caiu = fundo && (maxAnt - cd.l) >= EX.grExMov * faixa;
+        if (!subiu && !caiu) return null;
+    }
+    const min = []; grFootprintParaCadaMinuto(cd.t, cd.t + ms, m => { let c = 0, v = 0; (m.niveis || []).forEach(n => { c += n.c || 0; v += n.v || 0; }); min.push({ ts: m.ts, c, v }); });
+    if (min.length < 2) return null;
+    min.sort((a, b) => a.ts - b.ts);
+    let cor = 0, maxD = 0, minD = 0, tot = 0;
+    min.forEach(m => { cor += m.c - m.v; tot += m.c + m.v; if (cor > maxD) maxD = cor; if (cor < minD) minD = cor; });
+    const delta = cor; if (tot <= 0) return null;
+    if (EX.grExVol > 0) {
+        let ok = false;
+        if (idx >= 5 && cd.v > 0) { let s = 0, n = 0; for (let i = Math.max(0, idx - 20); i < idx; i++) if (_grAllCandles[i].v > 0) { s += _grAllCandles[i].v; n++; } if (n > 0 && s > 0) ok = cd.v / (s / n) >= EX.grExVol; }
+        if (!ok) return null;
+    }
+    const dev = EX.grExDevol / 100, fe = EX.grExFech / 100;
+    let r = null;
+    if (topo && maxD >= tot * EX_PICO_MIN && delta <= maxD * (1 - dev) && cd.c <= cd.l + rng * fe) r = 'EC';
+    else if (fundo && -minD >= tot * EX_PICO_MIN && delta >= minD * (1 - dev) && cd.c >= cd.h - rng * fe) r = 'EV';
+    if (r && EX.grExPres > 0) {   // pressão prévia: nos candles anteriores o lado que "cansou" vinha dominando o delta
+        let soma = 0, achou = false;
+        for (let i = Math.max(0, idx - EX.grExPres); i < idx; i++) { const d = grExDeltaCandle(_grAllCandles[i]); if (d != null) { soma += d; achou = true; } }
+        if (!achou || (r === 'EC' ? soma <= 0 : soma >= 0)) return null;
+    }
+    return r;
+}
+function grExaustaoDesenhar(ctx, g) {
+    if (!_grFootprintAtivo || !_grFootprintCandlesRaw || !_grAllCandles.length) return;
+    const xmin = g.PAD.left - g.slotW, xmax = g.W - g.PAD.right + g.slotW;
+    ctx.save();
+    ctx.font = 'bold 9px -apple-system'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    for (let i = _grAllCandles.length - 1; i >= EX.grExN; i--) {
+        const cd = _grAllCandles[i], x0 = g.xLeft(cd.t);
+        if (x0 > xmax) continue; if (x0 < xmin) break;
+        const cx = x0 + g.slotW / 2; if (cx < g.PAD.left || cx > g.W - g.PAD.right) continue;
+        const r = grExaustaoDe(i); if (!r) continue;
+        const ec = r === 'EC', w = 18, h = 12;
+        let y = ec ? g.toY(cd.h) - h / 2 - 3 : g.toY(cd.l) + h / 2 + 3;
+        y = Math.max(g.PAD.top + h / 2, Math.min(g.PAD.top + g.chartH - h / 2, y));
+        ctx.fillStyle = ec ? '#DC2626' : '#16A34A'; ctx.beginPath(); ctx.roundRect(cx - w / 2, y - h / 2, w, h, 3); ctx.fill();
+        ctx.fillStyle = '#FFFFFF'; ctx.fillText(r, cx, y + 0.5);
+    }
+    ctx.restore();
+}
 // ── desenho (chamado por grDrawCandles, por cima dos candles; g = { PAD, W, chartW, chartH, toY, slotW, xLeft(ts) }) ──
 function grMetricasDesenhar(ctx, g) {
     { // canvas próprio, acima do footprint, dos desenhos e do crosshair: a tabela nunca fica com elementos aparecendo por baixo
         const cvM = document.getElementById('gr-metricas-canvas'), cvP = ctx.canvas;
         if (cvM && cvP) { grDimensionarCanvas(cvM, grLW(cvP), grLH(cvP)); ctx = grPrepararCtx(cvM); ctx.clearRect(0, 0, grLW(cvM), grLH(cvM)); }
     }
+    try { grExaustaoDesenhar(ctx, g); } catch (e) {}
     window._grMetricasRect = null; window._grMetricasHits = null; window._grMetricasNoteRect = null;
     const ts = _grMetricasTabTs;
     if (ts == null || !_grFootprintAtivo || !_grFootprintCandlesRaw || !_grAllCandles.length) return;
