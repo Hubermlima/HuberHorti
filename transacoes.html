@@ -11464,7 +11464,7 @@ function cvFecharSetupSheet() {
     <div style="display:none;" id="footprint-historico-sub"></div>
     <div style="padding:0 16px 8px;color:#E5E5EA;font-size:12px;font-weight:700;font-family:-apple-system,sans-serif;min-height:16px;flex-shrink:0;" id="footprint-historico-detalhe"></div>
     <div style="flex:1;min-height:0;overflow-y:auto;padding:0 16px 16px;-webkit-overflow-scrolling:touch;">
-      <canvas id="footprint-historico-canvas" style="width:100%;height:460px;display:block;"></canvas>
+      <canvas id="footprint-historico-canvas" style="width:100%;height:660px;display:block;"></canvas>
     </div>
   </div>
 </div>
@@ -13130,6 +13130,20 @@ function grEfxAbrir() {
         if (q !== ult || (el && !el.dataset.pronto)) { ult = q; grEfxRender(); }
     }, 4000);
 }
+// Exporta o footprint de UM DIA (UTC) em CSV: ts (ISO, minuto), preço, ask (compra agressora), bid (venda agressora). Serve para estudar candles reais fora do app.
+function grFootprintExportarDia() {
+    const raw = _grFootprintCandlesRaw;
+    if (!raw || !raw.length) { alert('Sem footprint carregado. Ligue o Fluxo primeiro.'); return; }
+    const ontem = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    const dia = (prompt('Dia do footprint (AAAA-MM-DD, horário UTC):', ontem) || '').trim(); if (!dia) return;
+    const t0 = Date.parse(dia + 'T00:00:00Z'); if (!isFinite(t0)) { alert('Data inválida.'); return; }
+    const t1 = t0 + 86400000, linhas = ['ts,preco,ask,bid'];
+    raw.forEach(m => { if (m.ts >= t0 && m.ts < t1) (m.niveis || []).forEach(n => linhas.push(new Date(m.ts).toISOString().slice(0, 16) + ',' + n.p + ',' + (n.c || 0) + ',' + (n.v || 0))); });
+    if (linhas.length < 2) { alert('Esse dia não está carregado no footprint (aumente "Dias ao ligar o Fluxo" ou escolha um dia dentro da janela).'); return; }
+    const nome = 'footprint_' + dia + '.csv', blob = new Blob([linhas.join('\n')], { type: 'text/csv' });
+    try { const f = new File([blob], nome, { type: 'text/csv' }); if (navigator.canShare && navigator.canShare({ files: [f] })) { navigator.share({ files: [f], title: nome }).catch(() => {}); return; } } catch (e) {}
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = nome; document.body.appendChild(a); a.click(); setTimeout(() => { a.remove(); URL.revokeObjectURL(a.href); }, 2000);
+}
 function grConfigBlocoExaustao(svg, comBotao) {
     let s = '<div style="padding:12px 2px;border-bottom:1px solid #F2F2F7;">'
         + '<div style="display:flex;align-items:center;gap:12px;">'
@@ -13137,6 +13151,7 @@ function grConfigBlocoExaustao(svg, comBotao) {
         + '<div style="flex:1;min-width:0;"><div style="font-size:14px;font-weight:600;color:#1C1C1E;">Exaustão (EC / EV)</div><div style="font-size:11.5px;color:#8E8E93;margin-top:1px;">EC: compra esgotada no topo · EV: venda esgotada no fundo</div></div></div>';
     s += '<div class="gr-ex-sl">' + grExSlidersHtml() + '</div>';
     if (comBotao) s += '<button onclick="grEfxAbrir()" style="width:100%;margin-top:10px;border:none;border-radius:8px;padding:10px 0;font-size:13px;font-weight:700;background:#1C1C1E;color:#FFFFFF;">Eficácia da exaustão (EC / EV)</button>';
+    if (comBotao) s += '<button onclick="grFootprintExportarDia()" style="width:100%;margin-top:8px;border:none;border-radius:8px;padding:10px 0;font-size:13px;font-weight:700;background:#F2F2F7;color:#1C1C1E;">Exportar footprint de um dia (CSV)</button>';
     return s + '</div>';
 }
 function grExDeltaCandle(cd) { // delta (compra − venda) do candle, com cache
@@ -13875,6 +13890,7 @@ function grFootprintFecharCandleModal() {
     const painelRastreio = document.getElementById('footprint-rastreio-painel');
     if (painelRastreio) painelRastreio.style.display = 'none';
 }
+let candles1mDoHistorico = [];
 let _grFootprintHistoricoColunas = []; // colunas do frame atual, p/ detectar toque: {x, xMin, xMax, ts, minP, maxP, total, delta}
 let _grFootprintHistoricoTouchBind = false;
 // Reconstrói automaticamente, minuto a minuto, a faixa de preço negociada dentro
@@ -13887,6 +13903,7 @@ function grFootprintAbrirHistorico() {
     const candles1m = grFootprintTodosOsCandlesBrutos()
         .filter(c => c.ts >= de && c.ts < ate)
         .sort((a, b) => a.ts - b.ts);
+    candles1mDoHistorico = candles1m;
     // Zonas ZII marcadas NESSE candle específico — usadas abaixo pra separar,
     // minuto a minuto, quanto do volume foi especificamente nesses níveis.
     const zonasDoCandle = _grZiiZonas.filter(z => z.candleTs === candle.t);
@@ -13933,16 +13950,18 @@ function grFootprintAbrirHistorico() {
             (pico.avgTrade != null ? ` · trade médio ${fmtBtc2(pico.avgTrade)} BTC` : '') +
             (_grFootprintHistoricoColunas[0] && _grFootprintHistoricoColunas[0]._acel != null
                 ? `<br><span style="color:#E65100;">Pico de aceleração do candle: ${_grFootprintHistoricoColunas[0]._acel.toFixed(1)} em $${_grFootprintHistoricoColunas[0]._acelPrecoPico.toLocaleString('pt-BR')}</span>`
-                : '');
+                : '') +
+            (window._grExtResumo ? `<br><b>${window._grExtResumo}</b>` : '');
     });
 }
 function grFootprintFecharHistorico() {
     document.getElementById('footprint-historico-overlay').style.display = 'none';
 }
 function grFootprintDesenharHistorico(colunas, candle) {
+    window._grExtResumo = '';
     const canvas = document.getElementById('footprint-historico-canvas');
     if (!canvas) return;
-    const W = canvas.parentElement.clientWidth, H = 460;
+    const W = canvas.parentElement.clientWidth, H = 660;
     canvas.width = W;
     canvas.height = H;
     canvas.style.height = H + 'px';
@@ -13953,7 +13972,8 @@ function grFootprintDesenharHistorico(colunas, candle) {
     const padEsq = 54, padDir = 8, padTop = 10, padEntrePaineis = 8, padBot = 24;
     const alturaVolume = 190;
     const chartW = W - padEsq - padDir;
-    const chartH = H - padTop - padEntrePaineis - alturaVolume - padBot; // painel de preço
+    const alturaExt = 190; // painel novo: Ask/Bid nos extremos do candle
+    const chartH = H - padTop - padEntrePaineis - alturaVolume - padEntrePaineis - alturaExt - padBot; // painel de preço
     const volTop = padTop + chartH + padEntrePaineis; // topo do painel de volume
     const lo = candle.l, hi = candle.h;
     const yForPrice = p => padTop + chartH - ((p - lo) / (hi - lo)) * chartH;
@@ -14204,6 +14224,61 @@ function grFootprintDesenharHistorico(colunas, candle) {
     ctx.fillStyle = '#B8860B';
     ctx.textAlign = 'left';
     ctx.fillText('média ' + fmtVolK(mediaVol), padEsq + 2, yMedia - 3);
+    // ===== Painel novo: Ask e Bid SÓ nas 3 linhas de cima e nas 3 de baixo do candle =====
+    (function () {
+        const extTop = volTop + alturaVolume + padEntrePaineis;
+        const meioY = extTop + alturaExt / 2;
+        let cl = null;
+        try { cl = grFootprintClusterDoCandle(candle, grTickAtr(), null); } catch (e) { cl = null; }
+        const L = cl && cl.linhas ? cl.linhas : [];
+        ctx.font = 'bold 9px -apple-system';
+        if (L.length < 4) {
+            ctx.fillStyle = '#555555'; ctx.textAlign = 'left';
+            ctx.fillText('Extremos: candle com poucas linhas no grid ATR', padEsq + 2, meioY);
+            return;
+        }
+        const kT = 2, kB = L.length - 3;
+        const bordaTopo = L[kT].p - (L[kT].meio || 0);      // topo: preços >= isso
+        const bordaBase = L[kB].p + (L[kB].meio || 0);      // base: preços < isso
+        const dados = _grFootprintHistoricoColunas.map(col => {
+            const cm = (candles1mDoHistorico.find(c => c.ts === col.ts) || {}).niveis || [];
+            let tA = 0, tB = 0, bA = 0, bB = 0;
+            cm.forEach(n => {
+                if (n.p >= bordaTopo) { tA += n.c; tB += n.v; }
+                if (n.p < bordaBase) { bA += n.c; bB += n.v; }
+            });
+            return { tA, tB, bA, bB };
+        });
+        const maxV = Math.max(1e-9, ...dados.map(d => Math.max(d.tA, d.tB, d.bA, d.bB)));
+        const metade = alturaExt / 2 - 12;
+        ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(padEsq, meioY); ctx.lineTo(W - padDir, meioY); ctx.stroke();
+        // metade de cima do painel = TOPO do candle; metade de baixo = BASE
+        const yTopoBase = extTop + 12 + metade;      // linha base das barras do topo (cresce pra cima)
+        const yBaseTopo = meioY + 12;                // linha de partida das barras da base (cresce pra baixo)
+        const bw = Math.max(1, colW * 0.42);
+        _grFootprintHistoricoColunas.forEach((col, i) => {
+            const d = dados[i];
+            // TOPO: Ask (verde) à esquerda, Bid (vermelho) à direita, crescendo p/ cima
+            if (d.tA > 0) { const h = d.tA / maxV * metade; ctx.fillStyle = '#2E9132'; ctx.fillRect(col.x - bw, yTopoBase - h, bw, h); }
+            if (d.tB > 0) { const h = d.tB / maxV * metade; ctx.fillStyle = '#D32F2F'; ctx.fillRect(col.x, yTopoBase - h, bw, h); }
+            // BASE: crescendo p/ baixo
+            if (d.bA > 0) { const h = d.bA / maxV * metade; ctx.fillStyle = '#2E9132'; ctx.fillRect(col.x - bw, yBaseTopo, bw, h); }
+            if (d.bB > 0) { const h = d.bB / maxV * metade; ctx.fillStyle = '#D32F2F'; ctx.fillRect(col.x, yBaseTopo, bw, h); }
+        });
+        ctx.fillStyle = '#333333'; ctx.textAlign = 'left';
+        ctx.fillText('TOPO (3 linhas de cima): Ask verde · Bid vermelho', padEsq + 2, extTop + 9);
+        ctx.fillText('BASE (3 linhas de baixo): Ask verde · Bid vermelho', padEsq + 2, meioY + 9);
+        // Soma total e onde o candle fechou
+        const sT = dados.reduce((a, d) => [a[0] + d.tA, a[1] + d.tB], [0, 0]);
+        const sB = dados.reduce((a, d) => [a[0] + d.bA, a[1] + d.bB], [0, 0]);
+        const rng = Math.max(1e-9, candle.h - candle.l);
+        const fechaPct = (candle.c - candle.l) / rng * 100;
+        const pavioSup = (candle.h - Math.max(candle.o, candle.c)) / rng * 100;
+        const pavioInf = (Math.min(candle.o, candle.c) - candle.l) / rng * 100;
+        window._grExtResumo = `Topo: Ask ${fmtBtc2(sT[0])} / Bid ${fmtBtc2(sT[1])} · Base: Ask ${fmtBtc2(sB[0])} / Bid ${fmtBtc2(sB[1])}<br>` +
+            `Fechou a ${fechaPct.toFixed(0)}% da faixa (0% = mínima, 100% = máxima) · pavio de cima ${pavioSup.toFixed(0)}% · pavio de baixo ${pavioInf.toFixed(0)}%`;
+    })();
     // Referências de horário: primeiro, meio, último minuto
     ctx.font = '9px -apple-system';
     ctx.fillStyle = '#555555';
