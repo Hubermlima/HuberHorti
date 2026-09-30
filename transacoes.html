@@ -13061,7 +13061,7 @@ function grExLado(l) {
 }
 // ══ EFICÁCIA DA EXAUSTÃO — para cada EC / EV do histórico com footprint, mede o que o preço fez depois (comparado com todos os candles) ═════
 const GR_EFX_H = [1, 3, 5, 10];
-let _grEfxLado = 'EC', _grEfxWatch = null;
+let _grEfxLado = 'EC', _grEfxWatch = null, _grEfxModo = 'candle';
 function grEfxCalcular(lado) {
     const cs = _grAllCandles, n = cs.length;
     if (!n || !_grFootprintAtivo || !_grFootprintCandlesRaw || !_grFootprintCandlesRaw.length) return null;
@@ -13108,20 +13108,22 @@ function grEfxRender() {
     const dl = (window._grFluxoDias || []).filter(d => d.estado === 'carregando').length;
     if (dl > 0 && !el.dataset.pronto) { el.innerHTML = '<div style="padding:16px 0;font-size:13px;">Baixando o footprint (' + dl + ' dias restantes)... o resultado aparece quando terminar.</div>'; const b0 = document.getElementById('gr-efx-lados'); if (b0) b0.innerHTML = ''; return; }
     el.dataset.pronto = '1';
-    let R = null; try { R = grEfxCalcular(_grEfxLado); } catch (e) {}
-    el.innerHTML = grEfxHtml(R);
+    let R = null;
+    if (_grEfxModo === 'minuto') { try { R = grEfmCalcular(_grEfxLado); } catch (e) {} el.innerHTML = grEfmHtml(R); }
+    else { try { R = grEfxCalcular(_grEfxLado); } catch (e) {} el.innerHTML = grEfxHtml(R); }
     const b = document.getElementById('gr-efx-lados');
     if (b) b.innerHTML = ['EC', 'EV'].map(l => '<button onclick="grEfxLado(\'' + l + '\')" style="flex:1;border:none;border-radius:8px;padding:9px 0;font-size:13px;font-weight:700;'
         + (l === _grEfxLado ? 'background:#1C1C1E;color:#FFFFFF;' : 'background:#F2F2F7;color:#1C1C1E;') + '">' + l + '</button>').join('');
 }
 function grEfxLado(l) { _grEfxLado = l; grEfxRender(); }
 function grEfxFechar() { clearInterval(_grEfxWatch); const o = document.getElementById('gr-efx-overlay'); if (o) o.remove(); }
-function grEfxAbrir() {
+function grEfxAbrir(modo) {
+    _grEfxModo = modo === 'minuto' ? 'minuto' : 'candle';
     try { cvFecharMenuFpCfg(); } catch (e) {}
     grEfxFechar();
     const o = document.createElement('div'); o.id = 'gr-efx-overlay';
     o.style.cssText = 'position:fixed;inset:0;z-index:9999;background:#FFFFFF;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 16px 40px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;color:#1C1C1E;';
-    o.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;"><div style="font-size:16px;font-weight:700;">Eficácia da Exaustão</div><button onclick="grEfxFechar()" style="border:none;background:#F2F2F7;border-radius:8px;padding:8px 14px;font-size:14px;font-weight:700;color:#1C1C1E;">Fechar</button></div>'
+    o.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;"><div style="font-size:16px;font-weight:700;">' + (_grEfxModo === 'minuto' ? 'Eficácia por minuto' : 'Eficácia da Exaustão') + '</div><button onclick="grEfxFechar()" style="border:none;background:#F2F2F7;border-radius:8px;padding:8px 14px;font-size:14px;font-weight:700;color:#1C1C1E;">Fechar</button></div>'
         + '<div style="font-size:12px;margin-top:6px;">Período: ' + (FOOTPRINT_DIAS_AO_ATIVAR >= 36500 ? 'todo o histórico disponível' : FOOTPRINT_DIAS_AO_ATIVAR + ' dias') + '. Usa o timeframe do gráfico.</div>'
         + '<div id="gr-efx-lados" style="display:flex;gap:6px;margin-top:10px;"></div><div id="gr-efx-corpo"></div>';
     document.body.appendChild(o);
@@ -13133,6 +13135,63 @@ function grEfxAbrir() {
         const el = document.getElementById('gr-efx-corpo');
         if (q !== ult || (el && !el.dataset.pronto)) { ult = q; grEfxRender(); }
     }, 4000);
+}
+// ══ EFICÁCIA POR MINUTO — clímax de volume + novo extremo com menos volume + secura (regras fixadas ANTES de olhar qualquer resultado) ═════
+//  EC (topo): o minuto E faz a MÁXIMA das últimas 60 min; nos 15 min até E houve um minuto S com volume ≥ 3× a média dos 60 min anteriores a ele (o clímax; pode ser o próprio E);
+//  o volume de E não passa o de S; e nos 5 min seguintes o volume médio fica abaixo de 0,6× a média dos 60 min anteriores a E (secura). O sinal vale no fim desses 5 min.
+//  EV (fundo): o espelho (mínima nova). Depois de um sinal, espera 15 min para outro. Retorno medido pelo preço médio ponderado (vwap) do minuto, na direção esperada.
+//  Controle = 5 min depois de QUALQUER nova máxima/mínima de 60 min (sem exigir clímax nem secura): mostra se o padrão acrescenta algo ao simples "fez extremo".
+const GR_EFM_H = [5, 15, 30, 60];
+function grEfmCalcular(lado) {
+    const raw = _grFootprintCandlesRaw; if (!raw || !raw.length) return null;
+    let t0 = Infinity, t1 = -Infinity; raw.forEach(m => { if (m.ts < t0) t0 = m.ts; if (m.ts > t1) t1 = m.ts; });
+    t0 = Math.max(t0, t1 - 800000 * 60000);
+    const n = Math.floor((t1 - t0) / 60000) + 1; if (n < 200) return null;
+    const vol = new Float64Array(n), pv = new Float64Array(n), hi = new Float64Array(n).fill(NaN), lo = new Float64Array(n).fill(NaN);
+    raw.forEach(m => {
+        if (m.ts < t0) return; const i = Math.round((m.ts - t0) / 60000);
+        (m.niveis || []).forEach(x => { const q = (x.c || 0) + (x.v || 0); if (q <= 0) return; vol[i] += q; pv[i] += x.p * q; if (!(hi[i] >= x.p)) hi[i] = x.p; if (!(lo[i] <= x.p)) lo[i] = x.p; });
+    });
+    const vw = new Float64Array(n), V = new Float64Array(n + 1);
+    for (let i = 0; i < n; i++) { vw[i] = vol[i] > 0 ? pv[i] / vol[i] : NaN; V[i + 1] = V[i] + vol[i]; }
+    const ec = lado === 'EC', sinal = ec ? -1 : 1, ext = i => ec ? hi[i] : -lo[i];
+    const novo = () => ({ n: 0, h: GR_EFM_H.map(() => ({ tot: 0, ok: 0, sum: 0 })) });
+    const S = novo(), S1 = novo(), S2 = novo(), C = novo(), B = novo(), M = n / 2;
+    const soma = (alvo, T) => { alvo.n++; GR_EFM_H.forEach((h, k) => { const j = T + h; if (j >= n || !(vw[T] > 0) || !(vw[j] > 0)) return; const r = (vw[j] / vw[T] - 1) * sinal, a = alvo.h[k]; a.tot++; if (r > 0) a.ok++; a.sum += r; }); };
+    const media = (a, b) => (V[b] - V[a]) / (b - a);   // média do volume dos minutos [a, b)
+    let ultS = -1e9, ultC = -1e9;
+    for (let T = 65; T < n; T += 1) { if (vol[T] > 0) soma(B, T); }
+    for (let i = 60; i < n - 5; i++) {
+        if (!(vol[i] > 0) || isNaN(ext(i))) continue;
+        let mx = -Infinity; for (let j = i - 60; j < i; j++) { const e = ext(j); if (e > mx) mx = e; }
+        if (!(ext(i) > mx)) continue;
+        const T = i + 5;
+        if (T >= ultC + 15) { ultC = T; soma(C, T); }
+        let sp = -1;
+        for (let q = i - 15; q <= i; q++) { if (q < 60) continue; if (vol[q] >= 3 * media(q - 60, q) && (sp < 0 || vol[q] > vol[sp])) sp = q; }
+        if (sp < 0 || vol[i] > vol[sp]) continue;
+        if (!(media(i + 1, i + 6) < 0.6 * media(i - 60, i))) continue;
+        if (T < ultS + 15) continue;
+        ultS = T; soma(S, T); soma(T < M ? S1 : S2, T);
+    }
+    return { S, S1, S2, C, B, dias: Math.max(1, n / 1440), lado };
+}
+function grEfmHtml(R) {
+    if (!R) return '<div style="padding:16px 0;font-size:13px;">Sem footprint carregado. Ligue o Fluxo e aumente "Dias ao ligar o Fluxo".</div>';
+    const sg = v => (v >= 0 ? '+' : '−') + (Math.abs(v) * 100).toFixed(2).replace('.', ',') + '%', pc = v => (v * 100).toFixed(0) + '%', ec = R.lado === 'EC';
+    let h = '<div style="font-size:12px;font-weight:700;margin-top:6px;">Por minuto · ' + Math.round(R.dias) + ' dias com footprint</div>';
+    h += '<div style="font-size:13px;font-weight:700;color:' + (ec ? '#DC2626' : '#16A34A') + ';margin-top:10px;">' + (ec ? 'EC — clímax no topo (esperado: preço cair)' : 'EV — clímax no fundo (esperado: preço subir)') + '</div>';
+    h += '<div style="font-size:12px;margin-top:2px;">Cada célula: variação média do preço NA DIREÇÃO ESPERADA (positivo = acertou) · % das vezes que foi na direção esperada. Verde = melhor que o controle, vermelho = pior (z ≥ 2). +5, +15, +30 e +60 são MINUTOS depois do sinal.</div>';
+    h += '<table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:12px;"><tr style="font-weight:700;"><td></td><td align="right">Sinais</td>' + GR_EFM_H.map(x => '<td align="right">+' + x + 'm</td>').join('') + '</tr>';
+    const cel = (k, A) => {
+        const a = A.h[k]; if (!a.tot) return '<td align="right">—</td>';
+        const b = R.C.h[k], bp = b.tot ? b.ok / b.tot : 0.5, p = a.ok / a.tot, se = Math.sqrt(Math.max(bp * (1 - bp), 1e-9) / a.tot), z = (p - bp) / se, m = a.sum / a.tot;
+        return '<td align="right"><span style="color:' + (m > 0 ? '#16A34A' : m < 0 ? '#DC2626' : '#1C1C1E') + ';">' + sg(m) + '</span> <span style="font-weight:700;color:' + (z >= 2 ? '#16A34A' : z <= -2 ? '#DC2626' : '#1C1C1E') + ';">' + pc(p) + '</span></td>';
+    };
+    const lin = (nome, A, negrito, borda) => '<tr style="border-top:' + (borda || '1px solid #F2F2F7') + ';' + (negrito ? 'font-weight:700;' : '') + '"><td>' + nome + '</td><td align="right">' + A.n + (A.n > 0 && A.n < 20 ? '*' : '') + '</td>' + GR_EFM_H.map((x, k) => cel(k, A)).join('') + '</tr>';
+    h += lin('Sinal', R.S, true) + lin('· 1ª metade', R.S1) + lin('· 2ª metade', R.S2) + lin('Controle (qualquer extremo)', R.C, false, '2px solid #1C1C1E') + lin('Base (todos os minutos)', R.B, false);
+    h += '<div style="font-size:11.5px;margin-top:8px;">* menos de 20 sinais. As duas metades mostram se o resultado se repete no tempo: se só uma metade tem vantagem, é acaso. A vantagem real é do Sinal contra o Controle.</div>';
+    return h + '</table>';
 }
 // Exporta o footprint de UM DIA (UTC) em CSV: ts (ISO, minuto), preço, ask (compra agressora), bid (venda agressora). Serve para estudar candles reais fora do app.
 function grFootprintExportarDia() {
@@ -13171,6 +13230,24 @@ function grFootprintExportarAoRedor(ts) {
     const alvo = new Date(ts).toISOString().slice(0, 16).replace(/[:T]/g, '-');
     grFootprintBaixarCsv(linhas, 'alvo_' + alvo + '_' + _grTf + '_3dias.csv');
 }
+// Exporta os últimos N dias (padrão 30) em RESUMO POR MINUTO (bem menor que todos os níveis): ts,hi,lo,vwap,ask,bid,ask_top3,bid_top3,ask_bot3,bid_bot3 (horário UTC).
+function grFootprintExportarPeriodo() {
+    const raw = _grFootprintCandlesRaw;
+    if (!raw || !raw.length) { alert('Sem footprint carregado. Ligue o Fluxo primeiro.'); return; }
+    const nd = parseInt(prompt('Quantos dias exportar (até hoje)?', '30'), 10); if (!(nd > 0)) return;
+    let t1 = -Infinity; raw.forEach(m => { if (m.ts > t1) t1 = m.ts; });
+    const t0 = t1 - nd * 86400000, linhas = ['ts,hi,lo,vwap,ask,bid,ask_top3,bid_top3,ask_bot3,bid_bot3'];
+    raw.slice().sort((a, b) => a.ts - b.ts).forEach(m => {
+        if (m.ts < t0) return;
+        const lv = (m.niveis || []).filter(x => (x.c || 0) + (x.v || 0) > 0).sort((a, b) => a.p - b.p); if (!lv.length) return;
+        let A = 0, B = 0, pv = 0, q = 0, ta = 0, tb = 0, ba = 0, bb = 0;
+        lv.forEach((x, i) => { const c = x.c || 0, v = x.v || 0; A += c; B += v; pv += x.p * (c + v); q += c + v; if (i < 3) { ba += c; bb += v; } if (i >= lv.length - 3) { ta += c; tb += v; } });
+        const r = z => (Math.round(z * 100) / 100);
+        linhas.push([new Date(m.ts).toISOString().slice(0, 16), lv[lv.length - 1].p, lv[0].p, Math.round(pv / q), r(A), r(B), r(ta), r(tb), r(ba), r(bb)].join(','));
+    });
+    if (linhas.length < 2) { alert('Sem dados nesse período.'); return; }
+    grFootprintBaixarCsv(linhas, 'minutos_' + nd + 'd_ate_' + new Date(t1).toISOString().slice(0, 10) + '.csv');
+}
 function grConfigBlocoExaustao(svg, comBotao) {
     let s = '<div style="padding:12px 2px;border-bottom:1px solid #F2F2F7;">'
         + '<div style="display:flex;align-items:center;gap:12px;">'
@@ -13178,6 +13255,8 @@ function grConfigBlocoExaustao(svg, comBotao) {
         + '<div style="flex:1;min-width:0;"><div style="font-size:14px;font-weight:600;color:#1C1C1E;">Exaustão (EC / EV)</div><div style="font-size:11.5px;color:#8E8E93;margin-top:1px;">EC: compra esgotada no topo · EV: venda esgotada no fundo</div></div></div>';
     s += '<div class="gr-ex-sl">' + grExSlidersHtml() + '</div>';
     if (comBotao) s += '<button onclick="grEfxAbrir()" style="width:100%;margin-top:10px;border:none;border-radius:8px;padding:10px 0;font-size:13px;font-weight:700;background:#1C1C1E;color:#FFFFFF;">Eficácia da exaustão (EC / EV)</button>';
+    if (comBotao) s += '<button onclick="grEfxAbrir(\'minuto\')" style="width:100%;margin-top:8px;border:none;border-radius:8px;padding:10px 0;font-size:13px;font-weight:700;background:#1C1C1E;color:#FFFFFF;">Eficácia por minuto (clímax + secura)</button>';
+    if (comBotao) s += '<button onclick="grFootprintExportarPeriodo()" style="width:100%;margin-top:8px;border:none;border-radius:8px;padding:10px 0;font-size:13px;font-weight:700;background:#F2F2F7;color:#1C1C1E;">Exportar período (resumo por minuto, CSV)</button>';
     if (comBotao) s += '<button onclick="grFootprintExportarDia()" style="width:100%;margin-top:8px;border:none;border-radius:8px;padding:10px 0;font-size:13px;font-weight:700;background:#F2F2F7;color:#1C1C1E;">Exportar footprint de um dia (CSV)</button>';
     return s + '</div>';
 }
