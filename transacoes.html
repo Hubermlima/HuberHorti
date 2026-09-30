@@ -13018,12 +13018,11 @@ function grMetricasFecharTabela() { _grMetricasTabTs = null; _grMetricasCache = 
 //   10 traders presos (agressores do lado no prejuízo em relação ao fechamento) · 11 tendência longa · 12 pressão prévia · 13 confirmação (próximos candles não rompem).
 function grExLer(k, pad) { try { const v = parseFloat(localStorage.getItem(k)); return isFinite(v) ? v : pad; } catch (e) { return pad; } }
 const GR_EX_CFG = {   // chave: [padrão, mín, máx, passo, rótulo] — só o que aparece na tela
-    grExN:     [3,   3, 50, 1,   'Extremo dos últimos (candles)'],
     grExPreso: [0,   0, 100, 1,  'Traders presos (% do volume do lado que ficou no prejuízo 3 candles depois, 0 = ignora)']
 };
 // Exaustão = no extremo, a agressão vai A FAVOR do movimento (delta do lado que empurrou), com absorção ACIMA DA MÉDIA (a barra do painel ABSORÇÃO
 // acima da linha: muito volume para pouco avanço). Esses dois critérios são fixos, sem número para calibrar. O resto fica desligado.
-const GR_EX_FIXO = { grExPico: 0, grExDevol: 0, grExFech: 100, grExMov: 0, grExPres: 0, grExCob: 50, grExVira: 0, grExVol: 0, grExEsf: 0, grExConf: 0, grExTend: 0 };
+const GR_EX_FIXO = { grExN: 1, grExPico: 0, grExDevol: 0, grExFech: 100, grExMov: 0, grExPres: 0, grExCob: 50, grExVira: 0, grExVol: 0, grExEsf: 0, grExConf: 0, grExTend: 0 };
 const EXS = { EV: {}, EC: {} };
 // uma configuração só, valendo para EC e EV (EXS.EV e EXS.EC recebem os mesmos valores)
 ['EV', 'EC'].forEach(l => { Object.assign(EXS[l], GR_EX_FIXO); Object.keys(GR_EX_CFG).forEach(k => { EXS[l][k] = grExLer('grEx3_' + k, GR_EX_CFG[k][0]); }); });
@@ -13056,12 +13055,88 @@ function grExLado(l) {
     document.querySelectorAll('.gr-ex-tog').forEach(e => { e.innerHTML = grExTogHtml(); });
     document.querySelectorAll('.gr-ex-sl').forEach(e => { e.innerHTML = grExSlidersHtml(); });
 }
+// ══ EFICÁCIA DA EXAUSTÃO — para cada EC / EV do histórico com footprint, mede o que o preço fez depois (comparado com todos os candles) ═════
+const GR_EFX_H = [1, 3, 5, 10];
+let _grEfxLado = 'EC', _grEfxWatch = null;
+function grEfxCalcular(lado) {
+    const cs = _grAllCandles, n = cs.length;
+    if (!n || !_grFootprintAtivo || !_grFootprintCandlesRaw || !_grFootprintCandlesRaw.length) return null;
+    const ms = grFootprintMsPorCandle(), agora = Date.now();
+    let t0 = Infinity; _grFootprintCandlesRaw.forEach(m => { if (m.ts < t0) t0 = m.ts; });
+    const tIni = agora - FOOTPRINT_DIAS_AO_ATIVAR * 86400000;
+    let i0 = cs.findIndex(c => c.t >= Math.max(t0, tIni)); if (i0 < 0) return null;
+    i0 = Math.max(i0, 20, n - 20000);
+    const sinal = lado === 'EC' ? -1 : 1;   // EC espera queda, EV espera alta: o retorno é medido NA DIREÇÃO ESPERADA
+    const novo = () => ({ n: 0, h: GR_EFX_H.map(() => ({ tot: 0, ok: 0, sum: 0 })) });
+    const S = novo(), base = novo(), fechado = j => j < n && agora >= cs[j].t + ms;
+    for (let i = i0; i < n; i++) {
+        if (!fechado(i)) continue;
+        const soma = (alvo, k) => { const j = i + GR_EFX_H[k]; if (!fechado(j)) return; const r = (cs[j].c / cs[i].c - 1) * sinal, a = alvo.h[k]; a.tot++; if (r > 0) a.ok++; a.sum += r; };
+        base.n++; GR_EFX_H.forEach((h, k) => soma(base, k));
+        let r = null; try { r = grExaustaoDe(i); } catch (e) {}
+        if (r !== lado) continue;
+        S.n++; GR_EFX_H.forEach((h, k) => soma(S, k));
+    }
+    return { S, base, dias: Math.max(1, (cs[n - 1].t - cs[i0].t) / 86400000), lado };
+}
+function grEfxHtml(R) {
+    if (!R) return '<div style="padding:16px 0;font-size:13px;color:#1C1C1E;">Sem footprint carregado. Ligue o Fluxo e aumente "Dias ao ligar o Fluxo".</div>';
+    const sg = v => (v >= 0 ? '+' : '−') + (Math.abs(v) * 100).toFixed(2).replace('.', ',') + '%';
+    const pc = v => (v * 100).toFixed(0) + '%';
+    const ec = R.lado === 'EC';
+    let h = '<div style="font-size:12px;font-weight:700;margin-top:6px;">Timeframe: ' + grTfSiglaAtual() + ' · ' + Math.round(R.dias) + ' dias com footprint</div>';
+    h += '<div style="font-size:13px;font-weight:700;color:' + (ec ? '#DC2626' : '#16A34A') + ';margin-top:10px;">' + (ec ? 'EC — compra esgotada (esperado: preço cair)' : 'EV — venda esgotada (esperado: preço subir)') + '</div>';
+    h += '<div style="font-size:12px;margin-top:2px;">Cada célula: variação média do preço NA DIREÇÃO ESPERADA (positivo = acertou) · % das vezes que o preço foi na direção esperada. Verde = melhor que a base, vermelho = pior (z ≥ 2).</div>';
+    h += '<table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:12px;"><tr style="font-weight:700;"><td></td><td align="right">Sinais</td>' + GR_EFX_H.map(x => '<td align="right">+' + x + '</td>').join('') + '</tr>';
+    const cel = k => {
+        const a = R.S.h[k]; if (!a.tot) return '<td align="right">—</td>';
+        const b = R.base.h[k], bp = b.tot ? b.ok / b.tot : 0.5, p = a.ok / a.tot, se = Math.sqrt(Math.max(bp * (1 - bp), 1e-9) / a.tot), z = (p - bp) / se;
+        const corP = z >= 2 ? '#16A34A' : z <= -2 ? '#DC2626' : '#1C1C1E', m = a.sum / a.tot;
+        return '<td align="right"><span style="color:' + (m > 0 ? '#16A34A' : m < 0 ? '#DC2626' : '#1C1C1E') + ';">' + sg(m) + '</span> <span style="font-weight:700;color:' + corP + ';">' + pc(p) + '</span></td>';
+    };
+    h += '<tr style="border-top:1px solid #F2F2F7;"><td>' + R.lado + '</td><td align="right">' + R.S.n + (R.S.n > 0 && R.S.n < 20 ? '*' : '') + '</td>' + (R.S.n ? GR_EFX_H.map((x, k) => cel(k)).join('') : GR_EFX_H.map(() => '<td align="right">—</td>').join('')) + '</tr>';
+    h += '<tr style="border-top:2px solid #1C1C1E;font-weight:700;"><td>Base (todos os candles)</td><td align="right">' + R.base.n + '</td>' + GR_EFX_H.map((x, k) => { const a = R.base.h[k]; return a.tot ? '<td align="right">' + sg(a.sum / a.tot) + ' ' + pc(a.ok / a.tot) + '</td>' : '<td align="right">—</td>'; }).join('') + '</tr></table>';
+    h += '<div style="font-size:11.5px;margin-top:8px;">* menos de 20 sinais: amostra pequena, não conclua nada. Os números +1, +3, +5 e +10 são candles depois do sinal. Para valer, precisa aparecer em vários prazos e em mais de um timeframe.</div>';
+    return h;
+}
+function grEfxRender() {
+    const el = document.getElementById('gr-efx-corpo'); if (!el) return;
+    const dl = (window._grFluxoDias || []).filter(d => d.estado === 'carregando').length;
+    if (dl > 0 && !el.dataset.pronto) { el.innerHTML = '<div style="padding:16px 0;font-size:13px;">Baixando o footprint (' + dl + ' dias restantes)... o resultado aparece quando terminar.</div>'; const b0 = document.getElementById('gr-efx-lados'); if (b0) b0.innerHTML = ''; return; }
+    el.dataset.pronto = '1';
+    let R = null; try { R = grEfxCalcular(_grEfxLado); } catch (e) {}
+    el.innerHTML = grEfxHtml(R);
+    const b = document.getElementById('gr-efx-lados');
+    if (b) b.innerHTML = ['EC', 'EV'].map(l => '<button onclick="grEfxLado(\'' + l + '\')" style="flex:1;border:none;border-radius:8px;padding:9px 0;font-size:13px;font-weight:700;'
+        + (l === _grEfxLado ? 'background:#1C1C1E;color:#FFFFFF;' : 'background:#F2F2F7;color:#1C1C1E;') + '">' + l + '</button>').join('');
+}
+function grEfxLado(l) { _grEfxLado = l; grEfxRender(); }
+function grEfxFechar() { clearInterval(_grEfxWatch); const o = document.getElementById('gr-efx-overlay'); if (o) o.remove(); }
+function grEfxAbrir() {
+    try { cvFecharMenuFpCfg(); } catch (e) {}
+    grEfxFechar();
+    const o = document.createElement('div'); o.id = 'gr-efx-overlay';
+    o.style.cssText = 'position:fixed;inset:0;z-index:9999;background:#FFFFFF;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 16px 40px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;color:#1C1C1E;';
+    o.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;"><div style="font-size:16px;font-weight:700;">Eficácia da Exaustão</div><button onclick="grEfxFechar()" style="border:none;background:#F2F2F7;border-radius:8px;padding:8px 14px;font-size:14px;font-weight:700;color:#1C1C1E;">Fechar</button></div>'
+        + '<div style="font-size:12px;margin-top:6px;">Período: ' + (FOOTPRINT_DIAS_AO_ATIVAR >= 36500 ? 'todo o histórico disponível' : FOOTPRINT_DIAS_AO_ATIVAR + ' dias') + '. Usa o timeframe do gráfico.</div>'
+        + '<div id="gr-efx-lados" style="display:flex;gap:6px;margin-top:10px;"></div><div id="gr-efx-corpo"></div>';
+    document.body.appendChild(o);
+    grEfxRender();
+    let ult = _grFootprintCandlesRaw ? _grFootprintCandlesRaw.length : 0;
+    _grEfxWatch = setInterval(() => {   // espera o footprint terminar de baixar; refaz uma vez
+        if ((window._grFluxoDias || []).some(d => d.estado === 'carregando')) return;
+        const q = _grFootprintCandlesRaw ? _grFootprintCandlesRaw.length : 0;
+        const el = document.getElementById('gr-efx-corpo');
+        if (q !== ult || (el && !el.dataset.pronto)) { ult = q; grEfxRender(); }
+    }, 4000);
+}
 function grConfigBlocoExaustao(svg, comBotao) {
     let s = '<div style="padding:12px 2px;border-bottom:1px solid #F2F2F7;">'
         + '<div style="display:flex;align-items:center;gap:12px;">'
         + '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;">' + svg + '</svg>'
         + '<div style="flex:1;min-width:0;"><div style="font-size:14px;font-weight:600;color:#1C1C1E;">Exaustão (EC / EV)</div><div style="font-size:11.5px;color:#8E8E93;margin-top:1px;">EC: compra esgotada no topo · EV: venda esgotada no fundo</div></div></div>';
     s += '<div class="gr-ex-sl">' + grExSlidersHtml() + '</div>';
+    if (comBotao) s += '<button onclick="grEfxAbrir()" style="width:100%;margin-top:10px;border:none;border-radius:8px;padding:10px 0;font-size:13px;font-weight:700;background:#1C1C1E;color:#FFFFFF;">Eficácia da exaustão (EC / EV)</button>';
     return s + '</div>';
 }
 function grExDeltaCandle(cd) { // delta (compra − venda) do candle, com cache
@@ -13072,6 +13147,23 @@ function grExDeltaCandle(cd) { // delta (compra − venda) do candle, com cache
 }
 function grExConfDe(r) { return EXS[r].grExConf; }
 // 'EC' | 'EV' | null para o candle de índice idx (só candles fechados, com footprint)
+// CONFIRMAÇÃO PELO PRÓPRIO PREÇO (sem contar candles): EC só vale depois que um candle FECHA abaixo da mínima do candle do sinal, sem que nenhum candle antes disso
+// tenha rompido a máxima dele (EV: fecha acima da máxima, sem romper a mínima). Simetria, sem número: se levou k candles para confirmar, o candle do sinal precisa ser
+// a máxima (EC) / mínima (EV) de k candles à esquerda também. Devolve { ok, k } ou { ok:false, motivo }.
+function grExConfirma(idx, r) {
+    const cs = _grAllCandles, cd = cs[idx], ms = grFootprintMsPorCandle(), agora = Date.now(), ec = r === 'EC';
+    let k = 0;
+    for (let j = idx + 1; j < cs.length; j++) {
+        const nx = cs[j];
+        if (ec ? nx.h > cd.h : nx.l < cd.l) return { ok: false, motivo: 'extremo rompido antes de confirmar' };
+        if (agora < nx.t + ms) return { ok: false, motivo: 'aguarda confirmação do preço' };   // candle em formação não confirma
+        if (ec ? nx.c < cd.l : nx.c > cd.h) { k = j - idx; break; }
+    }
+    if (!k) return { ok: false, motivo: 'aguarda confirmação do preço' };
+    if (idx - k < 0) return { ok: false, motivo: 'poucos candles à esquerda' };
+    for (let i = idx - k; i < idx; i++) if (ec ? cs[i].h > cd.h : cs[i].l < cd.l) return { ok: false, motivo: 'não é o extremo dos ' + k + ' candles à esquerda' };
+    return { ok: true, k };
+}
 function grExaustaoDe(idx) {
     const cd = _grAllCandles[idx]; if (!cd || idx < Math.min(EXS.EV.grExN, EXS.EC.grExN)) return null;
     const ms = grFootprintMsPorCandle(); if (Date.now() < cd.t + ms) return null;      // em formação: não marca
@@ -13080,6 +13172,7 @@ function grExaustaoDe(idx) {
     const nAll = _grAllCandles.length;
     if (c0 && c0.raw === raw && c0.v === _grExVersao && (!c0.esp || c0.n === nAll)) r = c0.r;
     else { r = grExaustaoBase(idx, cd, ms); _grExCache.set(cd.t, { raw, v: _grExVersao, r, esp: idx + GR_PRESO_K >= nAll, n: nAll }); }
+    if (r && !grExConfirma(idx, r).ok) return null;
     if (r && grExConfDe(r) > 0) {   // confirmação: os próximos candles não podem romper o extremo (e precisam existir)
         for (let j = 1; j <= grExConfDe(r); j++) {
             const nx = _grAllCandles[idx + j];
@@ -13176,6 +13269,7 @@ function grExaustaoDiag(idx) {
     _grExMotivo = '';
     const r = grExaustaoBase(idx, cd, ms);
     if (!r) return { r: null, motivo: _grExMotivo || 'sem sinal' };
+    { const cf = grExConfirma(idx, r); if (!cf.ok) return { r: null, motivo: cf.motivo }; }
     for (let j = 1; j <= grExConfDe(r); j++) {
         const nx = _grAllCandles[idx + j];
         if (!nx) return { r: null, motivo: 'aguarda candle seguinte' };
