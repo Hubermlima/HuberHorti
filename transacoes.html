@@ -13068,7 +13068,7 @@ function grEfxCalcular(lado) {
     i0 = Math.max(i0, 20, n - 20000);
     const sinal = lado === 'EC' ? -1 : 1;   // EC espera queda, EV espera alta: o retorno é medido NA DIREÇÃO ESPERADA
     const novo = () => ({ n: 0, h: GR_EFX_H.map(() => ({ tot: 0, ok: 0, sum: 0 })) });
-    const S = novo(), base = novo(), fechado = j => j < n && agora >= cs[j].t + ms;
+    const S = novo(), SL = [novo(), novo(), novo()], base = novo(), fechado = j => j < n && agora >= cs[j].t + ms;
     for (let i = i0; i < n; i++) {
         if (!fechado(i)) continue;
         const soma = (alvo, k, e) => { const j = e + GR_EFX_H[k]; if (!fechado(j)) return; const r = (cs[j].c / cs[e].c - 1) * sinal, a = alvo.h[k]; a.tot++; if (r > 0) a.ok++; a.sum += r; };
@@ -13076,8 +13076,9 @@ function grEfxCalcular(lado) {
         let r = null; try { r = grExaustaoDe(i); } catch (e) {}
         if (r !== lado) continue;
         S.n++; GR_EFX_H.forEach((h, k) => soma(S, k, i));   // o sinal é conhecido no fechamento do próprio candle
+        { const L = grExCadeia(i, lado === 'EC'), q = SL[Math.min(L, 3) - 1]; if (q) { q.n++; GR_EFX_H.forEach((h, k) => soma(q, k, i)); } }
     }
-    return { S, base, dias: Math.max(1, (cs[n - 1].t - cs[i0].t) / 86400000), lado };
+    return { S, SL, base, dias: Math.max(1, (cs[n - 1].t - cs[i0].t) / 86400000), lado };
 }
 function grEfxHtml(R) {
     if (!R) return '<div style="padding:16px 0;font-size:13px;color:#1C1C1E;">Sem footprint carregado. Ligue o Fluxo e aumente "Dias ao ligar o Fluxo".</div>';
@@ -13088,13 +13089,14 @@ function grEfxHtml(R) {
     h += '<div style="font-size:13px;font-weight:700;color:' + (ec ? '#DC2626' : '#16A34A') + ';margin-top:10px;">' + (ec ? 'EC — compra esgotada (esperado: preço cair)' : 'EV — venda esgotada (esperado: preço subir)') + '</div>';
     h += '<div style="font-size:12px;margin-top:2px;">Cada célula: variação média do preço NA DIREÇÃO ESPERADA (positivo = acertou) · % das vezes que o preço foi na direção esperada. Verde = melhor que a base, vermelho = pior (z ≥ 2).</div>';
     h += '<table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:12px;"><tr style="font-weight:700;"><td></td><td align="right">Sinais</td>' + GR_EFX_H.map(x => '<td align="right">+' + x + '</td>').join('') + '</tr>';
-    const cel = k => {
-        const a = R.S.h[k]; if (!a.tot) return '<td align="right">—</td>';
+    const cel = (k, S0) => {
+        const a = (S0 || R.S).h[k]; if (!a.tot) return '<td align="right">—</td>';
         const b = R.base.h[k], bp = b.tot ? b.ok / b.tot : 0.5, p = a.ok / a.tot, se = Math.sqrt(Math.max(bp * (1 - bp), 1e-9) / a.tot), z = (p - bp) / se;
         const corP = z >= 2 ? '#16A34A' : z <= -2 ? '#DC2626' : '#1C1C1E', m = a.sum / a.tot;
         return '<td align="right"><span style="color:' + (m > 0 ? '#16A34A' : m < 0 ? '#DC2626' : '#1C1C1E') + ';">' + sg(m) + '</span> <span style="font-weight:700;color:' + corP + ';">' + pc(p) + '</span></td>';
     };
     h += '<tr style="border-top:1px solid #F2F2F7;"><td>' + R.lado + '</td><td align="right">' + R.S.n + (R.S.n > 0 && R.S.n < 20 ? '*' : '') + '</td>' + (R.S.n ? GR_EFX_H.map((x, k) => cel(k)).join('') : GR_EFX_H.map(() => '<td align="right">—</td>').join('')) + '</tr>';
+    ['1 barra', '2 barras seguidas', '3 ou mais seguidas'].forEach((nm, q) => { const Q = R.SL[q]; h += '<tr style="border-top:1px solid #F2F2F7;color:#1C1C1E;"><td>&nbsp;&nbsp;' + nm + '</td><td align="right">' + Q.n + (Q.n > 0 && Q.n < 20 ? '*' : '') + '</td>' + (Q.n ? GR_EFX_H.map((x, k) => cel(k, Q)).join('') : GR_EFX_H.map(() => '<td align="right">—</td>').join('')) + '</tr>'; });
     h += '<tr style="border-top:2px solid #1C1C1E;font-weight:700;"><td>Base (todos os candles)</td><td align="right">' + R.base.n + '</td>' + GR_EFX_H.map((x, k) => { const a = R.base.h[k]; return a.tot ? '<td align="right">' + sg(a.sum / a.tot) + ' ' + pc(a.ok / a.tot) + '</td>' : '<td align="right">—</td>'; }).join('') + '</tr></table>';
     h += '<div style="font-size:11.5px;margin-top:8px;">* menos de 20 sinais: amostra pequena, não conclua nada. Os números +1, +3, +5 e +10 são candles depois do candle do sinal (contados a partir do fechamento dele). Para valer, precisa aparecer em vários prazos e em mais de um timeframe.</div>';
     return h;
@@ -13147,6 +13149,25 @@ function grExDeltaCandle(cd) { // delta (compra − venda) do candle, com cache
 }
 function grExConfDe(r) { return EXS[r].grExConf; }
 // 'EC' | 'EV' | null para o candle de índice idx (só candles fechados, com footprint)
+// Regra da barra j (devolve null se passa, ou o motivo de não passar). Só compara com a barra imediatamente anterior:
+//   EC: Δ+ atual > Δ+ anterior  e  eficiência atual < eficiência anterior  e  máxima atual ≥ máxima anterior   (EV: Δ−, eficiência vendedora, mínima ≤)
+//   eficiência = deslocamento % ÷ agressão do lado; deslocamento % = (fechamento − abertura) ÷ abertura (EC) ou (abertura − fechamento) ÷ abertura (EV).
+// Δ+ = volume de compra agressora do candle; Δ− = volume de venda agressora (footprint, soma dos minutos).
+function grExCondBarra(j, ec) {
+    const cs = _grAllCandles, cd = cs[j], ant = cs[j - 1]; if (!cd || !ant) return 'sem barra anterior';
+    if (!(ec ? cd.h >= ant.h : cd.l <= ant.l)) return 'não é extremo em relação à barra anterior';
+    const ms0 = grFootprintMsPorCandle(), A = grExAgressao(cd, ms0), B = grExAgressao(ant, ms0);
+    if (!B || B.n < 2 || !A || A.n < 2) return 'sem footprint da barra anterior';
+    const ag = ec ? A.comp : A.vend, agAnt = ec ? B.comp : B.vend;
+    if (!(ag > 0 && agAnt > 0)) return 'sem agressão do lado';
+    if (!(ag > agAnt)) return 'agressão não subiu em relação à barra anterior';
+    if (!(cd.o > 0 && ant.o > 0)) return 'sem abertura';
+    const dp = ec ? (cd.c - cd.o) / cd.o : (cd.o - cd.c) / cd.o, dpAnt = ec ? (ant.c - ant.o) / ant.o : (ant.o - ant.c) / ant.o;
+    if (!(dp / ag < dpAnt / agAnt)) return 'eficiência não caiu em relação à barra anterior';
+    return null;
+}
+// Tamanho da sequência: quantas barras seguidas (terminando em idx) passam na regra acima. 1 = só a barra atual.
+function grExCadeia(idx, ec) { let n = 0; for (let j = idx; j > 0 && n < 50; j--) { if (grExCondBarra(j, ec)) break; n++; } return n; }
 const _grExAgrCache = new Map();
 function grExAgressao(cd, ms) {   // agressão compradora (comp) e vendedora (vend) do candle inteiro, a partir do footprint; n = minutos com dado
     const raw = _grFootprintCandlesRaw ? _grFootprintCandlesRaw.length : 0, c0 = _grExAgrCache.get(cd.t);
@@ -13231,18 +13252,7 @@ function grExTestaLado(lado, idx, cd, fp, ctx) {
     if (P.grExVol > 0 && !(ctx.volRel != null && ctx.volRel >= P.grExVol)) return grExFalha('volume baixo');
     const pico = ec ? fp.maxD : -fp.minD, dl = ec ? fp.delta : -fp.delta;   // pico e delta final vistos do lado que empurrou
     if (pico < fp.tot * (P.grExPico / 100)) return grExFalha('sem pico de delta');
-    // EFICIÊNCIA DO AGRESSOR e sua deterioração (só a barra imediatamente anterior, sem média nem janela):
-    //   EC: Δ+ atual > Δ+ anterior  e  (fechamento − abertura)/Δ+ atual < o da barra anterior  (+ máxima atual ≥ máxima anterior, checada acima)
-    //   EV: Δ− atual > Δ− anterior  e  (abertura − fechamento)/Δ− atual < o da barra anterior  (+ mínima atual ≤ mínima anterior)
-    // Δ+ = volume de compra agressora do candle; Δ− = volume de venda agressora do candle (footprint, somando os minutos).
-    { const ms0 = grFootprintMsPorCandle(), ant = _grAllCandles[idx - 1];
-      const A = grExAgressao(cd, ms0), B = ant ? grExAgressao(ant, ms0) : null;
-      if (!B || B.n < 2) return grExFalha('sem footprint da barra anterior');
-      const ag = ec ? A.comp : A.vend, agAnt = ec ? B.comp : B.vend;
-      if (!(ag > 0 && agAnt > 0)) return grExFalha('sem agressão do lado');
-      if (!(ag > agAnt)) return grExFalha('agressão não subiu em relação à barra anterior');
-      const desl = ec ? cd.c - cd.o : cd.o - cd.c, deslAnt = ec ? ant.c - ant.o : ant.o - ant.c;
-      if (!(desl / ag < deslAnt / agAnt)) return grExFalha('eficiência não caiu em relação à barra anterior'); }
+    { const mt = grExCondBarra(idx, ec); if (mt) return grExFalha(mt); }
     if (P.grExVira > 0 && dl > 0) return grExFalha('delta não virou');
     if (ec ? cd.c > cd.l + rng * P.grExFech / 100 : cd.c < cd.h - rng * P.grExFech / 100) return grExFalha('fechou no extremo');
     if (P.grExEsf > 0) {   // esforço × resultado: volume relativo dividido pela faixa relativa — alto = muito volume para pouco avanço (absorção)
