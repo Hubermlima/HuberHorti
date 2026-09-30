@@ -13076,7 +13076,6 @@ function grEfxCalcular(lado) {
         let r = null; try { r = grExaustaoDe(i); } catch (e) {}
         if (r !== lado) continue;
         S.n++; GR_EFX_H.forEach((h, k) => soma(S, k, i));   // o sinal é conhecido no fechamento do próprio candle
-        { const L = grExCadeia(i, lado === 'EC'), q = SL[Math.min(L, 3) - 1]; if (q) { q.n++; GR_EFX_H.forEach((h, k) => soma(q, k, i)); } }
     }
     return { S, SL, base, dias: Math.max(1, (cs[n - 1].t - cs[i0].t) / 86400000), lado };
 }
@@ -13096,7 +13095,6 @@ function grEfxHtml(R) {
         return '<td align="right"><span style="color:' + (m > 0 ? '#16A34A' : m < 0 ? '#DC2626' : '#1C1C1E') + ';">' + sg(m) + '</span> <span style="font-weight:700;color:' + corP + ';">' + pc(p) + '</span></td>';
     };
     h += '<tr style="border-top:1px solid #F2F2F7;"><td>' + R.lado + '</td><td align="right">' + R.S.n + (R.S.n > 0 && R.S.n < 20 ? '*' : '') + '</td>' + (R.S.n ? GR_EFX_H.map((x, k) => cel(k)).join('') : GR_EFX_H.map(() => '<td align="right">—</td>').join('')) + '</tr>';
-    ['1 barra', '2 barras seguidas', '3 ou mais seguidas'].forEach((nm, q) => { const Q = R.SL[q]; h += '<tr style="border-top:1px solid #F2F2F7;color:#1C1C1E;"><td>&nbsp;&nbsp;' + nm + '</td><td align="right">' + Q.n + (Q.n > 0 && Q.n < 20 ? '*' : '') + '</td>' + (Q.n ? GR_EFX_H.map((x, k) => cel(k, Q)).join('') : GR_EFX_H.map(() => '<td align="right">—</td>').join('')) + '</tr>'; });
     h += '<tr style="border-top:2px solid #1C1C1E;font-weight:700;"><td>Base (todos os candles)</td><td align="right">' + R.base.n + '</td>' + GR_EFX_H.map((x, k) => { const a = R.base.h[k]; return a.tot ? '<td align="right">' + sg(a.sum / a.tot) + ' ' + pc(a.ok / a.tot) + '</td>' : '<td align="right">—</td>'; }).join('') + '</tr></table>';
     h += '<div style="font-size:11.5px;margin-top:8px;">* menos de 20 sinais: amostra pequena, não conclua nada. Os números +1, +3, +5 e +10 são candles depois do candle do sinal (contados a partir do fechamento dele). Para valer, precisa aparecer em vários prazos e em mais de um timeframe.</div>';
     return h;
@@ -13168,6 +13166,31 @@ function grExCondBarra(j, ec) {
 }
 // Tamanho da sequência: quantas barras seguidas (terminando em idx) passam na regra acima. 1 = só a barra atual.
 function grExCadeia(idx, ec) { let n = 0; for (let j = idx; j > 0 && n < 50; j--) { if (grExCondBarra(j, ec)) break; n++; } return n; }
+// ZERO PRINT CLÁSSICO (módulo 1 do Exhaustion Indicator Suite, Sierra Chart), aplicado ao candle idx:
+//   EC: os 3 candles anteriores são de ALTA; na linha da máxima do candle NÃO houve vendedor agressor (Bid = 0); e o candle FECHA de baixa (reversão).
+//   EV: os 3 candles anteriores são de QUEDA; na linha da mínima NÃO houve comprador agressor (Ask = 0); e o candle FECHA de alta.
+// A linha é a do nível de preço mais fino que o footprint guarda (sem regrupar na grade do ATR). Devolve null se passa, ou o motivo.
+const _grExNivCache = new Map();
+function grExNiveisBorda(cd, ms) {
+    const raw = _grFootprintCandlesRaw ? _grFootprintCandlesRaw.length : 0, c0 = _grExNivCache.get(cd.t);
+    if (c0 && c0.raw === raw && c0.ms === ms) return c0;
+    const m = new Map(); let n = 0;
+    grFootprintParaCadaMinuto(cd.t, cd.t + ms, mi => { n++; (mi.niveis || []).forEach(x => { let a = m.get(x.p); if (!a) { a = { c: 0, v: 0 }; m.set(x.p, a); } a.c += x.c || 0; a.v += x.v || 0; }); });
+    let pMax = -Infinity, pMin = Infinity;
+    m.forEach((a, p) => { if (a.c + a.v > 0) { if (p > pMax) pMax = p; if (p < pMin) pMin = p; } });
+    const top = m.get(pMax), bot = m.get(pMin);
+    const r = { raw, ms, n, topC: top ? top.c : null, topV: top ? top.v : null, botC: bot ? bot.c : null, botV: bot ? bot.v : null };
+    _grExNivCache.set(cd.t, r); if (_grExNivCache.size > 6000) _grExNivCache.delete(_grExNivCache.keys().next().value);
+    return r;
+}
+function grExZeroPrint(idx, ec) {
+    const cs = _grAllCandles, cd = cs[idx]; if (!cd || idx < 3) return 'poucos candles antes';
+    for (let j = idx - 3; j < idx; j++) if (ec ? !(cs[j].c > cs[j].o) : !(cs[j].c < cs[j].o)) return ec ? 'sem 3 candles de alta antes' : 'sem 3 candles de queda antes';
+    if (ec ? !(cd.c < cd.o) : !(cd.c > cd.o)) return 'não fechou em reversão';
+    const b = grExNiveisBorda(cd, grFootprintMsPorCandle()); if (!b || b.n < 2 || b.topC == null) return 'sem footprint';
+    if (ec ? b.topV > 0 : b.botC > 0) return 'houve negócio do outro lado na linha do extremo';
+    return null;
+}
 const _grExAgrCache = new Map();
 function grExAgressao(cd, ms) {   // agressão compradora (comp) e vendedora (vend) do candle inteiro, a partir do footprint; n = minutos com dado
     const raw = _grFootprintCandlesRaw ? _grFootprintCandlesRaw.length : 0, c0 = _grExAgrCache.get(cd.t);
@@ -13242,7 +13265,6 @@ function grExTestaLado(lado, idx, cd, fp, ctx) {
     if (idx < N) return grExFalha('poucos candles antes');
     let maxAnt = -Infinity, minAnt = Infinity;
     for (let i = idx - N; i < idx; i++) { const a = _grAllCandles[i]; if (a.h > maxAnt) maxAnt = a.h; if (a.l < minAnt) minAnt = a.l; }
-    if (!(ec ? cd.h >= maxAnt : cd.l <= minAnt)) return grExFalha('não é extremo');
     if (P.grExMov > 0) {   // o preço veio andando até o extremo (subida até o topo / queda até o fundo), em faixas médias de candle
         if (!ctx.faixa) return grExFalha('sem histórico');
         if ((ec ? cd.h - minAnt : maxAnt - cd.l) < P.grExMov * ctx.faixa) return grExFalha('movimento curto');
@@ -13252,7 +13274,7 @@ function grExTestaLado(lado, idx, cd, fp, ctx) {
     if (P.grExVol > 0 && !(ctx.volRel != null && ctx.volRel >= P.grExVol)) return grExFalha('volume baixo');
     const pico = ec ? fp.maxD : -fp.minD, dl = ec ? fp.delta : -fp.delta;   // pico e delta final vistos do lado que empurrou
     if (pico < fp.tot * (P.grExPico / 100)) return grExFalha('sem pico de delta');
-    { const mt = grExCondBarra(idx, ec); if (mt) return grExFalha(mt); }
+    { const mt = grExZeroPrint(idx, ec); if (mt) return grExFalha(mt); }
     if (P.grExVira > 0 && dl > 0) return grExFalha('delta não virou');
     if (ec ? cd.c > cd.l + rng * P.grExFech / 100 : cd.c < cd.h - rng * P.grExFech / 100) return grExFalha('fechou no extremo');
     if (P.grExEsf > 0) {   // esforço × resultado: volume relativo dividido pela faixa relativa — alto = muito volume para pouco avanço (absorção)
@@ -13321,10 +13343,6 @@ function grExaustaoDesenhar(ctx, g) {
         y = Math.max(g.PAD.top + h / 2, Math.min(g.PAD.top + g.chartH - h / 2, y));
         ctx.fillStyle = ec ? '#DC2626' : '#16A34A'; ctx.beginPath(); ctx.roundRect(cx - w / 2, y - h / 2, w, h, 3); ctx.fill();
         ctx.fillStyle = '#FFFFFF'; ctx.fillText(r, cx, y + 0.5);
-        // leilão finalizado (informação extra, NÃO filtra): EC com bid = 0 na linha da máxima / EV com ask = 0 na linha da mínima (grade do ATR) → bolinha amarela
-        try { const cl = grFootprintClusterDoCandle(cd, grTickAtr(), null);
-            if (cl && cl.linhas && cl.linhas.length >= 2) { const bd = ec ? cl.linhas[0] : cl.linhas[cl.linhas.length - 1];
-                if (ec ? bd.bid === 0 : bd.ask === 0) { ctx.fillStyle = '#FDE047'; ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(cx + w / 2 - 1, y - h / 2 + 1, 3.2, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); } } } catch (e) {}
     }
     ctx.restore();
 }
