@@ -13021,7 +13021,7 @@ function grMetricasFecharTabela() { _grMetricasTabTs = null; _grMetricasCache = 
 //   10 traders presos (agressores do lado no prejuízo em relação ao fechamento) · 11 tendência longa · 12 pressão prévia · 13 confirmação (próximos candles não rompem).
 function grExLer(k, pad) { try { const v = parseFloat(localStorage.getItem(k)); return isFinite(v) ? v : pad; } catch (e) { return pad; } }
 const GR_EX_CFG = {   // chave: [padrão, mín, máx, passo, rótulo] — só o que aparece na tela
-    grExPadrao: [0,  0,   3, 1,  'Padrão de exaustão (0 = qualquer um · 1 = clímax · 2 = leilão terminado · 3 = afinamento)'],
+    grExPadrao: [0,  0,   4, 1,  'Padrão de exaustão (0 = qualquer um · 1 = clímax · 2 = leilão · 3 = afinamento · 4 = topo/fundo duplo)'],
     grExPreso: [0,   0, 100, 1,  'Traders presos (% do volume do lado que ficou no prejuízo 3 candles depois, 0 = ignora)']
 };
 // Exaustão = no extremo, a agressão vai A FAVOR do movimento (delta do lado que empurrou), com absorção ACIMA DA MÉDIA (a barra do painel ABSORÇÃO
@@ -13032,7 +13032,7 @@ const EXS = { EV: {}, EC: {} };
 ['EV', 'EC'].forEach(l => { Object.assign(EXS[l], GR_EX_FIXO); Object.keys(GR_EX_CFG).forEach(k => { EXS[l][k] = grExLer('grEx3_' + k, GR_EX_CFG[k][0]); }); });
 let _grExLadoSel = 'EV';
 let _grExVersao = 0; const _grExCache = new Map(), _grExDeltaCache = new Map();
-function grExFmt(k, v) { if (k === 'grExPadrao') return ['qualquer', 'clímax', 'leilão', 'afinamento'][v] || String(v); return (k === 'grExDevol' || k === 'grExFech' || k === 'grExCob' || k === 'grExPreso') ? v + '%' : k === 'grExPico' ? v.toFixed(1).replace('.', ',') + '%' : (k === 'grExVol' || k === 'grExMov' || k === 'grExEsf') ? v.toFixed(1).replace('.', ',') + '×' : String(v); }
+function grExFmt(k, v) { if (k === 'grExPadrao') return ['qualquer', 'clímax', 'leilão', 'afinamento', 'duplo'][v] || String(v); return (k === 'grExDevol' || k === 'grExFech' || k === 'grExCob' || k === 'grExPreso') ? v + '%' : k === 'grExPico' ? v.toFixed(1).replace('.', ',') + '%' : (k === 'grExVol' || k === 'grExMov' || k === 'grExEsf') ? v.toFixed(1).replace('.', ',') + '×' : String(v); }
 function grExAplicar(k, v) {
     const c = GR_EX_CFG[k]; v = Math.max(c[1], Math.min(c[2], parseFloat(v) || 0));
     v = c[3] < 1 ? Math.round(v / c[3]) * c[3] : Math.round(v);
@@ -13270,9 +13270,31 @@ function grExLeilao(idx, ec) {
     if (!(pavio > corpo)) return 'sem pavio de rejeição';
     return null;
 }
+//  4 TOPO / FUNDO DUPLO com divergência de volume: o candle idx faz máxima (EV: mínima) a até UMA linha do grid ATR da máxima do pico anterior (pode passar um pouco: upthrust),
+//    esse pico anterior é o extremo dos GR_EX_JANELA candles antes e teve VOLUME ACIMA DA MÉDIA (clímax), o preço saiu da zona entre os dois (a mínima entre eles ficou abaixo da mínima do pico)
+//    e o candle atual tem MENOS volume que o pico anterior.
+function grExDuplo(idx, ec) {
+    const cs = _grAllCandles, cd = cs[idx];
+    if (!cd || idx < GR_EX_JANELA + 2) return 'poucos candles antes';
+    let jp = -1;
+    for (let j = idx - 2; j >= idx - GR_EX_JANELA; j--) { if (jp < 0 || (ec ? cs[j].h > cs[jp].h : cs[j].l < cs[jp].l)) jp = j; }
+    for (let j = idx - 1; j >= idx - GR_EX_JANELA; j--) { if (ec ? cs[j].h > cs[jp].h : cs[j].l < cs[jp].l) return 'candle vizinho fez extremo maior que o pico'; }
+    const P = cs[jp], tk = grTickAtr();
+    if (ec ? !(cd.h >= P.h - tk && cd.h <= P.h + tk) : !(cd.l <= P.l + tk && cd.l >= P.l - tk)) return 'não está perto do pico anterior';
+    let sai = ec ? Infinity : -Infinity;
+    for (let j = jp + 1; j < idx; j++) { if (ec) sai = Math.min(sai, cs[j].l); else sai = Math.max(sai, cs[j].h); }
+    if (ec ? !(sai < P.l) : !(sai > P.h)) return 'o preço não saiu da zona entre os dois';
+    const vP = grExVolCandle(P), vC = grExVolCandle(cd); if (vP == null || vC == null) return 'sem footprint';
+    let sv = 0, nv = 0;
+    for (let j = idx - GR_EX_JANELA; j < idx; j++) { const x = grExVolCandle(cs[j]); if (x != null) { sv += x; nv++; } }
+    if (nv < GR_EX_JANELA / 2) return 'poucos candles anteriores com footprint';
+    if (!(vP > sv / nv)) return 'o pico anterior não teve volume de clímax';
+    if (!(vC < vP)) return 'volume não ficou menor que o do pico';
+    return null;
+}
 function grExPadraoOk(idx, ec, modo) {
-    const fs = [grExClimax, grExLeilao, grExAfina];
-    if (modo >= 1 && modo <= 3) return fs[modo - 1](idx, ec);
+    const fs = [grExClimax, grExLeilao, grExAfina, grExDuplo];
+    if (modo >= 1 && modo <= 4) return fs[modo - 1](idx, ec);
     let mt = null; for (const fn of fs) { mt = fn(idx, ec); if (!mt) return null; } return mt || 'nenhum padrão';
 }
 // ZERO PRINT CLÁSSICO (módulo 1 do Exhaustion Indicator Suite, Sierra Chart), aplicado ao candle idx:
