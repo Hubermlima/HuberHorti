@@ -1,7 +1,6 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-
 <script src="https://cdn.jsdelivr.net/npm/eruda"></script>
 <script>eruda.init();</script>
 <meta charset="UTF-8"/>
@@ -13014,186 +13013,25 @@ function grMetricasAlternar(candle) {
     _grMetricasCache = null; _grMetricasOff = { dx: 0, dy: 0 }; _grMetricasInfo = null;
 }
 function grMetricasFecharTabela() { _grMetricasTabTs = null; _grMetricasCache = null; _grMetricasInfo = null; window._grMetricasRect = null; window._grMetricasHits = null; window._grMetricasNoteRect = null; grDrawChart(); }
-// ══ EXAUSTÃO (EC / EV) — sigla no gráfico, nos candles FECHADOS em que um lado tentou empurrar o preço no extremo e perdeu força ══
-//  EC (vermelho, acima do candle) = exaustão de compra no topo; EV (verde, abaixo do candle) = exaustão de venda no fundo. Cada lado tem os SEUS
-//  parâmetros (EXS.EC / EXS.EV), porque topo e fundo não se comportam igual. Um candle vira sinal quando passa por TODOS os filtros abaixo (0 = ignora):
-//   1 extremo dos últimos N candles · 2 movimento prévio · 3 footprint completo (cobertura de minutos) · 4 volume · 5 pico do delta (o lado empurrou)
-//   6 delta devolvido · 7 delta VIROU de sinal · 8 fechamento no lado oposto · 9 esforço × resultado (muito volume, pouco avanço = absorção)
-//   10 traders presos (agressores do lado no prejuízo em relação ao fechamento) · 11 tendência longa · 12 pressão prévia · 13 confirmação (próximos candles não rompem).
+// ══ EXAUSTÃO — sigla EC / EV no gráfico, com a NOTA do score (0–100), nos candles fechados dos TFs 5m, 15m, 30m e 1h ══
+//  EC (vermelho, acima do candle) = topo (compra esgotada); EV (verde, abaixo do candle) = fundo (venda esgotada). Única configuração: a nota mínima.
 function grExLer(k, pad) { try { const v = parseFloat(localStorage.getItem(k)); return isFinite(v) ? v : pad; } catch (e) { return pad; } }
-const GR_EX_CFG = {   // chave: [padrão, mín, máx, passo, rótulo] — só o que aparece na tela
-    grExPadrao: [0,  0,   4, 1,  'Padrão de exaustão (0 = qualquer um · 1 = clímax · 2 = leilão · 3 = afinamento · 4 = topo/fundo duplo)'],
-    grExPreso: [0,   0, 100, 1,  'Traders presos (% do volume do lado que ficou no prejuízo 3 candles depois, 0 = ignora)']
-};
-// Exaustão = no extremo, a agressão vai A FAVOR do movimento (delta do lado que empurrou), com absorção ACIMA DA MÉDIA (a barra do painel ABSORÇÃO
-// acima da linha: muito volume para pouco avanço). Esses dois critérios são fixos, sem número para calibrar. O resto fica desligado.
-const GR_EX_FIXO = { grExN: 1, grExPico: 0, grExDevol: 0, grExFech: 100, grExMov: 0, grExPres: 0, grExCob: 50, grExVira: 0, grExVol: 0, grExEsf: 0, grExConf: 0, grExTend: 0 };
+const GR_EX_CFG = { grExNota: [95, 50, 99, 1, 'Nota mínima para marcar EC / EV (95 = os 5% mais fortes)'] };   // chave: [padrão, mín, máx, passo, rótulo]
 const EXS = { EV: {}, EC: {} };
-// uma configuração só, valendo para EC e EV (EXS.EV e EXS.EC recebem os mesmos valores)
-['EV', 'EC'].forEach(l => { Object.assign(EXS[l], GR_EX_FIXO); Object.keys(GR_EX_CFG).forEach(k => { EXS[l][k] = grExLer('grEx3_' + k, GR_EX_CFG[k][0]); }); });
-let _grExLadoSel = 'EV';
-let _grExVersao = 0; const _grExCache = new Map(), _grExDeltaCache = new Map();
-function grExFmt(k, v) { if (k === 'grExPadrao') return ['qualquer', 'clímax', 'leilão', 'afinamento', 'duplo'][v] || String(v); return (k === 'grExDevol' || k === 'grExFech' || k === 'grExCob' || k === 'grExPreso') ? v + '%' : k === 'grExPico' ? v.toFixed(1).replace('.', ',') + '%' : (k === 'grExVol' || k === 'grExMov' || k === 'grExEsf') ? v.toFixed(1).replace('.', ',') + '×' : String(v); }
+['EV', 'EC'].forEach(l => { Object.keys(GR_EX_CFG).forEach(k => { EXS[l][k] = grExLer('grEx3_' + k, GR_EX_CFG[k][0]); }); });
 function grExAplicar(k, v) {
-    const c = GR_EX_CFG[k]; v = Math.max(c[1], Math.min(c[2], parseFloat(v) || 0));
-    v = c[3] < 1 ? Math.round(v / c[3]) * c[3] : Math.round(v);
+    const c = GR_EX_CFG[k]; v = Math.max(c[1], Math.min(c[2], Math.round(parseFloat(v) || 0)));
     EXS.EV[k] = v; EXS.EC[k] = v; try { localStorage.setItem('grEx3_' + k, String(v)); } catch (e) {}
-    _grExVersao++; _grExCache.clear();
-    document.querySelectorAll('[id="cv-cfg-' + k.toLowerCase() + '-txt"]').forEach(el => { el.textContent = grExFmt(k, v); });   // o popup do Fluxo e o Backtest têm o mesmo slider (ids repetidos): atualiza os dois
+    document.querySelectorAll('[id="cv-cfg-' + k.toLowerCase() + '-txt"]').forEach(el => { el.textContent = String(v); });
     grDrawChart();
 }
 Object.keys(GR_EX_CFG).forEach(k => { window['grEx_' + k] = v => grExAplicar(k, v); });   // nome que o slider chama (oninput)
 function grExSlidersHtml() {
-    const P = EXS[_grExLadoSel]; let s = '';
-    Object.keys(GR_EX_CFG).forEach(k => {
-        const c = GR_EX_CFG[k], id = 'cv-cfg-' + k.toLowerCase(), suf = (k === 'grExDevol' || k === 'grExFech' || k === 'grExCob' || k === 'grExPreso') ? '%' : '';
-        s += c[3] < 1 ? grConfigSliderDecimal(id, c[4], P[k], c[1], c[2], c[3], 'grEx_' + k) : grConfigSliderInt(id, c[4], P[k], c[1], c[2], 'grEx_' + k, '', suf);
-    });
+    let s = ''; Object.keys(GR_EX_CFG).forEach(k => { const c = GR_EX_CFG[k]; s += grConfigSliderInt('cv-cfg-' + k.toLowerCase(), c[4], EXS.EC[k], c[1], c[2], 'grEx_' + k, '', ''); });
     return s;
 }
-function grExTogHtml() {
-    return ['EV', 'EC'].map(l => '<button onclick="grExLado(\'' + l + '\')" style="flex:1;border:none;border-radius:8px;padding:9px 0;font-size:13px;font-weight:700;'
-        + (l === _grExLadoSel ? 'background:' + (l === 'EV' ? '#16A34A' : '#DC2626') + ';color:#FFFFFF;' : 'background:#F2F2F7;color:#1C1C1E;') + '">' + (l === 'EV' ? 'EV (compra)' : 'EC (venda)') + '</button>').join('');
-}
-function grExLado(l) {
-    _grExLadoSel = l;
-    document.querySelectorAll('.gr-ex-tog').forEach(e => { e.innerHTML = grExTogHtml(); });
-    document.querySelectorAll('.gr-ex-sl').forEach(e => { e.innerHTML = grExSlidersHtml(); });
-}
-// ══ EFICÁCIA DA EXAUSTÃO — para cada EC / EV do histórico com footprint, mede o que o preço fez depois (comparado com todos os candles) ═════
-const GR_EFX_H = [1, 3, 5, 10];
-let _grEfxLado = 'EC', _grEfxWatch = null, _grEfxModo = 'candle';
-function grEfxCalcular(lado) {
-    const cs = _grAllCandles, n = cs.length;
-    if (!n || !_grFootprintAtivo || !_grFootprintCandlesRaw || !_grFootprintCandlesRaw.length) return null;
-    const ms = grFootprintMsPorCandle(), agora = Date.now();
-    let t0 = Infinity; _grFootprintCandlesRaw.forEach(m => { if (m.ts < t0) t0 = m.ts; });
-    const tIni = agora - FOOTPRINT_DIAS_AO_ATIVAR * 86400000;
-    let i0 = cs.findIndex(c => c.t >= Math.max(t0, tIni)); if (i0 < 0) return null;
-    i0 = Math.max(i0, 20, n - 20000);
-    const sinal = lado === 'EC' ? -1 : 1;   // EC espera queda, EV espera alta: o retorno é medido NA DIREÇÃO ESPERADA
-    const novo = () => ({ n: 0, h: GR_EFX_H.map(() => ({ tot: 0, ok: 0, sum: 0 })) });
-    const S = novo(), SL = [novo(), novo(), novo()], base = novo(), fechado = j => j < n && agora >= cs[j].t + ms;
-    for (let i = i0; i < n; i++) {
-        if (!fechado(i)) continue;
-        const soma = (alvo, k, e) => { const j = e + GR_EFX_H[k]; if (!fechado(j)) return; const r = (cs[j].c / cs[e].c - 1) * sinal, a = alvo.h[k]; a.tot++; if (r > 0) a.ok++; a.sum += r; };
-        base.n++; GR_EFX_H.forEach((h, k) => soma(base, k, i));
-        let r = null; try { r = grExaustaoDe(i); } catch (e) {}
-        if (r !== lado) continue;
-        S.n++; GR_EFX_H.forEach((h, k) => soma(S, k, i));   // o sinal é conhecido no fechamento do próprio candle
-    }
-    return { S, SL, base, dias: Math.max(1, (cs[n - 1].t - cs[i0].t) / 86400000), lado };
-}
-function grEfxHtml(R) {
-    if (!R) return '<div style="padding:16px 0;font-size:13px;color:#1C1C1E;">Sem footprint carregado. Ligue o Fluxo e aumente "Dias ao ligar o Fluxo".</div>';
-    const sg = v => (v >= 0 ? '+' : '−') + (Math.abs(v) * 100).toFixed(2).replace('.', ',') + '%';
-    const pc = v => (v * 100).toFixed(0) + '%';
-    const ec = R.lado === 'EC';
-    let h = '<div style="font-size:12px;font-weight:700;margin-top:6px;">Timeframe: ' + grTfSiglaAtual() + ' · ' + Math.round(R.dias) + ' dias com footprint</div>';
-    h += '<div style="font-size:13px;font-weight:700;color:' + (ec ? '#DC2626' : '#16A34A') + ';margin-top:10px;">' + (ec ? 'EC — compra esgotada (esperado: preço cair)' : 'EV — venda esgotada (esperado: preço subir)') + '</div>';
-    h += '<div style="font-size:12px;margin-top:2px;">Cada célula: variação média do preço NA DIREÇÃO ESPERADA (positivo = acertou) · % das vezes que o preço foi na direção esperada. Verde = melhor que a base, vermelho = pior (z ≥ 2).</div>';
-    h += '<table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:12px;"><tr style="font-weight:700;"><td></td><td align="right">Sinais</td>' + GR_EFX_H.map(x => '<td align="right">+' + x + '</td>').join('') + '</tr>';
-    const cel = (k, S0) => {
-        const a = (S0 || R.S).h[k]; if (!a.tot) return '<td align="right">—</td>';
-        const b = R.base.h[k], bp = b.tot ? b.ok / b.tot : 0.5, p = a.ok / a.tot, se = Math.sqrt(Math.max(bp * (1 - bp), 1e-9) / a.tot), z = (p - bp) / se;
-        const corP = z >= 2 ? '#16A34A' : z <= -2 ? '#DC2626' : '#1C1C1E', m = a.sum / a.tot;
-        return '<td align="right"><span style="color:' + (m > 0 ? '#16A34A' : m < 0 ? '#DC2626' : '#1C1C1E') + ';">' + sg(m) + '</span> <span style="font-weight:700;color:' + corP + ';">' + pc(p) + '</span></td>';
-    };
-    h += '<tr style="border-top:1px solid #F2F2F7;"><td>' + R.lado + '</td><td align="right">' + R.S.n + (R.S.n > 0 && R.S.n < 20 ? '*' : '') + '</td>' + (R.S.n ? GR_EFX_H.map((x, k) => cel(k)).join('') : GR_EFX_H.map(() => '<td align="right">—</td>').join('')) + '</tr>';
-    h += '<tr style="border-top:2px solid #1C1C1E;font-weight:700;"><td>Base (todos os candles)</td><td align="right">' + R.base.n + '</td>' + GR_EFX_H.map((x, k) => { const a = R.base.h[k]; return a.tot ? '<td align="right">' + sg(a.sum / a.tot) + ' ' + pc(a.ok / a.tot) + '</td>' : '<td align="right">—</td>'; }).join('') + '</tr></table>';
-    h += '<div style="font-size:11.5px;margin-top:8px;">* menos de 20 sinais: amostra pequena, não conclua nada. Os números +1, +3, +5 e +10 são candles depois do candle do sinal (contados a partir do fechamento dele). Para valer, precisa aparecer em vários prazos e em mais de um timeframe.</div>';
-    return h;
-}
-function grEfxRender() {
-    const el = document.getElementById('gr-efx-corpo'); if (!el) return;
-    const dl = (window._grFluxoDias || []).filter(d => d.estado === 'carregando').length;
-    if (dl > 0 && !el.dataset.pronto) { el.innerHTML = '<div style="padding:16px 0;font-size:13px;">Baixando o footprint (' + dl + ' dias restantes)... o resultado aparece quando terminar.</div>'; const b0 = document.getElementById('gr-efx-lados'); if (b0) b0.innerHTML = ''; return; }
-    el.dataset.pronto = '1';
-    let R = null;
-    if (_grEfxModo === 'minuto') { try { R = grEfmCalcular(_grEfxLado); } catch (e) {} el.innerHTML = grEfmHtml(R); }
-    else { try { R = grEfxCalcular(_grEfxLado); } catch (e) {} el.innerHTML = grEfxHtml(R); }
-    const b = document.getElementById('gr-efx-lados');
-    if (b) b.innerHTML = ['EC', 'EV'].map(l => '<button onclick="grEfxLado(\'' + l + '\')" style="flex:1;border:none;border-radius:8px;padding:9px 0;font-size:13px;font-weight:700;'
-        + (l === _grEfxLado ? 'background:#1C1C1E;color:#FFFFFF;' : 'background:#F2F2F7;color:#1C1C1E;') + '">' + l + '</button>').join('');
-}
-function grEfxLado(l) { _grEfxLado = l; grEfxRender(); }
-function grEfxFechar() { clearInterval(_grEfxWatch); const o = document.getElementById('gr-efx-overlay'); if (o) o.remove(); }
-function grEfxAbrir(modo) {
-    _grEfxModo = modo === 'minuto' ? 'minuto' : 'candle';
-    try { cvFecharMenuFpCfg(); } catch (e) {}
-    grEfxFechar();
-    const o = document.createElement('div'); o.id = 'gr-efx-overlay';
-    o.style.cssText = 'position:fixed;inset:0;z-index:9999;background:#FFFFFF;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 16px 40px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;color:#1C1C1E;';
-    o.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;"><div style="font-size:16px;font-weight:700;">' + (_grEfxModo === 'minuto' ? 'Eficácia por minuto' : 'Eficácia da Exaustão') + '</div><button onclick="grEfxFechar()" style="border:none;background:#F2F2F7;border-radius:8px;padding:8px 14px;font-size:14px;font-weight:700;color:#1C1C1E;">Fechar</button></div>'
-        + '<div style="font-size:12px;margin-top:6px;">Período: ' + (FOOTPRINT_DIAS_AO_ATIVAR >= 36500 ? 'todo o histórico disponível' : FOOTPRINT_DIAS_AO_ATIVAR + ' dias') + '. Usa o timeframe do gráfico.</div>'
-        + '<div id="gr-efx-lados" style="display:flex;gap:6px;margin-top:10px;"></div><div id="gr-efx-corpo"></div>';
-    document.body.appendChild(o);
-    grEfxRender();
-    let ult = _grFootprintCandlesRaw ? _grFootprintCandlesRaw.length : 0;
-    _grEfxWatch = setInterval(() => {   // espera o footprint terminar de baixar; refaz uma vez
-        if ((window._grFluxoDias || []).some(d => d.estado === 'carregando')) return;
-        const q = _grFootprintCandlesRaw ? _grFootprintCandlesRaw.length : 0;
-        const el = document.getElementById('gr-efx-corpo');
-        if (q !== ult || (el && !el.dataset.pronto)) { ult = q; grEfxRender(); }
-    }, 4000);
-}
-// ══ EFICÁCIA POR MINUTO — clímax de volume + novo extremo com menos volume + secura (regras fixadas ANTES de olhar qualquer resultado) ═════
-//  EC (topo): o minuto E faz a MÁXIMA das últimas 60 min; nos 15 min até E houve um minuto S com volume ≥ 3× a média dos 60 min anteriores a ele (o clímax; pode ser o próprio E);
-//  o volume de E não passa o de S; e nos 5 min seguintes o volume médio fica abaixo de 0,6× a média dos 60 min anteriores a E (secura). O sinal vale no fim desses 5 min.
-//  EV (fundo): o espelho (mínima nova). Depois de um sinal, espera 15 min para outro. Retorno medido pelo preço médio ponderado (vwap) do minuto, na direção esperada.
-//  Controle = 5 min depois de QUALQUER nova máxima/mínima de 60 min (sem exigir clímax nem secura): mostra se o padrão acrescenta algo ao simples "fez extremo".
-const GR_EFM_H = [5, 15, 30, 60];
-function grEfmCalcular(lado) {
-    const raw = _grFootprintCandlesRaw; if (!raw || !raw.length) return null;
-    let t0 = Infinity, t1 = -Infinity; raw.forEach(m => { if (m.ts < t0) t0 = m.ts; if (m.ts > t1) t1 = m.ts; });
-    t0 = Math.max(t0, t1 - 800000 * 60000);
-    const n = Math.floor((t1 - t0) / 60000) + 1; if (n < 200) return null;
-    const vol = new Float64Array(n), pv = new Float64Array(n), hi = new Float64Array(n).fill(NaN), lo = new Float64Array(n).fill(NaN);
-    raw.forEach(m => {
-        if (m.ts < t0) return; const i = Math.round((m.ts - t0) / 60000);
-        (m.niveis || []).forEach(x => { const q = (x.c || 0) + (x.v || 0); if (q <= 0) return; vol[i] += q; pv[i] += x.p * q; if (!(hi[i] >= x.p)) hi[i] = x.p; if (!(lo[i] <= x.p)) lo[i] = x.p; });
-    });
-    const vw = new Float64Array(n), V = new Float64Array(n + 1);
-    for (let i = 0; i < n; i++) { vw[i] = vol[i] > 0 ? pv[i] / vol[i] : NaN; V[i + 1] = V[i] + vol[i]; }
-    const ec = lado === 'EC', sinal = ec ? -1 : 1, ext = i => ec ? hi[i] : -lo[i];
-    const novo = () => ({ n: 0, h: GR_EFM_H.map(() => ({ tot: 0, ok: 0, sum: 0 })) });
-    const S = novo(), S1 = novo(), S2 = novo(), C = novo(), B = novo(), M = n / 2;
-    const soma = (alvo, T) => { alvo.n++; GR_EFM_H.forEach((h, k) => { const j = T + h; if (j >= n || !(vw[T] > 0) || !(vw[j] > 0)) return; const r = (vw[j] / vw[T] - 1) * sinal, a = alvo.h[k]; a.tot++; if (r > 0) a.ok++; a.sum += r; }); };
-    const media = (a, b) => (V[b] - V[a]) / (b - a);   // média do volume dos minutos [a, b)
-    let ultS = -1e9, ultC = -1e9;
-    for (let T = 65; T < n; T += 1) { if (vol[T] > 0) soma(B, T); }
-    for (let i = 60; i < n - 5; i++) {
-        if (!(vol[i] > 0) || isNaN(ext(i))) continue;
-        let mx = -Infinity; for (let j = i - 60; j < i; j++) { const e = ext(j); if (e > mx) mx = e; }
-        if (!(ext(i) > mx)) continue;
-        const T = i + 5;
-        if (T >= ultC + 15) { ultC = T; soma(C, T); }
-        let sp = -1;
-        for (let q = i - 15; q <= i; q++) { if (q < 60) continue; if (vol[q] >= 3 * media(q - 60, q) && (sp < 0 || vol[q] > vol[sp])) sp = q; }
-        if (sp < 0 || vol[i] > vol[sp]) continue;
-        if (!(media(i + 1, i + 6) < 0.6 * media(i - 60, i))) continue;
-        if (T < ultS + 15) continue;
-        ultS = T; soma(S, T); soma(T < M ? S1 : S2, T);
-    }
-    return { S, S1, S2, C, B, dias: Math.max(1, n / 1440), lado };
-}
-function grEfmHtml(R) {
-    if (!R) return '<div style="padding:16px 0;font-size:13px;">Sem footprint carregado. Ligue o Fluxo e aumente "Dias ao ligar o Fluxo".</div>';
-    const sg = v => (v >= 0 ? '+' : '−') + (Math.abs(v) * 100).toFixed(2).replace('.', ',') + '%', pc = v => (v * 100).toFixed(0) + '%', ec = R.lado === 'EC';
-    let h = '<div style="font-size:12px;font-weight:700;margin-top:6px;">Por minuto · ' + Math.round(R.dias) + ' dias com footprint</div>';
-    h += '<div style="font-size:13px;font-weight:700;color:' + (ec ? '#DC2626' : '#16A34A') + ';margin-top:10px;">' + (ec ? 'EC — clímax no topo (esperado: preço cair)' : 'EV — clímax no fundo (esperado: preço subir)') + '</div>';
-    h += '<div style="font-size:12px;margin-top:2px;">Cada célula: variação média do preço NA DIREÇÃO ESPERADA (positivo = acertou) · % das vezes que foi na direção esperada. Verde = melhor que o controle, vermelho = pior (z ≥ 2). +5, +15, +30 e +60 são MINUTOS depois do sinal.</div>';
-    h += '<table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:12px;"><tr style="font-weight:700;"><td></td><td align="right">Sinais</td>' + GR_EFM_H.map(x => '<td align="right">+' + x + 'm</td>').join('') + '</tr>';
-    const cel = (k, A) => {
-        const a = A.h[k]; if (!a.tot) return '<td align="right">—</td>';
-        const b = R.C.h[k], bp = b.tot ? b.ok / b.tot : 0.5, p = a.ok / a.tot, se = Math.sqrt(Math.max(bp * (1 - bp), 1e-9) / a.tot), z = (p - bp) / se, m = a.sum / a.tot;
-        return '<td align="right"><span style="color:' + (m > 0 ? '#16A34A' : m < 0 ? '#DC2626' : '#1C1C1E') + ';">' + sg(m) + '</span> <span style="font-weight:700;color:' + (z >= 2 ? '#16A34A' : z <= -2 ? '#DC2626' : '#1C1C1E') + ';">' + pc(p) + '</span></td>';
-    };
-    const lin = (nome, A, negrito, borda) => '<tr style="border-top:' + (borda || '1px solid #F2F2F7') + ';' + (negrito ? 'font-weight:700;' : '') + '"><td>' + nome + '</td><td align="right">' + A.n + (A.n > 0 && A.n < 20 ? '*' : '') + '</td>' + GR_EFM_H.map((x, k) => cel(k, A)).join('') + '</tr>';
-    h += lin('Sinal', R.S, true) + lin('· 1ª metade', R.S1) + lin('· 2ª metade', R.S2) + lin('Controle (qualquer extremo)', R.C, false, '2px solid #1C1C1E') + lin('Base (todos os minutos)', R.B, false);
-    h += '<div style="font-size:11.5px;margin-top:8px;">* menos de 20 sinais. As duas metades mostram se o resultado se repete no tempo: se só uma metade tem vantagem, é acaso. A vantagem real é do Sinal contra o Controle.</div>';
-    return h + '</table>';
-}
+// ── exportações em CSV (para estudar candles e recalibrar o score) ──
+const GR_PRESO_K = 3;   // usado na tabela de métricas do crosshair
 // Exporta o footprint de UM DIA (UTC) em CSV: ts (ISO, minuto), preço, ask (compra agressora), bid (venda agressora). Serve para estudar candles reais fora do app.
 function grFootprintExportarDia() {
     const raw = _grFootprintCandlesRaw;
@@ -13273,307 +13111,187 @@ function grConfigBlocoExaustao(svg, comBotao) {
     let s = '<div style="padding:12px 2px;border-bottom:1px solid #F2F2F7;">'
         + '<div style="display:flex;align-items:center;gap:12px;">'
         + '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;">' + svg + '</svg>'
-        + '<div style="flex:1;min-width:0;"><div style="font-size:14px;font-weight:600;color:#1C1C1E;">Exaustão (EC / EV)</div><div style="font-size:11.5px;color:#8E8E93;margin-top:1px;">EC: compra esgotada no topo · EV: venda esgotada no fundo</div></div></div>';
+        + '<div style="flex:1;min-width:0;"><div style="font-size:14px;font-weight:600;color:#1C1C1E;">Exaustão</div><div style="font-size:11.5px;color:#8E8E93;margin-top:1px;">EC: compra esgotada no topo · EV: venda esgotada no fundo</div></div></div>';
     s += '<div class="gr-ex-sl">' + grExSlidersHtml() + '</div>';
-    if (comBotao) s += '<button onclick="grEfxAbrir()" style="width:100%;margin-top:10px;border:none;border-radius:8px;padding:10px 0;font-size:13px;font-weight:700;background:#1C1C1E;color:#FFFFFF;">Eficácia da exaustão (EC / EV)</button>';
-    if (comBotao) s += '<button onclick="grEfxAbrir(\'minuto\')" style="width:100%;margin-top:8px;border:none;border-radius:8px;padding:10px 0;font-size:13px;font-weight:700;background:#1C1C1E;color:#FFFFFF;">Eficácia por minuto (clímax + secura)</button>';
+    s += grScAcertoHtml();
     if (comBotao) s += '<button onclick="grFootprintExportarPeriodo()" style="width:100%;margin-top:8px;border:none;border-radius:8px;padding:10px 0;font-size:13px;font-weight:700;background:#F2F2F7;color:#1C1C1E;">Exportar período (resumo por minuto, CSV)</button>';
     if (comBotao) s += '<button onclick="grFootprintExportarDia()" style="width:100%;margin-top:8px;border:none;border-radius:8px;padding:10px 0;font-size:13px;font-weight:700;background:#F2F2F7;color:#1C1C1E;">Exportar footprint de um dia (CSV)</button>';
     return s + '</div>';
 }
-function grExDeltaCandle(cd) { // delta (compra − venda) do candle, com cache
-    const raw = _grFootprintCandlesRaw.length, c0 = _grExDeltaCache.get(cd.t);
-    if (c0 && c0.raw === raw) return c0.d;
-    let d = null; grFootprintParaCadaMinuto(cd.t, cd.t + grFootprintMsPorCandle(), m => { d = d || 0; (m.niveis || []).forEach(n => { d += (n.c || 0) - (n.v || 0); }); });
-    _grExDeltaCache.set(cd.t, { raw, d }); return d;
-}
-function grExConfDe(r) { return EXS[r].grExConf; }
-// 'EC' | 'EV' | null para o candle de índice idx (só candles fechados, com footprint)
-// Regra da barra j (devolve null se passa, ou o motivo de não passar). Só compara com a barra imediatamente anterior:
-//   EC: Δ+ atual > Δ+ anterior  e  eficiência atual < eficiência anterior  e  máxima atual ≥ máxima anterior   (EV: Δ−, eficiência vendedora, mínima ≤)
-//   eficiência = deslocamento % ÷ agressão do lado; deslocamento % = (fechamento − abertura) ÷ abertura (EC) ou (abertura − fechamento) ÷ abertura (EV).
-// Δ+ = volume de compra agressora do candle; Δ− = volume de venda agressora (footprint, soma dos minutos).
-function grExCondBarra(j, ec) {
-    const cs = _grAllCandles, cd = cs[j], ant = cs[j - 1]; if (!cd || !ant) return 'sem barra anterior';
-    if (!(ec ? cd.h >= ant.h : cd.l <= ant.l)) return 'não é extremo em relação à barra anterior';
-    const ms0 = grFootprintMsPorCandle(), A = grExAgressao(cd, ms0), B = grExAgressao(ant, ms0);
-    if (!B || B.n < 2 || !A || A.n < 2) return 'sem footprint da barra anterior';
-    const ag = ec ? A.comp : A.vend, agAnt = ec ? B.comp : B.vend;
-    if (!(ag > 0 && agAnt > 0)) return 'sem agressão do lado';
-    if (!(ag > agAnt)) return 'agressão não subiu em relação à barra anterior';
-    if (!(cd.o > 0 && ant.o > 0)) return 'sem abertura';
-    const dp = ec ? (cd.c - cd.o) / cd.o : (cd.o - cd.c) / cd.o, dpAnt = ec ? (ant.c - ant.o) / ant.o : (ant.o - ant.c) / ant.o;
-    if (!(dp / ag < dpAnt / agAnt)) return 'eficiência não caiu em relação à barra anterior';
-    return null;
-}
-// Tamanho da sequência: quantas barras seguidas (terminando em idx) passam na regra acima. 1 = só a barra atual.
-function grExCadeia(idx, ec) { let n = 0; for (let j = idx; j > 0 && n < 50; j--) { if (grExCondBarra(j, ec)) break; n++; } return n; }
-// AGRESSÃO QUE SECA NO EXTREMO (definição clássica de exaustão em footprint: a agressão some onde o preço chega):
-//   EC: máxima nova (maior que a do candle anterior) e a agressão COMPRADORA (Ask) nas últimas GR_EX_NLINHAS linhas do topo é menor, em proporção ao Ask do candle,
-//       do que é normalmente nos GR_EX_JANELA candles anteriores.
-//   EV: mínima nova e a agressão VENDEDORA (Bid) nas últimas linhas do fundo é menor, em proporção ao Bid do candle, do que é normalmente nos candles anteriores.
-// Sem número fixo de volume: o limite é a média do próprio mercado. Linhas na grade do ATR. (3 linhas e 20 candles fixados ANTES de olhar qualquer resultado.)
-const GR_EX_NLINHAS = 3, GR_EX_JANELA = 20;
-function grExFatiaExtremo(cd, ec) {   // fatia do Ask (EC) / Bid (EV) que ficou nas N linhas do extremo; null se o candle não tem linhas suficientes
-    let cl = null; try { cl = grFootprintClusterDoCandle(cd, grTickAtr(), null); } catch (e) {}
-    if (!cl || !cl.linhas || cl.linhas.length <= GR_EX_NLINHAS) return null;
-    const L = cl.linhas; let tot = 0, ext = 0;
-    for (let i = 0; i < L.length; i++) { const v = ec ? L[i].ask : L[i].bid; tot += v; if (ec ? i < GR_EX_NLINHAS : i >= L.length - GR_EX_NLINHAS) ext += v; }
-    return tot > 0 ? ext / tot : null;
-}
-function grExAfina(idx, ec) {
-    const cs = _grAllCandles, cd = cs[idx], ant = cs[idx - 1];
-    if (!cd || !ant || idx < GR_EX_JANELA + 1) return 'poucos candles antes';
-    if (ec ? !(cd.h > ant.h) : !(cd.l < ant.l)) return ec ? 'não fez máxima nova' : 'não fez mínima nova';
-    const f = grExFatiaExtremo(cd, ec); if (f == null) return 'candle com poucas linhas ou sem footprint';
-    let soma = 0, n = 0;
-    for (let j = idx - GR_EX_JANELA; j < idx; j++) { const x = grExFatiaExtremo(cs[j], ec); if (x != null) { soma += x; n++; } }
-    if (n < GR_EX_JANELA / 2) return 'poucos candles anteriores com footprint';
-    if (!(f < soma / n)) return 'agressão no extremo não ficou abaixo do normal';
-    return null;
-}
-// ── OS 3 PADRÕES DE EXAUSTÃO (candle idx; cada um devolve null se passa, ou o motivo). Sem número para calibrar: os limites são as médias dos 20 candles anteriores. ──
-//  1 CLÍMAX (Wyckoff): máxima/mínima nova, volume e faixa ACIMA da média e o candle fecha na metade contrária (longe do extremo).
-//  2 LEILÃO TERMINADO: máxima nova e, na última linha do grid ATR do topo, o Bid é maior que o Ask (EV: na da base, Ask maior que Bid) e o pavio do lado do extremo é maior que o corpo.
-//  3 AFINAMENTO: a agressão nas linhas do extremo, em proporção ao candle, fica abaixo do normal (grExAfina).
-const _grExVolCache = new Map();
-function grExVolCandle(cd) {
-    const raw = _grFootprintCandlesRaw.length, c0 = _grExVolCache.get(cd.t);
-    if (c0 && c0.raw === raw) return c0.v;
-    let v = null; grFootprintParaCadaMinuto(cd.t, cd.t + grFootprintMsPorCandle(), m => { v = v || 0; (m.niveis || []).forEach(n => { v += (n.c || 0) + (n.v || 0); }); });
-    _grExVolCache.set(cd.t, { raw, v }); if (_grExVolCache.size > 6000) _grExVolCache.delete(_grExVolCache.keys().next().value); return v;
-}
-function grExClimax(idx, ec) {
-    const cs = _grAllCandles, cd = cs[idx], ant = cs[idx - 1];
-    if (!cd || !ant || idx < GR_EX_JANELA + 1) return 'poucos candles antes';
-    if (ec ? !(cd.h > ant.h) : !(cd.l < ant.l)) return ec ? 'não fez máxima nova' : 'não fez mínima nova';
-    const v = grExVolCandle(cd); if (v == null) return 'sem footprint';
-    let sv = 0, nv = 0, sr = 0;
-    for (let j = idx - GR_EX_JANELA; j < idx; j++) { const x = grExVolCandle(cs[j]); if (x != null) { sv += x; nv++; } sr += cs[j].h - cs[j].l; }
-    if (nv < GR_EX_JANELA / 2) return 'poucos candles anteriores com footprint';
-    if (!(v > sv / nv)) return 'volume não passou da média';
-    if (!((cd.h - cd.l) > sr / GR_EX_JANELA)) return 'faixa não passou da média';
-    const meio = (cd.h + cd.l) / 2;
-    if (ec ? !(cd.c < meio) : !(cd.c > meio)) return 'fechou perto do extremo';
-    return null;
-}
-function grExLeilao(idx, ec) {
-    const cs = _grAllCandles, cd = cs[idx], ant = cs[idx - 1];
-    if (!cd || !ant) return 'sem candle anterior';
-    if (ec ? !(cd.h > ant.h) : !(cd.l < ant.l)) return ec ? 'não fez máxima nova' : 'não fez mínima nova';
-    let cl = null; try { cl = grFootprintClusterDoCandle(cd, grTickAtr(), null); } catch (e) {}
-    if (!cl || !cl.linhas || cl.linhas.length < 2) return 'sem footprint';
-    const L = cl.linhas, u = ec ? L[0] : L[L.length - 1];   // última linha do grid ATR do extremo
-    if (!(u.ask + u.bid > 0)) return 'sem volume na linha do extremo';
-    if (ec ? !(u.bid > u.ask) : !(u.ask > u.bid)) return ec ? 'compradores dominam a linha da máxima' : 'vendedores dominam a linha da mínima';
-    const corpo = Math.abs(cd.c - cd.o), pavio = ec ? cd.h - Math.max(cd.o, cd.c) : Math.min(cd.o, cd.c) - cd.l;
-    if (!(pavio > corpo)) return 'sem pavio de rejeição';
-    return null;
-}
-//  4 TOPO / FUNDO DUPLO com divergência de volume: o candle idx faz máxima (EV: mínima) a até UMA linha do grid ATR da máxima do pico anterior (pode passar um pouco: upthrust),
-//    esse pico anterior é o extremo dos GR_EX_JANELA candles antes e teve VOLUME ACIMA DA MÉDIA (clímax), o preço saiu da zona entre os dois (a mínima entre eles ficou abaixo da mínima do pico)
-//    e o candle atual tem MENOS volume que o pico anterior.
-function grExDuplo(idx, ec) {
-    const cs = _grAllCandles, cd = cs[idx];
-    if (!cd || idx < GR_EX_JANELA + 2) return 'poucos candles antes';
-    let jp = -1;
-    for (let j = idx - 2; j >= idx - GR_EX_JANELA; j--) { if (jp < 0 || (ec ? cs[j].h > cs[jp].h : cs[j].l < cs[jp].l)) jp = j; }
-    for (let j = idx - 1; j >= idx - GR_EX_JANELA; j--) { if (ec ? cs[j].h > cs[jp].h : cs[j].l < cs[jp].l) return 'candle vizinho fez extremo maior que o pico'; }
-    const P = cs[jp], tk = grTickAtr();
-    if (ec ? !(cd.h >= P.h - tk && cd.h <= P.h + tk) : !(cd.l <= P.l + tk && cd.l >= P.l - tk)) return 'não está perto do pico anterior';
-    let sai = ec ? Infinity : -Infinity;
-    for (let j = jp + 1; j < idx; j++) { if (ec) sai = Math.min(sai, cs[j].l); else sai = Math.max(sai, cs[j].h); }
-    if (ec ? !(sai < P.l) : !(sai > P.h)) return 'o preço não saiu da zona entre os dois';
-    const vP = grExVolCandle(P), vC = grExVolCandle(cd); if (vP == null || vC == null) return 'sem footprint';
-    let sv = 0, nv = 0;
-    for (let j = idx - GR_EX_JANELA; j < idx; j++) { const x = grExVolCandle(cs[j]); if (x != null) { sv += x; nv++; } }
-    if (nv < GR_EX_JANELA / 2) return 'poucos candles anteriores com footprint';
-    if (!(vP > sv / nv)) return 'o pico anterior não teve volume de clímax';
-    if (!(vC < vP)) return 'volume não ficou menor que o do pico';
-    return null;
-}
-function grExPadraoOk(idx, ec, modo) {
-    const fs = [grExClimax, grExLeilao, grExAfina, grExDuplo];
-    if (modo >= 1 && modo <= 4) return fs[modo - 1](idx, ec);
-    let mt = null; for (const fn of fs) { mt = fn(idx, ec); if (!mt) return null; } return mt || 'nenhum padrão';
-}
-// ZERO PRINT CLÁSSICO (módulo 1 do Exhaustion Indicator Suite, Sierra Chart), aplicado ao candle idx:
-//   EC: os 3 candles anteriores são de ALTA; na linha da máxima do candle NÃO houve vendedor agressor (Bid = 0); e o candle FECHA de baixa (reversão).
-//   EV: os 3 candles anteriores são de QUEDA; na linha da mínima NÃO houve comprador agressor (Ask = 0); e o candle FECHA de alta.
-// A linha é a do nível de preço mais fino que o footprint guarda (sem regrupar na grade do ATR). Devolve null se passa, ou o motivo.
-const _grExNivCache = new Map();
-function grExNiveisBorda(cd, ms) {
-    const raw = _grFootprintCandlesRaw ? _grFootprintCandlesRaw.length : 0, c0 = _grExNivCache.get(cd.t);
-    if (c0 && c0.raw === raw && c0.ms === ms) return c0;
-    const m = new Map(); let n = 0;
-    grFootprintParaCadaMinuto(cd.t, cd.t + ms, mi => { n++; (mi.niveis || []).forEach(x => { let a = m.get(x.p); if (!a) { a = { c: 0, v: 0 }; m.set(x.p, a); } a.c += x.c || 0; a.v += x.v || 0; }); });
-    let pMax = -Infinity, pMin = Infinity;
-    m.forEach((a, p) => { if (a.c + a.v > 0) { if (p > pMax) pMax = p; if (p < pMin) pMin = p; } });
-    const top = m.get(pMax), bot = m.get(pMin);
-    const r = { raw, ms, n, topC: top ? top.c : null, topV: top ? top.v : null, botC: bot ? bot.c : null, botV: bot ? bot.v : null };
-    _grExNivCache.set(cd.t, r); if (_grExNivCache.size > 6000) _grExNivCache.delete(_grExNivCache.keys().next().value);
-    return r;
-}
-function grExZeroPrint(idx, ec) {
-    const cs = _grAllCandles, cd = cs[idx]; if (!cd || idx < 3) return 'poucos candles antes';
-    for (let j = idx - 3; j < idx; j++) if (ec ? !(cs[j].c > cs[j].o) : !(cs[j].c < cs[j].o)) return ec ? 'sem 3 candles de alta antes' : 'sem 3 candles de queda antes';
-    if (ec ? !(cd.c < cd.o) : !(cd.c > cd.o)) return 'não fechou em reversão';
-    const b = grExNiveisBorda(cd, grFootprintMsPorCandle()); if (!b || b.n < 2 || b.topC == null) return 'sem footprint';
-    if (ec ? b.topV > 0 : b.botC > 0) return 'houve negócio do outro lado na linha do extremo';
-    return null;
-}
-const _grExAgrCache = new Map();
-function grExAgressao(cd, ms) {   // agressão compradora (comp) e vendedora (vend) do candle inteiro, a partir do footprint; n = minutos com dado
-    const raw = _grFootprintCandlesRaw ? _grFootprintCandlesRaw.length : 0, c0 = _grExAgrCache.get(cd.t);
-    if (c0 && c0.raw === raw && c0.ms === ms) return c0;
-    let comp = 0, vend = 0, n = 0;
-    grFootprintParaCadaMinuto(cd.t, cd.t + ms, m => { n++; (m.niveis || []).forEach(x => { comp += x.c || 0; vend += x.v || 0; }); });
-    const r = { raw, ms, comp, vend, n };
-    _grExAgrCache.set(cd.t, r); if (_grExAgrCache.size > 6000) _grExAgrCache.delete(_grExAgrCache.keys().next().value);
-    return r;
-}
-// CONFIRMAÇÃO PELO PRÓPRIO PREÇO (sem contar candles): EC só vale depois que um candle FECHA abaixo da mínima do candle do sinal, sem que nenhum candle antes disso
-// tenha rompido a máxima dele (EV: fecha acima da máxima, sem romper a mínima). Simetria, sem número: se levou k candles para confirmar, o candle do sinal precisa ser
-// a máxima (EC) / mínima (EV) de k candles à esquerda também. Devolve { ok, k } ou { ok:false, motivo }.
-function grExConfirma(idx, r) {
-    const cs = _grAllCandles, cd = cs[idx], ms = grFootprintMsPorCandle(), agora = Date.now(), ec = r === 'EC';
-    let k = 0;
-    for (let j = idx + 1; j < cs.length; j++) {
-        const nx = cs[j];
-        if (ec ? nx.h > cd.h : nx.l < cd.l) return { ok: false, motivo: 'extremo rompido antes de confirmar' };
-        if (agora < nx.t + ms) return { ok: false, motivo: 'aguarda confirmação do preço' };   // candle em formação não confirma
-        if (ec ? nx.c < cd.l : nx.c > cd.h) { k = j - idx; break; }
+
+// ══ SCORE DE EXAUSTÃO ══════════════════════════════════════════════════════════════════════════════════════════════════
+// ═══ SCORE DE EXAUSTÃO (EC/EV) ═════════════════════════════════════════════════════════════════════════════
+// Entrada: minutos do footprint (M). Saída: nota 0–100 para EC (topo) e EV (fundo) em cada barra do TF (5m, 15m, 30m, 1h).
+// A nota é o percentil, entre ~1 ano de eventos, da probabilidade dada por 25 fatores empilhados (regressão logística por TF e lado).
+// Evento = a barra faz nova máxima (EC) ou mínima (EV) das 20 barras anteriores.
+function grScPrep(M) {   // incremental: processa só os minutos novos (M.pn = quantos já foram)
+    if (!M.dv) { M.dv = []; M.dh = []; M.dl = []; M.pdh = []; M.pdl = []; M.st = { dia: -1, cpv: 0, cv: 0, mx: -Infinity, mn: Infinity, ultMx: NaN, ultMn: NaN }; M.pn = 0; }
+    const st = M.st;
+    for (let i = M.pn; i < M.n; i++) {
+        const d = Math.floor(M.ts[i] / 86400000);
+        if (d !== st.dia) { if (st.dia >= 0) { st.ultMx = st.mx; st.ultMn = st.mn; } st.dia = d; st.cpv = 0; st.cv = 0; st.mx = -Infinity; st.mn = Infinity; }
+        const v = M.ask[i] + M.bid[i]; st.cpv += M.vw[i] * v; st.cv += v;
+        if (M.hi[i] > st.mx) st.mx = M.hi[i]; if (M.lo[i] < st.mn) st.mn = M.lo[i];
+        M.dv.push(st.cv > 0 ? st.cpv / st.cv : M.vw[i]); M.dh.push(st.mx); M.dl.push(st.mn); M.pdh.push(st.ultMx); M.pdl.push(st.ultMn);
     }
-    if (!k) return { ok: false, motivo: 'aguarda confirmação do preço' };
-    if (idx - k < 0) return { ok: false, motivo: 'poucos candles à esquerda' };
-    for (let i = idx - k; i < idx; i++) if (ec ? cs[i].h > cd.h : cs[i].l < cd.l) return { ok: false, motivo: 'não é o extremo dos ' + k + ' candles à esquerda' };
-    return { ok: true, k };
+    M.pn = M.n; return M;
 }
+function grScBarras(M, tfMin) {   // agrupa os minutos em barras do TF (alinhadas ao UTC)
+    const ms = tfMin * 60000, B = { t: [], i0: [], i1: [], hi: [], lo: [], c: [], v: [], ask: [], bid: [], dv: [], pdh: [], pdl: [], dh: [], dl: [] };
+    let cur = null;
+    for (let i = 0; i < M.n; i++) {
+        const b = Math.floor(M.ts[i] / ms) * ms;
+        if (cur !== b) { cur = b; B.t.push(b); B.i0.push(i); B.i1.push(i + 1); B.hi.push(M.hi[i]); B.lo.push(M.lo[i]); B.v.push(0); B.ask.push(0); B.bid.push(0); B.c.push(0); B.dv.push(0); B.pdh.push(0); B.pdl.push(0); B.dh.push(0); B.dl.push(0); }
+        const k = B.t.length - 1; B.i1[k] = i + 1;
+        if (M.hi[i] > B.hi[k]) B.hi[k] = M.hi[i]; if (M.lo[i] < B.lo[k]) B.lo[k] = M.lo[i];
+        B.v[k] += M.ask[i] + M.bid[i]; B.ask[k] += M.ask[i]; B.bid[k] += M.bid[i];
+        B.c[k] = M.vw[i]; B.dv[k] = M.dv[i]; B.pdh[k] = M.pdh[i]; B.pdl[k] = M.pdl[i]; B.dh[k] = M.dh[i]; B.dl[k] = M.dl[i];
+    }
+    B.n = B.t.length; return B;
+}
+function grScRoll(a, w, f) { const o = new Float64Array(a.length).fill(NaN); for (let i = w - 1; i < a.length; i++) o[i] = f(a, i - w + 1, i); return o; }
+function grScEwm(a, alpha) { const o = new Float64Array(a.length).fill(NaN); let y = NaN; for (let i = 0; i < a.length; i++) { if (isNaN(a[i])) continue; y = isNaN(y) ? a[i] : (1 - alpha) * y + alpha * a[i]; o[i] = y; } return o; }
+function grScSerie(M, B, s) {   // indicadores da barra no sentido s (+1 topo/EC, −1 fundo/EV; no fundo o preço é espelhado)
+    const n = B.n, h = new Float64Array(n), l = new Float64Array(n), c = new Float64Array(n), dlt = new Float64Array(n), tpu = new Float64Array(n);
+    for (let k = 0; k < n; k++) { h[k] = s > 0 ? B.hi[k] : -B.lo[k]; l[k] = s > 0 ? B.lo[k] : -B.hi[k]; c[k] = s * B.c[k]; dlt[k] = s * (B.ask[k] - B.bid[k]); tpu[k] = (B.hi[k] + B.lo[k] + B.c[k]) / 3; }
+    const tr = new Float64Array(n); for (let k = 0; k < n; k++) { const pc = k ? c[k - 1] : c[n - 1]; tr[k] = Math.max(h[k] - l[k], Math.abs(h[k] - pc), Math.abs(l[k] - pc)); }
+    const mean = (a, i, j) => { let t = 0; for (let x = i; x <= j; x++) t += a[x]; return t / (j - i + 1); };
+    const atr = grScRoll(tr, 14, mean);
+    const df = new Float64Array(n).fill(NaN), up = new Float64Array(n).fill(NaN), dn = new Float64Array(n).fill(NaN);
+    for (let k = 1; k < n; k++) { const d = c[k] - c[k - 1]; up[k] = d > 0 ? d : 0; dn[k] = d < 0 ? -d : 0; df[k] = d; }
+    const eu = grScEwm(up, 1 / 14), ed = grScEwm(dn, 1 / 14), rsi = new Float64Array(n).fill(NaN);
+    for (let k = 1; k < n; k++) rsi[k] = ed[k] === 0 ? 100 : 100 - 100 / (1 + eu[k] / ed[k]);
+    const e20 = grScEwm(c, 2 / 21), e50 = grScEwm(c, 2 / 51), e200 = grScEwm(c, 2 / 201);
+    const m20 = grScRoll(c, 20, mean), sd20 = grScRoll(c, 20, (a, i, j) => { const m = mean(a, i, j); let t = 0; for (let x = i; x <= j; x++) t += (a[x] - m) * (a[x] - m); return Math.sqrt(t / (j - i)); });
+    const hh = grScRoll(h, 14, (a, i, j) => { let m = -Infinity; for (let x = i; x <= j; x++) if (a[x] > m) m = a[x]; return m; });
+    const ll = grScRoll(l, 14, (a, i, j) => { let m = Infinity; for (let x = i; x <= j; x++) if (a[x] < m) m = a[x]; return m; });
+    const tp = new Float64Array(n); for (let k = 0; k < n; k++) tp[k] = (h[k] + l[k] + c[k]) / 3;
+    const tpm = grScRoll(tp, 20, mean), md = grScRoll(tp, 20, (a, i, j) => { const m = mean(a, i, j); let t = 0; for (let x = i; x <= j; x++) t += Math.abs(a[x] - m); return t / (j - i + 1); });
+    const pos = new Float64Array(n), neg = new Float64Array(n);
+    for (let k = 1; k < n; k++) { const d = tpu[k] - tpu[k - 1], r = tpu[k] * B.v[k]; pos[k] = d > 0 ? r : 0; neg[k] = d < 0 ? r : 0; }
+    const sum = (a, i, j) => { let t = 0; for (let x = i; x <= j; x++) t += a[x]; return t; };
+    const ps = grScRoll(pos, 14, sum), ns = grScRoll(neg, 14, sum);
+    const rmax = new Float64Array(n).fill(NaN), vmed = new Float64Array(n).fill(NaN), rsimax = new Float64Array(n).fill(NaN);
+    for (let k = 20; k < n; k++) { let a = -Infinity, v = 0, r = -Infinity; for (let x = k - 20; x < k; x++) { if (h[x] > a) a = h[x]; v += B.v[x]; if (rsi[x] > r) r = rsi[x]; } rmax[k] = a; vmed[k] = v / 20; rsimax[k] = r; }
+    return { s, h, l, c, dlt, atr, rsi, e20, e50, e200, m20, sd20, hh, ll, tp, tpm, md, ps, ns, rmax, vmed, rsimax, df };
+}
+function grScPerfilRank(M, i0, px) {   // posição do preço no perfil de volume dos 7 dias anteriores (0 = pouco volume … 1 = muito volume)
+    const t0 = M.ts[i0], tIni = t0 - 7 * 86400000; let j = i0; while (j > 0 && M.ts[j - 1] >= tIni) j--;
+    if (i0 - j < 3000) return NaN;
+    const mp = new Map(); for (let x = j; x < i0; x++) { const k = Math.floor(M.vw[x] / 100), v = M.ask[x] + M.bid[x]; mp.set(k, (mp.get(k) || 0) + v); }
+    const val = mp.get(Math.floor(px / 100)) || 0; let q = 0; mp.forEach(v => { if (v < val) q++; }); return q / mp.size;
+}
+// vetor de 25 fatores (0/1) da barra k, no sentido de S (resultado de grScSerie); null se não é evento (não fez nova máx/mín de 20 barras)
+function grScFatores(M, B, S, k, ec, ini) {
+    if (k < 211 || !(S.h[k] > S.rmax[k])) return null;
+    if (M.ts[B.i0[k]] - ini < (10080 + 1440) * 60000) return null;
+    const s = S.s, atr = S.atr[k], h = S.h[k], l = S.l[k], c = S.c[k], rng = Math.max(h - l, 1e-9), px = ec ? B.hi[k] : B.lo[k];
+    const pb = (c - S.m20[k]) / (4 * S.sd20[k]) + 0.5, sto = (c - S.ll[k]) / Math.max(S.hh[k] - S.ll[k], 1e-9) * 100, cci = (S.tp[k] - S.tpm[k]) / (0.015 * S.md[k]);
+    const mfi = 100 * S.ps[k] / Math.max(S.ps[k] + S.ns[k], 1e-9), vr = B.v[k] / S.vmed[k];
+    const up3 = S.df[k - 1] > 0 && S.df[k - 2] > 0 && S.df[k - 3] > 0, pos = (c - l) / rng, wick = (h - Math.max(c, S.c[k - 1])) / rng;
+    const hv = grScPerfilRank(M, B.i0[k], px), pdlvl = ec ? B.pdh[k] : B.pdl[k], dext = ec ? B.dh[k] : B.dl[k], dvw = s * B.dv[k];
+    // minuto do extremo da barra (primeiro minuto que fez a máx/mín) e as linhas de agressão dele
+    let jx = B.i0[k]; for (let x = B.i0[k]; x < B.i1[k]; x++) { if (ec ? M.hi[x] > M.hi[jx] : M.lo[x] < M.lo[jx]) jx = x; }
+    const cont3 = ec ? M.at3[jx] : M.bb3[jx], rev3 = ec ? M.bt3[jx] : M.ab3[jx], cont1 = ec ? M.a1t[jx] : M.b1b[jx], rev1 = ec ? M.b1t[jx] : M.a1b[jx];
+    const cdv = S.dlt[k] + S.dlt[k - 1] + S.dlt[k - 2], askB = ec ? B.ask[k] : B.bid[k], askP = ec ? B.ask[k - 1] : B.bid[k - 1];
+    const f = [vr >= 2, hv <= 0.25, S.rsi[k] >= 70, pb >= 1, pos <= 0.4, S.dlt[k] < 0, (c - S.e20[k]) / atr >= 2, (c - S.e50[k]) / atr >= 3, (c - S.e200[k]) / atr >= 5, sto >= 90, cci >= 150,
+        ec ? mfi >= 80 : mfi <= 20, rng >= 1.5 * atr, up3, S.rsimax[k] > S.rsi[k] + 3, B.v[k] < B.v[k - 1], (c - dvw) >= 3 * atr, Math.abs(px - pdlvl) / px <= 0.0015,
+        ec ? px >= dext - 1e-9 : px <= dext + 1e-9, wick >= 0.5, rev3 > cont3, rev1 > cont1, cont3 / Math.max(cont3 + rev3, 1e-9) <= 0.4, cdv < 0, askB < askP];
+    return f.map(x => x ? 1 : 0);
+}
+function grScNota(mod, f) {   // mod = { w, b, q }
+    let z = mod.b; for (let i = 0; i < f.length; i++) if (f[i]) z += mod.w[i]; const p = 1 / (1 + Math.exp(-z)); let n = 0; while (n < 100 && mod.q[n + 1] <= p) n++; return { p, nota: n };
+}
+
+const GR_SC_MODELO = {"5m":{"EC":{"w":[0.297761,0.42905,0.293697,-0.152948,0.587753,0.203009,-0.049253,-0.004807,-0.066207,-0.790025,0.032197,0.272716,0.313548,0.140509,0.393045,-0.018583,-0.068229,-0.490052,0.157782,-0.03615,0.04969,-0.183999,0.033072,-0.018514,0.070533],"b":-1.391115,"q":[0.039997,0.076535,0.082946,0.08587,0.088822,0.090966,0.092375,0.095404,0.098414,0.100822,0.101457,0.102907,0.104883,0.107415,0.109887,0.113132,0.115003,0.116772,0.118825,0.120646,0.123848,0.126544,0.128859,0.131668,0.134204,0.137242,0.140881,0.144273,0.147286,0.149334,0.151885,0.155699,0.159312,0.162721,0.166412,0.170505,0.173847,0.178586,0.183125,0.188479,0.192179,0.195661,0.19979,0.20478,0.209449,0.215263,0.220923,0.22588,0.231533,0.237457,0.241258,0.249032,0.252954,0.257729,0.263398,0.267154,0.27412,0.278923,0.283221,0.288936,0.293496,0.299251,0.303012,0.308463,0.314027,0.318779,0.324479,0.328261,0.334537,0.340533,0.345795,0.352775,0.359525,0.367439,0.372968,0.379075,0.386597,0.392749,0.40105,0.408893,0.41601,0.424291,0.432919,0.442367,0.448613,0.458244,0.466819,0.475028,0.484835,0.495625,0.508073,0.517162,0.53156,0.546,0.561085,0.579041,0.598647,0.623816,0.648841,0.692973,0.823282],"acc":{"95":{"a":67.7,"piso":63.3,"n":458},"90":{"a":63.6,"piso":60.4,"n":915},"80":{"a":53.6,"piso":51.3,"n":1830}},"base":27.5,"n":9139,"auc":0.696},"EV":{"w":[0.392974,0.51113,0.292701,0.00247,0.568583,0.315926,-0.08493,-0.034851,-0.090571,-0.709283,0.033084,0.260541,0.255241,0.094255,0.453765,-0.060779,-0.010754,-0.156149,0.282313,0.131326,-0.148745,-0.219172,0.172383,-0.052065,0.24119],"b":-1.686329,"q":[0.051094,0.067291,0.071736,0.076918,0.079625,0.083508,0.084204,0.08627,0.088662,0.091379,0.094099,0.09722,0.099792,0.101977,0.105467,0.107811,0.109502,0.111854,0.115106,0.118371,0.122077,0.124407,0.127539,0.131528,0.134702,0.138141,0.14196,0.145019,0.148376,0.152022,0.154512,0.157279,0.160685,0.164149,0.167779,0.17245,0.175899,0.179217,0.183032,0.186799,0.19128,0.194581,0.198851,0.203959,0.209016,0.214889,0.219252,0.221871,0.226731,0.23088,0.23665,0.242593,0.248549,0.252091,0.256153,0.261431,0.264863,0.268438,0.27162,0.276733,0.280886,0.287482,0.29391,0.300103,0.304956,0.310746,0.31785,0.323559,0.329211,0.336206,0.343293,0.352741,0.358528,0.364155,0.369898,0.378388,0.384876,0.39286,0.40135,0.407878,0.41734,0.426159,0.433738,0.445304,0.454873,0.465641,0.474635,0.484238,0.498175,0.511679,0.526913,0.535769,0.551279,0.560969,0.579636,0.599664,0.625246,0.653759,0.694857,0.733657,0.876301],"acc":{"95":{"a":72.6,"piso":68.4,"n":481},"90":{"a":65.1,"piso":62.0,"n":973},"80":{"a":55.0,"piso":52.8,"n":1924}},"base":27.5,"n":9612,"auc":0.704}},"15m":{"EC":{"w":[0.125484,0.603317,0.026228,-0.033257,0.500512,0.147262,0.047093,0.139336,-0.476267,-0.823813,-0.025251,0.206832,0.370262,0.051071,0.315294,0.023718,0.001415,-0.588539,0.008236,0.209231,-0.047738,-0.337919,0.10488,0.021896,0.100645],"b":-1.048465,"q":[0.055539,0.085034,0.09445,0.099561,0.108015,0.116243,0.123341,0.127578,0.129757,0.132687,0.133371,0.135076,0.139289,0.142454,0.147374,0.148854,0.152887,0.155908,0.160111,0.163663,0.167036,0.171531,0.174804,0.177228,0.182095,0.185301,0.190956,0.193597,0.197527,0.201567,0.205279,0.209366,0.212899,0.218616,0.223809,0.229218,0.234111,0.239797,0.248745,0.254509,0.259405,0.262049,0.268785,0.27601,0.279531,0.284277,0.290323,0.293623,0.301188,0.304115,0.307014,0.315763,0.325219,0.331056,0.338504,0.344794,0.35178,0.354209,0.361659,0.364497,0.367146,0.37286,0.37909,0.38662,0.396057,0.401986,0.408435,0.41161,0.416391,0.420639,0.427412,0.433598,0.441258,0.448515,0.454604,0.464643,0.47199,0.478357,0.484354,0.491419,0.495826,0.500935,0.509722,0.516737,0.525118,0.533671,0.539176,0.549106,0.560943,0.567787,0.575884,0.584985,0.598469,0.6119,0.620554,0.630718,0.642924,0.660589,0.685889,0.725008,0.83503],"acc":{"95":{"a":63.8,"piso":55.9,"n":152},"90":{"a":62.8,"piso":57.3,"n":304},"80":{"a":57.5,"piso":53.5,"n":609}},"base":33.4,"n":3029,"auc":0.675},"EV":{"w":[0.408479,0.436387,0.306175,0.023829,0.467804,0.256407,-0.090309,-0.007676,0.128831,-0.952633,-0.152064,0.1371,0.389383,0.119802,0.552791,-0.052412,-0.002913,-0.118641,0.13487,0.251484,0.147074,-0.186897,-0.178865,0.080868,0.115077],"b":-1.391606,"q":[0.058334,0.075026,0.079321,0.084255,0.086948,0.088631,0.09322,0.097513,0.100005,0.10464,0.110228,0.113299,0.118198,0.123628,0.126848,0.131103,0.13534,0.140689,0.144785,0.147512,0.15319,0.158796,0.1635,0.166085,0.172902,0.176573,0.179499,0.184862,0.189753,0.196368,0.199244,0.202362,0.208417,0.210435,0.216818,0.221536,0.230475,0.233323,0.239155,0.246237,0.252666,0.258366,0.266764,0.271805,0.279801,0.289294,0.296536,0.305662,0.310924,0.316299,0.321736,0.326958,0.332962,0.336926,0.346188,0.352132,0.357299,0.361257,0.368708,0.375758,0.382125,0.387253,0.39253,0.399885,0.406659,0.415226,0.423808,0.430206,0.437529,0.441903,0.452842,0.462128,0.470154,0.47818,0.490403,0.497253,0.503836,0.51119,0.519159,0.525674,0.534465,0.546196,0.553782,0.566568,0.576405,0.586456,0.600362,0.609144,0.620422,0.628613,0.638911,0.651808,0.663756,0.674113,0.690534,0.700159,0.72131,0.749749,0.777166,0.803055,0.890362],"acc":{"95":{"a":78.8,"piso":71.8,"n":156},"90":{"a":72.4,"piso":67.2,"n":312},"80":{"a":63.7,"piso":59.9,"n":623}},"base":34.8,"n":3104,"auc":0.716}},"30m":{"EC":{"w":[0.00197,0.340667,0.366339,-0.307153,0.49403,0.106658,-0.064754,-0.484365,-0.233455,-0.977566,0.243181,0.317872,0.49288,0.234276,0.515555,-0.018081,0.349003,-0.999023,0.190538,0.129299,-0.061143,-0.21917,0.179353,-0.131252,-0.050584],"b":-1.079329,"q":[0.043749,0.064397,0.082339,0.093225,0.101292,0.107085,0.113686,0.119454,0.121543,0.126675,0.127005,0.1311,0.133964,0.137346,0.140683,0.146225,0.150635,0.154693,0.160631,0.164883,0.167465,0.173355,0.178625,0.180784,0.182391,0.188091,0.192246,0.198188,0.202025,0.206131,0.211603,0.219399,0.226691,0.232692,0.239044,0.247545,0.2525,0.263202,0.270192,0.277309,0.281224,0.286123,0.291359,0.297368,0.300792,0.308418,0.314947,0.322792,0.328981,0.333915,0.337009,0.343265,0.35045,0.355442,0.360911,0.367413,0.372229,0.373521,0.381165,0.387481,0.39033,0.399906,0.403471,0.41198,0.419365,0.425991,0.436383,0.443226,0.450327,0.455201,0.462143,0.47028,0.477508,0.48536,0.491305,0.497417,0.50952,0.516833,0.52192,0.529663,0.53166,0.541266,0.553129,0.560397,0.563189,0.572768,0.581521,0.596045,0.604604,0.615035,0.622933,0.640685,0.651817,0.661826,0.671885,0.685564,0.704612,0.718403,0.7427,0.772098,0.83413],"acc":{"95":{"a":71.4,"piso":60.5,"n":77},"90":{"a":69.1,"piso":61.3,"n":152},"80":{"a":58.6,"piso":53.0,"n":302}},"base":35.6,"n":1508,"auc":0.674},"EV":{"w":[0.419729,0.449442,0.175564,-0.152545,0.565391,0.121081,-0.192067,-0.099241,0.101824,-0.940788,-0.022676,0.448365,0.501196,-0.226288,0.592406,0.040702,-0.154478,-0.310438,0.483894,-0.02983,0.053951,-0.191331,0.54354,0.040019,0.005911],"b":-1.451982,"q":[0.052861,0.070663,0.07931,0.087288,0.092366,0.094545,0.104326,0.110636,0.113422,0.120437,0.124013,0.129193,0.134495,0.138437,0.146494,0.152374,0.157517,0.161628,0.165463,0.169533,0.173273,0.179525,0.185918,0.189313,0.197487,0.20438,0.20544,0.212717,0.217735,0.224996,0.229795,0.238667,0.244242,0.250457,0.258043,0.263446,0.27116,0.275262,0.279965,0.285164,0.288391,0.297348,0.303529,0.309979,0.320003,0.325711,0.328776,0.339912,0.344769,0.351276,0.35789,0.366274,0.373394,0.378553,0.386078,0.393229,0.396328,0.400466,0.407007,0.414249,0.421554,0.43063,0.435723,0.444632,0.455737,0.46801,0.479999,0.484825,0.492155,0.498534,0.509393,0.516943,0.524566,0.532864,0.540035,0.549924,0.554424,0.56241,0.571628,0.580374,0.590651,0.604818,0.615383,0.624109,0.633824,0.642001,0.651493,0.659305,0.665138,0.6836,0.690771,0.702742,0.723335,0.736557,0.748575,0.765995,0.778277,0.792438,0.818869,0.840462,0.903202],"acc":{"95":{"a":67.9,"piso":57.0,"n":78},"90":{"a":70.3,"piso":62.7,"n":155},"80":{"a":68.6,"piso":63.2,"n":306}},"base":38.5,"n":1529,"auc":0.705}},"1h":{"EC":{"w":[0.536926,0.390925,0.315616,0.063313,0.83651,-0.060093,0.009088,-0.268469,-0.512864,-1.198209,-0.403911,0.190191,0.559842,0.226032,0.282117,0.625323,-0.186298,-0.957751,2.976015,0.243063,-0.294316,-0.497772,0.163876,0.124496,-0.317146],"b":-3.881661,"q":[0.017114,0.044719,0.053418,0.061756,0.074847,0.079845,0.091478,0.098238,0.102592,0.105648,0.109734,0.114782,0.118751,0.121651,0.128099,0.13186,0.134308,0.136405,0.140935,0.143634,0.147194,0.152261,0.158266,0.163491,0.16874,0.170784,0.180358,0.186491,0.194475,0.199739,0.207645,0.210939,0.215689,0.221336,0.227374,0.234264,0.237934,0.245766,0.252079,0.267719,0.272556,0.280588,0.285921,0.287892,0.293929,0.31337,0.318354,0.329525,0.336471,0.34016,0.34361,0.358157,0.369418,0.376722,0.389338,0.400242,0.4177,0.424154,0.432649,0.439902,0.446411,0.44798,0.457622,0.4627,0.473633,0.484608,0.498402,0.502802,0.511241,0.523336,0.533088,0.540064,0.543489,0.547636,0.557436,0.560772,0.568905,0.576606,0.581759,0.591975,0.598697,0.606553,0.617683,0.62717,0.631004,0.644217,0.660557,0.671263,0.683819,0.691833,0.703548,0.720209,0.739504,0.75386,0.761505,0.779413,0.806529,0.825319,0.837067,0.855139,0.898269],"acc":{"95":{"a":85.0,"piso":70.9,"n":40},"90":{"a":75.0,"piso":64.5,"n":80},"80":{"a":68.4,"piso":60.7,"n":158}},"base":38.1,"n":789,"auc":0.727},"EV":{"w":[0.431795,0.400089,0.306998,-0.122311,0.905237,-0.119832,-0.346203,0.125179,0.171981,-1.029418,-0.429653,0.269493,0.283986,0.179663,0.691528,-0.441767,-0.358756,-0.566442,3.619337,-0.139405,0.299311,-0.10251,-0.037955,0.117242,0.372658],"b":-4.157951,"q":[0.005556,0.068967,0.083499,0.097204,0.104197,0.107462,0.125424,0.134934,0.142951,0.147121,0.151377,0.155195,0.162854,0.17185,0.17265,0.177838,0.183671,0.189932,0.197148,0.206465,0.211111,0.218615,0.227513,0.232819,0.240979,0.246256,0.253265,0.258617,0.264035,0.267899,0.274937,0.287281,0.299911,0.30501,0.308462,0.313362,0.321297,0.327173,0.341613,0.349369,0.362043,0.367171,0.371779,0.378275,0.383037,0.389785,0.398025,0.405133,0.410599,0.419672,0.426287,0.433931,0.445607,0.452889,0.461181,0.469071,0.476465,0.486922,0.495066,0.504875,0.510283,0.518656,0.527788,0.5425,0.548344,0.556561,0.568496,0.574938,0.588357,0.598004,0.608913,0.621849,0.628083,0.635551,0.643943,0.652546,0.667857,0.674735,0.67886,0.697688,0.703577,0.71296,0.722556,0.729116,0.742071,0.749225,0.756326,0.766035,0.777207,0.78745,0.800695,0.817311,0.823214,0.834646,0.839539,0.85057,0.869117,0.883346,0.89029,0.912461,0.948254],"acc":{"95":{"a":95.0,"piso":83.5,"n":40},"90":{"a":87.3,"piso":78.2,"n":79},"80":{"a":79.6,"piso":72.6,"n":157}},"base":45.4,"n":776,"auc":0.733}}};
+const GR_SC_REV = { '5m': 0.4, '15m': 0.6, '30m': 0.8, '1h': 1.0 };   // reversão (%) que define "topo/fundo real" em cada TF
+let _grScM = null, _grScTfKey = '', _grScB = null, _grScBI = null, _grScS = {}; const _grScMemo = new Map();
+function grScNomeTf() { const m = Math.round(grFootprintMsPorCandle() / 60000); return { 5: '5m', 15: '15m', 30: '30m', 60: '1h' }[m] || null; }
+// minutos do Fluxo em colunas (as mesmas do CSV "Exportar período"); só entram minutos com 3 min de atraso (já fechados), de forma incremental
+function grScMinutos() {
+    const raw = _grFootprintCandlesRaw; if (!raw || !raw.length) return null;
+    const corte = Date.now() - 3 * 60000;
+    let M = _grScM;
+    if (!M || M.ver !== _grFpVersaoAntiga || M.ts0 !== raw[0].ts) {
+        M = _grScM = { ver: _grFpVersaoAntiga, ts0: raw[0].ts, n: 0, ts: [], hi: [], lo: [], vw: [], ask: [], bid: [], at3: [], bt3: [], ab3: [], bb3: [], a1t: [], b1t: [], a1b: [], b1b: [] };
+        _grScMemo.clear(); _grScTfKey = '';
+    }
+    for (let i = M.n ? grFootprintIdxMinuto(raw, M.ts[M.n - 1] + 1) : 0; i < raw.length; i++) {
+        const m = raw[i]; if (m.ts > corte) break;
+        const lv = (m.niveis || []).filter(x => (x.c || 0) + (x.v || 0) > 0).sort((a, b) => a.p - b.p); if (!lv.length) continue;
+        let A = 0, B = 0, pv = 0, q = 0, ta = 0, tb = 0, ba = 0, bb = 0;
+        lv.forEach((x, j) => { const c = x.c || 0, v = x.v || 0; A += c; B += v; pv += x.p * (c + v); q += c + v; if (j < 3) { ba += c; bb += v; } if (j >= lv.length - 3) { ta += c; tb += v; } });
+        const top = lv[lv.length - 1], bot = lv[0], r = z => Math.round(z * 100) / 100;
+        M.ts.push(m.ts); M.hi.push(top.p); M.lo.push(bot.p); M.vw.push(Math.round(pv / q)); M.ask.push(r(A)); M.bid.push(r(B));
+        M.at3.push(r(ta)); M.bt3.push(r(tb)); M.ab3.push(r(ba)); M.bb3.push(r(bb)); M.a1t.push(r(top.c || 0)); M.b1t.push(r(top.v || 0)); M.a1b.push(r(bot.c || 0)); M.b1b.push(r(bot.v || 0));
+        M.n++;
+    }
+    return M;
+}
+// { EC: nota|null, EV: nota|null } da barra que começa em t (só barras fechadas, TF calibrado); null = sem dados / TF sem calibração
+function grScDe(t) {
+    const nome = grScNomeTf(); if (!nome || !GR_SC_MODELO[nome]) return null;
+    const tfMin = { '5m': 5, '15m': 15, '30m': 30, '1h': 60 }[nome], tfMs = tfMin * 60000;
+    const M = grScMinutos(); if (!M || M.n < 20000) return null;
+    grScPrep(M);
+    const chave = nome + '|' + M.ver + '|' + Math.floor((M.ts[M.n - 1] + 60000) / tfMs);
+    if (_grScTfKey !== chave) { _grScB = grScBarras(M, tfMin); _grScS = {}; _grScTfKey = chave; _grScBI = new Map(); _grScB.t.forEach((x, i) => _grScBI.set(x, i)); }
+    const mk = nome + '|' + t; if (_grScMemo.has(mk)) return _grScMemo.get(mk);
+    const B = _grScB, k = _grScBI.get(t); if (k === undefined) return null;
+    if (!(k + 1 < B.n || M.ts[M.n - 1] >= t + tfMs - 60000)) return null;   // barra ainda incompleta
+    const Se = _grScS.ec || (_grScS.ec = grScSerie(M, B, 1)), Sv = _grScS.ev || (_grScS.ev = grScSerie(M, B, -1)), mod = GR_SC_MODELO[nome];
+    const fe = grScFatores(M, B, Se, k, true, M.ts[0]), fv = grScFatores(M, B, Sv, k, false, M.ts[0]);
+    const res = { EC: fe ? grScNota(mod.EC, fe).nota : null, EV: fv ? grScNota(mod.EV, fv).nota : null };
+    _grScMemo.set(mk, res); return res;
+}
+function grScSinal(t) {   // { r: 'EC'|'EV', nota } se a nota passa do corte, senão null
+    const x = grScDe(t); if (!x) return null; const cut = EXS.EC.grExNota;
+    const a = x.EC != null && x.EC >= cut ? x.EC : -1, b = x.EV != null && x.EV >= cut ? x.EV : -1;
+    if (a < 0 && b < 0) return null; return a >= b ? { r: 'EC', nota: a } : { r: 'EV', nota: b };
+}
+function grScAcertoHtml() {   // taxa de acerto do score no TF corrente do gráfico (calibrada em 1 ano de footprint, treino e teste em metades diferentes)
+    const nome = grScNomeTf(), mod = nome && GR_SC_MODELO[nome];
+    let s = '<div style="margin-top:10px;padding:10px 12px;border-radius:10px;background:#F2F2F7;font-size:12px;color:#1C1C1E;line-height:1.45;">';
+    s += '<div style="font-weight:700;font-size:13px;margin-bottom:6px;">Score de exaustão · acerto no TF ' + (nome || 'atual') + '</div>';
+    if (!mod) return s + 'Este TF ainda não tem calibração (feita para 5m, 15m, 30m e 1h; 4h e diário faltam anos de histórico).</div>';
+    const cuts = ['95', '90', '80'];
+    s += '<table style="width:100%;border-collapse:collapse;text-align:center;"><tr><td></td>' + cuts.map(c => '<td style="font-weight:700;padding:2px 0;">nota ≥ ' + c + '</td>').join('') + '</tr>';
+    ['EC', 'EV'].forEach(l => { s += '<tr><td style="font-weight:700;text-align:left;color:' + (l === 'EC' ? '#DC2626' : '#16A34A') + ';padding:3px 0;">' + l + '</td>' + cuts.map(c => { const a = mod[l].acc[c]; return '<td style="padding:3px 0;"><b>' + Math.round(a.a) + '%</b><br><span style="color:#8E8E93;">piso ' + Math.round(a.piso) + '% · ' + a.n + ' casos</span></td>'; }).join('') + '</tr>'; });
+    s += '</table><div style="margin-top:6px;color:#8E8E93;">Acerto = o extremo foi topo (EC) / fundo (EV) de verdade: o preço reverteu ≥ ' + String(GR_SC_REV[nome]).replace('.', ',') + '% depois, sem superá-lo. Sem o score, só ' + Math.round(mod.EC.base) + '% (EC) e ' + Math.round(mod.EV.base) + '% (EV) dos novos extremos de 20 barras são. Piso = limite inferior com 95% de confiança.</div></div>';
+    return s;
+}
+
+
+// 'EC' | 'EV' | null para o candle de índice idx (só candles fechados)
 function grExaustaoDe(idx) {
-    const cd = _grAllCandles[idx]; if (!cd || idx < Math.min(EXS.EV.grExN, EXS.EC.grExN)) return null;
-    const ms = grFootprintMsPorCandle(); if (Date.now() < cd.t + ms) return null;      // em formação: não marca
-    const raw = _grFootprintCandlesRaw.length;
-    let c0 = _grExCache.get(cd.t), r;
-    const nAll = _grAllCandles.length;
-    const tk = ms + '_' + grTickAtr();
-    if (c0 && c0.raw === raw && c0.v === _grExVersao && c0.tk === tk && (!c0.esp || c0.n === nAll)) r = c0.r;
-    else { r = grExaustaoBase(idx, cd, ms); _grExCache.set(cd.t, { raw, v: _grExVersao, tk, r, esp: idx + GR_PRESO_K >= nAll, n: nAll }); }
-    if (r && grExConfDe(r) > 0) {   // confirmação: os próximos candles não podem romper o extremo (e precisam existir)
-        for (let j = 1; j <= grExConfDe(r); j++) {
-            const nx = _grAllCandles[idx + j];
-            if (!nx) return null;
-            if (r === 'EC' ? nx.h > cd.h : nx.l < cd.l) return null;
-        }
-    }
-    return r;
+    const cd = _grAllCandles[idx]; if (!cd || Date.now() < cd.t + grFootprintMsPorCandle()) return null;
+    const x = grScSinal(cd.t); return x ? x.r : null;
 }
-// PRESOS: comparados com o que o preço fez DEPOIS do candle. Referência = fechamento do candle GR_PRESO_K à direita.
-// Comprador preso = comprou (agressão) acima da referência; vendedor preso = vendeu abaixo dela.
-const GR_PRESO_K = 3;
-function grExRefPreso(idx) { const a = _grAllCandles[idx + GR_PRESO_K]; return a ? a.c : null; }   // null = ainda não há candles à direita
-function grExEsperaDe(r) { return Math.max(grExConfDe(r), EXS[r].grExPreso > 0 ? GR_PRESO_K : 0); }   // candle de entrada: só com os candles à direita já fechados
-let _grExMotivo = '';
-function grExFalha(m) { _grExMotivo = m; return null; }
-// Lê o footprint do candle uma vez: delta acumulado minuto a minuto (pico, vale, final), volume total, cobertura de minutos e traders presos.
-function grExFootprintCandle(cd, ms, ref) {
-    const min = []; let cSob = 0, cTot = 0, vSob = 0, vTot = 0;
-    grFootprintParaCadaMinuto(cd.t, cd.t + ms, m => {
-        let c = 0, v = 0;
-        (m.niveis || []).forEach(n => { const nC = n.c || 0, nV = n.v || 0; c += nC; v += nV; cTot += nC; vTot += nV; if (ref != null) { if (n.p > ref) cSob += nC; if (n.p < ref) vSob += nV; } });
-        min.push({ ts: m.ts, c, v });
-    });
-    if (min.length < 2) return null;
-    min.sort((a, b) => a.ts - b.ts);
-    let cor = 0, maxD = 0, minD = 0, tot = 0;
-    min.forEach(m => { cor += m.c - m.v; tot += m.c + m.v; if (cor > maxD) maxD = cor; if (cor < minD) minD = cor; });
-    if (tot <= 0) return null;
-    const esperado = Math.max(1, Math.round(ms / 60000));
-    return { maxD, minD, delta: cor, tot, cob: Math.min(1, min.length / esperado), presoC: ref == null ? null : (cTot > 0 ? cSob / cTot : 0), presoV: ref == null ? null : (vTot > 0 ? vSob / vTot : 0) };
-}
-// Testa um lado ('EC' ou 'EV') contra os filtros dele. Devolve o lado ou null (deixando o motivo em _grExMotivo).
-function grExTestaLado(lado, idx, cd, fp, ctx) {
-    const P = EXS[lado], N = P.grExN, ec = lado === 'EC', rng = cd.h - cd.l;
-    if (idx < N) return grExFalha('poucos candles antes');
-    let maxAnt = -Infinity, minAnt = Infinity;
-    for (let i = idx - N; i < idx; i++) { const a = _grAllCandles[i]; if (a.h > maxAnt) maxAnt = a.h; if (a.l < minAnt) minAnt = a.l; }
-    if (P.grExMov > 0) {   // o preço veio andando até o extremo (subida até o topo / queda até o fundo), em faixas médias de candle
-        if (!ctx.faixa) return grExFalha('sem histórico');
-        if ((ec ? cd.h - minAnt : maxAnt - cd.l) < P.grExMov * ctx.faixa) return grExFalha('movimento curto');
-    }
-    if (!fp) return grExFalha('sem footprint');
-    if (fp.cob < P.grExCob / 100) return grExFalha('footprint incompleto');
-    if (P.grExVol > 0 && !(ctx.volRel != null && ctx.volRel >= P.grExVol)) return grExFalha('volume baixo');
-    const pico = ec ? fp.maxD : -fp.minD, dl = ec ? fp.delta : -fp.delta;   // pico e delta final vistos do lado que empurrou
-    if (pico < fp.tot * (P.grExPico / 100)) return grExFalha('sem pico de delta');
-    { const mt = grExPadraoOk(idx, ec, P.grExPadrao || 0); if (mt) return grExFalha(mt); }
-    if (P.grExVira > 0 && dl > 0) return grExFalha('delta não virou');
-    if (ec ? cd.c > cd.l + rng * P.grExFech / 100 : cd.c < cd.h - rng * P.grExFech / 100) return grExFalha('fechou no extremo');
-    if (P.grExEsf > 0) {   // esforço × resultado: volume relativo dividido pela faixa relativa — alto = muito volume para pouco avanço (absorção)
-        if (!(ctx.volRel != null && ctx.faixa && (ctx.volRel / (rng / ctx.faixa)) >= P.grExEsf)) return grExFalha('sem absorção');
-    }
-    if (P.grExPreso > 0) { const pr = ec ? fp.presoC : fp.presoV; if (pr == null) return grExFalha('aguarda candles à direita'); if (pr < P.grExPreso / 100) return grExFalha('sem traders presos'); }
-    if (P.grExTend > 0) {   // tendência: EV não vale com a média de N candles caindo; EC não vale com ela subindo
-        const T = P.grExTend, h = Math.max(1, Math.floor(T / 2));
-        if (idx - T - h + 1 < 0) return grExFalha('poucos candles p/ tendência');
-        const sma = fim => { let s = 0; for (let i = fim - T + 1; i <= fim; i++) s += _grAllCandles[i].c; return s / T; };
-        const agora = sma(idx), antes = sma(idx - h);
-        if (ec ? agora > antes : agora < antes) return grExFalha('contra a tendência');
-    }
-    if (P.grExPres > 0) {   // pressão prévia: nos candles anteriores o lado que "cansou" vinha dominando o delta
-        let soma = 0, achou = false;
-        for (let i = Math.max(0, idx - P.grExPres); i < idx; i++) { const d = grExDeltaCandle(_grAllCandles[i]); if (d != null) { soma += d; achou = true; } }
-        if (!achou || (ec ? soma <= 0 : soma >= 0)) return grExFalha('pressão contrária');
-    }
-    return lado;
-}
-function grExaustaoBase(idx, cd, ms) {
-    const rng = cd.h - cd.l; if (rng <= 0) return grExFalha('sem faixa');
-    // contexto comum: faixa média e volume médio dos 20 candles anteriores
-    let sf = 0, nf = 0, sv = 0, nv = 0;
-    for (let i = Math.max(0, idx - 20); i < idx; i++) { const a = _grAllCandles[i]; if (a.h > a.l) { sf += a.h - a.l; nf++; } if (a.v > 0) { sv += a.v; nv++; } }
-    const ctx = { faixa: nf ? sf / nf : 0, volRel: (idx >= 5 && cd.v > 0 && nv > 0 && sv > 0) ? cd.v / (sv / nv) : null };
-    const fp = grExFootprintCandle(cd, ms, grExRefPreso(idx));
-    let motivo = '';
-    for (const lado of ['EC', 'EV']) {
-        _grExMotivo = '';
-        const r = grExTestaLado(lado, idx, cd, fp, ctx);
-        if (r) return r;
-        if (!motivo || _grExMotivo !== 'não é extremo' && motivo === 'não é extremo') motivo = _grExMotivo;   // guarda o motivo do lado que era extremo
-    }
-    _grExMotivo = motivo; return null;
-}
-// diagnóstico de um candle: { r: 'EC'|'EV'|null, motivo } (mesma regra do gráfico, sem cache)
+// diagnóstico de um candle: { r: 'EC'|'EV'|null, nota, motivo } (usado na tabela do crosshair)
 function grExaustaoDiag(idx) {
     const cd = _grAllCandles[idx];
     if (!cd || !_grFootprintAtivo || !_grFootprintCandlesRaw) return null;
-    if (idx < Math.min(EXS.EV.grExN, EXS.EC.grExN)) return { r: null, motivo: 'poucos candles antes' };
-    const ms = grFootprintMsPorCandle();
-    if (Date.now() < cd.t + ms) return { r: null, motivo: 'em formação' };
-    _grExMotivo = '';
-    const r = grExaustaoBase(idx, cd, ms);
-    if (!r) return { r: null, motivo: _grExMotivo || 'sem sinal' };
-    for (let j = 1; j <= grExConfDe(r); j++) {
-        const nx = _grAllCandles[idx + j];
-        if (!nx) return { r: null, motivo: 'aguarda candle seguinte' };
-        if (r === 'EC' ? nx.h > cd.h : nx.l < cd.l) return { r: null, motivo: 'rompeu no seguinte' };
-    }
-    return { r, motivo: '' };
+    if (Date.now() < cd.t + grFootprintMsPorCandle()) return { r: null, motivo: 'em formação' };
+    const x = grScSinal(cd.t); if (x) return { r: x.r, motivo: '', nota: x.nota };
+    if (!grScNomeTf() || !GR_SC_MODELO[grScNomeTf()]) return { r: null, motivo: 'TF sem calibração (use 5m, 15m, 30m ou 1h)' };
+    const y = grScDe(cd.t); return { r: null, motivo: y ? 'nota abaixo de ' + EXS.EC.grExNota : 'não é nova máx/mín de 20 barras' };
 }
 function grExaustaoDesenhar(ctx, g) {
     if (!_grFootprintAtivo || !_grFootprintCandlesRaw || !_grAllCandles.length) return;
     const xmin = g.PAD.left - g.slotW, xmax = g.W - g.PAD.right + g.slotW;
     ctx.save();
     ctx.font = 'bold 9px -apple-system'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    for (let i = _grAllCandles.length - 1; i >= Math.min(EXS.EV.grExN, EXS.EC.grExN); i--) {
+    for (let i = _grAllCandles.length - 1; i >= 0; i--) {
         const cd = _grAllCandles[i], x0 = g.xLeft(cd.t);
         if (x0 > xmax) continue; if (x0 < xmin) break;
         const cx = x0 + g.slotW / 2; if (cx < g.PAD.left || cx > g.W - g.PAD.right) continue;
-        const r = grExaustaoDe(i); if (!r) continue;
-        const ec = r === 'EC', w = 18, h = 12;
+        if (Date.now() < cd.t + grFootprintMsPorCandle()) continue;
+        const nt = grScSinal(cd.t); if (!nt) continue;
+        const ec = nt.r === 'EC', w = 32, h = 12;
         let y = ec ? g.toY(cd.h) - h / 2 - 3 : g.toY(cd.l) + h / 2 + 3;
         y = Math.max(g.PAD.top + h / 2, Math.min(g.PAD.top + g.chartH - h / 2, y));
         ctx.fillStyle = ec ? '#DC2626' : '#16A34A'; ctx.beginPath(); ctx.roundRect(cx - w / 2, y - h / 2, w, h, 3); ctx.fill();
-        ctx.fillStyle = '#FFFFFF'; ctx.fillText(r, cx, y + 0.5);
+        ctx.fillStyle = '#FFFFFF'; ctx.fillText(nt.r + ' ' + nt.nota, cx, y + 0.5);
     }
     ctx.restore();
 }
@@ -13632,7 +13350,7 @@ function grMetricasDesenhar(ctx, g) {
         ['Máx / Mín Δ', [{ t: sg(m.maxD), c: cd(m.maxD) }, { t: ' / ', c: TX }, { t: sg(m.minD), c: cd(m.minD) }], TX, 'maxmin'],   // pico verde, fundo vermelho
         ['Δ vs anterior', m.deltaChange == null ? '—' : sg(m.deltaChange), m.deltaChange == null ? TX : cd(m.deltaChange), 'dant'],
         ['Volume', m.volRel != null ? [{ t: fk(m.total) + '  ', c: TX }, { t: m.volRel.toFixed(2).replace('.', ',') + '×', c: m.volRel >= GR_MET.VOL_ALTO ? AMBAR : TX }] : fk(m.total), TX, 'volume'],   // múltiplo em destaque a partir de 1,5×
-        ['Exaustão', (function () { const e = _grMetricasCache.ex; if (!e) return '—'; if (e.r) return [{ t: e.r, c: e.r === 'EC' ? VERM : VERDE }]; return '— ' + e.motivo; })(), TX, 'exaustao'],
+        ['Exaustão', (function () { const e = _grMetricasCache.ex; if (!e) return '—'; if (e.r) return [{ t: e.r + (e.nota != null ? ' ' + e.nota : ''), c: e.r === 'EC' ? VERM : VERDE }]; return '— ' + e.motivo; })(), TX, 'exaustao'],
         ['Compra presa' + (m.presoK ? ' +' + m.presoK + 'c' : ''), grMetPreso(m.presoC, candle.c, VERM), TX, 'compra_prej'],
         ['Venda presa' + (m.presoK ? ' +' + m.presoK + 'c' : ''), grMetPreso(m.presoV, candle.c, VERM), TX, 'venda_prej'],
     ];
