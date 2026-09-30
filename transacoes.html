@@ -13147,6 +13147,16 @@ function grExDeltaCandle(cd) { // delta (compra − venda) do candle, com cache
 }
 function grExConfDe(r) { return EXS[r].grExConf; }
 // 'EC' | 'EV' | null para o candle de índice idx (só candles fechados, com footprint)
+const _grExAgrCache = new Map();
+function grExAgressao(cd, ms) {   // agressão compradora (comp) e vendedora (vend) do candle inteiro, a partir do footprint; n = minutos com dado
+    const raw = _grFootprintCandlesRaw ? _grFootprintCandlesRaw.length : 0, c0 = _grExAgrCache.get(cd.t);
+    if (c0 && c0.raw === raw && c0.ms === ms) return c0;
+    let comp = 0, vend = 0, n = 0;
+    grFootprintParaCadaMinuto(cd.t, cd.t + ms, m => { n++; (m.niveis || []).forEach(x => { comp += x.c || 0; vend += x.v || 0; }); });
+    const r = { raw, ms, comp, vend, n };
+    _grExAgrCache.set(cd.t, r); if (_grExAgrCache.size > 6000) _grExAgrCache.delete(_grExAgrCache.keys().next().value);
+    return r;
+}
 // CONFIRMAÇÃO PELO PRÓPRIO PREÇO (sem contar candles): EC só vale depois que um candle FECHA abaixo da mínima do candle do sinal, sem que nenhum candle antes disso
 // tenha rompido a máxima dele (EV: fecha acima da máxima, sem romper a mínima). Simetria, sem número: se levou k candles para confirmar, o candle do sinal precisa ser
 // a máxima (EC) / mínima (EV) de k candles à esquerda também. Devolve { ok, k } ou { ok:false, motivo }.
@@ -13221,12 +13231,18 @@ function grExTestaLado(lado, idx, cd, fp, ctx) {
     if (P.grExVol > 0 && !(ctx.volRel != null && ctx.volRel >= P.grExVol)) return grExFalha('volume baixo');
     const pico = ec ? fp.maxD : -fp.minD, dl = ec ? fp.delta : -fp.delta;   // pico e delta final vistos do lado que empurrou
     if (pico < fp.tot * (P.grExPico / 100)) return grExFalha('sem pico de delta');
-    // LEILÃO FINALIZADO no extremo (definição de footprint, ATAS / Imprint): na linha da máxima (EC) não houve NENHUM vendedor agressor (bid = 0); na linha da mínima
-    // (EV) não houve NENHUM comprador agressor (ask = 0). O preço foi até lá, não achou interesse do outro lado e voltou. Linhas na grade do ATR (independe do zoom).
-    { let cl = null; try { cl = grFootprintClusterDoCandle(cd, grTickAtr(), null); } catch (e) {}
-      if (!cl || !cl.linhas || cl.linhas.length < 2) return grExFalha('sem footprint');
-      const borda = ec ? cl.linhas[0] : cl.linhas[cl.linhas.length - 1];
-      if (ec ? borda.bid > 0 : borda.ask > 0) return grExFalha('leilão não finalizado (negócio dos dois lados no extremo)'); }
+    // EFICIÊNCIA DO AGRESSOR e sua deterioração (só a barra imediatamente anterior, sem média nem janela):
+    //   EC: Δ+ atual > Δ+ anterior  e  (fechamento − abertura)/Δ+ atual < o da barra anterior  (+ máxima atual ≥ máxima anterior, checada acima)
+    //   EV: Δ− atual > Δ− anterior  e  (abertura − fechamento)/Δ− atual < o da barra anterior  (+ mínima atual ≤ mínima anterior)
+    // Δ+ = volume de compra agressora do candle; Δ− = volume de venda agressora do candle (footprint, somando os minutos).
+    { const ms0 = grFootprintMsPorCandle(), ant = _grAllCandles[idx - 1];
+      const A = grExAgressao(cd, ms0), B = ant ? grExAgressao(ant, ms0) : null;
+      if (!B || B.n < 2) return grExFalha('sem footprint da barra anterior');
+      const ag = ec ? A.comp : A.vend, agAnt = ec ? B.comp : B.vend;
+      if (!(ag > 0 && agAnt > 0)) return grExFalha('sem agressão do lado');
+      if (!(ag > agAnt)) return grExFalha('agressão não subiu em relação à barra anterior');
+      const desl = ec ? cd.c - cd.o : cd.o - cd.c, deslAnt = ec ? ant.c - ant.o : ant.o - ant.c;
+      if (!(desl / ag < deslAnt / agAnt)) return grExFalha('eficiência não caiu em relação à barra anterior'); }
     if (P.grExVira > 0 && dl > 0) return grExFalha('delta não virou');
     if (ec ? cd.c > cd.l + rng * P.grExFech / 100 : cd.c < cd.h - rng * P.grExFech / 100) return grExFalha('fechou no extremo');
     if (P.grExEsf > 0) {   // esforço × resultado: volume relativo dividido pela faixa relativa — alto = muito volume para pouco avanço (absorção)
@@ -13295,6 +13311,10 @@ function grExaustaoDesenhar(ctx, g) {
         y = Math.max(g.PAD.top + h / 2, Math.min(g.PAD.top + g.chartH - h / 2, y));
         ctx.fillStyle = ec ? '#DC2626' : '#16A34A'; ctx.beginPath(); ctx.roundRect(cx - w / 2, y - h / 2, w, h, 3); ctx.fill();
         ctx.fillStyle = '#FFFFFF'; ctx.fillText(r, cx, y + 0.5);
+        // leilão finalizado (informação extra, NÃO filtra): EC com bid = 0 na linha da máxima / EV com ask = 0 na linha da mínima (grade do ATR) → bolinha amarela
+        try { const cl = grFootprintClusterDoCandle(cd, grTickAtr(), null);
+            if (cl && cl.linhas && cl.linhas.length >= 2) { const bd = ec ? cl.linhas[0] : cl.linhas[cl.linhas.length - 1];
+                if (ec ? bd.bid === 0 : bd.ask === 0) { ctx.fillStyle = '#FDE047'; ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(cx + w / 2 - 1, y - h / 2 + 1, 3.2, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); } } } catch (e) {}
     }
     ctx.restore();
 }
