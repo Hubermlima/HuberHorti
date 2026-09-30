@@ -13166,6 +13166,30 @@ function grExCondBarra(j, ec) {
 }
 // Tamanho da sequência: quantas barras seguidas (terminando em idx) passam na regra acima. 1 = só a barra atual.
 function grExCadeia(idx, ec) { let n = 0; for (let j = idx; j > 0 && n < 50; j--) { if (grExCondBarra(j, ec)) break; n++; } return n; }
+// AGRESSÃO QUE SECA NO EXTREMO (definição clássica de exaustão em footprint: a agressão some onde o preço chega):
+//   EC: máxima nova (maior que a do candle anterior) e a agressão COMPRADORA (Ask) nas últimas GR_EX_NLINHAS linhas do topo é menor, em proporção ao Ask do candle,
+//       do que é normalmente nos GR_EX_JANELA candles anteriores.
+//   EV: mínima nova e a agressão VENDEDORA (Bid) nas últimas linhas do fundo é menor, em proporção ao Bid do candle, do que é normalmente nos candles anteriores.
+// Sem número fixo de volume: o limite é a média do próprio mercado. Linhas na grade do ATR. (3 linhas e 20 candles fixados ANTES de olhar qualquer resultado.)
+const GR_EX_NLINHAS = 3, GR_EX_JANELA = 20;
+function grExFatiaExtremo(cd, ec) {   // fatia do Ask (EC) / Bid (EV) que ficou nas N linhas do extremo; null se o candle não tem linhas suficientes
+    let cl = null; try { cl = grFootprintClusterDoCandle(cd, grTickAtr(), null); } catch (e) {}
+    if (!cl || !cl.linhas || cl.linhas.length <= GR_EX_NLINHAS) return null;
+    const L = cl.linhas; let tot = 0, ext = 0;
+    for (let i = 0; i < L.length; i++) { const v = ec ? L[i].ask : L[i].bid; tot += v; if (ec ? i < GR_EX_NLINHAS : i >= L.length - GR_EX_NLINHAS) ext += v; }
+    return tot > 0 ? ext / tot : null;
+}
+function grExAfina(idx, ec) {
+    const cs = _grAllCandles, cd = cs[idx], ant = cs[idx - 1];
+    if (!cd || !ant || idx < GR_EX_JANELA + 1) return 'poucos candles antes';
+    if (ec ? !(cd.h > ant.h) : !(cd.l < ant.l)) return ec ? 'não fez máxima nova' : 'não fez mínima nova';
+    const f = grExFatiaExtremo(cd, ec); if (f == null) return 'candle com poucas linhas ou sem footprint';
+    let soma = 0, n = 0;
+    for (let j = idx - GR_EX_JANELA; j < idx; j++) { const x = grExFatiaExtremo(cs[j], ec); if (x != null) { soma += x; n++; } }
+    if (n < GR_EX_JANELA / 2) return 'poucos candles anteriores com footprint';
+    if (!(f < soma / n)) return 'agressão no extremo não ficou abaixo do normal';
+    return null;
+}
 // ZERO PRINT CLÁSSICO (módulo 1 do Exhaustion Indicator Suite, Sierra Chart), aplicado ao candle idx:
 //   EC: os 3 candles anteriores são de ALTA; na linha da máxima do candle NÃO houve vendedor agressor (Bid = 0); e o candle FECHA de baixa (reversão).
 //   EV: os 3 candles anteriores são de QUEDA; na linha da mínima NÃO houve comprador agressor (Ask = 0); e o candle FECHA de alta.
@@ -13274,7 +13298,7 @@ function grExTestaLado(lado, idx, cd, fp, ctx) {
     if (P.grExVol > 0 && !(ctx.volRel != null && ctx.volRel >= P.grExVol)) return grExFalha('volume baixo');
     const pico = ec ? fp.maxD : -fp.minD, dl = ec ? fp.delta : -fp.delta;   // pico e delta final vistos do lado que empurrou
     if (pico < fp.tot * (P.grExPico / 100)) return grExFalha('sem pico de delta');
-    { const mt = grExZeroPrint(idx, ec); if (mt) return grExFalha(mt); }
+    { const mt = grExAfina(idx, ec); if (mt) return grExFalha(mt); }
     if (P.grExVira > 0 && dl > 0) return grExFalha('delta não virou');
     if (ec ? cd.c > cd.l + rng * P.grExFech / 100 : cd.c < cd.h - rng * P.grExFech / 100) return grExFalha('fechou no extremo');
     if (P.grExEsf > 0) {   // esforço × resultado: volume relativo dividido pela faixa relativa — alto = muito volume para pouco avanço (absorção)
