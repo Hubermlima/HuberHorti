@@ -67,6 +67,12 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
 .detalhe-link{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:14px;padding:10px;background:#F0F6FF;border-radius:12px;cursor:pointer;-webkit-tap-highlight-color:transparent;text-decoration:none;}
 .detalhe-link span{font-size:13px;color:#007AFF;font-weight:500;}
 .detalhe-link svg{width:14px;height:14px;stroke:#007AFF;stroke-width:2;fill:none;}
+.btn-relatorio{width:100%;margin-top:8px;padding:13px;background:#F0F6FF;border:none;border-radius:100px;color:#007AFF;font-family:'Inter',sans-serif;font-size:14px;font-weight:600;cursor:pointer;-webkit-tap-highlight-color:transparent;}
+.btn-relatorio:active{opacity:0.7;}
+.rel-texto{width:100%;height:46vh;max-height:340px;border:none;background:#F7F7F9;border-radius:12px;padding:12px;font-family:'Inter',sans-serif;font-size:13px;line-height:1.5;color:#1C1C1E;overflow-y:auto;white-space:pre-wrap;user-select:text;-webkit-user-select:text;}
+.rel-acoes{display:flex;gap:8px;margin-top:12px;}
+.rel-btn{flex:1;padding:12px;border:none;border-radius:12px;background:#007AFF;color:#FFF;font-family:'Inter',sans-serif;font-size:13px;font-weight:600;cursor:pointer;}
+.rel-btn.sec{background:#F2F2F7;color:#1C1C1E;}
 .empty{font-size:13px;color:#C7C7CC;text-align:center;padding:32px 0;}
 .loading{font-size:13px;color:#C7C7CC;text-align:center;padding:32px 0;}
 .item-acumulado{grid-column:1 / -1;font-size:11px;color:#EF4444;font-weight:500;padding-top:2px;text-align:right;}
@@ -111,6 +117,7 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
       <span class="rodape-val" id="rodape-dif">0,00</span>
     </div>
     <button class="btn-confirmar" id="btn-confirmar" onclick="confirmarConferencia()">Confirmar Conferência</button>
+    <button class="btn-relatorio" onclick="abrirRelatorio()">Relatório do Físico (Sobras)</button>
   </div>
 </div>
 
@@ -133,6 +140,22 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
       <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
       <span>Ver vendas do produto</span>
     </a>
+  </div>
+</div>
+
+<div class="detalhe-overlay" id="rel-overlay" onclick="fecharRelatorio()">
+  <div class="detalhe-sheet" onclick="event.stopPropagation()">
+    <div class="detalhe-header">
+      <span class="detalhe-title">Estoque Físico (Sobras)</span>
+      <button class="detalhe-close" onclick="fecharRelatorio()">
+        <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="rel-texto" id="rel-texto"></div>
+    <div class="rel-acoes">
+      <button class="rel-btn sec" id="rel-copiar" onclick="copiarRelatorio()">Copiar</button>
+      <button class="rel-btn" onclick="compartilharRelatorio()">Compartilhar</button>
+    </div>
   </div>
 </div>
 
@@ -448,6 +471,75 @@ function fecharDetalhe() {
 }
 
 
+// ---------- Relatório do Físico (Sobras) ----------
+function normUnid(u) { return String(u || '').trim().toLowerCase().replace(/\./g, ''); }
+
+// Converte o físico (na unid_venda, normalmente kg) para "N Sc, X kg"
+function formatarFisico(item) {
+  const fisico = Math.round(item.fisico * 100) / 100;
+  const uv = normUnid(item.unid_venda);
+  const uc = normUnid(item.unid_compra);
+  const peso = item.peso_por_unid;
+  const nomeCompra = (item.unid_compra || '').trim();
+  const nomeVenda = (item.unid_venda || '').trim();
+
+  // Físico em kg e produto comprado em outra embalagem (Sc, Cx...) com peso conhecido
+  if (uv === 'kg' && uc && uc !== 'kg' && peso > 0) {
+    const embal = Math.floor(Math.round((fisico / peso) * 100) / 100 + 1e-9);
+    const resto = Math.round((fisico - embal * peso) * 100) / 100;
+    const partes = [];
+    if (embal > 0) partes.push(`${embal} ${nomeCompra}`);
+    if (resto > 0 || embal === 0) partes.push(`${fmtQtd(resto)} kg`);
+    return partes;
+  }
+  // Sem conversão possível: mostra na própria unidade do físico
+  return [`${fmtQtd(fisico)}${nomeVenda ? ' ' + nomeVenda : ''}`];
+}
+
+function fmtQtd(v) {
+  return Number(v).toLocaleString('pt-BR', {minimumFractionDigits:0, maximumFractionDigits:2});
+}
+
+function gerarTextoRelatorio() {
+  const hoje = new Date().toLocaleDateString('pt-BR', {timeZone:'America/Manaus'});
+  const linhas = _itens
+    .filter(i => Math.round(i.fisico * 100) > 0)
+    .map(i => {
+      const [a, b] = formatarFisico(i);
+      return b ? `${a} ${i.nome}, ${b}` : `${a} ${i.nome}`;
+    });
+  return `*Estoque Físico (Sobras)*\nEm: ${hoje}\n\n` + (linhas.length ? linhas.join('\n') : 'Nenhuma sobra.');
+}
+
+let _relTexto = '';
+function abrirRelatorio() {
+  _relTexto = gerarTextoRelatorio();
+  const el = document.getElementById('rel-texto');
+  el.textContent = '';
+  _relTexto.split('\n').forEach((l, k) => {
+    if (k) el.appendChild(document.createTextNode('\n'));
+    if (k === 0) { const b = document.createElement('b'); b.textContent = l.replace(/\*/g, ''); el.appendChild(b); }
+    else el.appendChild(document.createTextNode(l));
+  });
+  document.getElementById('rel-copiar').textContent = 'Copiar';
+  document.getElementById('rel-overlay').classList.add('active');
+}
+function fecharRelatorio() { document.getElementById('rel-overlay').classList.remove('active'); }
+
+async function copiarRelatorio() {
+  try { await navigator.clipboard.writeText(_relTexto); }
+  catch (e) {
+    const ta = document.createElement('textarea'); ta.value = _relTexto;
+    document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove();
+  }
+  document.getElementById('rel-copiar').textContent = 'Copiado ✓';
+}
+async function compartilharRelatorio() {
+  const texto = _relTexto;
+  if (navigator.share) { try { await navigator.share({ text: texto }); } catch (e) {} }
+  else copiarRelatorio();
+}
+
 async function confirmarConferencia() {
   console.log("Iniciando Fechamento de Estoque...");
   setBtnEstado('salvando');
@@ -518,7 +610,7 @@ async function carregarDados() {
   document.getElementById('topbar-ciclo').textContent =
     `${window.HHUtils.formatarDataBR(d0)} — ${window.HHUtils.formatarDataBR(d7)}`;
 
-  const { data: produtos } = await window.db.from('produtos').select('id, nome, unid_venda, preco_medio_compra').order('nome');
+  const { data: produtos } = await window.db.from('produtos').select('id, nome, unid_venda, unid_compra, peso_por_unid, preco_medio_compra').order('nome');
   const { data: estoqueIni } = await window.db.from('estoque_inicial').select('produto_id, quantidade_inicial');
 
   const { data: pedidosCompra } = await window.db.from('pedidos_compras')
@@ -556,7 +648,7 @@ async function carregarDados() {
     const entradas = compras.filter(c => c.produto_id === prodId).reduce((a,c) => a + (parseFloat(c.quantidade)||0), 0);
     const saidas = vendas.filter(v => v.produto_id === prodId).reduce((a,v) => a + (parseFloat(v.quantidade)||0), 0);
     const sist = estIni + entradas - saidas;
-    _itens.push({ produto_id: prodId, nome: prod.nome, unid_venda: prod.unid_venda || '', estIni, estIniOrig: estIni, entradas, saidas, sist, fisico: sist, fisicoDigitado: false, custoUni: parseFloat(prod.preco_medio_compra) || 0 });
+    _itens.push({ produto_id: prodId, nome: prod.nome, unid_venda: prod.unid_venda || '', unid_compra: prod.unid_compra || '', peso_por_unid: parseFloat(prod.peso_por_unid) || 0, estIni, estIniOrig: estIni, entradas, saidas, sist, fisico: sist, fisicoDigitado: false, custoUni: parseFloat(prod.preco_medio_compra) || 0 });
   });
 
   _itens.sort((a, b) => a.nome.localeCompare(b.nome));
