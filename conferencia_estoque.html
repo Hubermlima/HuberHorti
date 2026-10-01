@@ -146,7 +146,7 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
 <div class="detalhe-overlay" id="rel-overlay" onclick="fecharRelatorio()">
   <div class="detalhe-sheet" onclick="event.stopPropagation()">
     <div class="detalhe-header">
-      <span class="detalhe-title">Estoque Físico (Sobras)</span>
+      <span class="detalhe-title">Relatório</span>
       <button class="detalhe-close" onclick="fecharRelatorio()">
         <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </button>
@@ -154,7 +154,7 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
     <div class="rel-texto" id="rel-texto"></div>
     <div class="rel-acoes">
       <button class="rel-btn sec" id="rel-copiar" onclick="copiarRelatorio()">Copiar</button>
-      <button class="rel-btn" onclick="compartilharRelatorio()">Compartilhar</button>
+      <button class="rel-btn" onclick="compartilharRelatorio()">Compartilhar PDF</button>
     </div>
   </div>
 </div>
@@ -534,10 +534,79 @@ async function copiarRelatorio() {
   }
   document.getElementById('rel-copiar').textContent = 'Copiado ✓';
 }
+// PDF de texto simples gerado direto no navegador (sem biblioteca externa)
+function gerarPdfRelatorio() {
+  const linhas = _relTexto.split('\n').map(l => l.replace(/\*/g, ''));
+  const W = 595, H = 842, M = 51, LH = 22, MAX = 62;
+  const esc = t => t.replace(/[^\x20-\xFF]/g, '?').replace(/([\\()])/g, '\\$1');
+  const quebrar = t => {
+    const out = []; let cur = '';
+    t.split(' ').forEach(w => {
+      if ((cur + ' ' + w).trim().length > MAX && cur) { out.push(cur); cur = w; }
+      else cur = (cur ? cur + ' ' : '') + w;
+    });
+    if (cur) out.push(cur);
+    return out;
+  };
+
+  const corpo = [];
+  linhas.slice(2).forEach(l => { if (l.trim()) quebrar(l).forEach(p => corpo.push(p)); });
+
+  const paginas = [];
+  let y = H - M - 18, cs = '';
+  cs += `BT /F2 18 Tf 0.11 0.11 0.12 rg ${M} ${y} Td (${esc(linhas[0])}) Tj ET\n`; y -= 22;
+  cs += `BT /F1 11 Tf 0.43 0.43 0.45 rg ${M} ${y} Td (${esc(linhas[1])}) Tj ET\n`; y -= 12;
+  cs += `0.86 0.86 0.88 RG 0.8 w ${M} ${y} m ${W - M} ${y} l S\n`; y -= 26;
+  corpo.forEach(t => {
+    if (y < M) { paginas.push(cs); cs = ''; y = H - M - 18; }
+    cs += `BT /F1 13 Tf 0.11 0.11 0.12 rg ${M} ${y} Td (${esc(t)}) Tj ET\n`; y -= LH;
+  });
+  paginas.push(cs);
+
+  // objetos: 1 catálogo, 2 páginas, 3 fonte normal, 4 fonte negrito, depois (página, conteúdo) por página
+  const objs = [];
+  const kids = paginas.map((_, i) => `${5 + i * 2} 0 R`).join(' ');
+  objs[1] = '<< /Type /Catalog /Pages 2 0 R >>';
+  objs[2] = `<< /Type /Pages /Kids [${kids}] /Count ${paginas.length} >>`;
+  objs[3] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>';
+  objs[4] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>';
+  paginas.forEach((c, i) => {
+    objs[5 + i * 2] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${W} ${H}] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents ${6 + i * 2} 0 R >>`;
+    objs[6 + i * 2] = `<< /Length ${c.length} >>\nstream\n${c}endstream`;
+  });
+
+  let pdf = '%PDF-1.4\n';
+  const offs = [];
+  for (let n = 1; n < objs.length; n++) { offs[n] = pdf.length; pdf += `${n} 0 obj\n${objs[n]}\nendobj\n`; }
+  const xref = pdf.length;
+  pdf += `xref\n0 ${objs.length}\n0000000000 65535 f \n`;
+  for (let n = 1; n < objs.length; n++) pdf += String(offs[n]).padStart(10, '0') + ' 00000 n \n';
+  pdf += `trailer\n<< /Size ${objs.length} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+
+  const bytes = new Uint8Array(pdf.length);
+  for (let i = 0; i < pdf.length; i++) bytes[i] = pdf.charCodeAt(i) & 255;
+  return new Blob([bytes], { type: 'application/pdf' });
+}
+
 async function compartilharRelatorio() {
-  const texto = _relTexto;
-  if (navigator.share) { try { await navigator.share({ text: texto }); } catch (e) {} }
-  else copiarRelatorio();
+  try {
+    const dataISO = new Date().toLocaleDateString('en-CA', {timeZone:'America/Manaus'});
+    const nome = `Estoque_Fisico_${dataISO}.pdf`;
+    const blob = gerarPdfRelatorio();
+    const arquivo = new File([blob], nome, { type: 'application/pdf' });
+    if (navigator.canShare && navigator.canShare({ files: [arquivo] })) {
+      await navigator.share({ files: [arquivo], title: 'Estoque Físico (Sobras)' });
+    } else {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = nome; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    }
+  } catch (e) {
+    if (e && e.name === 'AbortError') return; // fechou o menu de compartilhar
+    console.error(e);
+    alert('Erro ao gerar PDF: ' + e.message);
+  }
 }
 
 async function confirmarConferencia() {
