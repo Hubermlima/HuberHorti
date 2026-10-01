@@ -186,8 +186,9 @@ function recalcularDetalhe() {
   const fisicoEl = document.getElementById(`fisico-${_detalheIdx}`);
   if (fisicoEl) fisicoEl.value = fmtNum(fisico);
 
-      atualizarRodape();
+  atualizarRodape();
   setBtnEstado('pendente');
+  salvarEstado();
 }
 
 
@@ -219,47 +220,44 @@ function setBtnEstado(estado) {
   }
 }
 
+const CHAVE_RASCUNHO = 'conf_estoque_rascunho';
+let _cicloChave = '';
+
+// Grava no localStorage apenas o que foi digitado (Físico) e o Est. Inicial alterado
 function salvarEstado() {
-  const fisicos = {};
-  const iniciais = {};
-  _itens.forEach((item, idx) => {
-    const el = document.getElementById(`fisico-${idx}`);
-    fisicos[item.produto_id] = el ? el.value : fmtNum(item.fisico);
-    iniciais[item.produto_id] = fmtNum(item.estIni);
-  });
-  sessionStorage.setItem('conf_estoque_fisicos', JSON.stringify(fisicos));
-  sessionStorage.setItem('conf_estoque_iniciais', JSON.stringify(iniciais));
-  sessionStorage.setItem('conf_estoque_pagina', _pagina);
+  try {
+    const fisicos = {}, iniciais = {};
+    _itens.forEach(item => {
+      if (item.fisicoDigitado) fisicos[item.produto_id] = fmtNum(item.fisico);
+      if (item.estIni !== item.estIniOrig) iniciais[item.produto_id] = fmtNum(item.estIni);
+    });
+    localStorage.setItem(CHAVE_RASCUNHO, JSON.stringify({ ciclo: _cicloChave, fisicos, iniciais, pagina: _pagina }));
+  } catch (e) { console.warn('Não foi possível salvar rascunho', e); }
+}
+
+function limparRascunho() {
+  try { localStorage.removeItem(CHAVE_RASCUNHO); } catch (e) {}
 }
 
 function restaurarEstado() {
-  const fisicosRaw = sessionStorage.getItem('conf_estoque_fisicos');
-  const iniciaisRaw = sessionStorage.getItem('conf_estoque_iniciais');
-  const paginaRaw = sessionStorage.getItem('conf_estoque_pagina');
-  if (fisicosRaw) {
-    const fisicos = JSON.parse(fisicosRaw);
-    _itens.forEach(item => {
-      if (fisicos[item.produto_id] !== undefined) {
-        item.fisico = parseNum(fisicos[item.produto_id]);
-      }
-    });
-    sessionStorage.removeItem('conf_estoque_fisicos');
-  }
-  if (iniciaisRaw) {
-    const iniciais = JSON.parse(iniciaisRaw);
-    _itens.forEach(item => {
-      if (iniciais[item.produto_id] !== undefined) {
-        const novoIni = parseNum(iniciais[item.produto_id]);
-        item.estIni = novoIni;
-        item.sist = novoIni + item.entradas - item.saidas;
-      }
-    });
-    sessionStorage.removeItem('conf_estoque_iniciais');
-  }
-  if (paginaRaw !== null) {
-    _pagina = parseInt(paginaRaw) || 0;
-    sessionStorage.removeItem('conf_estoque_pagina');
-  }
+  let r = null;
+  try { r = JSON.parse(localStorage.getItem(CHAVE_RASCUNHO) || 'null'); } catch (e) {}
+  if (!r || r.ciclo !== _cicloChave) return;
+  const iniciais = r.iniciais || {}, fisicos = r.fisicos || {};
+  _itens.forEach(item => {
+    if (iniciais[item.produto_id] !== undefined) {
+      item.estIni = parseNum(iniciais[item.produto_id]);
+      item.sist = item.estIni + item.entradas - item.saidas;
+    }
+    if (fisicos[item.produto_id] !== undefined) {
+      item.fisico = parseNum(fisicos[item.produto_id]);
+      item.fisicoDigitado = true;
+    } else {
+      item.fisico = item.sist;
+    }
+  });
+  const totalPags = Math.max(1, Math.ceil(_itens.length / POR_PAGINA));
+  _pagina = Math.min(Math.max(parseInt(r.pagina) || 0, 0), totalPags - 1);
 }
 
 
@@ -356,12 +354,16 @@ const acumuladoHtml = temFalta
 function mudarPagina(dir) {
   const totalPags = Math.ceil(_itens.length / POR_PAGINA);
   _pagina = Math.max(0, Math.min(_pagina + dir, totalPags - 1));
+  salvarEstado();
   renderLista();
 }
 
 function atualizarFisico(idx, valor) {
   const parsed = parseNum(valor);
-  _itens[idx].fisico = isNaN(parsed) || valor === '' ? _itens[idx].sist : parsed;
+  const vazio = isNaN(parsed) || valor === '';
+  _itens[idx].fisico = vazio ? _itens[idx].sist : parsed;
+  _itens[idx].fisicoDigitado = !vazio;
+  salvarEstado();
 
   atualizarRodape();
   atualizarLinhaAcumulado();
@@ -493,6 +495,7 @@ async function confirmarConferencia() {
     if (errConsolidacao) throw errConsolidacao;
 
     console.log("Processo concluído com sucesso!");
+    limparRascunho();
     setBtnEstado('salvo');
     alert('Sucesso! Estoque inicial atualizado e Fechamento de Estoque registrado.');
 
@@ -553,11 +556,12 @@ async function carregarDados() {
     const entradas = compras.filter(c => c.produto_id === prodId).reduce((a,c) => a + (parseFloat(c.quantidade)||0), 0);
     const saidas = vendas.filter(v => v.produto_id === prodId).reduce((a,v) => a + (parseFloat(v.quantidade)||0), 0);
     const sist = estIni + entradas - saidas;
-    _itens.push({ produto_id: prodId, nome: prod.nome, unid_venda: prod.unid_venda || '', estIni, entradas, saidas, sist, fisico: sist, custoUni: parseFloat(prod.preco_medio_compra) || 0 });
+    _itens.push({ produto_id: prodId, nome: prod.nome, unid_venda: prod.unid_venda || '', estIni, estIniOrig: estIni, entradas, saidas, sist, fisico: sist, fisicoDigitado: false, custoUni: parseFloat(prod.preco_medio_compra) || 0 });
   });
 
   _itens.sort((a, b) => a.nome.localeCompare(b.nome));
   _pagina = 0;
+  _cicloChave = d0Str;
   restaurarEstado();
   renderLista();
   atualizarRodape();
