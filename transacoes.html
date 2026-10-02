@@ -3468,7 +3468,7 @@ function grFootprintAlternarSkin() {
 grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
-const APP_VERSAO = '02/10 10:50 · 15117 linhas · COR-CONTRASTE-SLIDER v83';
+const APP_VERSAO = '02/10 11:25 · 15117 linhas · SALVAR-ÁREA-TF v84';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) el.textContent = 'Versão ' + APP_VERSAO;
@@ -7056,15 +7056,19 @@ let _grAreaP1 = null;        // { preco, ts } do 1º canto, enquanto aguarda o 2
 let _grAreaMarcada = null;   // { precoBaixo, precoAlto, tsIni, tsFim } — o retângulo atual (ts em ms, resolução de 1 minuto)
 let _grAreaZii = null;       // zonas calculadas da área (ZII + refinada + entrada/stop) que o gráfico desenha: { tsIni, lado, lo, hi, refLo, refHi, entrada, stop, risco, riscoPct }
 function _grAreaLSKey() { return 'gr_area_marcada_' + (_ativoId || 'default'); }
+let _grAreasMapa = {};   // cópia das áreas (por ativo) que vai junto com o ambiente pro Supabase -- o localStorage do iPhone some ao reabrir o app
 function grAreaSalvar() {
-    try { localStorage.setItem(_grAreaLSKey(), JSON.stringify({ area: _grAreaMarcada, zii: _grAreaZii })); } catch (e) {}
+    const v = { area: _grAreaMarcada, zii: _grAreaZii };
+    try { localStorage.setItem(_grAreaLSKey(), JSON.stringify(v)); } catch (e) {}
+    if (_grAreaMarcada) _grAreasMapa[_grAreaLSKey()] = v; else delete _grAreasMapa[_grAreaLSKey()];
+    if (typeof grAmbienteSalvar === 'function') grAmbienteSalvar();
 }
 function grAreaCarregar() {
     const num = v => typeof v === 'number' && isFinite(v);
     _grAreaMarcada = null; _grAreaZii = null; _grAreaP1 = null; _grAreaArmada = false; // também limpa a do ativo anterior ao trocar de ativo
     try {
         const raw = localStorage.getItem(_grAreaLSKey());
-        const sv = raw ? (JSON.parse(raw) || {}) : {};
+        const sv = raw ? (JSON.parse(raw) || {}) : (_grAreasMapa[_grAreaLSKey()] || {});
         const a = sv.area, z = sv.zii;
         if (a && num(a.precoBaixo) && num(a.precoAlto) && num(a.tsIni) && num(a.tsFim)) {
             _grAreaMarcada = a;
@@ -7813,6 +7817,7 @@ function grAreaApagar(btn) {
             ks.forEach(k => localStorage.removeItem(k));
             for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.indexOf('gr_area_marcada_') === 0) sobrou++; }
         } catch (e) { sobrou = -1; }
+        _grAreasMapa = {}; try { grAmbienteSalvar(); } catch (e) {}
         grAreaFecharRelatorio();
         try { grAreaAtualizarMenu(); } catch (e) {}
         try { grAreaAtualizarBotao(); } catch (e) {}
@@ -8922,28 +8927,45 @@ function grAmbienteColetar() {
         emaCustom: _grEmaCustom.map(e => ({ periodo: e.periodo, cor: e.cor })),
         zoom: _grZoom,
         yFatorMapa: _grYFatorMapa,
+        areas: _grAreasMapa,
+        tfCustom: { u: _grTfCustomUnit, a: _grTfCustomAmount },
+        footprintContraste: FOOTPRINT_CONTRASTE,
     };
 }
 let _grAmbienteRestaurando = false; // true enquanto grAmbienteCarregar() está aplicando os campos -- evita gravar o ambiente pela metade
+let _grAmbienteCarregado = false;   // só grava depois da tentativa de leitura -- senão um save logo na abertura sobrescreve o salvo com o padrão
+let _grAmbientePendente = false;
+const GR_AMBIENTE_BKP = 'gr_ambiente_bkp_v1';
 function grAmbienteSalvar() {
     if (_grAmbienteRestaurando) return; // restauração em andamento -- não regrava por cima do que ainda está sendo aplicado
+    if (!_grAmbienteCarregado) { _grAmbientePendente = true; return; }
     const ambiente = grAmbienteColetar();
-    // Só na tabela do Supabase -- sem localStorage e sem debounce, pra não perder nada se fechar rápido.
-    db.from('preferencias').upsert({ id: 1, indicadores: ambiente, updated_at: new Date().toISOString() })
-        .then(() => console.log('[ambiente] salvo no Supabase, tf=' + ambiente.tf))
-        .catch(e => console.log('[ambiente] ERRO ao salvar no Supabase:', e));
+    // Duas cópias: Supabase (principal) e localStorage (reserva). O erro do Supabase vem em {error}, não como exceção.
+    try { localStorage.setItem(GR_AMBIENTE_BKP, JSON.stringify({ t: Date.now(), ambiente })); } catch (e) {}
+    Promise.resolve(db.from('preferencias').upsert({ id: 1, indicadores: ambiente, updated_at: new Date().toISOString() }))
+        .then(r => {
+            if (r && r.error) { console.log('[ambiente] ERRO Supabase:', JSON.stringify(r.error)); try { grAreaToast('Não salvou no servidor: ' + (r.error.message || 'erro'), '#DC2626'); } catch (e) {} }
+            else console.log('[ambiente] salvo no Supabase, tf=' + ambiente.tf);
+        })
+        .catch(e => { console.log('[ambiente] ERRO ao salvar no Supabase:', e); try { grAreaToast('Sem conexão pra salvar (ficou só neste aparelho)', '#DC2626'); } catch (er) {} });
 }
-// Roda uma vez ao abrir o app: localStorage primeiro (instantâneo); se estiver vazio, busca a
-// última cópia do Supabase como reserva.
+// Roda uma vez ao abrir o app: Supabase primeiro; se vier vazio ou der erro, usa a cópia reserva do localStorage.
 async function grAmbienteCarregar() {
     let ambiente = null;
-    // Só na tabela do Supabase -- sem localStorage, pra não ter dois lugares divergindo.
     try {
-        const { data, error } = await db.from('preferencias').select('indicadores').single();
+        const { data, error } = await db.from('preferencias').select('indicadores').eq('id', 1).maybeSingle();
         if (data && data.indicadores) ambiente = data.indicadores;
         console.log('[ambiente] busquei do Supabase:', JSON.stringify(data), error ? ('erro=' + JSON.stringify(error)) : '');
     } catch(e) { console.log('[ambiente] ERRO buscando do Supabase:', e); }
-    if (!ambiente) { console.log('[ambiente] NADA encontrado no Supabase -- fica no padrão'); return; }
+    if (!ambiente) {
+        try { const b = JSON.parse(localStorage.getItem(GR_AMBIENTE_BKP) || 'null'); if (b && b.ambiente) { ambiente = b.ambiente; console.log('[ambiente] usando a cópia reserva do localStorage'); } } catch (e) {}
+    }
+    if (!ambiente) { console.log('[ambiente] NADA encontrado -- fica no padrão'); _grAmbienteCarregado = true; if (_grAmbientePendente) { _grAmbientePendente = false; grAmbienteSalvar(); } return; }
+    if (ambiente.areas && typeof ambiente.areas === 'object') {
+        _grAreasMapa = ambiente.areas;
+        if (!_grAreaMarcada) { try { grAreaCarregar(); } catch (e) {} }
+    }
+    if (typeof ambiente.footprintContraste === 'number' && ambiente.footprintContraste >= 0 && ambiente.footprintContraste <= 10) FOOTPRINT_CONTRASTE = ambiente.footprintContraste;
     console.log('[ambiente] restaurando tf=' + ambiente.tf + ' (atual antes de restaurar: ' + _grTf + ')');
     _grAmbienteRestaurando = true; // a partir daqui, grAmbienteSalvar() não grava nada até liberar no fim
     // Zoom horizontal e fator de escala vertical (por tf) -- restaura ANTES do cvSetTf/carregamento de candles usá-los.
@@ -8953,6 +8975,7 @@ async function grAmbienteCarregar() {
         _grZoomAcumulado = _grZoom;
     }
     // TF: 'custom' já traz amount/unit próprios restaurados do localStorage 'cvTfCustom' antes daqui.
+    if (ambiente.tfCustom && ambiente.tfCustom.u && ambiente.tfCustom.a && !(_grTfCustomUnit && _grTfCustomAmount)) { _grTfCustomUnit = ambiente.tfCustom.u; _grTfCustomAmount = ambiente.tfCustom.a; }
     if (ambiente.tf && ambiente.tf !== _grTf) cvSetTf(ambiente.tf);
     if (!!ambiente.bollinger !== _indState.bollinger) cvToggleBol();
     if (Array.isArray(ambiente.rsiNiveis)) _grRsiNiveis = ambiente.rsiNiveis.filter(nv => RSI_NIVEIS_DISPONIVEIS.includes(nv)).sort((a, b) => a - b);
@@ -8977,6 +9000,7 @@ async function grAmbienteCarregar() {
         grEmaCustomSalvar();
     }
     _grAmbienteRestaurando = false; // libera as gravações -- tudo que era pra restaurar já foi aplicado
+    _grAmbienteCarregado = true; if (_grAmbientePendente) { _grAmbientePendente = false; grAmbienteSalvar(); }
     grDrawChart();
 }
 function cvAdicionarEmaCustom() {
