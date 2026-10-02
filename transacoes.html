@@ -914,7 +914,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <span class="cv-menu-item-label">Help</span>
     </button>
     <div class="cv-menu-divider"></div>
-    <button class="cv-menu-item" onclick="cvFecharMenu();window.location.href='dashboard.html';">
+    <button class="cv-menu-item" onclick="cvFecharMenu();try{grAmbienteSalvar();}catch(e){};setTimeout(function(){window.location.href='dashboard.html';},400);">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
       <span class="cv-menu-item-label" style="color:#EF5350;">Sair</span>
     </button>
@@ -3468,10 +3468,10 @@ function grFootprintAlternarSkin() {
 grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
-const APP_VERSAO = '02/10 11:25 · 15117 linhas · SALVAR-ÁREA-TF v84';
+const APP_VERSAO = '02/10 12:45 · 15117 linhas · SALVAR-SAIR v87';
 (function () {
     const el = document.getElementById('cv-menu-versao');
-    if (el) el.textContent = 'Versão ' + APP_VERSAO;
+    if (el) { el.textContent = 'Versão ' + APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
     console.log('[versão] ' + APP_VERSAO);
 })();
 // Menor tamanho de linha (múltiplo ÍMPAR de $10: 10, 30, 50...) que dá pelo menos `minPx` pixels na escala atual
@@ -7072,6 +7072,8 @@ function grAreaCarregar() {
         const a = sv.area, z = sv.zii;
         if (a && num(a.precoBaixo) && num(a.precoAlto) && num(a.tsIni) && num(a.tsFim)) {
             _grAreaMarcada = a;
+            // Área que só existia no aparelho (marcada antes do salvamento no servidor): sobe pro Supabase agora.
+            if (!_grAreasMapa[_grAreaLSKey()]) { _grAreasMapa[_grAreaLSKey()] = { area: a, zii: z || null }; try { grAmbienteSalvar(); } catch (e) {} }
             if (z && num(z.lo) && num(z.hi) && num(z.refLo) && num(z.refHi) && num(z.tsIni)) _grAreaZii = z;
         }
     } catch (e) {}
@@ -8935,6 +8937,15 @@ function grAmbienteColetar() {
 let _grAmbienteRestaurando = false; // true enquanto grAmbienteCarregar() está aplicando os campos -- evita gravar o ambiente pela metade
 let _grAmbienteCarregado = false;   // só grava depois da tentativa de leitura -- senão um save logo na abertura sobrescreve o salvo com o padrão
 let _grAmbientePendente = false;
+// Garantia extra: grava também quando o app vai pra segundo plano / a tela bloqueia / a página fecha.
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') { try { grAmbienteSalvar(); } catch (e) {} } });
+window.addEventListener('pagehide', () => { try { grAmbienteSalvar(); } catch (e) {} });
+window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
+function grAmbStatusMostrar() {
+    const el = document.getElementById('cv-menu-versao'); if (!el) return;
+    const base = 'Versão ' + APP_VERSAO;
+    el.innerHTML = base + '<br>Carga: ' + window._grAmbStatus.carga + '<br>Gravação: ' + window._grAmbStatus.save;
+}
 const GR_AMBIENTE_BKP = 'gr_ambiente_bkp_v1';
 function grAmbienteSalvar() {
     if (_grAmbienteRestaurando) return; // restauração em andamento -- não regrava por cima do que ainda está sendo aplicado
@@ -8944,25 +8955,29 @@ function grAmbienteSalvar() {
     try { localStorage.setItem(GR_AMBIENTE_BKP, JSON.stringify({ t: Date.now(), ambiente })); } catch (e) {}
     Promise.resolve(db.from('preferencias').upsert({ id: 1, indicadores: ambiente, updated_at: new Date().toISOString() }))
         .then(r => {
+            const hh = new Date().toTimeString().slice(0, 8);
+            window._grAmbStatus.save = (r && r.error) ? ('ERRO ' + hh + ' — ' + (r.error.message || JSON.stringify(r.error))) : ('ok no servidor ' + hh + ' (' + (Object.keys(_grAreasMapa).length) + ' área)');
+            grAmbStatusMostrar();
             if (r && r.error) { console.log('[ambiente] ERRO Supabase:', JSON.stringify(r.error)); try { grAreaToast('Não salvou no servidor: ' + (r.error.message || 'erro'), '#DC2626'); } catch (e) {} }
             else console.log('[ambiente] salvo no Supabase, tf=' + ambiente.tf);
         })
-        .catch(e => { console.log('[ambiente] ERRO ao salvar no Supabase:', e); try { grAreaToast('Sem conexão pra salvar (ficou só neste aparelho)', '#DC2626'); } catch (er) {} });
+        .catch(e => { window._grAmbStatus.save = 'FALHOU: ' + (e && e.message ? e.message : e); grAmbStatusMostrar(); console.log('[ambiente] ERRO ao salvar no Supabase:', e); try { grAreaToast('Sem conexão pra salvar (ficou só neste aparelho)', '#DC2626'); } catch (er) {} });
 }
 // Roda uma vez ao abrir o app: Supabase primeiro; se vier vazio ou der erro, usa a cópia reserva do localStorage.
 async function grAmbienteCarregar() {
     let ambiente = null;
     try {
         const { data, error } = await db.from('preferencias').select('indicadores').eq('id', 1).maybeSingle();
-        if (data && data.indicadores) ambiente = data.indicadores;
+        if (data && data.indicadores) { ambiente = data.indicadores; window._grAmbStatus.carga = 'servidor ok (tf=' + ambiente.tf + ', áreas=' + Object.keys(ambiente.areas || {}).length + ')'; }
+        else window._grAmbStatus.carga = error ? ('ERRO no servidor: ' + (error.message || JSON.stringify(error))) : 'servidor sem registro (id 1 vazio)';
         console.log('[ambiente] busquei do Supabase:', JSON.stringify(data), error ? ('erro=' + JSON.stringify(error)) : '');
-    } catch(e) { console.log('[ambiente] ERRO buscando do Supabase:', e); }
+    } catch(e) { window._grAmbStatus.carga = 'FALHOU: ' + (e && e.message ? e.message : e); console.log('[ambiente] ERRO buscando do Supabase:', e); }
     if (!ambiente) {
-        try { const b = JSON.parse(localStorage.getItem(GR_AMBIENTE_BKP) || 'null'); if (b && b.ambiente) { ambiente = b.ambiente; console.log('[ambiente] usando a cópia reserva do localStorage'); } } catch (e) {}
+        try { const b = JSON.parse(localStorage.getItem(GR_AMBIENTE_BKP) || 'null'); if (b && b.ambiente) { ambiente = b.ambiente; window._grAmbStatus.carga += ' → usou cópia do aparelho'; console.log('[ambiente] usando a cópia reserva do localStorage'); } } catch (e) {}
     }
     if (!ambiente) { console.log('[ambiente] NADA encontrado -- fica no padrão'); _grAmbienteCarregado = true; if (_grAmbientePendente) { _grAmbientePendente = false; grAmbienteSalvar(); } return; }
     if (ambiente.areas && typeof ambiente.areas === 'object') {
-        _grAreasMapa = ambiente.areas;
+        _grAreasMapa = Object.assign({}, ambiente.areas, _grAreasMapa); // o que já está no aparelho não é perdido
         if (!_grAreaMarcada) { try { grAreaCarregar(); } catch (e) {} }
     }
     if (typeof ambiente.footprintContraste === 'number' && ambiente.footprintContraste >= 0 && ambiente.footprintContraste <= 10) FOOTPRINT_CONTRASTE = ambiente.footprintContraste;
