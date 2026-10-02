@@ -2557,6 +2557,7 @@ function cvRenderMenuFpCfg() {
             + SEC('lookback', grConfigBlocoSliderDias(ICO.calendario, 'Janela de dias', 'CVD, delta e zonas de disputa', 'cv-cfg-lookback', _grFootprintLookbackDias, 1, 180, 'input', 'grFootprintLookbackSlider'))
             + SEC('diasfluxo', grConfigBlocoSliderDias(ICO.baixar, 'Dias ao ligar o Fluxo', 'Quanto histórico carregar de uma vez', 'cv-cfg-diasfluxo', FOOTPRINT_DIAS_AO_ATIVAR, 1, 36500, 'input', 'grFootprintDiasFluxoPreview'))
             + R('cv-cfg-skin-value', ICO.skin, 'Skin', null, 'grFootprintAlternarSkin()')
+            + SEC('contraste', grConfigBlocoContrasteV2(ICO.contraste))
             + SEC('linhas', grConfigBlocoLinhasFootprint(ICO.linhas))
             + R('cv-cfg-poccontorno-value', ICO.contorno, 'Contorno da célula', 'Realce ao redor da linha de maior volume do candle', 'grFootprintAlternarPocContorno()')
             + SEC('maiores', grConfigBlocoMarcarMaiores(ICO.refcor))
@@ -3467,7 +3468,7 @@ function grFootprintAlternarSkin() {
 grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
-const APP_VERSAO = '02/10 10:20 · 15117 linhas · COR-LOG-DESTAQUE v82';
+const APP_VERSAO = '02/10 10:50 · 15117 linhas · COR-CONTRASTE-SLIDER v83';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) el.textContent = 'Versão ' + APP_VERSAO;
@@ -3780,10 +3781,30 @@ function grFootprintDestaqueRef(clusters, tick) {
     const f = Float64Array.from(v).sort();
     return f[Math.min(f.length - 1, Math.floor(f.length * 0.97))];
 }
+// CONTRASTE (0 a 10): quanto mais alto, mais os volumes pequenos (ruído) ficam apagados e só os grandes escurecem.
+let FOOTPRINT_CONTRASTE = parseFloat(localStorage.getItem('grFootprintContrasteV2'));
+if (!(FOOTPRINT_CONTRASTE >= 0 && FOOTPRINT_CONTRASTE <= 10)) FOOTPRINT_CONTRASTE = 6;
+function grFootprintContrasteSlider(v) {
+    const c = Math.max(0, Math.min(10, Math.round((parseFloat(v) || 0) * 2) / 2));
+    FOOTPRINT_CONTRASTE = c;
+    try { localStorage.setItem('grFootprintContrasteV2', String(c)); } catch (e) {}
+    const txt = document.getElementById('cv-cfg-contraste-txt'); if (txt) txt.textContent = c.toFixed(1).replace('.', ',');
+    grDrawChart();
+}
+function grFootprintGamaContraste() { return 1 + 0.5 * FOOTPRINT_CONTRASTE; }
+function grConfigBlocoContrasteV2(svg) {
+    return '<div style="padding:12px 2px;border-bottom:1px solid #F2F2F7;">'
+        + '<div style="display:flex;align-items:center;gap:12px;">'
+        + '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;">' + svg + '</svg>'
+        + '<div style="flex:1;min-width:0;"><div style="font-size:14px;font-weight:600;color:#1C1C1E;">Contraste</div><div style="font-size:11.5px;color:#8E8E93;margin-top:1px;">Mais alto = volumes pequenos somem, só os grandes escurecem</div></div></div>'
+        + grConfigSliderDecimal('cv-cfg-contraste', 'Contraste', FOOTPRINT_CONTRASTE, 0, 10, 0.5, 'grFootprintContrasteSlider')
+        + '</div>';
+}
 function grFootprintPintar(pal, k, destaque) {
-    let r = pal.base[0] + (pal.forte[0] - pal.base[0]) * k;
-    let g = pal.base[1] + (pal.forte[1] - pal.base[1]) * k;
-    let b = pal.base[2] + (pal.forte[2] - pal.base[2]) * k;
+    const w = Math.min(1, k * 5);   // k quase zero (ruído) -> quase branco
+    let r = 255 + (pal.base[0] - 255) * w + (pal.forte[0] - pal.base[0]) * k;
+    let g = 255 + (pal.base[1] - 255) * w + (pal.forte[1] - pal.base[1]) * k;
+    let b = 255 + (pal.base[2] - 255) * w + (pal.forte[2] - pal.base[2]) * k;
     if (destaque > 0) { r += (8 - r) * destaque; g += (8 - g) * destaque; b += (8 - b) * destaque; }
     r = Math.round(r); g = Math.round(g); b = Math.round(b);
     return { cor: 'rgb(' + r + ',' + g + ',' + b + ')', escura: (0.299 * r + 0.587 * g + 0.114 * b) < 130 };
@@ -3796,10 +3817,11 @@ function grFootprintCorCelula(bid, ask, tick, refTop) {
     const pal = FOOTPRINT_SKIN === 'cinza' ? FOOTPRINT_COR_CINZA : (ask >= bid ? FOOTPRINT_COR_VERDE : FOOTPRINT_COR_VERMELHO);
     let k = Math.log(d / FOOTPRINT_DENS_PISO) / Math.log(FOOTPRINT_DENS_TETO / FOOTPRINT_DENS_PISO);
     k = Math.max(0, Math.min(1, k));
+    k = Math.pow(k, grFootprintGamaContraste());   // contraste: pequenos ficam pálidos, grandes mantêm
     let dest = 0;
     if (refTop > 0) {
         const r = d / refTop;                       // 1 = no limite do top 3%
-        const s = Math.max(0, Math.min(1, (r - 0.55) / 0.9));
+        const s = Math.max(0, Math.min(1, (r - (0.75 - 0.03 * FOOTPRINT_CONTRASTE)) / 0.9));
         const sm = s * s * (3 - 2 * s);
         k = Math.max(k, sm);                        // sobe até a cor forte
         dest = 0.8 * sm;                            // e depois escurece rumo ao preto
@@ -3812,7 +3834,7 @@ function grFootprintCorRelativa(bid, ask, ref) {
     if (t < 0.02) return { cor: '#FFFFFF', escura: false };
     const pal = FOOTPRINT_SKIN === 'cinza' ? FOOTPRINT_COR_CINZA : (ask >= bid ? FOOTPRINT_COR_VERDE : FOOTPRINT_COR_VERMELHO);
     const s = Math.max(0, Math.min(1, (t - 0.5) / 0.5));
-    return grFootprintPintar(pal, Math.pow(t, 0.7), 0.8 * s * s * (3 - 2 * s));
+    return grFootprintPintar(pal, Math.pow(t, 0.5 * grFootprintGamaContraste()), 0.8 * s * s * (3 - 2 * s));
 }
 // Volume compacto (células do footprint e rótulos do painel Delta/Total), em 3 níveis de
 // compactação (o mais preciso que caiba): acima de 1.000 vira "1,23k"; de 10 a 999 inteiro; abaixo de 10 uma casa.
