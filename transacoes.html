@@ -2427,6 +2427,63 @@ function cvFecharMenuTf() {
     const overlay = document.getElementById('cv-tf-menu-overlay'); if (overlay) overlay.remove();
     const menu = document.getElementById('cv-tf-menu'); if (menu) menu.remove();
 }
+// Seletor de escala do price action: Normal (linear) ou Logarítmica. Aberto pelo chip "Escala ..." da barra superior.
+function cvAbrirMenuEscala(clientX, clientY) {
+    cvFecharMenuEscala();
+    const overlay = document.createElement('div');
+    overlay.id = 'cv-escala-menu-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:9700;background:transparent;';
+    overlay.onclick = cvFecharMenuEscala;
+    const menu = document.createElement('div');
+    menu.id = 'cv-escala-menu';
+    menu.style.cssText = 'position:fixed;z-index:9701;background:#FFFFFF;border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,0.22);padding:6px;min-width:150px;font-family:-apple-system,sans-serif;';
+    [{ log: false, label: 'Normal' }, { log: true, label: 'Logarítmica' }].forEach(it => {
+        const ativo = it.log === _grEscalaLog;
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = it.label;
+        b.style.cssText = 'display:block;width:100%;text-align:left;border:none;background:none;padding:10px 12px;font-size:14px;font-weight:' + (ativo ? '700' : '600') + ';color:' + (ativo ? '#007AFF' : '#1C1C1E') + ';border-radius:8px;';
+        b.onclick = e => { e.stopPropagation(); cvFecharMenuEscala(); cvSetEscala(it.log); };
+        menu.appendChild(b);
+    });
+    document.body.appendChild(overlay);
+    document.body.appendChild(menu);
+    requestAnimationFrame(() => {
+        const r = menu.getBoundingClientRect();
+        const W = window.innerWidth, H = window.innerHeight;
+        let x = clientX, y = clientY + 8;
+        if (x + r.width > W - 8) x = W - r.width - 8;
+        if (y + r.height > H - 8) y = clientY - r.height - 8;
+        menu.style.left = Math.max(8, x) + 'px';
+        menu.style.top = Math.max(8, y) + 'px';
+    });
+}
+function cvFecharMenuEscala() {
+    const overlay = document.getElementById('cv-escala-menu-overlay'); if (overlay) overlay.remove();
+    const menu = document.getElementById('cv-escala-menu'); if (menu) menu.remove();
+}
+// Troca a escala mantendo o que está na tela: normal → log usa o preço do centro como referência (mesma altura de candle no
+// centro); log → normal devolve o fator vertical equivalente, pra a altura dos candles no centro não pular.
+function cvSetEscala(log) {
+    log = !!log;
+    if (log === _grEscalaLog) return;
+    if (_grYAxisCenter != null && _grYAxisPxPerDollar) {
+        if (log) {
+            if (!(_grYAxisCenter > 0)) _grYAxisCenter = _precoAtual > 0 ? _precoAtual : 1;
+            _grLogRef = _grYAxisCenter;
+        } else {
+            const ref = grLogRefAtual();
+            if (_grYAxisCenter > 0) _grYFator = Math.max(0.02, Math.min(100, _grYFator * ref / _grYAxisCenter));
+            _grEscalaLog = false;
+            grAtualizarPxPerDollar();
+        }
+    }
+    _grEscalaLog = log;
+    try { localStorage.setItem('gr_escala_log', log ? '1' : '0'); } catch (e) {}
+    if (!log) { try { grYFatorSalvar(); } catch (e) {} } // guarda o fator vertical ajustado (falha de rede ao salvar não pode travar a troca)
+    window._grManualPanTs = Date.now();
+    grDrawChart();
+}
 // Menu de médias: fundo branco, só EMA de período livre (digita + Add, "✕" remove da pilha) — sem
 // médias padrão fixas. Abre perto do toque no chip "EMA" desenhado no gráfico (ver _grEmaLabelHit em
 // grDrawCandles), com um overlay transparente que fecha ao tocar fora. Fica aberto entre um toque e
@@ -3328,9 +3385,36 @@ let _grYAxisPxPerDollar = null; // tick fixo — pixels por dólar (DERIVADO, n�
 // independente, e o arredondamento assimétrico entre elas acumulava erro).
 let _grZoomReferencia = null;
 let _grPxPerDollarReferencia = null;
+// ── Escala do price action: 'normal' (linear, em dólares) ou 'log' (logarítmica). No modo log o eixo vertical é medido em ln(preço):
+// pixels por unidade de ln = _grYAxisPxPerDollar × _grLogRef (um preço de referência fixo — assim a pinça no eixo e o fator vertical
+// continuam funcionando igual, só que em variação percentual). _grYAxisCenter segue sendo o PREÇO no centro da tela nos dois modos.
+let _grEscalaLog = false;
+try { _grEscalaLog = localStorage.getItem('gr_escala_log') === '1'; } catch (e) {}
+let _grLogRef = null;
+function grLogRefAtual() { return (_grLogRef && _grLogRef > 0) ? _grLogRef : ((_grYAxisCenter && _grYAxisCenter > 0) ? _grYAxisCenter : 1); }
+// Marcas do eixo de preço no modo log: o passo cresce com o preço (o espaçamento em PIXELS fica constante, ~fonte × 2,5 como no
+// modo normal), sempre em números redondos (1, 2, 2,5, 4, 5 × 10ⁿ). Devolve [{price, step}].
+function grTicksLog(minP, maxP, alturaPx, fontSize) {
+    const out = [];
+    if (!(minP > 0) || !(maxP > minP) || !(alturaPx > 0)) return out;
+    const pxPorLog = alturaPx / Math.log(maxP / minP);
+    const minPx = Math.ceil(fontSize * 2.5);
+    let cur = minP, guarda = 0;
+    while (cur <= maxP && guarda++ < 500) {
+        const bruto = cur * minPx / pxPorLog; // passo em $ que dá ~minPx pixels neste preço
+        const mag = Math.pow(10, Math.floor(Math.log10(bruto)));
+        let passo = 10 * mag;
+        for (const m of [1, 2, 2.5, 4, 5, 10]) if (m * mag >= bruto * (1 - 1e-9)) { passo = m * mag; break; }
+        const prox = (Math.floor(cur / passo + 1e-9) + 1) * passo;
+        if (prox > maxP) break;
+        out.push({ price: Math.round(prox * 1e8) / 1e8, step: passo });
+        cur = prox;
+    }
+    return out;
+}
 // ── Escala vertical MANUAL (pinça no eixo Y). A escala automática (calibrada pelo range dos candles visíveis e amarrada ao
 // zoom horizontal) deixava os candles de tempo pequeno achatados e os de tempo grande (semanal) compridos demais. A
-// pinça de dois dedos sobre a faixa de preços (à esquerda) multiplica só a ALTURA (pixels por dólar) por um fator, sem
+// pinça de dois dedos sobre a faixa de preços (à direita) multiplica só a ALTURA (pixels por dólar) por um fator, sem
 // mexer na largura. O fator vale por timeframe, fica salvo no aparelho e continua valendo quando o zoom horizontal muda
 // (é multiplicado por cima da escala automática).
 let _grYFator = 1;
@@ -3353,6 +3437,7 @@ function grCalibrarEixoYFixo(chartH) {
     if (total === 0) return;
     const ultimo = _grAllCandles[total - 1];
     _grYAxisCenter = ultimo.c;
+    _grLogRef = ultimo.c;
     // Calibra o tick a partir do range de um conjunto recente de candles
     // (a janela padrão de zoom), com folga de 30% pra não ficar espremido.
     const janela = _grAllCandles.slice(Math.max(0, total - _grZoom), total);
@@ -3854,7 +3939,7 @@ function grFmtVolCompacto(v, nivel) {
 function grCrosshairCandleSelecionadoT(candles, totalSlots, chartW) {
     if (!window._longPressActive || !candles.length) return null;
     const slotW = chartW / Math.max(totalSlots, 1);
-    const idx = Math.min(candles.length - 1, Math.max(0, Math.floor((_grCrosshairX - (window._grPADLeft != null ? window._grPADLeft : _grPAD.left)) / slotW)));
+    const idx = Math.min(candles.length - 1, Math.max(0, Math.floor((_grCrosshairX - grPadL()) / slotW)));
     return candles[idx].t;
 }
 // Tamanho de fonte do candle SELECIONADO: o maior que cabe nele (largura da célula e altura da linha),
@@ -4297,7 +4382,7 @@ function grDrawCandles(candles, emptyRight) {
         const PAD = { ..._grPAD };
         const _altPan = grAlturasPaineis(H);
         if (_altPan.total > 0) PAD.bottom = _altPan.total + _grPAD.bottom;
-        if (_indState.deltaAtr) PAD.right += 30; // regua de Delta ATR: precisa de espaço real pro número ficar legível (7.5px/15px ficava ilegível)
+        if (_indState.deltaAtr) PAD.left += 20; // regua de Delta ATR (agora na ESQUERDA): precisa de espaço real pro número ficar legível (7.5px/15px ficava ilegível)
         let chartW = W - PAD.left - PAD.right;
         const chartH = H - PAD.top - PAD.bottom;
         // ── Calcula indicadores sobre todos os candles ───────────────
@@ -4364,22 +4449,44 @@ function grDrawCandles(candles, emptyRight) {
         const allL = candles.map(c => c.l);
         window._grVisibleHigh = Math.max(...allH);
         window._grVisibleLow  = Math.min(...allL);
-        let minP = _grYAxisCenter - (chartH / _grYAxisPxPerDollar) / 2;
-        let maxP = _grYAxisCenter + (chartH / _grYAxisPxPerDollar) / 2;
-        // PAD.left flexível — calcula após maxP/minP estarem definidos
+        let minP, maxP;
+        if (_grEscalaLog) {
+            // Escala LOG: o centro é o preço no meio da tela; a altura da tela vale chartH/pxPorLog em unidades de ln(preço).
+            if (!(_grYAxisCenter > 0)) _grYAxisCenter = _precoAtual > 0 ? _precoAtual : 1;
+            const spanLog = Math.min(40, chartH / (_grYAxisPxPerDollar * grLogRefAtual()));
+            minP = _grYAxisCenter * Math.exp(-spanLog / 2);
+            maxP = _grYAxisCenter * Math.exp(spanLog / 2);
+        } else {
+            minP = _grYAxisCenter - (chartH / _grYAxisPxPerDollar) / 2;
+            maxP = _grYAxisCenter + (chartH / _grYAxisPxPerDollar) / 2;
+        }
+        // Largura do eixo de preços (agora à DIREITA) flexível — calcula após maxP/minP estarem definidos
         const fsEixo = 11;
         const gridStep = grPassoEixoY(maxP - minP, chartH, fsEixo);
+        const ticksEixo = []; // marcas do eixo: [{price, step}] — passo único no normal, passo crescente no log
+        if (_grEscalaLog) grTicksLog(minP, maxP, chartH, fsEixo).forEach(t => ticksEixo.push(t));
+        else for (let k = Math.ceil(minP / gridStep); k * gridStep <= maxP; k++) ticksEixo.push({ price: Math.round(k * gridStep * 1e8) / 1e8, step: gridStep });
         {
             ctx.font = fsEixo + 'px -apple-system';
-            const maxW = Math.max(ctx.measureText(grFmtPrecoEixo(maxP, gridStep)).width, ctx.measureText(grFmtPrecoEixo(minP, gridStep)).width);
-            PAD.left = Math.ceil(maxW) + 14;
+            let maxW = 0;
+            if (_grEscalaLog) ticksEixo.forEach(t => { maxW = Math.max(maxW, ctx.measureText(grFmtPrecoEixo(t.price, t.step)).width); });
+            else maxW = Math.max(ctx.measureText(grFmtPrecoEixo(maxP, gridStep)).width, ctx.measureText(grFmtPrecoEixo(minP, gridStep)).width);
+            PAD.right = Math.ceil(maxW) + 14;
         }
-        // Recalcula chartW com PAD.left atualizado
-        chartW = W - PAD.left - PAD.right; // recalcula com PAD.left atualizado
+        // Recalcula chartW com a largura do eixo atualizada
+        chartW = W - PAD.left - PAD.right;
         // Salva escala para drag de linhas
         _grMinP = minP; _grMaxP = maxP; _grChartH = chartH;
+        window._grEscalaDes = _grEscalaLog; // em qual escala ESTE desenho foi feito (grToPrice/grLineY leem daqui)
+        window._grPADRight = PAD.right;     // largura do eixo de preços desta rodada (hit-test, crosshair)
         const priceRange = maxP - minP;
-        const toY = p => PAD.top + chartH - ((p - minP) / priceRange) * chartH;
+        const lnMinP = Math.log(Math.max(minP, 1e-9)), lnRangeP = Math.log(Math.max(maxP, 1e-9)) - lnMinP;
+        const toY = _grEscalaLog
+            ? (p => PAD.top + chartH - ((Math.log(Math.max(p, 1e-9)) - lnMinP) / lnRangeP) * chartH)
+            : (p => PAD.top + chartH - ((p - minP) / priceRange) * chartH);
+        // Pixels por dólar no CENTRO da tela (no modo normal é a média da tela toda): dimensiona as linhas do footprint, da régua Delta ATR e do Volume Profile.
+        const pxDolar = _grEscalaLog ? (_grYAxisPxPerDollar * grLogRefAtual() / _grYAxisCenter) : chartH / priceRange;
+        window._grPxDolarLocal = pxDolar;
         const totalSlots = candles.length + emptyRight;
         const cW = Math.max(2, Math.floor(chartW / Math.max(totalSlots, 1)) - 1);
         grAtualizarTipoGraficoAuto(chartW / Math.max(totalSlots, 1)); // largura bruta, sem o clamp acima -- detecta zoom out extremo
@@ -4404,20 +4511,19 @@ function grDrawCandles(candles, emptyRight) {
             ctx.setLineDash([]);
             ctx.font = fsEixo + 'px -apple-system';
             ctx.textAlign = 'right';
-            for (let k = Math.ceil(minP / gridStep); k * gridStep <= maxP; k++) {
-                const price = Math.round(k * gridStep * 1e8) / 1e8;
-                const y = toY(price);
-                if (y < PAD.top || y > PAD.top + chartH) continue;
+            ticksEixo.forEach(tk => {
+                const y = toY(tk.price);
+                if (y < PAD.top || y > PAD.top + chartH) return;
                 ctx.strokeStyle = corGrade;
                 ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(W - PAD.right, y); ctx.stroke();
                 // só desenha o número se ele cabe inteiro dentro da área do gráfico (o TradingView faz o mesmo: "entireTextOnly")
                 if (y - fsEixo / 2 >= PAD.top && y + fsEixo / 2 <= PAD.top + chartH) {
                     ctx.fillStyle = corRotulo;
-                    ctx.fillText(grFmtPrecoEixo(price, gridStep), PAD.left - 5, y + 4);
+                    ctx.fillText(grFmtPrecoEixo(tk.price, tk.step), W - 6, y + 4); // eixo à direita: números alinhados à direita, como as pílulas
                 }
-            }
+            });
         }
-        // Regua de Delta por faixa de ATR -- eixo dedicado no canto direito, so numeros (sem cor/barra):
+        // Regua de Delta por faixa de ATR -- eixo dedicado no canto ESQUERDO (trocou de lado com o eixo de preços), so numeros (sem cor/barra):
         // o delta (compra - venda) de cada faixa de preco, na janela de dias do Fluxo. Experimental -- e pra
         // ver se ajuda a enxergar onde a pressao liquida se concentrou, faixa por faixa.
         if (_indState.deltaAtr) {
@@ -4425,35 +4531,36 @@ function grDrawCandles(candles, emptyRight) {
             // (antes ficava em branco, sem explicar: Fluxo desligado, sem dados na janela ou faixas finas demais pra caber número).
             const avisoDA = txt => {
                 ctx.save(); ctx.fillStyle = '#8E8E93'; ctx.font = '700 9px -apple-system'; ctx.textAlign = 'center';
-                ctx.translate(W - PAD.right / 2, PAD.top + chartH / 2); ctx.rotate(-Math.PI / 2); ctx.fillText(txt, 0, 3); ctx.restore();
+                ctx.translate(PAD.left / 2, PAD.top + chartH / 2); ctx.rotate(-Math.PI / 2); ctx.fillText(txt, 0, 3); ctx.restore();
             };
             if (!_grFootprintAtivo) avisoDA('ligue o Fluxo (FX)');
             else {
-            let tickDA = grFootprintTickDaGrade(chartH / priceRange, true);
+            let tickDA = grFootprintTickDaGrade(pxDolar, true);
             // Faixa fina demais (< 8 px) não cabe número: agrupa em faixas maiores (múltiplo do tick) em vez de deixar tudo em branco.
-            if ((chartH / priceRange) * tickDA < 8) tickDA = tickDA * Math.ceil(8 / ((chartH / priceRange) * tickDA));
+            if (pxDolar * tickDA < 8) tickDA = tickDA * Math.ceil(8 / (pxDolar * tickDA));
             const resultadoDA = grDeltaPorFaixaATR(tickDA);
             const mapaDA = resultadoDA ? resultadoDA.mapa : null;
             const maxAbsDA = resultadoDA ? (resultadoDA.maxAbs || 1) : 1;
-            const rowHDA = (chartH / priceRange) * tickDA;
+            const rowHDA = pxDolar * tickDA;
             if (!mapaDA || mapaDA.size === 0) avisoDA('sem dados na janela');
             if (mapaDA && rowHDA >= 8) {
                 ctx.font = '700 10px -apple-system';
                 ctx.textAlign = 'right';
-                const xDA = W - 3;
-                const larguraFaixaDA = PAD.right - 2; // faixa reservada pro indicador -- o fundo colorido cobre ela inteira
+                const xDA = PAD.left - 3; // números alinhados à direita, colados na borda da área dos candles
+                const larguraFaixaDA = PAD.left - 2; // faixa reservada pro indicador -- o fundo colorido cobre ela inteira
                 const kIni = Math.floor(minP / tickDA), kFim = Math.ceil(maxP / tickDA);
                 for (let k = kIni; k <= kFim; k++) {
                     const deltaFaixa = mapaDA.get(k);
                     if (deltaFaixa === undefined) continue; // sem negocio nessa faixa na janela -- nao desenha nada
                     const y = toY(k * tickDA);
                     if (y < PAD.top || y > PAD.top + chartH) continue;
+                    const yTopoDA = toY(k * tickDA + tickDA / 2), yBaseDA = toY(k * tickDA - tickDA / 2); // bordas pelo PREÇO (no modo log as faixas não têm altura constante)
                     // Mesma gradacao de cor do footprint (escala relativa + destaque):
                     // delta negativo entra como "bid", positivo como "ask" -- fundo pálido→forte→quase preto conforme
                     // o tamanho em relação ao maior |delta| das faixas visíveis agora.
                     const corInfoDA = grFootprintCorRelativa(deltaFaixa < 0 ? -deltaFaixa : 0, deltaFaixa > 0 ? deltaFaixa : 0, maxAbsDA);
                     ctx.fillStyle = corInfoDA.cor;
-                    ctx.fillRect(W - PAD.right, y - rowHDA / 2, larguraFaixaDA, rowHDA);
+                    ctx.fillRect(2, yTopoDA, larguraFaixaDA, yBaseDA - yTopoDA);
                     // Fundo abaixo do piso vira branco puro (sem tom) -- aí o sinal sumia. Em vez de preto neutro,
                     // colore o próprio número de verde/vermelho pra continuar dando pra ler o sinal de longe -- MAS só
                     // nessa faixa bem pálida mesmo: o "escura" do footprint (luminância < 130) só vira branco perto do
@@ -4629,7 +4736,7 @@ function grDrawCandles(candles, emptyRight) {
                     ctx.strokeStyle = '#FFFFFF';
                     ctx.stroke();
                 }
-                // Label + pílula (uma por âncora, na margem esquerda)
+                // Label + pílula (uma por âncora, no eixo de preços, à direita)
                 const lastVwap = vwapVis.filter(v=>v!==null).pop();
                 if (lastVwap) {
                     window._compValores.vwap = { cor: CorVwap, valor: fmtN(lastVwap) };
@@ -4637,12 +4744,12 @@ function grDrawCandles(candles, emptyRight) {
                     if (yv >= PAD.top && yv <= PAD.top + chartH) {
                         const tv = 'V ' + fmtN(lastVwap);
                         ctx.font = 'bold 10px -apple-system';
-                        const pH = 13, pW = PAD.left - 4;
+                        const pH = 13, pW = PAD.right - 4, pXv = W - PAD.right + 1;
                         ctx.fillStyle = CorVwap;
-                        ctx.beginPath(); ctx.roundRect(3, yv - pH/2, pW, pH, 3); ctx.fill();
+                        ctx.beginPath(); ctx.roundRect(pXv, yv - pH/2, pW, pH, 3); ctx.fill();
                         ctx.fillStyle = '#FFF';
                         ctx.textAlign = 'right';
-                        ctx.fillText(tv, pW - 1, yv + pH/2 - 3);
+                        ctx.fillText(tv, pXv + pW - 1, yv + pH/2 - 3);
                     }
                 }
             });
@@ -4797,7 +4904,7 @@ if (_grTipoGrafico === 'linha') {
     const ALTURA_MIN_POC_PX = 12; // candle (H até L, na tela) menor que isso não recebe traço de PoC — vira poluição
     // Footprint em clusters: grade única + teto de volume (escala de cor) calculados 1x por desenho
     const clustersCfg = (_grFootprintAtivo && cW >= FOOTPRINT_CLUSTER_CW_MIN)
-        ? grFootprintPrepararClusters(ctx, candles, chartH / priceRange, cW) : null;
+        ? grFootprintPrepararClusters(ctx, candles, pxDolar, cW) : null;
     if (clustersCfg) clustersCfg.tSel = grCrosshairCandleSelecionadoT(candles, totalSlots, chartW);
     window._grFpTotalPx = (clustersCfg && clustersCfg.nivelTxt >= 0) ? Math.ceil(clustersCfg.fs * 1.4 + 6) : 0; // altura da linha de totais bid x ask abaixo do candle (EV desce além dela)
     // "Marcar os maiores níveis": faixa horizontal cruzando TODO o eixo X, desenhada ANTES dos candles (fica por
@@ -4937,6 +5044,7 @@ if (_grTipoGrafico === 'linha') {
         // de fora — já têm seu próprio espaço embaixo do gráfico).
         {
             window._grBarraSuperiorChips = [];
+            const corTextoBarra = _grTemaClaro ? '#000000' : '#FFFFFF'; // texto da barra: preto no tema claro, BRANCO no escuro (fundo #131722)
             const chipLineH = 16;
             const chipLimiteDireita = W - PAD.right - 4;
             let chipX = PAD.left + 4;
@@ -4955,14 +5063,14 @@ if (_grTipoGrafico === 'linha') {
                     chipPrimeiroDaLinha = true;
                 }
                 if (!chipPrimeiroDaLinha) {
-                    ctx.fillStyle = 'rgba(0,0,0,0.28)';
+                    ctx.fillStyle = _grTemaClaro ? 'rgba(0,0,0,0.28)' : 'rgba(255,255,255,0.45)';
                     ctx.beginPath();
                     ctx.arc(chipX + 2.5, chipY - 3, 1.6, 0, Math.PI * 2);
                     ctx.fill();
                     chipX += 9;
                 }
                 ctx.textAlign = 'left';
-                ctx.fillStyle = cor || '#000000';
+                ctx.fillStyle = (!cor || cor === '#000000') ? corTextoBarra : cor;
                 let cursorX = chipX;
                 segs.forEach(s => {
                     ctx.font = s.negrito ? CHIP_FONTE_NEGRITO : CHIP_FONTE_NORMAL;
@@ -4977,6 +5085,8 @@ if (_grTipoGrafico === 'linha') {
             // forma de trocar de timeframe agora (os botões saíram da barra lateral) e de gerenciar as EMAs.
             grBarraChip([{ t: 'TF ', negrito: false }, { t: grTfSiglaAtual(), negrito: true }], '#000000', (cx, cy) => cvAbrirMenuTf(cx, cy));
             grBarraChip('EMA', '#000000', (cx, cy) => cvAbrirMenuEma(cx, cy));
+            // Escala do price action: Normal (linear) ou Log — tocar abre o seletor.
+            grBarraChip([{ t: 'Escala ', negrito: false }, { t: _grEscalaLog ? 'Log' : 'Normal', negrito: true }], '#000000', (cx, cy) => cvAbrirMenuEscala(cx, cy));
             // Tocar no chip agora SEMPRE abre os detalhes/valores do indicador (nunca mais desliga) — desligar
             // só pelo botão da barra lateral. É isso que tira as pílulas de preço grandes do eixo Y: o valor
             // completo mora nesse popup, o gráfico só mantém a linha.
@@ -5262,7 +5372,7 @@ if (_grTipoGrafico === 'linha') {
 
                 const yEficTexto = chipY + chipLineH + 2;
                 ctx.font = 'bold 10px -apple-system';
-                ctx.fillStyle = '#000000';
+                ctx.fillStyle = corTextoBarra;
                 ctx.fillText('Eficiência: ' + bidScoreEf + '/' + askScoreEf, PAD.left + 4, yEficTexto);
 
                 // Barra: vermelho (BID) à esquerda, verde (ASK) à direita, comprimento de cada lado proporcional
@@ -5275,13 +5385,13 @@ if (_grTipoGrafico === 'linha') {
                 const larguraBarra = 160;
                 const xBarrFim = xBarrIni + larguraBarra;
                 ctx.textAlign = 'left';
-                ctx.fillStyle = '#000000';
+                ctx.fillStyle = corTextoBarra;
                 ctx.fillText(rotBid, PAD.left + 4, yBar + hBar - 1);
                 ctx.fillStyle = '#EF5350'; // vermelho — BID
                 ctx.fillRect(xBarrIni, yBar, larguraBarra * fracBidEf, hBar);
                 ctx.fillStyle = '#26A69A'; // verde — ASK
                 ctx.fillRect(xBarrIni + larguraBarra * fracBidEf, yBar, larguraBarra * fracAskEf, hBar);
-                ctx.fillStyle = '#000000';
+                ctx.fillStyle = corTextoBarra;
                 ctx.fillText(rotAsk, xBarrFim + 5, yBar + hBar - 1);
                 }
             }
@@ -5314,8 +5424,8 @@ if (_grTipoGrafico === 'linha') {
             ctx.setLineDash([4, 3]);
             ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(W - PAD.right, y); ctx.stroke();
             ctx.setLineDash([]);
-            // Badge esquerdo — só o preço, sem "S"
-            const bH = 16, bW = PAD.left - 4, bX = 3, bY = y - bH / 2;
+            // Badge no eixo (direita) — só o preço, sem "S"
+            const bH = 16, bW = PAD.right - 4, bX = W - PAD.right + 1, bY = y - bH / 2;
             ctx.fillStyle = color;
             ctx.beginPath(); ctx.roundRect(bX, bY, bW, bH, 3); ctx.fill();
             ctx.fillStyle = '#FFFFFF';
@@ -5459,8 +5569,8 @@ ctx.fillText(fmtN(stopPrice), bX + bW - 4, bY + bH - 3);
             {
                 const aTxt = fmtN(_regAtual.p2);
                 ctx.font = 'bold 10px -apple-system';
-                const aBH = 16, aBW = PAD.left - 4;
-const aBX = 3, aBY = yR2 - aBH / 2;
+                const aBH = 16, aBW = PAD.right - 4;
+const aBX = W - PAD.right + 1, aBY = yR2 - aBH / 2;
                 ctx.fillStyle = corBorda;
                 ctx.beginPath(); ctx.roundRect(aBX, aBY, aBW, aBH, 3); ctx.fill();
                 ctx.fillStyle = '#131722';
@@ -5504,8 +5614,9 @@ const aBX = 3, aBY = yR2 - aBH / 2;
             ctx.setLineDash([]);
             const pmTxt = 'PM ' + fmtN(_grPm);
             ctx.font = 'bold 10px -apple-system';
-            const bH = 16, bW = PAD.left - 4;
-            const bX = 3, bY = yPm - bH / 2;
+            const bH = 16;
+            const bW = Math.max(PAD.right - 4, Math.ceil(ctx.measureText(pmTxt).width) + 10);
+            const bX = W - 3 - bW, bY = yPm - bH / 2;
             ctx.fillStyle = '#F5A623';
             ctx.beginPath(); ctx.roundRect(bX, bY, bW, bH, 3); ctx.fill();
             ctx.fillStyle = '#131722';
@@ -5548,11 +5659,11 @@ const aBX = 3, aBY = yR2 - aBH / 2;
             ctx.setLineDash([4, 3]); 
             ctx.beginPath(); ctx.moveTo(PAD.left, yPreco); ctx.lineTo(W - PAD.right, yPreco); ctx.stroke();
             ctx.setLineDash([]);
-            // Badge esquerdo
+            // Badge no eixo (direita)
             const txt = fmtN(_precoAtual);
             ctx.font = 'bold 10px -apple-system';
-            const bH = 16, bW = PAD.left - 4;
-            const bX = 3, bY = yPreco - bH / 2;
+            const bH = 16, bW = PAD.right - 4;
+            const bX = W - PAD.right + 1, bY = yPreco - bH / 2;
             ctx.fillStyle = precoColor;
             ctx.beginPath(); ctx.roundRect(bX, bY, bW, bH, 3); ctx.fill();
             ctx.fillStyle = '#FFFFFF';
@@ -6573,11 +6684,11 @@ function grInitTouch() {
             // atual, pra não carregar deriva de qualquer mudança de zoom que
             // tenha acontecido fora da pinça entre um gesto e outro.
             _grZoomAcumulado = _grZoom;
-            // Pinça no EIXO Y: os dois dedos começam na faixa de preços (esquerda do gráfico) → só a altura muda
+            // Pinça no EIXO Y: os dois dedos começam na faixa de preços (agora à DIREITA do gráfico) → só a altura muda
             const rectP = canvas.getBoundingClientRect(), escP = grLW(canvas) / rectP.width;
             const xa = (e.touches[0].clientX - rectP.left) * escP, xb = (e.touches[1].clientX - rectP.left) * escP;
-            const limiteEixo = (window._grPADLeft != null ? window._grPADLeft : 45) + 10;
-            window._grPincaY = (xa < limiteEixo && xb < limiteEixo) ? { lastDist: Math.abs(e.touches[0].clientY - e.touches[1].clientY) } : null;
+            const limiteEixo = grLW(canvas) - grPadR() - 10;
+            window._grPincaY = (xa > limiteEixo && xb > limiteEixo) ? { lastDist: Math.abs(e.touches[0].clientY - e.touches[1].clientY) } : null;
             // Pinça no EIXO X: os dois dedos começam ABAIXO do gráfico de preços (faixa de baixo: painéis e margem) → só a
             // LARGURA dos candles muda; a altura fica exatamente onde está.
             const ya = (e.touches[0].clientY - rectP.top) * (grLH(canvas) / rectP.height), yb = (e.touches[1].clientY - rectP.top) * (grLH(canvas) / rectP.height);
@@ -6759,7 +6870,8 @@ function grInitTouch() {
                 // ALTOS (puxa o conteúdo de cima pra baixo, como uma cortina).
                 const dyAxis = e.touches[0].clientY - touchStartY;
                 if (Math.abs(dyAxis) >= 1 && _grYAxisPxPerDollar) {
-                    _grYAxisCenter += (dyAxis * AMORTECIMENTO_PAN) / _grYAxisPxPerDollar;
+                    if (_grEscalaLog && _grYAxisCenter > 0) _grYAxisCenter *= Math.exp((dyAxis * AMORTECIMENTO_PAN) / (_grYAxisPxPerDollar * grLogRefAtual())); // log: o pan é em variação %
+                    else _grYAxisCenter += (dyAxis * AMORTECIMENTO_PAN) / _grYAxisPxPerDollar;
                     touchStartY = e.touches[0].clientY;
                     window._grManualPanTs = Date.now();
                     grAgendarDesenho();
@@ -6810,7 +6922,12 @@ function grInitTouch() {
                         _grYFator = novoFator;
                         grAtualizarPxPerDollar();
                         // recentra pra o preço p0 continuar exatamente na mesma altura da tela
-                        _grYAxisCenter = p0 + _grChartH / (2 * _grYAxisPxPerDollar) - (_grPAD.top + _grChartH - midY) / _grYAxisPxPerDollar;
+                        if (_grEscalaLog) {
+                            const pxLog = _grYAxisPxPerDollar * grLogRefAtual();
+                            _grYAxisCenter = Math.exp(Math.log(p0) + _grChartH / (2 * pxLog) - (_grPAD.top + _grChartH - midY) / pxLog);
+                        } else {
+                            _grYAxisCenter = p0 + _grChartH / (2 * _grYAxisPxPerDollar) - (_grPAD.top + _grChartH - midY) / _grYAxisPxPerDollar;
+                        }
                     }
                 }
                 window._grPincaY.lastDist = distY;
@@ -7868,7 +7985,7 @@ function grCrosshairZonaDeltaPreco(preco, pctZona) {
     const mapa = _grFootprintBins ? _grFootprintBins.mapaBase : null;
     if (!mapa) return null;
     if (_grMaxP > _grMinP && _grChartH > 0) {
-        const tick = grVpTick(_grChartH / (_grMaxP - _grMinP));
+        const tick = grVpTick(window._grPxDolarLocal || (_grChartH / (_grMaxP - _grMinP)));
         const centro = Math.round(preco / tick) * tick;
         const cacheN = window._grCrosshairNivelCache;
         if (cacheN && cacheN.centro === centro && cacheN.tick === tick && cacheN.mapa === mapa) return cacheN;
@@ -7919,8 +8036,8 @@ function grDrawChartWithCrosshair(yInterno) {
         ctx.setLineDash([4, 4]);
         // Linha horizontal
         ctx.beginPath();
-        ctx.moveTo(_grPAD.left, yInterno);
-        ctx.lineTo(W - _grPAD.right, yInterno);
+        ctx.moveTo(grPadL(), yInterno);
+        ctx.lineTo(W - grPadR(), yInterno);
         ctx.stroke();
         // Linha vertical — do topo ao rodapé do canvas (inclui painel de indicador).
         // O painel (RSI/Absorção/etc) tem fundo escuro FIXO mesmo no tema claro, então
@@ -7942,11 +8059,11 @@ function grDrawChartWithCrosshair(yInterno) {
             ctx.strokeStyle = corCrosshair; // restaura pro resto da função (pílulas etc usam essa cor depois)
         }
         ctx.setLineDash([]);
-        // Pílula no eixo Y esquerdo
+        // Pílula no eixo Y (agora à direita)
         const txt = fmtN(preco);
         ctx.font = 'bold 10px -apple-system';
         const tw = ctx.measureText(txt).width;
-        const pH = 16, pW = tw + 10, pX = 0, pY = yInterno - pH / 2;
+        const pH = 16, pW = Math.max(tw + 10, grPadR() - 2), pX = W - pW - 1, pY = yInterno - pH / 2;
         ctx.fillStyle = _grTemaClaro ? '#4A4A4A' : '#FFFFFF';
         ctx.beginPath(); ctx.roundRect(pX, pY, pW, pH, 3); ctx.fill();
             ctx.fillStyle = _grTemaClaro ? '#FFFFFF' : '#131722';
@@ -7960,13 +8077,13 @@ function grDrawChartWithCrosshair(yInterno) {
     // startIdx idêntico ao grDrawChart para sincronizar com scroll
     const maxOff2 = total + Math.floor(zoomEfetivo3 * 0.5);
     const startIdx = Math.max(0, Math.min(maxOff2, _grOffset));
-    const chartW2 = W - _grPAD.left - _grPAD.right;
+    const chartW2 = W - grPadL() - grPadR();
     const cc2 = _grAllCandles.slice(startIdx, startIdx + visible);
     const emptyR2 = Math.max(0, visible - cc2.length);
     const totalSlots2 = cc2.length + emptyR2;
     // Geometria REAL do último desenho (margem esquerda flexível pelo tamanho do rótulo de preço, régua do Delta ATR na direita etc.):
     // com o _grPAD fixo, o candle escolhido podia sair 1 ou 2 candles deslocado do que está sob o dedo. Cai no PAD fixo se ainda não desenhou.
-    const _padL2 = window._grPADLeft != null ? window._grPADLeft : _grPAD.left;
+    const _padL2 = grPadL();
     const _slotW2 = (window._grChartW && window._grTotalSlots) ? window._grChartW / window._grTotalSlots : chartW2 / Math.max(totalSlots2, 1);
     const rawIdx = Math.floor((_grCrosshairX - _padL2) / _slotW2);
     let candleIdx = startIdx + Math.min(rawIdx, cc2.length - 1);
@@ -7984,7 +8101,7 @@ function grDrawChartWithCrosshair(yInterno) {
         const xa1 = grAreaXDoTempo(Math.min(_grAreaP1.ts, candAtual.ini)), xa2 = grAreaXDoTempo(Math.max(_grAreaP1.fim, candAtual.fim) + 60000), yp1 = grLineY(_grAreaP1.preco);
         const rx0 = Math.min(xa1, xa2), rx1 = Math.max(xa1, xa2), ry0 = Math.min(yp1, yInterno), ry1 = Math.max(yp1, yInterno);
         ctx.save();
-        ctx.beginPath(); ctx.rect(_grPAD.left, _grPAD.top, W - _grPAD.left - _grPAD.right, _grChartH); ctx.clip();
+        ctx.beginPath(); ctx.rect(grPadL(), _grPAD.top, W - grPadL() - grPadR(), _grChartH); ctx.clip();
         ctx.fillStyle = 'rgba(255,183,77,0.20)'; ctx.fillRect(rx0, ry0, rx1 - rx0, ry1 - ry0);
         ctx.strokeStyle = '#FFB74D'; ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]); ctx.strokeRect(rx0, ry0, rx1 - rx0, ry1 - ry0);
         ctx.restore();
@@ -8009,7 +8126,7 @@ function grDrawChartWithCrosshair(yInterno) {
         const dw = ctx.measureText(dtxt).width;
         const dpW = dw + 12;
         let dpX = _grCrosshairX - dpW / 2;
-        dpX = Math.max(_grPAD.left, Math.min(W - _grPAD.right - dpW, dpX));
+        dpX = Math.max(grPadL(), Math.min(W - grPadR() - dpW, dpX));
         // Janelinha do crosshair, COMPACTA (é opaca e esconde o gráfico atrás dela): data, ΔV Zona e botões. Abert/Max/Min/
         // Fech ficam atrás do botão "Ver OHLC" (expande a janela). Delta V, Delta $ e Total do candle agora moram no painel
         // do rodapé; quando esse painel está oculto (skin cinza) eles entram no OHLC expandido pra não sumirem.
@@ -8077,7 +8194,7 @@ function grDrawChartWithCrosshair(yInterno) {
         const headerW = boxPad / 2 + 2 + dateW + 12 + HB_W + 8;
         const boxW = Math.max(colLabel + colVal + boxPad, maiorBtnW, headerW);
         let bx = _grCrosshairX + 10;
-        if (bx + boxW > W - _grPAD.right) bx = _grCrosshairX - boxW - 10;
+        if (bx + boxW > W - grPadR()) bx = _grCrosshairX - boxW - 10;
         const boxH = boxPad + dateLineH + linhasVisiveis.length * lineH + botoes.length * BTN_H;
         // Posição vertical DINÂMICA: a janela sai do caminho da linha horizontal do crosshair — se a linha está em cima ela
         // vai pra baixo, e vice-versa (padrão: no topo). Se nenhum dos lados escapa (janela expandida), fica no mais longe.
@@ -8154,7 +8271,7 @@ const _indState = {
     rsi:       true,   // RSI Levels -- níveis configuráveis em _grRsiNiveis
     subInd:    null,
     cvdPA:     false, // CVD + Delta sobrepostos no painel de preço (segunda camada, em cima dos candles)
-    deltaAtr:  false, // Regua de delta por faixa de ATR, eixo dedicado no canto direito (experimental)
+    deltaAtr:  false, // Regua de delta por faixa de ATR, eixo dedicado no canto esquerdo (experimental)
     exaustao:  false, // Exaustão (EC/EV com nota do score): marcas nos candles fechados de 5m/15m/30m/1h, depende do Fluxo
     oiPA:      false, // Open Interest (nivel + variacao por candle) sobreposto ao preco, igual o CVD
     fib:       false,
@@ -8167,7 +8284,11 @@ const _indState = {
 // Escala Y atual do gráfico (atualizada a cada draw)
 let _grMinP = 0, _grMaxP = 0, _grChartH = 0;
 let _grCrosshairX = 0;
-const _grPAD = { top: 8, right: 24, bottom: 30, left: 45 }; // era 22 -- sobrava respiro em branco acima da barra de TF/EMA/Eficiência
+// Eixo de preços agora à DIREITA (right = largura padrão; no desenho vira flexível pelo tamanho do rótulo) e a margem ESQUERDA é
+// a pequena (34 px: títulos "Delta V/Delta $/Total" do painel de baixo; +20 px quando a régua Delta ATR está ligada).
+const _grPAD = { top: 8, right: 45, bottom: 30, left: 34 }; // top era 22 -- sobrava respiro em branco acima da barra de TF/EMA/Eficiência
+function grPadL() { return window._grPADLeft != null ? window._grPADLeft : _grPAD.left; }   // borda ESQUERDA da área dos candles (geometria real do último desenho)
+function grPadR() { return window._grPADRight != null ? window._grPADRight : _grPAD.right; } // largura do eixo de preços (à direita)
 // Linha sendo arrastada: 'entrada' | 'stop' | 'alvo' | null
 let _grDragLine = null;
 // Toque perto de uma linha de preço (pm/alvo/entrada/stop/nível/alerta) não decide na hora entre "arrastar a linha" e
@@ -8182,7 +8303,10 @@ let _grQtd = 0;
 let _fxRate = 1;
 function grToPrice(yCanvas) {
     if (_grMaxP === _grMinP) return 0;
-    const p = _grMinP + (1 - (yCanvas - _grPAD.top) / _grChartH) * (_grMaxP - _grMinP);
+    const f = 1 - (yCanvas - _grPAD.top) / _grChartH;
+    const p = (window._grEscalaDes && _grMinP > 0)
+        ? Math.exp(Math.log(_grMinP) + f * (Math.log(_grMaxP) - Math.log(_grMinP)))
+        : _grMinP + f * (_grMaxP - _grMinP);
     return Math.max(_grMinP, Math.min(_grMaxP, p));
 }
 function grXToIndex(xCanvas) {
@@ -8203,6 +8327,10 @@ function grIndexToX(absIdx) {
 }
 function grLineY(price) {
     if (_grMaxP === _grMinP) return -999;
+    if (window._grEscalaDes && _grMinP > 0) {
+        if (!(price > 0)) return -999;
+        return _grPAD.top + _grChartH - ((Math.log(price) - Math.log(_grMinP)) / (Math.log(_grMaxP) - Math.log(_grMinP))) * _grChartH;
+    }
     return _grPAD.top + _grChartH - ((price - _grMinP) / (_grMaxP - _grMinP)) * _grChartH;
 }
 // ── Componentes: o "Gerenciar Componentes" (fixar/travar/esconder) saiu — a Barra Superior já mostra o que
@@ -12440,7 +12568,7 @@ function grFootprintDesenharOverlay() {
     const xBase = ancoraVisivel ? padLeft + ((idx - startIdx) / window._grTotalSlots) * chartW : padLeft;
     const rightEdge = padLeft + chartW;
     const chartTop = _grPAD.top, chartBottom = _grPAD.top + _grChartH;
-    const pxPorDolar = _grChartH / (_grMaxP - _grMinP);
+    const pxPorDolar = window._grPxDolarLocal || (_grChartH / (_grMaxP - _grMinP));
     // Aviso de carregamento / sem dado (canto de cima, ao lado da âncora)
     const aviso = (txt) => {
         ctx.font = 'bold 9px -apple-system'; ctx.textAlign = 'left';
