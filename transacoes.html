@@ -4368,6 +4368,7 @@ function grDrawCandles(candles, emptyRight) {
     const canvas = document.getElementById('gr-chart-canvas');
     const ctx = grPrepararCtx(canvas);
         const W = grLW(canvas), H = grLH(canvas);
+        window._grAlturaCanvas = H;
         // Canvas próprio pra Value Area (VAH/POC/VAL) — precisa ficar ACIMA do
         // overlay do histograma do footprint (z-index 5), senão as linhas e os
         // labels ficam escondidos atrás das barras. Sincroniza resolução e
@@ -5045,6 +5046,7 @@ if (_grTipoGrafico === 'linha') {
         {
             window._grBarraSuperiorChips = [];
             const corTextoBarra = _grTemaClaro ? '#000000' : '#FFFFFF'; // texto da barra: preto no tema claro, BRANCO no escuro (fundo #131722)
+            let barraFundoY = 0; // y onde a barra termina (a linha OHLC é desenhada logo abaixo dela)
             const chipLineH = 16;
             const chipLimiteDireita = W - PAD.right - 4;
             let chipX = PAD.left + 4;
@@ -5393,8 +5395,10 @@ if (_grTipoGrafico === 'linha') {
                 ctx.fillRect(xBarrIni + larguraBarra * fracBidEf, yBar, larguraBarra * fracAskEf, hBar);
                 ctx.fillStyle = corTextoBarra;
                 ctx.fillText(rotAsk, xBarrFim + 5, yBar + hBar - 1);
+                barraFundoY = yBar + hBar;
                 }
             }
+            window._grBarraSuperiorBottom = Math.max(barraFundoY, chipY + 4);
         }
         // Linha Stop — sempre visível, área ancorada no PM
         if (true) { // Régua S: sempre visível quando há stop definido/PM ativo
@@ -6271,6 +6275,195 @@ if (fibsParaDesenhar.length > 0) {
     if (_grFootprintAtivo) {
         try { grFootprintDesenharOverlay(); } catch(e) { console.log('Footprint overlay error:', e.message); }
     }
+    // Linha OHLC (estilo TradingView) + chip "Ações": vive no canvas de overlay do crosshair. Aqui é o caso SEM crosshair (último
+    // candle); com o crosshair aberto, grDrawChartWithCrosshair limpa o overlay e desenha de novo com o candle marcado.
+    try {
+        const cvOv = document.getElementById('gr-crosshair-overlay-canvas');
+        if (cvOv) {
+            grDimensionarCanvas(cvOv, W, H);
+            const ctxOv = grPrepararCtx(cvOv);
+            ctxOv.clearRect(0, 0, W, H);
+            grDesenharLinhaOhlc(ctxOv, W, grOhlcAtual());
+        }
+    } catch (e) { console.log('Linha OHLC error:', e.message); }
+}
+// ── Linha OHLC (estilo TradingView) ──────────────────────────────────────────────────────────────────────────────────────────
+// Substitui a antiga janela do crosshair: mostra Abr/Máx/Mín/Fch + variação do candle numa linha logo abaixo da Barra Superior.
+// Sem crosshair = último candle; com o crosshair aberto (segurar e arrastar) acompanha o candle marcado. Candle de alta = tudo
+// verde, de baixa = tudo vermelho. O chip "Ações ▾" ao lado abre o menu do candle (cvAbrirMenuCandle).
+function grOhlcAtual() {
+    if (window._longPressActive && window._grOhlcCross && window._grOhlcCross.candle) return { candle: window._grOhlcCross.candle, idx: window._grOhlcCross.idx, cross: true };
+    const n = _grAllCandles.length;
+    if (!n) return null;
+    return { candle: _grAllCandles[n - 1], idx: n - 1, cross: false };
+}
+// Data do candle no mesmo formato que a janela antiga usava (timeZone UTC nos candles de dia/semana/mês: fronteira é meia-noite UTC).
+function grFmtDataCandle(candle) {
+    const d = new Date(candle.t);
+    const _customSoData = _grTf === 'custom' && (_grTfCustomUnit === 'dia' || _grTfCustomUnit === 'mes');
+    return _grTf === '1day' || _grTf === '1week' || _grTf === '1month' || _grTf === '1h' || _grTf === '15m' || _customSoData
+        ? d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: '2-digit', timeZone: 'UTC' })
+        : d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }) + ' ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+}
+function grDesenharLinhaOhlc(ctx, W, info) {
+    window._grOhlcAtual = info || null;
+    if (!info || !info.candle) return;
+    const c = info.candle;
+    const cor = c.c >= c.o ? '#26A69A' : '#EF5350';                       // alta = verde, baixa = vermelho (valores TODOS na cor do candle)
+    const corRotulo = _grTemaClaro ? '#6C6C70' : '#9AA0AE';
+    const corData = _grTemaClaro ? '#131722' : '#D1D4DC';
+    const x0 = grPadL() + 4;
+    const xMax = W - grPadR() - 4;
+    const yBase = (window._grBarraSuperiorBottom != null ? window._grBarraSuperiorBottom : (_grPAD.top + 30)) + 13;
+    // Linha 1: Abr 81,144  Máx 87,385  Mín 80,819  Fch 84,433 — a fonte encolhe (até 8 px) se não couber na largura
+    const partes = [['Abr', fmtN(c.o)], ['Máx', fmtN(c.h)], ['Mín', fmtN(c.l)], ['Fch', fmtN(c.c)]];
+    let fs = 11, wTotal = 0;
+    const medir = () => {
+        wTotal = 0;
+        partes.forEach(p => {
+            ctx.font = fs + 'px -apple-system'; wTotal += ctx.measureText(p[0] + ' ').width;
+            ctx.font = 'bold ' + fs + 'px -apple-system'; wTotal += ctx.measureText(p[1]).width;
+        });
+        wTotal += (partes.length - 1) * fs * 0.8;
+    };
+    medir();
+    while (wTotal > xMax - x0 && fs > 8) { fs -= 0.5; medir(); }
+    let x = x0;
+    ctx.textAlign = 'left';
+    partes.forEach(p => {
+        ctx.font = fs + 'px -apple-system'; ctx.fillStyle = corRotulo;
+        ctx.fillText(p[0] + ' ', x, yBase); x += ctx.measureText(p[0] + ' ').width;
+        ctx.font = 'bold ' + fs + 'px -apple-system'; ctx.fillStyle = cor;
+        ctx.fillText(p[1], x, yBase); x += ctx.measureText(p[1]).width + fs * 0.8;
+    });
+    // Linha 2: data · variação (fechamento − abertura, em $ e %) · chip "Ações ▾"
+    const y2 = yBase + fs + 4;
+    const diff = c.c - c.o, pct = c.o ? (diff / c.o) * 100 : 0;
+    const sinal = v => v >= 0 ? '+' : '−';
+    const txtVar = sinal(diff) + fmtN(Math.abs(diff)) + ' (' + sinal(pct) + Math.abs(pct).toFixed(2) + '%)';
+    ctx.font = fs + 'px -apple-system'; ctx.fillStyle = corData;
+    const txtData = grFmtDataCandle(c);
+    ctx.fillText(txtData, x0, y2);
+    let x2 = x0 + ctx.measureText(txtData).width + fs * 0.8;
+    ctx.font = 'bold ' + fs + 'px -apple-system'; ctx.fillStyle = cor;
+    ctx.fillText(txtVar, x2, y2);
+    x2 += ctx.measureText(txtVar).width + fs * 0.9;
+    // Chip "Ações ▾"
+    const txtAc = 'Ações ▾';
+    ctx.font = 'bold ' + Math.max(9, fs - 1) + 'px -apple-system';
+    const wAc = ctx.measureText(txtAc).width + 14, hAc = fs + 7;
+    const xAc = Math.min(x2, xMax - wAc), yAc = y2 - fs - 1;
+    ctx.fillStyle = _grTemaClaro ? 'rgba(0,0,0,0.07)' : 'rgba(255,255,255,0.12)';
+    ctx.beginPath(); ctx.roundRect(xAc, yAc, wAc, hAc, 5); ctx.fill();
+    ctx.fillStyle = corData;
+    ctx.fillText(txtAc, xAc + 7, y2);
+    // Área de toque generosa (dedo). manterCrosshair: tocar nele com o crosshair aberto NÃO fecha o crosshair.
+    if (!window._grBarraSuperiorChips) window._grBarraSuperiorChips = [];
+    window._grBarraSuperiorChips.push({ x: xAc - 6, y: yAc - 8, w: wAc + 12, h: hAc + 16, manterCrosshair: true, abrir: (cx, cy, snap) => cvAbrirMenuCandle(cx, cy, snap) });
+}
+// Menu do candle (no lugar dos botões da antiga janela do crosshair): lista de ações para o candle que a linha OHLC está mostrando.
+function cvFecharMenuCandle() {
+    const overlay = document.getElementById('cv-candle-menu-overlay'); if (overlay) overlay.remove();
+    const menu = document.getElementById('cv-candle-menu'); if (menu) menu.remove();
+}
+function cvAbrirMenuCandle(clientX, clientY, snap) {
+    cvFecharMenuCandle();
+    snap = snap || window._grOhlcAtual;
+    if (!snap || !snap.candle) return;
+    const candle = snap.candle, idx = snap.idx;
+    const temBotaoFootprint = !!(_grFootprintAtivo && _grFootprintBins);
+    // Informações (não clicáveis) que a janela antiga mostrava quando não havia outro lugar pra elas
+    const infos = [];
+    const buyVol = candle.bv != null ? candle.bv : null;
+    const sellVol = candle.bv != null ? candle.v - candle.bv : null;
+    const totalVol = buyVol != null ? buyVol + sellVol : null;
+    if (!temBotaoFootprint && buyVol != null && totalVol) {
+        const fmtBtc = v => v != null ? fmtVolK(v) + ' btc' : '—';
+        infos.push({ label: (sellVol / totalVol * 100).toFixed(0) + '% venda', val: fmtBtc(sellVol), color: '#EF5350' });
+        infos.push({ label: (buyVol / totalVol * 100).toFixed(0) + '% compra', val: fmtBtc(buyVol), color: '#26A69A' });
+    }
+    if (grAlturasPaineis(window._grAlturaCanvas || 600).dt === 0 && _grFootprintAtivo) {
+        const dtMapa = grObterDeltaTotalPorCandle(_grAllCandles);
+        const dtC = dtMapa ? dtMapa.get(candle.t) : null;
+        if (dtC) {
+            const dPct = candle.o ? ((candle.c - candle.o) / candle.o) * 100 : null;
+            infos.push({ label: 'Delta V', val: (dtC.delta >= 0 ? '+' : '') + grFmtVolCompacto(Math.abs(dtC.delta), 0), color: dtC.delta >= 0 ? '#26A69A' : '#EF5350' });
+            if (dPct != null) infos.push({ label: 'Delta $', val: (dPct >= 0 ? '+' : '') + dPct.toFixed(2) + '%', color: dPct >= 0 ? '#26A69A' : '#EF5350' });
+            infos.push({ label: 'Total', val: grFmtVolCompacto(dtC.total, 0) });
+        }
+    }
+    // Ações
+    const itens = [];
+    if (_grAreaArmada && _grAreaP1 == null && snap.cross && window._longPressActive) {
+        itens.push({ txt: 'Marcar canto ↖ (sup. esq.)', icone: HEROICON_BOOKMARK, acao: () => {
+            // fixa o 1º canto onde o crosshair está; o crosshair CONTINUA aberto (agora é tocar e arrastar até o canto inferior direito)
+            grAreaMarcarCanto(window._grCrosshairPrecoAtual, grAreaCandleNoX(_grCrosshairX));
+            grDrawChart();
+        } });
+    }
+    if (temBotaoFootprint) {
+        const jaEAncora = _grVwapAncoras.some(a => a.ts === candle.t);
+        const jaEAncoraVA = _grValueAreaAncoraTs != null && _grValueAreaAncoraTs === candle.t;
+        const jaEAncoraVP = _grVpAncoraTs != null && _grVpAncoraTs === candle.t;
+        itens.push({ txt: 'Ver Footprint', icone: HEROICON_CHART_BAR, acao: () => grFootprintAbrirCandleModal(candle) });
+        itens.push({ txt: _grMetricasTabTs === candle.t ? 'Ocultar Métricas' : 'Ver Métricas', icone: HEROICON_CHART_BAR, acao: () => {
+            grMetricasAlternar(candle);
+            window._longPressActive = false; // fecha o crosshair: o candle e a tabela ficam à vista
+            grDrawChart();
+        } });
+        itens.push({ sep: true });
+        itens.push({ txt: jaEAncora ? 'Remover VWAP' : 'Ancorar VWAP', icone: jaEAncora ? HEROICON_XMARK : HEROICON_BOOKMARK, acao: () => { window._longPressActive = false; grVwapAncorarNoCandle(idx); } });
+        itens.push({ txt: jaEAncoraVA ? 'Remover Value Area' : 'Ancorar Value Area', icone: jaEAncoraVA ? HEROICON_XMARK : HEROICON_BOOKMARK, acao: () => { window._longPressActive = false; grValueAreaAncorarNoCandle(idx); } });
+        itens.push({ txt: jaEAncoraVP ? 'Remover Volume Profile' : 'Ancorar Volume Profile', icone: jaEAncoraVP ? HEROICON_XMARK : HEROICON_CHART_BAR, acao: () => { window._longPressActive = false; grVpAncorarNoCandle(idx); } });
+    }
+    const overlay = document.createElement('div');
+    overlay.id = 'cv-candle-menu-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:9700;background:transparent;';
+    overlay.onclick = cvFecharMenuCandle;
+    const menu = document.createElement('div');
+    menu.id = 'cv-candle-menu';
+    menu.style.cssText = 'position:fixed;z-index:9701;background:#FFFFFF;border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,0.22);padding:6px;min-width:230px;max-width:calc(100vw - 16px);font-family:-apple-system,sans-serif;';
+    const cab = document.createElement('div');
+    cab.textContent = grFmtDataCandle(candle);
+    cab.style.cssText = 'padding:6px 12px 4px;font-size:12px;font-weight:700;color:#6C6C70;';
+    menu.appendChild(cab);
+    infos.forEach(l => {
+        const r = document.createElement('div');
+        r.style.cssText = 'display:flex;justify-content:space-between;gap:16px;padding:3px 12px;font-size:13px;font-weight:600;color:#1C1C1E;';
+        const a = document.createElement('span'); a.textContent = l.label;
+        const b = document.createElement('span'); b.textContent = l.val; b.style.color = l.color || '#1C1C1E';
+        r.appendChild(a); r.appendChild(b); menu.appendChild(r);
+    });
+    if (infos.length || itens.length) {
+        const sep0 = document.createElement('div'); sep0.style.cssText = 'height:1px;background:#F2F2F7;margin:4px 2px;'; menu.appendChild(sep0);
+    }
+    if (!itens.length) {
+        const vazio = document.createElement('div');
+        vazio.textContent = 'Ligue o Fluxo (FX) para ver as ações do candle';
+        vazio.style.cssText = 'padding:8px 12px;font-size:13px;font-weight:600;color:#8E8E93;';
+        menu.appendChild(vazio);
+    }
+    itens.forEach(it => {
+        if (it.sep) { const sp = document.createElement('div'); sp.style.cssText = 'height:1px;background:#F2F2F7;margin:4px 2px;'; menu.appendChild(sp); return; }
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.style.cssText = 'display:flex;align-items:center;gap:10px;width:100%;text-align:left;border:none;background:none;padding:10px 12px;font-size:14px;font-weight:600;color:#1C1C1E;border-radius:8px;';
+        b.innerHTML = grHeroSvgInline(it.icone, 16, '#1C1C1E');
+        const t = document.createElement('span'); t.textContent = it.txt; b.appendChild(t);
+        b.onclick = e => { e.stopPropagation(); cvFecharMenuCandle(); it.acao(); };
+        menu.appendChild(b);
+    });
+    document.body.appendChild(overlay);
+    document.body.appendChild(menu);
+    requestAnimationFrame(() => {
+        const r = menu.getBoundingClientRect();
+        const Wn = window.innerWidth, Hn = window.innerHeight;
+        let x = clientX, y = clientY + 14;
+        if (x + r.width > Wn - 8) x = Wn - r.width - 8;
+        if (y + r.height > Hn - 8) y = clientY - r.height - 14;
+        menu.style.left = Math.max(8, x) + 'px';
+        menu.style.top = Math.max(8, y) + 'px';
+    });
 }
 // Touch scroll, zoom e drag de linhas
 function grInitTouch() {
@@ -6296,7 +6489,8 @@ function grInitTouch() {
         const x = (evt.touches[0].clientX - rect.left) * (grLW(canvas) / rect.width);
         const y = (evt.touches[0].clientY - rect.top) * (grLH(canvas) / rect.height);
         const chip = _grChipSobToque(x, y);
-        _grChipTapInicio = chip ? { x: evt.touches[0].clientX, y: evt.touches[0].clientY, chip } : null;
+        // snap: o candle que a linha OHLC mostra NO MOMENTO do toque (o redesenho seguinte pode trocar, ex.: ao fechar o crosshair)
+        _grChipTapInicio = chip ? { x: evt.touches[0].clientX, y: evt.touches[0].clientY, chip, snap: window._grOhlcAtual ? Object.assign({}, window._grOhlcAtual) : null } : null;
     }, { passive: true });
     canvas.addEventListener('touchend', evt => {
         if (!_grChipTapInicio) return;
@@ -6305,7 +6499,7 @@ function grInitTouch() {
         const touch = evt.changedTouches && evt.changedTouches[0];
         if (!touch) return;
         if (Math.hypot(touch.clientX - inicio.x, touch.clientY - inicio.y) > 12) return; // moveu — foi arrasto, não toque
-        inicio.chip.abrir(touch.clientX, touch.clientY);
+        inicio.chip.abrir(touch.clientX, touch.clientY, inicio.snap);
     }, { passive: true });
     canvas.addEventListener('click', evt => { // fallback desktop/mouse
         const rect = canvas.getBoundingClientRect();
@@ -6360,6 +6554,8 @@ function grInitTouch() {
             const ey2 = (e.touches[0].clientY - canvas.getBoundingClientRect().top) * (grLH(canvas) / canvas.getBoundingClientRect().height);
             // Tabela de métricas: tocar e arrastar por cima dela move a janela (o ✕ é tratado como toque, pelos chips)
             if (grMetricasToqueInicio(ex2, ey2)) { e.preventDefault(); return; }
+            // Chip "Ações" da linha OHLC com o crosshair aberto: não fecha o crosshair (o menu abre no touchend e age sobre o candle marcado)
+            if (window._longPressActive && (window._grBarraSuperiorChips || []).some(h => h.manterCrosshair && ex2 >= h.x && ex2 <= h.x + h.w && ey2 >= h.y && ey2 <= h.y + h.h)) { e.preventDefault(); return; }
             // Janela do crosshair: UM botão alterna □ (expande) ↔ — (recolhe); o crosshair continua aberto
             if (window._longPressActive) {
                 const tb = window._grCrosshairToggleBtnArea;
@@ -7159,11 +7355,7 @@ function grDrawChart() {
     if (candles.length === 0) return;
     const emptyRight = Math.max(0, visible - candles.length);
     grDrawCandles(candles, emptyRight);
-    // Crosshair inativo — limpa o canvas dele (senão a janela antiga fica
-    // presa na tela: esse canvas é separado do principal e só ele desenha
-    // nele, então precisa ser limpo explicitamente aqui também).
-    const crosshairCanvasFechar = document.getElementById('gr-crosshair-overlay-canvas');
-    if (crosshairCanvasFechar) crosshairCanvasFechar.getContext('2d').clearRect(0, 0, crosshairCanvasFechar.width, crosshairCanvasFechar.height);
+    // Crosshair inativo: o overlay do crosshair já foi limpo e redesenhado (só com a linha OHLC do último candle) no fim do grDrawCandles.
 }
 // ══ Ferramenta ÁREA ═══════════════════════════════════════════════════════════════════════════════════════════
 // Marca um RETÂNGULO (tempo × preço) por dois cantos — superior esquerdo e inferior direito — usando o crosshair (a linha
@@ -8110,154 +8302,15 @@ function grDrawChartWithCrosshair(yInterno) {
         window._grCrosshairMetricasBtnArea = null;
         window._grCrosshairVpBtnArea = null; window._grCrosshairAreaBtnArea = null; window._grCrosshairToggleBtnArea = null;
     }
-    if (candle && !areaArrastando) {
-        const d = new Date(candle.t);
-        const _customSoData = _grTf === 'custom' && (_grTfCustomUnit === 'dia' || _grTfCustomUnit === 'mes');
-        // timeZone:'UTC' é obrigatório aqui: os candles de 1day/1week/1month/custom-dia/mes
-        // são definidos em fronteiras UTC (meia-noite UTC), mas toLocaleDateString sem
-        // timeZone explícito converte pro fuso do aparelho — em Manaus/Brasília (UTC-4/-3)
-        // isso empurra o candle 1 dia pra trás na exibição (ex: candle de 01/set 00h UTC
-        // vira "31 de ago" na tela, mesmo os dados sendo de setembro).
-        const dtxt = _grTf === '1day' || _grTf === '1week' || _grTf === '1month' || _grTf === '1h' || _grTf === '15m' || _customSoData
-            ? d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: '2-digit', timeZone: 'UTC' })
-            : d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }) + ' ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-        ctx.font = 'bold 10px -apple-system';
-        ctx.textAlign = 'left';
-        const dw = ctx.measureText(dtxt).width;
-        const dpW = dw + 12;
-        let dpX = _grCrosshairX - dpW / 2;
-        dpX = Math.max(grPadL(), Math.min(W - grPadR() - dpW, dpX));
-        // Janelinha do crosshair, COMPACTA (é opaca e esconde o gráfico atrás dela): data, ΔV Zona e botões. Abert/Max/Min/
-        // Fech ficam atrás do botão "Ver OHLC" (expande a janela). Delta V, Delta $ e Total do candle agora moram no painel
-        // do rodapé; quando esse painel está oculto (skin cinza) eles entram no OHLC expandido pra não sumirem.
-        const isBull = candle.c >= candle.o;
-        const corCandle = isBull ? '#26A69A' : '#EF5350';
-        const fmtBtc = v => v != null ? fmtVolK(v) + ' btc' : '—';
-        const buyVol  = candle.bv != null ? candle.bv : null;
-        const sellVol = candle.bv != null ? candle.v - candle.bv : null;
-        const totalVol = buyVol != null ? buyVol + sellVol : null;
-        const buyPct  = totalVol ? (buyVol  / totalVol * 100).toFixed(0) + '%' : '';
-        const sellPct = totalVol ? (sellVol / totalVol * 100).toFixed(0) + '%' : '';
-        const temBotaoFootprint = _grFootprintAtivo && _grFootprintBins;
-        const corTxt = _grTemaClaro ? '#1C1C1E' : '#FFFFFF';
-        const maximizada = !!window._grCrosshairMaximizada; // □ maximiza o resto da janela · — minimiza (só data)
-        // ΔV Nível/Zona saiu daqui — redundante com a régua Delta ATR (grade e janela diferentes, números que
-        // não batiam entre si). A régua lateral é quem fica com essa leitura agora.
-        // Linhas sempre visíveis
-        const linhas = [];
-        // Linhas atrás do "Ver OHLC"
-        const dtMapaJanela = _grFootprintAtivo ? grObterDeltaTotalPorCandle(_grAllCandles) : null;
-        const dtCandleJanela = dtMapaJanela ? dtMapaJanela.get(candle.t) : null;
-        const deltaPrecoPct = candle.o ? ((candle.c - candle.o) / candle.o) * 100 : null;
-        const painelOculto = grAlturasPaineis(H).dt === 0;
-        const linhasOhlc = [
-            { label: 'Abert', val: fmtN(candle.o) },
-            { label: 'Max',   val: fmtN(candle.h) },
-            { label: 'Min',   val: fmtN(candle.l) },
-            { label: 'Fech',  val: fmtN(candle.c) },
-        ];
-        if (!temBotaoFootprint && buyVol != null) {
-            linhasOhlc.push({ label: sellPct, val: fmtBtc(sellVol), color: '#EF5350' });
-            linhasOhlc.push({ label: buyPct,  val: fmtBtc(buyVol),  color: '#26A69A' });
-        }
-        if (painelOculto && dtCandleJanela) {
-            linhasOhlc.push({ label: 'Delta V', val: (dtCandleJanela.delta >= 0 ? '+' : '') + grFmtVolCompacto(Math.abs(dtCandleJanela.delta), 0), color: dtCandleJanela.delta >= 0 ? '#26A69A' : '#EF5350' });
-            if (deltaPrecoPct != null) linhasOhlc.push({ label: 'Delta $', val: (deltaPrecoPct >= 0 ? '+' : '') + deltaPrecoPct.toFixed(2) + '%', color: deltaPrecoPct >= 0 ? '#26A69A' : '#EF5350' });
-            linhasOhlc.push({ label: 'Total', val: grFmtVolCompacto(dtCandleJanela.total, 0) });
-        }
-        const linhasVisiveis = maximizada ? linhas.concat(linhasOhlc) : linhas;
-        // Botões (de cima pra baixo). Minimizada, a janela é só data + ΔV Nível. Maximizada mostra OHLC e os botões do Fluxo.
-        // Com a ferramenta ÁREA armada, o botão de marcar o canto aparece SEMPRE (é ele que fixa o canto onde o crosshair está).
-        const BTN_H = 26;
-        const botoes = [];
-        if (_grAreaArmada && _grAreaP1 == null) botoes.push({ chave: 'area', txt: 'Marcar canto ↖ (sup. esq.)', icone: HEROICON_BOOKMARK });
-        if (maximizada && temBotaoFootprint) {
-            const jaEAncora = _grVwapAncoras.some(a => a.ts === candle.t);
-            const jaEAncoraVA = _grValueAreaAncoraTs != null && _grValueAreaAncoraTs === candle.t;
-            const jaEAncoraVP = _grVpAncoraTs != null && _grVpAncoraTs === candle.t;
-            botoes.push({ chave: 'footprint', txt: 'Ver Footprint', icone: HEROICON_CHART_BAR });
-            botoes.push({ chave: 'metricas', txt: _grMetricasTabTs === candle.t ? 'Ocultar Métricas' : 'Ver Métricas', icone: HEROICON_CHART_BAR });
-            botoes.push({ chave: 'vwap', txt: jaEAncora ? 'Remover VWAP' : 'Ancorar VWAP', icone: jaEAncora ? HEROICON_XMARK : HEROICON_BOOKMARK });
-            botoes.push({ chave: 'va', txt: jaEAncoraVA ? 'Remover Value Area' : 'Ancorar Value Area', icone: jaEAncoraVA ? HEROICON_XMARK : HEROICON_BOOKMARK });
-            botoes.push({ chave: 'vp', txt: jaEAncoraVP ? 'Remover Volume Profile' : 'Ancorar Volume Profile', icone: jaEAncoraVP ? HEROICON_XMARK : HEROICON_CHART_BAR });
-        }
-        // Largura: o maior rótulo (de qualquer linha, aberta ou não, pra janela não mudar de largura ao expandir) e o maior botão
-        const boxPad = 10, lineH = 18;
-        const dateLineH = 24; // cabeçalho: data à esquerda + botões □ (maximizar) e — (minimizar) à direita
-        ctx.font = 'bold 12px -apple-system';
-        const dateW = ctx.measureText(dtxt).width;
-        ctx.font = 'bold 11px -apple-system';
-        const maiorLabelW = Math.max(0, ...linhas.concat(linhasOhlc).map(l => ctx.measureText(l.label).width));
-        const colLabel = Math.max(44, Math.ceil(maiorLabelW) + 6), colVal = 80;
-        const maiorBtnW = botoes.length ? Math.max(...botoes.map(b => ctx.measureText(b.txt).width)) + 22 + 12 : 0;
-        const HB_W = 20, HB_H = 16;
-        const headerW = boxPad / 2 + 2 + dateW + 12 + HB_W + 8;
-        const boxW = Math.max(colLabel + colVal + boxPad, maiorBtnW, headerW);
-        let bx = _grCrosshairX + 10;
-        if (bx + boxW > W - grPadR()) bx = _grCrosshairX - boxW - 10;
-        const boxH = boxPad + dateLineH + linhasVisiveis.length * lineH + botoes.length * BTN_H;
-        // Posição vertical DINÂMICA: a janela sai do caminho da linha horizontal do crosshair — se a linha está em cima ela
-        // vai pra baixo, e vice-versa (padrão: no topo). Se nenhum dos lados escapa (janela expandida), fica no mais longe.
-        const byTopo = _grPAD.top + 10;
-        const byBase = Math.max(byTopo, _grPAD.top + _grChartH - boxH - 10);
-        const colide = (by0) => yInterno >= by0 - 8 && yInterno <= by0 + boxH + 8;
-        const by = !colide(byTopo) ? byTopo
-            : (!colide(byBase) ? byBase
-                : (Math.abs(yInterno - (byTopo + boxH / 2)) >= Math.abs(yInterno - (byBase + boxH / 2)) ? byTopo : byBase));
-        // Fundo totalmente opaco — sem degradê de transparência na coluna de rótulos, que atrapalhava a leitura.
-        const bgRGB = _grTemaClaro ? '255,255,255' : '19,23,34';
-        ctx.fillStyle = `rgba(${bgRGB},1)`;
-        ctx.beginPath(); ctx.roundRect(bx, by, boxW, boxH, 8); ctx.fill();
-        ctx.strokeStyle = corCandle;
-        ctx.lineWidth = 1.5;
-        ctx.beginPath(); ctx.roundRect(bx, by, boxW, boxH, 8); ctx.stroke();
-        // Cabeçalho: data à esquerda; à direita UM botão que alterna — □ (expande o resto da janela) e, expandida, vira — (recolhe).
-        ctx.font = 'bold 12px -apple-system';
-        ctx.textAlign = 'left';
-        ctx.fillStyle = corTxt;
-        ctx.fillText(dtxt, bx + boxPad / 2 + 2, by + 16);
-        const hbT = { x: bx + boxW - 6 - HB_W, y: by + 4, w: HB_W, h: HB_H };
-        ctx.fillStyle = '#D1D1D6';
-        ctx.beginPath(); ctx.roundRect(hbT.x, hbT.y, hbT.w, hbT.h, 4); ctx.fill();
-        ctx.strokeStyle = '#1C1C1E'; ctx.fillStyle = '#1C1C1E'; ctx.lineWidth = 1.5;
-        if (!maximizada) ctx.strokeRect(hbT.x + 5.5, hbT.y + 3.5, hbT.w - 11, hbT.h - 7); // □ = expandir
-        else ctx.fillRect(hbT.x + 5, hbT.y + hbT.h / 2 - 1, hbT.w - 10, 2);              // — = recolher
-        window._grCrosshairToggleBtnArea = hbT;
-        linhasVisiveis.forEach((l, i) => {
-            const ly = by + dateLineH + boxPad / 2 + i * lineH + lineH * 0.75;
-            ctx.font = 'bold 11px -apple-system';
-            ctx.textAlign = 'left';
-            ctx.fillStyle = corTxt;
-            ctx.fillText(l.label, bx + boxPad / 2, ly);
-            ctx.fillStyle = l.color || corTxt;
-            ctx.textAlign = 'right';
-            ctx.fillText(l.val, bx + boxW - boxPad / 2, ly);
-        });
-        // Botões: fundo cinza padrão + label escuro + ícone Heroicon. Cada um registra a sua área de toque (window._grCrosshair*).
-        window._grCrosshairFootprintBtnArea = null; window._grCrosshairAncorarBtnArea = null;
-        window._grCrosshairValueAreaBtnArea = null; window._grCrosshairVpBtnArea = null; window._grCrosshairAreaBtnArea = null;
-        window._grCrosshairMetricasBtnArea = null;
+    // A janela flutuante saiu: a linha OHLC (abaixo da Barra Superior) acompanha o candle marcado e o menu "Ações" tem os botões.
+    window._grCrosshairFootprintBtnArea = null; window._grCrosshairAncorarBtnArea = null; window._grCrosshairValueAreaBtnArea = null;
+    window._grCrosshairMetricasBtnArea = null; window._grCrosshairVpBtnArea = null; window._grCrosshairAreaBtnArea = null; window._grCrosshairToggleBtnArea = null;
+    if (candle) {
         window._grCrosshairCandleAtual = candle;
-        botoes.forEach((b, i) => {
-            const y = by + boxH - (botoes.length - i) * BTN_H - 4;
-            const rect = { x: bx + 4, y, w: boxW - 8, h: BTN_H - 4 };
-            ctx.fillStyle = '#D1D1D6';
-            ctx.beginPath(); ctx.roundRect(rect.x, rect.y, rect.w, rect.h, 6); ctx.fill();
-            grDesenharIconeHeroicon(ctx, b.icone, rect.x + 12, y + rect.h / 2, 13, '#1C1C1E');
-            ctx.font = 'bold 11px -apple-system';
-            ctx.textAlign = 'left';
-            ctx.fillStyle = '#1C1C1E';
-            ctx.fillText(b.txt, rect.x + 22, y + rect.h / 2 + 4);
-            if (b.chave === 'footprint') window._grCrosshairFootprintBtnArea = rect;
-            else if (b.chave === 'metricas') window._grCrosshairMetricasBtnArea = rect;
-            else if (b.chave === 'vwap') { window._grCrosshairAncorarBtnArea = rect; window._grCrosshairAncorarIdx = idxCandleCrosshair; }
-            else if (b.chave === 'va') { window._grCrosshairValueAreaBtnArea = rect; window._grCrosshairValueAreaIdx = idxCandleCrosshair; }
-            else if (b.chave === 'vp') { window._grCrosshairVpBtnArea = rect; window._grCrosshairVpIdx = idxCandleCrosshair; }
-            else if (b.chave === 'area') window._grCrosshairAreaBtnArea = rect;
-        });
-        // Remove pílula temporal do eixo X
+        window._grOhlcCross = { candle, idx: idxCandleCrosshair };
+        grDesenharLinhaOhlc(ctx, W, { candle, idx: idxCandleCrosshair, cross: true });
     }
-    desenharLinhasDoCrosshair(); // por último: por cima da janela
+    desenharLinhasDoCrosshair();
 }
 let _grDir = 'LONG';
 window._cotJanelaVisivel = false;
