@@ -3569,7 +3569,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = '04/10 07:10 · 15575 linhas · 15583 linhas · FERRAMENTA-AUTO-OFF v98';
+const APP_VERSAO = '04/10 07:10 · 15575 linhas · 15583 linhas · 15590 linhas · CANAL-PROJECAO v99';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = 'Versão ' + APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -5911,7 +5911,6 @@ if (fibsParaDesenhar.length > 0) {
         const trendsSalvasComoIdx = _trendlines.map(tl => ({
             i1: grTimeToIndex(tl.t1), p1: tl.p1, i2: grTimeToIndex(tl.t2), p2: tl.p2, cor: tl.cor || '#FFD700', canal: !!tl.canal
         }));
-        _trendlines.forEach((tl, k) => { if (tl.canal && tl.vivo) { grCanalAjustar(tl); trendsSalvasComoIdx[k].i2 = grTimeToIndex(tl.t2); trendsSalvasComoIdx[k].p2 = tl.p2; trendsSalvasComoIdx[k].p1 = tl.p1; } });
         const trendsParaDesenhar = [...trendsSalvasComoIdx, ...(_trendAtual ? [_trendAtual] : [])];
         if (trendsParaDesenhar.length > 0) {
             const toXIdx = absIdx => PAD.left + ((absIdx - startIdx) / totalSlots) * chartW + cW / 2;
@@ -6581,7 +6580,7 @@ function grEdToqueMove(x, y) {
     const idx = grXToIndex(nx), preco = grToPrice(ny);
     if (!(preco > 0)) return true;
     const tp = _edSel.tipo;
-    if (tp === 'tl') { if (d.k === 'a') { o.t1 = grIndexToTime(idx); o.p1 = preco; } else { o.t2 = grIndexToTime(idx); o.p2 = preco; if (o.canal) o.vivo = false; } if (o.canal) grCanalAjustar(o); }
+    if (tp === 'tl') { if (d.k === 'a') { o.t1 = grIndexToTime(idx); o.p1 = preco; } else { o.t2 = grIndexToTime(idx); o.p2 = preco; } if (o.canal) grCanalAjustar(o); }
     else if (tp === 'bd') {
         const m = o.mastro;
         if (d.k === 'a') { m.t1 = grIndexToTime(idx); m.p1 = preco; }
@@ -6755,8 +6754,7 @@ function cvAbrirMenuCandle(clientX, clientY, snap) {
                 _canalP1 = { t: candle.t }; grAreaToast('Início marcado. Mova o crosshair e abra Ações', '#00ACC1'); grDrawChart();
             } });
         } else {
-            itens.push({ txt: 'Canal: marcar fim aqui', icone: HEROICON_BOOKMARK, acao: () => grCanalFinalizar(candle.t, false) });
-            itens.push({ txt: 'Canal: até o candle atual (ao vivo)', icone: HEROICON_BOOKMARK, acao: () => grCanalFinalizar(null, true) });
+            itens.push({ txt: 'Canal: marcar fim aqui', icone: HEROICON_BOOKMARK, acao: () => grCanalFinalizar(candle.t) });
             itens.push({ txt: 'Canal: cancelar início', icone: HEROICON_XMARK, acao: () => { _canalP1 = null; grDrawChart(); } });
         }
     }
@@ -8978,7 +8976,7 @@ async function cvCarregarTrendlines() {
     window._grTlOk = _ativoId;
     const d = (window._grDesenhosMapa || {})[_ativoId];
     if (d) { // v93: vem do JSON de preferencias
-        _trendlines = (d.trendlines || []).map(t => ({ id: null, t1: t.t1, p1: parseFloat(t.p1), t2: t.t2, p2: parseFloat(t.p2), cor: t.cor || '#FFD700', canal: !!t.canal, vivo: !!t.vivo }));
+        _trendlines = (d.trendlines || []).map(t => ({ id: null, t1: t.t1, p1: parseFloat(t.p1), t2: t.t2, p2: parseFloat(t.p2), cor: t.cor || '#FFD700', canal: !!t.canal }));
         _bandeiras = (d.bandeiras || []).map(b => ({ id: null, mastro: { t1: b.t1, p1: parseFloat(b.p1), t2: b.t2, p2: parseFloat(b.p2) }, offset: parseFloat(b.offset), cor: b.cor || '#26A69A' }));
         return;
     }
@@ -9347,6 +9345,7 @@ function cvToggleReg() {
 // Você arrasta do candle inicial ao final (igual à Tendência); o app ajusta a reta de mínimos quadrados sobre o LOG dos
 // fechamentos desses candles (mediana) e desenha mediana ± K·σ, com σ = desvio-padrão dos resíduos. Tudo calculado, nada manual.
 const GR_CANAL_K = 2;
+const GR_CANAL_PROJ = 0.5;   // projeção à frente = metade do tamanho do canal (entre 5 e 60 barras)
 let _canalModo = false;   // true = a ferramenta Tendência está criando canais em vez de retas
 function grCanalCalc(i1, i2) {
     const arr = _grAllCandles; if (!arr || arr.length < 3) return null;
@@ -9363,7 +9362,6 @@ function grCanalCalc(i1, i2) {
 }
 // prende as pontas do canal na mediana (p1/p2 = preço da mediana nos candles inicial e final)
 function grCanalAjustar(tl) {
-    if (tl.vivo && _grAllCandles.length) tl.t2 = _grAllCandles[_grAllCandles.length - 1].t;   // ao vivo: ponta final = candle em formação
     const c = grCanalCalc(grTimeToIndex(tl.t1), grTimeToIndex(tl.t2)); if (!c) return;
     const i1 = grTimeToIndex(tl.t1), i2 = grTimeToIndex(tl.t2);
     tl.p1 = Math.exp(c.inter + c.slope * (i1 - c.a)); tl.p2 = Math.exp(c.inter + c.slope * (i2 - c.a));
@@ -9378,6 +9376,15 @@ function grCanalDesenhar(ctx, tl, toXIdx, toY, cor) {   // tl: {i1,i2}
     ctx.globalAlpha = 1; ctx.strokeStyle = cor; ctx.lineWidth = 1.5;
     [[up, [5, 4]], [dn, [5, 4]], [md, []]].forEach(([pts, dash]) => { ctx.setLineDash(dash); ctx.lineWidth = dash.length ? 1.3 : 2; ctx.beginPath(); pts.forEach((q, j) => j ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])); ctx.stroke(); });
     ctx.setLineDash([]);
+    // projeção para a frente (mesma reta e mesma largura, SEM recalcular com os candles novos): serve pra ver como o preço se comporta depois do fim
+    const P = Math.max(5, Math.min(60, Math.round(c.n * GR_CANAL_PROJ)));
+    const proj = off => { const pts = []; for (let j = 0; j <= 12; j++) { const k = (c.n - 1) + P * j / 12; pts.push([toXIdx(c.a + k), toY(Math.exp(c.inter + c.slope * k + off * c.sg))]); } return pts; };
+    const pu = proj(GR_CANAL_K), pm = proj(0), pd = proj(-GR_CANAL_K);
+    ctx.globalAlpha = 0.04; ctx.fillStyle = cor; ctx.beginPath();
+    pu.forEach((q, j) => j ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])); for (let j = pd.length - 1; j >= 0; j--) ctx.lineTo(pd[j][0], pd[j][1]); ctx.closePath(); ctx.fill();
+    ctx.globalAlpha = 0.55; ctx.strokeStyle = cor;
+    [[pu, [2, 4]], [pd, [2, 4]], [pm, [2, 4]]].forEach(([pts, dash]) => { ctx.setLineDash(dash); ctx.lineWidth = 1.3; ctx.beginPath(); pts.forEach((q, j) => j ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])); ctx.stroke(); });
+    ctx.globalAlpha = 1; ctx.setLineDash([]);
     // pontas na mediana
     ctx.fillStyle = cor; [md[0], md[md.length - 1]].forEach(pt => { ctx.beginPath(); ctx.arc(pt[0], pt[1], 3.5, 0, Math.PI * 2); ctx.fill(); });
     ctx.restore(); return true;
@@ -9387,12 +9394,12 @@ function grFerramentaDesligar(flag, ids) {
     try { _indState[flag] = false; (ids || []).forEach(id => { const b = document.getElementById(id); if (b) b.classList.remove('active'); }); } catch (e) {}
 }
 let _canalP1 = null;   // {t}: candle inicial marcado pelo crosshair
-function grCanalFinalizar(tFim, vivo) {
+function grCanalFinalizar(tFim) {
     if (!_canalP1) return;
     const arr = _grAllCandles, ultimo = arr[arr.length - 1];
-    let t1 = _canalP1.t, t2 = vivo ? ultimo.t : tFim;
+    let t1 = _canalP1.t, t2 = tFim;
     if (t2 < t1) { const x = t1; t1 = t2; t2 = x; }
-    const novo = { id: null, t1, p1: 0, t2, p2: 0, cor: _trendColor, canal: true, vivo: !!vivo };
+    const novo = { id: null, t1, p1: 0, t2, p2: 0, cor: _trendColor, canal: true };
     if (!grCanalCalc(grTimeToIndex(t1), grTimeToIndex(t2))) { grAreaToast('Escolha um intervalo de pelo menos 5 candles', '#DC2626'); return; }
     grCanalAjustar(novo);
     _trendlines.push(novo);
@@ -9576,7 +9583,7 @@ window._grDesenhosMapa = {};
 function grDesenhosColetar() {
     if (_ativoId && window._grTlOk === _ativoId) {
         window._grDesenhosMapa[_ativoId] = {
-            trendlines: _trendlines.map(t => ({ t1: t.t1, p1: t.p1, t2: t.t2, p2: t.p2, cor: t.cor, canal: !!t.canal, vivo: !!t.vivo })),
+            trendlines: _trendlines.map(t => ({ t1: t.t1, p1: t.p1, t2: t.t2, p2: t.p2, cor: t.cor, canal: !!t.canal })),
             bandeiras: _bandeiras.map(b => ({ t1: b.mastro.t1, p1: b.mastro.p1, t2: b.mastro.t2, p2: b.mastro.p2, offset: b.offset, cor: b.cor })),
             fibs: _fibs.map(f => ({ p1: f.p1, p2: f.p2, tipo: f.tipo }))
         };
