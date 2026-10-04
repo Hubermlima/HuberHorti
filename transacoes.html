@@ -3564,7 +3564,9 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = '04/10 19:10 · 15738 linhas · POSICAO-APORTES v134';
+// Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
+const GR_REGUAS_SA = false;
+const APP_VERSAO = '04/10 20:00 · 15740 linhas · POSICAO-APORTES v136';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = 'Versão ' + APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -5823,7 +5825,7 @@ if (_grTipoGrafico === 'linha') {
             window._grBarraSuperiorBottom = chipY + 4; // a linha OHLC é desenhada logo abaixo dos chips
         }
         // Linha Stop — sempre visível, área ancorada no PM
-        if (true) { // Régua S: sempre visível quando há stop definido/PM ativo
+        if (GR_REGUAS_SA) { // Régua S: sempre visível quando há stop definido/PM ativo
             const stopPrice = _grStop > 0 ? _grStop : _precoAtual * 0.95;
             if (!_grStop) _grStop = stopPrice;
             const dirStopCor = (_grDir || 'LONG').toUpperCase();
@@ -5929,7 +5931,7 @@ ctx.fillText(fmtN(stopPrice), bX + bW - 4, bY + bH - 3);
             }
         }
         // Régua % (Alvo) — respeita o toggle "Visível" de Gerenciar Componentes
-        if (_regAtual && Math.abs(_regAtual.p2 - _regAtual.p1) > 0) {
+        if (GR_REGUAS_SA && _regAtual && Math.abs(_regAtual.p2 - _regAtual.p1) > 0) {
             const yR1 = toY(_regAtual.p1);
             const yR2 = toY(_regAtual.p2);
             const dirRegua = (_grDir || 'LONG').toUpperCase();
@@ -6098,36 +6100,34 @@ const aBX = W - PAD.right + 1, aBY = yR2 - aBH / 2;
             ctx.strokeStyle = precoColor;
             ctx.lineWidth = 1;
             ctx.setLineDash([4, 4]);
-            ctx.beginPath(); ctx.moveTo(PAD.left, yPreco); ctx.lineTo(W - PAD.right, yPreco); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(PAD.left, yPreco); ctx.lineTo(W - PAD.right - 5, yPreco); ctx.stroke();   // vai até a ponta da seta do badge
             ctx.restore();
             ctx.setLineDash([]);
-            // Badge no eixo (direita)
+            // Badge no eixo (direita) — com ponta em seta apontando para o candle em formação
             const txt = fmtN(_precoAtual);
             ctx.font = 'bold 10px -apple-system';
             const bH = 16, bW = PAD.right - 4;
             const bX = W - PAD.right + 1, bY = yPreco - bH / 2;
             ctx.fillStyle = precoColor;
-            ctx.beginPath(); ctx.roundRect(bX, bY, bW, bH, 3); ctx.fill();
+            {
+                const tip = 6, r = 3;
+                ctx.beginPath();
+                ctx.moveTo(bX - tip, yPreco);
+                ctx.lineTo(bX + 1, bY);
+                ctx.lineTo(bX + bW - r, bY); ctx.arcTo(bX + bW, bY, bX + bW, bY + r, r);
+                ctx.lineTo(bX + bW, bY + bH - r); ctx.arcTo(bX + bW, bY + bH, bX + bW - r, bY + bH, r);
+                ctx.lineTo(bX + 1, bY + bH);
+                ctx.closePath(); ctx.fill();
+            }
             ctx.fillStyle = '#FFFFFF';
             ctx.textAlign = 'right';
             ctx.fillText(txt, bX + bW - 4, bY + bH - 3);
             // O badge "Δ" ao vivo que ficava aqui (grCrosshairZonaDeltaPreco) saiu — redundante com a régua
             // Delta ATR, que é a leitura oficial agora (grade e janela diferentes, número não batia com o dela).
-            // Handle C — sempre visível: o Volume Profile não fica mais colado na borda direita (ele nasce na âncora e
-            // cresce pra direita, por cima dos candles), então não disputa mais espaço com o handle.
-            {
-                const cHW = 18;
-                const cHX = W - PAD.right;
-                ctx.fillStyle = precoColor;
-                ctx.beginPath(); ctx.arc(cHX - 9, yPreco, 9, 0, Math.PI * 2); ctx.fill();
-                ctx.fillStyle = '#FFFFFF';
-                ctx.font = 'bold 11px -apple-system';
-                ctx.textAlign = 'center';
-                ctx.fillText('C', cHX - cHW / 2, yPreco + 4);
-                window._cotHandleY = yPreco;
-                window._cotHandleX = cHX - cHW;
-                window._cotHandleW = cHW;
-            }
+            // Handle C removido: o toque no próprio badge continua abrindo a janelinha C
+            window._cotHandleY = yPreco;
+            window._cotHandleX = bX - 6;
+            window._cotHandleW = bW + 6;
             // Janelinha C
             if (window._cotJanelaVisivel && _grPm > 0) {
                 const _dirMult  = _grDir === 'SHORT' ? -1 : 1;
@@ -7350,11 +7350,13 @@ function grInitTouch() {
         const locked = key => key === 'reguaA' ? _grReguaLock.A : key === 'reguaS' ? _grReguaLock.S : false;
         const pmTravado = !!(window._cvTradeCache && odTradeModo(window._cvTradeCache) === 0);
         if (!pmTravado && _grPm > 0 && Math.abs(yInterno - grLineY(_grPm)) <= HIT) return 'pm';
-        if (!locked('reguaA') && _grAlvo    > 0 && Math.abs(yInterno - grLineY(_grAlvo))    <= HIT) return 'alvo';
+        if (GR_REGUAS_SA && !locked('reguaA') && _grAlvo    > 0 && Math.abs(yInterno - grLineY(_grAlvo))    <= HIT) return 'alvo';
         if (_grEntrada > 0 && Math.abs(yInterno - grLineY(_grEntrada)) <= HIT) return 'entrada';
+        if (GR_REGUAS_SA) {
         if (_grStop    > 0 && Math.abs(yInterno - grLineY(_grStop))    <= HIT) return 'stop';
         const stopPrice = _grStop > 0 ? _grStop : _precoAtual * 0.95;
         if (Math.abs(yInterno - grLineY(stopPrice)) <= HIT) return 'stop';
+        }
         // Alertas
         if (!locked('alertas')) {
             for (let i = 0; i < _grAlertas.length; i++) {
