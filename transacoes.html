@@ -3564,7 +3564,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = '04/10 15:10 · 15573 linhas · POSICAO-APORTES v121';
+const APP_VERSAO = '04/10 17:05 · 15616 linhas · POSICAO-APORTES v127';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = 'Versão ' + APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4235,6 +4235,22 @@ const GR_HEROICONS = {
 function grHeroicon(nome, tam, cor) {
     return '<svg xmlns="http://www.w3.org/2000/svg" width="' + tam + '" height="' + tam + '" viewBox="0 0 24 24" fill="none" stroke="' + (cor || 'currentColor') + '" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="' + GR_HEROICONS[nome] + '"/></svg>';
 }
+let _grStopLib = null;   // id da posição cujo stop foi liberado para UM arraste
+function grStopConfirmar(pz) {
+    if (document.getElementById('gr-stop-conf')) return;
+    const f = (v, d) => v.toLocaleString('pt-BR', { minimumFractionDigits: d, maximumFractionDigits: d });
+    const perda = pz.qty > 0 ? pz.qty * Math.abs(pz.pm - pz.stop) : null, conta = pz.cfg && pz.cfg.conta, al = pz.cfg && pz.cfg.alav;
+    const txt = 'O stop está travado porque a posição já tem aportes. Mover o stop muda a perda máxima' + (perda != null ? ' (hoje ' + f(perda, 2) + ' USDT' + (conta ? ', ' + f(perda / conta * 100, 2) + '% da margem' : '') + ')' : '') + (al ? ' e a distância até a liquidação (aprox. ' + f(100 / al, 2) + '% do preço médio)' : '') + '.';
+    const ov = document.createElement('div'); ov.id = 'gr-stop-conf';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:9900;background:rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;font-family:-apple-system,sans-serif;';
+    ov.innerHTML = '<div style="background:#fff;width:100%;max-width:300px;border-radius:16px;padding:16px 16px 12px;box-shadow:0 8px 28px rgba(0,0,0,.28);">' +
+        '<div style="display:flex;align-items:center;gap:6px;font-size:16px;font-weight:700;color:#1C1C1E;">' + grHeroicon('lock-closed', 16, '#1C1C1E') + 'Mover o stop?</div>' +
+        '<div style="font-size:13px;color:#1C1C1E;line-height:1.45;margin:8px 0 12px;">' + txt + ' Tem certeza?</div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;"><button id="gsc-n" type="button" style="height:38px;border-radius:11px;border:none;background:#F2F2F7;font-size:15px;color:#007AFF;font-family:-apple-system,BlinkMacSystemFont,sans-serif;">Cancelar</button><button id="gsc-s" type="button" style="height:38px;border-radius:11px;border:none;background:#007AFF;font-size:15px;font-weight:600;color:#fff;font-family:-apple-system,BlinkMacSystemFont,sans-serif;">Mover stop</button></div></div>';
+    document.body.appendChild(ov);
+    ov.querySelector('#gsc-n').onclick = () => ov.remove();
+    ov.querySelector('#gsc-s').onclick = () => { _grStopLib = pz.id; ov.remove(); setTimeout(() => { if (_grStopLib === pz.id) _grStopLib = null; }, 20000); };
+}
 function cvPosFormFechar() { const o = document.getElementById('cv-posform-overlay'); if (o) o.remove(); }
 // máscara de digitação de banco: os dígitos entram pela direita, sempre com 2 casas (ex.: 8538120 → 85.381,20)
 function cvMascaraValor(v) {
@@ -4255,8 +4271,10 @@ function cvPosFormAbrir(idx) {
     cvPosFormFechar();
     const c = pz.cfg || {};
     const salvos = window._grPosAportes[pz.id];
-    let ap = salvos ? salvos.map(x => Object.assign({}, x)) : [{ tipo: 'R', data: cvPosHoje(), preco: pz.entrada, qtd: null, taxa: null }];
+    let ap = salvos ? salvos.map(x => Object.assign({}, x)) : [{ tipo: 'R', data: cvPosHoje(), preco: null, aporte: null, qtd: null, taxa: null }];
     let pg = 0;
+    // Preço de Entrada Original (planejado na caixa). Se a caixa foi mexida depois do último Ok, vale a linha atual.
+    const orig = pz.entrada;
     let margemUni = salvos ? null : (c.conta != null ? c.conta : null);   // com 1 aporte só: margem e quantidade são o mesmo dado
     let fonte = salvos ? 'qtd' : 'margem';                              // qual dos dois o Huber digitou por último
     const ov = document.createElement('div');
@@ -4282,9 +4300,11 @@ function cvPosFormAbrir(idx) {
         '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 10px;align-items:center;">' +
         '<div class="seg" style="grid-column:1 / -1;"><button id="pf-t-R" type="button">Abertura</button><button id="pf-t-D" type="button">Fechamento</button></div>' +
         '<label for="pf-ap-data" style="font-size:12px;color:#1C1C1E;">' + seta(true) + 'Data</label><input id="pf-ap-data" type="date" style="' + inp + 'min-width:0;max-width:100%;display:block;-webkit-appearance:none;appearance:none;">' +
-        lin('Preço de Entrada', 'pf-ap-preco') +
+        lin('Preço de Entrada', 'pf-orig', true) +
+        lin('Preço Médio', 'pf-pm', true) +
         lin('Preço do Stop', 'pf-stop') +
         lin('Preço do Alvo', 'pf-alvo') +
+        lin('Preço do Aporte', 'pf-ap-preco') +
         lin('Quantidade (BTC)', 'pf-ap-qtd') +
         lin('Aporte (USDT)', 'pf-ap-margem') +
         lin('Valor da posição (USD)', 'pf-ap-valor', true) +
@@ -4318,7 +4338,7 @@ function cvPosFormAbrir(idx) {
     // ── matemática ──
     // Reforço soma quantidade e custo; redução tira quantidade ao PM (o PM não muda) e realiza resultado.
     function estado() {   // mesma conta de calcularConsolidado() (boleta): LA/LF no long, SA/SF no short
-        let qty = 0, cost = 0, real = 0, erro = null;
+        let qty = 0, cost = 0, real = 0, erro = null, qb = 0;
         ap.forEach((x, i) => {
             if (!pos(x.preco) || !pos(x.qtd)) return;
             const valor = x.qtd * x.preco, taxa = pos(x.taxa) ? x.taxa : 0;
@@ -4328,16 +4348,21 @@ function cvPosFormAbrir(idx) {
                 const pm = cost / qty;
                 if (sgn === 1) real += (valor - taxa) - x.qtd * pm;      // LF: taxa em USDT sai do valor
                 else real += x.qtd * pm - valor;                          // SF: como na boleta
-                qty -= x.qtd; cost = qty * pm;
+                qty -= x.qtd; cost = qty * pm; qb = Math.max(0, qb - x.qtd);
                 if (qty <= 0.000001) { qty = 0; cost = 0; }
             } else {
                 qty += sgn === 1 ? x.qtd - taxa : x.qtd;                  // LA: a taxa em BTC sai da quantidade (política da corretora)
-                cost += valor;
+                cost += valor; qb += x.qtd;
             }
         });
-        return { qty, cost, pm: qty > 0 ? cost / qty : null, real, erro };
+        return { qty, cost, pm: qty > 0 ? cost / qty : null, pmBruto: qb > 0 ? cost / qb : null, real, erro };
     }
     const alav = () => { const v = num('pf-alav'); return pos(v) ? v : null; };
+    const calc = () => ap[pg].tipo !== 'D' && !!alav();   // aporte de abertura: preço = aporte × alavancagem ÷ quantidade
+    function calcPreco(x) {
+        const al = alav();
+        x.preco = pos(x.aporte) && pos(x.qtd) && al ? x.aporte * al / x.qtd : null;
+    }
     function autoTaxa(x) {   // padrão da boleta: abertura = 0,1% da quantidade (BTC); fechamento = 0,1% do valor (USD)
         if (x.taxaManual || !pos(x.qtd)) return;
         x.taxa = x.tipo === 'D' ? (pos(x.preco) ? x.qtd * x.preco * 0.001 : null) : x.qtd * 0.001;
@@ -4355,20 +4380,22 @@ function cvPosFormAbrir(idx) {
         g('pf-t-R').classList.toggle('on', x.tipo !== 'D'); g('pf-t-D').classList.toggle('on', x.tipo === 'D');
         ov.querySelector('label[for="pf-ap-taxa"]').lastChild.textContent = x.tipo === 'D' ? 'Taxa (USD)' : 'Taxa (BTC)';
         if (skip !== 'pf-ap-data') g('pf-ap-data').value = x.data || '';
+        const cm = calc(), pi = g('pf-ap-preco');
+        pi.readOnly = cm; pi.tabIndex = cm ? -1 : 0;
+        ov.querySelector('label[for="pf-ap-preco"]').firstChild.innerHTML = cm ? '' : grHeroicon('chevron-right', 10, '#3A3A3C');
         if (skip !== 'pf-ap-preco') setv('pf-ap-preco', x.preco);
         if (skip !== 'pf-ap-qtd') set8('pf-ap-qtd', x.qtd);
-        if (skip !== 'pf-ap-margem') setv('pf-ap-margem', pos(x.qtd) && pos(x.preco) && al ? x.qtd * x.preco / al : null);
+        if (skip !== 'pf-ap-margem') setv('pf-ap-margem', cm && pos(x.aporte) ? x.aporte : (pos(x.qtd) && pos(x.preco) && al ? x.qtd * x.preco / al : null));
         g('pf-ap-valor').value = pos(x.qtd) && pos(x.preco) ? cvMascaraDeNumero(x.qtd * x.preco) : '';
         if (skip !== 'pf-ap-taxa') { if (x.tipo === 'D') setv('pf-ap-taxa', x.taxa); else set8('pf-ap-taxa', x.taxa); }
     }
     function addAporte() {
-        ap.push({ tipo: 'R', data: cvPosHoje(), preco: _precoAtual > 0 ? Math.round(_precoAtual * 100) / 100 : ap[ap.length - 1].preco, qtd: null, taxa: null });
+        ap.push({ tipo: 'R', data: cvPosHoje(), preco: alav() ? null : (_precoAtual > 0 ? Math.round(_precoAtual * 100) / 100 : ap[ap.length - 1].preco), aporte: null, qtd: null, taxa: null });
         pg = ap.length - 1; renderPag(); refreshPagina(); info();
     }
     function delAporte() {
         if (ap.length < 2) return;
         ap.splice(pg, 1); pg = Math.min(pg, ap.length - 1);
-        if (ap.length === 1) { fonte = 'qtd'; syncUni(); }
         renderPag(); recalc('x');
     }
     function renderPag() {
@@ -4389,23 +4416,27 @@ function cvPosFormAbrir(idx) {
         g('pf-ap-del').onclick = delAporte;
     }
     function recalc(origem) {
-        const st = num('pf-stop'), r = num('pf-risco'), al = alav();
-        if (ap.length === 1) {
-            const e = ap[0].preco;
-            if (origem === 'alav') { if (pos(e) && pos(r) && al) g('pf-stop').value = cvMascaraDeNumero(e * (1 - sgn * (r / al) / 100)); }
-            else if (pos(e) && pos(st) && pos(r) && e !== st) g('pf-alav').value = cvMascaraDeNumero(r / (Math.abs(e - st) / e * 100));
-            syncUni();
-        }
+        const st = num('pf-stop'), r = num('pf-risco');
+        // alavancagem pela entrada ORIGINAL: risco ÷ distância até o stop
+        if (!(pz.pm > 0) && pos(orig) && pos(st) && pos(r) && orig !== st) g('pf-alav').value = cvMascaraDeNumero(r / (Math.abs(orig - st) / orig * 100));
+        ap.forEach(x => { if (x.tipo !== 'D' && alav() && pos(x.aporte) && pos(x.qtd)) calcPreco(x); });
         refreshPagina(document.activeElement && document.activeElement.id && document.activeElement.id.indexOf('pf-ap-') === 0 ? document.activeElement.id : null);
         info();
     }
     function info() {
         g('pf-risco-real').value = '';
-        const est = estado(), st = num('pf-stop'), r = num('pf-risco'), al = alav();
+        const est = estado();
+        {
+            const pmv = est.pm != null ? est.pm : (pz.pm > 0 ? pz.pm : null);
+            g('pf-orig').value = cvMascaraDeNumero(orig); g('pf-pm').value = pmv != null ? cvMascaraDeNumero(pmv) : '';
+            const dv = pmv != null && orig > 0 ? (pmv - orig) / orig * 100 : null;
+            ov.querySelector('label[for="pf-pm"]').lastChild.textContent = 'Preço Médio' + (dv != null ? ' (' + (dv >= 0 ? '+' : '−') + Math.abs(dv).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%)' : '');
+        }
+        const st = num('pf-stop'), r = num('pf-risco'), al = alav();
         const f = (v, d) => v.toLocaleString('pt-BR', { minimumFractionDigits: d, maximumFractionDigits: d });
         const L = [];
         if (est.qty > 0) {
-            L.push('Quantidade atual: <b>' + f(est.qty, 6) + ' BTC</b> · Preço médio: <b>' + f(est.pm, 2) + '</b>');
+            L.push('Quantidade atual: <b>' + f(est.qty, 6) + ' BTC</b>');
             L.push('Tamanho da posição: <b>' + f(est.cost, 2) + ' USDT</b>');
             if (al) {
                 const marg = est.cost / al;
@@ -4422,6 +4453,7 @@ function cvPosFormAbrir(idx) {
                 }
             }
         }
+        if (est.pmBruto != null && pos(orig) && (sgn === 1 ? est.pmBruto > orig + 0.005 : est.pmBruto < orig - 0.005)) L.push('<span style="color:#E08A00;">PM ' + (sgn === 1 ? 'acima' : 'abaixo') + ' do Preço de Entrada: o lucro até o alvo diminui. Ajuste a entrada na caixa se quiser.</span>');
         if (ap.some(x => x.tipo === 'D')) L.push('Resultado realizado: <b style="color:' + (est.real >= 0 ? '#15803D' : '#DC2626') + ';">' + (est.real >= 0 ? '+' : '') + f(est.real, 2) + ' USDT</b>');
         if (est.erro) L.push('<span style="color:#EF5350;">' + est.erro + '</span>');
         g('pf-info').innerHTML = L.join('<br>');
@@ -4429,21 +4461,23 @@ function cvPosFormAbrir(idx) {
 
     // ── eventos ──
     const X = () => ap[pg];
-    g('pf-ap-preco').addEventListener('input', () => { X().preco = num('pf-ap-preco'); if (X().tipo === 'D' || ap.length > 1) autoTaxa(X()); recalc('x'); });
-    g('pf-ap-qtd').addEventListener('input', () => { X().qtd = num('pf-ap-qtd'); if (ap.length === 1) fonte = 'qtd'; autoTaxa(X()); recalc('x'); });
+    g('pf-ap-preco').addEventListener('input', () => { if (calc()) return; X().preco = num('pf-ap-preco'); if (X().tipo === 'D' || ap.length > 1) autoTaxa(X()); recalc('x'); });
+    g('pf-ap-qtd').addEventListener('input', () => { X().qtd = num('pf-ap-qtd'); if (ap.length === 1) fonte = 'qtd'; if (calc()) calcPreco(X()); autoTaxa(X()); recalc('x'); });
     g('pf-ap-margem').addEventListener('input', () => {
         const m = num('pf-ap-margem'), al = alav();
-        if (pos(m) && al && pos(X().preco)) X().qtd = m * al / X().preco;
+        if (calc()) { X().aporte = m; calcPreco(X()); }
+        else if (pos(m) && al && pos(X().preco)) X().qtd = m * al / X().preco;
         if (ap.length === 1) { margemUni = m; fonte = 'margem'; }
         autoTaxa(X()); recalc('x');
     });
     g('pf-ap-taxa').addEventListener('input', () => { X().taxa = num('pf-ap-taxa'); X().taxaManual = true; });
     g('pf-ap-data').addEventListener('change', () => { X().data = g('pf-ap-data').value; });
-    ['R', 'D'].forEach(t => g('pf-t-' + t).onclick = () => { X().tipo = t; X().taxaManual = false; autoTaxa(X()); recalc('x'); });
+    ['R', 'D'].forEach(t => g('pf-t-' + t).onclick = () => { X().tipo = t; X().taxaManual = false; if (t === 'R' && alav() && pos(X().qtd) && pos(X().preco)) X().aporte = X().qtd * X().preco / alav(); autoTaxa(X()); recalc('x'); });
     ['pf-stop', 'pf-risco'].forEach(id => g(id).addEventListener('input', () => recalc('x')));
     g('pf-alvo').addEventListener('input', info);
     g('pf-alav').addEventListener('input', () => recalc('alav'));
     // abertura
+    ap.forEach(x => { if (x.tipo !== 'D' && !pos(x.aporte) && pos(x.qtd) && pos(x.preco) && alav()) x.aporte = x.qtd * x.preco / alav(); });
     recalc('x'); renderPag();
     g('pf-ok').onclick = () => {
         const erro = m => { g('pf-erro').textContent = m; };
@@ -4456,7 +4490,7 @@ function cvPosFormAbrir(idx) {
         const ok = pz.lado === 'short' ? (a < e && e < st) : (st < e && e < a);
         if (!ok) return erro(pz.lado === 'short' ? 'No short: alvo < entrada < stop.' : 'No long: stop < entrada < alvo.');
         if (al && Math.abs(e - st) / e * 100 >= 100 / al) return erro('Bloqueado: com esse preço médio (' + e.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ') o stop fica além da liquidação. Ajuste o aporte.');
-        pz.entrada = e; pz.alvo = a; pz.stop = st;
+        pz.pm = e; pz.pmLim = est.pmBruto; pz.qty = est.qty; pz.alvo = a; pz.stop = st;
         pz.cfg = { conta: al ? est.cost / al : (c.conta != null ? c.conta : null), risco: r, alav: al };
         window._grPosAportes[pz.id] = ap;     // só em memória
         grPosSalvar(); cvPosFormFechar(); grDrawChart();
@@ -6298,6 +6332,11 @@ if (fibsParaDesenhar.length > 0) {
                     ctx.fillStyle = '#FFFFFF'; ctx.textAlign = 'center'; ctx.fillText(txt, cx, ty + 11);
                 };
                 const pc = v => (v >= 0 ? '+' : '') + (v * 100).toFixed(2) + '%';
+                if (!pz.previa && pz.pm > 0) {   // cadeado no stop
+                    ctx.save(); ctx.translate(xa + 6, yS + (yS < yE ? 3 : -15)); ctx.scale(0.5, 0.5); ctx.strokeStyle = '#D1D4DC'; ctx.lineWidth = 2.2; ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.setLineDash([]);
+                    try { ctx.stroke(new Path2D(GR_HEROICONS['lock-closed'])); } catch (e) {}
+                    ctx.restore();
+                }
                 if (!pz.previa) {
                     rot('Alvo ' + fmtN(pz.alvo) + ' (' + pc((pz.alvo - pz.entrada) / pz.entrada) + ')', yA, '#26A69A', yA <= yE);
                     rot('Stop ' + fmtN(pz.stop) + ' (' + pc((pz.stop - pz.entrada) / pz.entrada) + ')', yS, '#EF5350', yS < yE);
@@ -6862,6 +6901,8 @@ function grEdToqueMove(x, y) {
     const d = _edDrag, nx = d.hx + (x - d.fx), ny = d.hy + (y - d.fy);
     if (Math.hypot(x - d.fx, y - d.fy) > 8) d.moved = true;
     if (!d.moved) return true;   // ainda é só um toque: não mexe no desenho
+    if (d.bloq) return true;
+    if (_edSel.tipo === 'ps' && d.k === 's' && o.pm > 0 && _grStopLib !== o.id) { d.bloq = true; grStopConfirmar(o); return true; }   // stop travado
     const idx = grXToIndex(nx), preco = grToPrice(ny);
     if (!(preco > 0)) return true;
     const tp = _edSel.tipo;
@@ -6888,7 +6929,7 @@ function grEdToqueMove(x, y) {
             const dIdx = grXToIndex(nx) - grXToIndex(d.hx), p0 = grToPrice(d.hy), p1 = grToPrice(ny);
             const mv = v => _grEscalaLog ? v * (p1 / p0) : v + (p1 - p0);
             o.t1 = grIndexToTime(grTimeToIndex(d.snap.t1) + dIdx); o.t2 = grIndexToTime(grTimeToIndex(d.snap.t2) + dIdx);
-            o.entrada = mv(d.snap.entrada); o.alvo = mv(d.snap.alvo); o.stop = mv(d.snap.stop);
+            if (!(o.pm > 0)) { o.entrada = mv(d.snap.entrada); o.alvo = mv(d.snap.alvo); o.stop = mv(d.snap.stop); }   // com PM: só desloca na horizontal
         }
     }
     grDrawChart();
@@ -6896,8 +6937,10 @@ function grEdToqueMove(x, y) {
 }
 async function grEdToqueFim() {
     if (!_edDrag) return false;
-    const moveu = _edDrag.moved;
+    const moveu = _edDrag.moved, bloq = _edDrag.bloq;
     _edDrag = null;
+    if (bloq) return true;
+    if (moveu && _grStopLib) _grStopLib = null;
     if (!moveu) { cvEdicaoSair(); return true; }   // toque simples no price action: libera o desenho
     const o = grEdObjeto(); if (!o) return true;
     try {
