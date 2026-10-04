@@ -653,6 +653,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <button class="cv-ind-btn freehand" id="cv-ind-freehand" onclick="cvToggleFreehand()" ontouchstart="cvFreehandColorPressStart()" ontouchend="cvFreehandColorPressEnd()"><span class="btn-sigla"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17c1.5-3.5 2.5-7 4-8s2.5 2.5 4 3.5 3.5-5.5 5-3-1.5 7-3 8-2.5-3.5-4-2.5-2.5 3.5-6 2z"/></svg></span><span class="btn-nome">Desenho Livre</span></button>
       <button class="cv-ind-btn bandeira" id="cv-ind-bandeira" onclick="cvToggleBandeira()"><span class="btn-sigla"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="19" x2="15" y2="7"/><line x1="9" y1="21" x2="21" y2="9"/></svg></span><span class="btn-nome">Bandeira</span></button>
       <button class="cv-ind-btn medida" id="cv-ind-medida" onclick="cvToggleMedida()"><span class="btn-sigla"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="6" y1="4" x2="18" y2="4"/><line x1="12" y1="4" x2="12" y2="20"/><line x1="6" y1="20" x2="18" y2="20"/></svg></span><span class="btn-nome">Medida</span></button>
+      <button class="cv-ind-btn" id="cv-ind-hlinha" onclick="cvToggleHLinha()"><span class="btn-sigla"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="12" x2="21" y2="12"/><circle cx="12" cy="12" r="2" fill="currentColor" stroke="none"/></svg></span><span class="btn-nome">Linha Horizontal</span></button>
     </div>
     <div class="cv-grupo-menu" id="cv-grupo-footprint">
       <div class="cv-grupo-menu-titulo"><span>Footprint</span><button type="button" class="cv-grupo-menu-fechar" onclick="cvFecharMenuGrupo()">✕</button></div>
@@ -4191,6 +4192,16 @@ let _bandeiraDeletePending = null;
 // ── Régua de Medição: descartável, mostra % e USD entre dois pontos ──
 let _medidaAtual = null;     // {i1,p1,i2,p2} durante o arrasto
 let _medidaDrawing = false;
+// ── Linha Horizontal: toque e arraste pra posicionar, solta pra fixar (a ferramenta desliga sozinha) ──
+let _hlAtual = null;          // {p} durante o toque
+let _hlDrawing = false;
+let _hlColor = '#FFD700';
+let _grHLinhasMapa = (function () { try { return JSON.parse(localStorage.getItem('gr_hlinhas') || '{}') || {}; } catch (e) { return {}; } })();
+function grHLinhas() { const k = String(_ativoId || 'default'); return _grHLinhasMapa[k] || (_grHLinhasMapa[k] = []); }
+function grHLinhasSalvar() {
+    try { localStorage.setItem('gr_hlinhas', JSON.stringify(_grHLinhasMapa)); } catch (e) {}
+    try { grAmbienteSalvar(); } catch (e) {}
+}
 let _medidaFlashTimer = null;
 let _bandeiraDeleteTimer = null;
 let _bandeiraDeleteStartX = 0, _bandeiraDeleteStartY = 0;
@@ -5107,7 +5118,7 @@ if (_grTipoGrafico === 'linha') {
             // Com configuração/modal próprio — tocar abre.
             if (_fibs && _fibs.length)         grBarraChip('Fibonacci', '#000000', (cx, cy) => cvToggleFib(cx, cy));
             // Lista de desenhos (tendência, bandeira, desenho livre, fibonacci) com ✕ pra apagar — não depende de acertar o toque na linha.
-            if ((_trendlines && _trendlines.length) || (_bandeiras && _bandeiras.length) || (_freehands && _freehands.length) || (_fibs && _fibs.length))
+            if ((_trendlines && _trendlines.length) || (_bandeiras && _bandeiras.length) || (_freehands && _freehands.length) || (_fibs && _fibs.length) || grHLinhas().length)
                 grBarraChip('Desenhos', '#000000', (cx, cy) => cvAbrirMenuDesenhos(cx, cy));
             if (_grAlertas && _grAlertas.length) grBarraChip('Alertas', '#000000', (cx, cy) => cvToggleAlerta(cx, cy));
             if (_grFootprintAtivo) grBarraChip('Fluxo', '#000000', (cx, cy) => cvAbrirMenuFpCfg('fluxo', cx, cy));
@@ -5952,6 +5963,24 @@ if (fibsParaDesenhar.length > 0) {
             const corPreview = _bandeiraMastroFinal.p2 >= _bandeiraMastroFinal.p1 ? '#26A69A' : '#EF5350';
             desenharBandeira(_bandeiraMastroFinal, _bandeiraOffsetAtual, corPreview);
         }
+        // ── Linhas horizontais (fixas + a que está sendo posicionada): linha em toda a largura + pílula de preço no eixo ──
+        {
+            const hls = grHLinhas().map(h => ({ p: h.p, cor: h.cor }));
+            if (_hlAtual) hls.push({ p: _hlAtual.p, cor: _hlColor });
+            hls.forEach(h => {
+                const y = toY(h.p);
+                if (y < PAD.top - 1 || y > PAD.top + chartH + 1) return;
+                ctx.save();
+                ctx.strokeStyle = h.cor; ctx.lineWidth = 1.5; ctx.setLineDash([]);
+                ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(W - PAD.right, y); ctx.stroke();
+                const bH = 16, bW = Math.max(PAD.right - 4, 40), bX = W - PAD.right + 1, bY = y - bH / 2;
+                ctx.fillStyle = h.cor; ctx.beginPath(); ctx.roundRect(bX, bY, bW, bH, 3); ctx.fill();
+                const rgb = parseInt(h.cor.slice(1), 16), lum = (0.299 * (rgb >> 16) + 0.587 * ((rgb >> 8) & 255) + 0.114 * (rgb & 255));
+                ctx.fillStyle = lum > 150 ? '#131722' : '#FFFFFF'; ctx.font = 'bold 10px -apple-system'; ctx.textAlign = 'right';
+                ctx.fillText(fmtN(h.p), bX + bW - 4, bY + bH - 4);
+                ctx.restore();
+            });
+        }
         // ── Régua de Medição: descartável, linha + caixa com % e USD ──
         if (_medidaAtual) {
             const corMedida = '#8B5CF6';
@@ -6444,15 +6473,61 @@ async function cvFibExcluirIdx(idx) {
     if (_fibs.length === 0) { _indState.fib = false; const b = document.getElementById('cv-ind-fib'); if (b) b.classList.remove('active'); }
     try { await cvCarregarAlertasGrafico(); } catch (e) {}
 }
+// Paleta de cores no estilo TradingView: cinzas, cores vivas e 6 tons (claro → escuro)
+const GR_PALETA = [
+ ['#FFFFFF','#D1D4DC','#B2B5BE','#9598A1','#787B86','#5D606B','#434651','#2A2E39','#131722','#000000'],
+ ['#F23645','#FF9800','#FFEB3B','#4CAF50','#089981','#00BCD4','#2962FF','#673AB7','#9C27B0','#E91E63'],
+ null,
+ ['#FCCBCD','#FFE0B2','#FFF9C4','#C8E6C9','#ACE5DC','#B2EBF2','#BBD9FB','#D1C4E9','#E1BEE7','#F8BBD0'],
+ ['#FAA1A4','#FFCC80','#FFF59D','#A5D6A7','#70CCBD','#80DEEA','#90BFF9','#B39DDB','#CE93D8','#F48FB1'],
+ ['#F77C80','#FFB74D','#FFF176','#81C784','#42BDA8','#4DD0E1','#5B9CF6','#9575CD','#BA68C8','#F06292'],
+ ['#F7525F','#FFA726','#FFEE58','#66BB6A','#22AB94','#26C6DA','#3179F5','#7E57C2','#AB47BC','#EC407A'],
+ ['#B22833','#F57C00','#FBC02D','#388E3C','#056656','#0097A7','#1848CC','#512DA8','#7B1FA2','#C2185B'],
+ ['#801922','#E65100','#F57F17','#1B5E20','#00332A','#006064','#0C3299','#311B92','#4A148C','#880E4F'],
+];
+function cvFecharPaletaCor() {
+    const o = document.getElementById('cv-paleta-overlay'); if (o) o.remove();
+    const p = document.getElementById('cv-paleta'); if (p) p.remove();
+}
+function cvAbrirPaletaCor(x, y, corAtual, onEscolher) {
+    cvFecharPaletaCor();
+    const overlay = document.createElement('div');
+    overlay.id = 'cv-paleta-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:9702;background:transparent;';
+    overlay.onclick = e => { e.stopPropagation(); cvFecharPaletaCor(); };
+    const box = document.createElement('div');
+    box.id = 'cv-paleta';
+    box.style.cssText = 'position:fixed;z-index:9703;background:#FFFFFF;border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,0.28);padding:12px;';
+    const grid = document.createElement('div');
+    grid.style.cssText = 'display:grid;grid-template-columns:repeat(10,26px);gap:5px;';
+    GR_PALETA.forEach(linha => {
+        if (!linha) { const sp = document.createElement('div'); sp.style.cssText = 'grid-column:1 / -1;height:6px;'; grid.appendChild(sp); return; }
+        linha.forEach(c => {
+            const b = document.createElement('button');
+            b.type = 'button'; b.setAttribute('aria-label', c);
+            const sel = (corAtual || '').toUpperCase() === c;
+            b.style.cssText = 'width:26px;height:26px;border-radius:5px;padding:0;cursor:pointer;background:' + c + ';border:1px solid rgba(0,0,0,0.12);' + (sel ? 'outline:2px solid #2962FF;outline-offset:1px;' : '');
+            b.onclick = ev => { ev.stopPropagation(); cvFecharPaletaCor(); onEscolher(c); };
+            grid.appendChild(b);
+        });
+    });
+    box.appendChild(grid);
+    document.body.appendChild(overlay);
+    document.body.appendChild(box);
+    const r = box.getBoundingClientRect(), W = window.innerWidth, H = window.innerHeight;
+    box.style.left = Math.max(8, Math.min(x, W - r.width - 8)) + 'px';
+    box.style.top = Math.max(8, Math.min(y, H - r.height - 8)) + 'px';
+}
 function cvAbrirMenuDesenhos(clientX, clientY) {
     const mantida = document.getElementById('cv-desenhos-menu');
     const pos = mantida ? { x: parseFloat(mantida.style.left), y: parseFloat(mantida.style.top) } : null;
     cvFecharMenuDesenhos();
     const fmtD = t => { const d = new Date(t); const p = n => String(n).padStart(2, '0'); return p(d.getDate()) + '/' + p(d.getMonth() + 1) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()); };
     const linhas = [];
-    _trendlines.forEach((tl, i) => linhas.push({ cor: tl.cor, nome: 'Tendência ' + (i + 1), det: fmtN(tl.p1) + ' → ' + fmtN(tl.p2) + ' · ' + fmtD(tl.t1), apagar: () => cvApagarTrendline(i) }));
-    _bandeiras.forEach((b, i) => linhas.push({ cor: b.cor, nome: 'Bandeira ' + (i + 1), det: fmtN(b.mastro.p1) + ' → ' + fmtN(b.mastro.p2) + ' · ' + fmtD(b.mastro.t1), apagar: () => cvApagarBandeira(i) }));
-    _freehands.forEach((fh, i) => { const p0 = fh.pontos && fh.pontos[0]; linhas.push({ cor: fh.cor, nome: 'Desenho livre ' + (i + 1), det: p0 ? fmtN(p0.p) + ' · ' + fmtD(p0.t) : '', apagar: () => cvApagarFreehand(i) }); });
+    _trendlines.forEach((tl, i) => linhas.push({ cor: tl.cor, nome: 'Tendência ' + (i + 1), det: fmtN(tl.p1) + ' → ' + fmtN(tl.p2) + ' · ' + fmtD(tl.t1), apagar: () => cvApagarTrendline(i), setCor: async c => { tl.cor = c; try { await cvSalvarTrendline(tl); } catch (e) {} } }));
+    grHLinhas().forEach((h, i) => linhas.push({ cor: h.cor, nome: 'Linha horizontal ' + (i + 1), det: fmtN(h.p), apagar: () => { grHLinhas().splice(i, 1); grHLinhasSalvar(); }, setCor: c => { h.cor = c; grHLinhasSalvar(); } }));
+    _bandeiras.forEach((b, i) => linhas.push({ cor: b.cor, nome: 'Bandeira ' + (i + 1), det: fmtN(b.mastro.p1) + ' → ' + fmtN(b.mastro.p2) + ' · ' + fmtD(b.mastro.t1), apagar: () => cvApagarBandeira(i), setCor: async c => { b.cor = c; try { await cvSalvarBandeira(b); } catch (e) {} } }));
+    _freehands.forEach((fh, i) => { const p0 = fh.pontos && fh.pontos[0]; linhas.push({ cor: fh.cor, nome: 'Desenho livre ' + (i + 1), det: p0 ? fmtN(p0.p) + ' · ' + fmtD(p0.t) : '', apagar: () => cvApagarFreehand(i), setCor: c => { fh.cor = c; cvSalvarFreehandLocal(); } }); });
     _fibs.forEach((f, i) => linhas.push({ cor: FIB_CORES[i % FIB_CORES.length], nome: 'Fibonacci ' + (i + 1), det: '0%: ' + fmtN(f.p1) + ' · 100%: ' + fmtN(f.p2), apagar: () => cvFibExcluirIdx(i) }));
     if (!linhas.length) return;
     const overlay = document.createElement('div');
@@ -6468,9 +6543,10 @@ function cvAbrirMenuDesenhos(clientX, clientY) {
     menu.appendChild(cab);
     linhas.forEach(l => {
         const row = document.createElement('div');
-        row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:2px 4px 2px 14px;border-top:1px solid #F2F2F7;';
-        const dot = document.createElement('span');
-        dot.style.cssText = 'flex-shrink:0;width:10px;height:10px;border-radius:50%;background:' + (l.cor || '#8E8E93') + ';border:1px solid rgba(0,0,0,0.15);';
+        row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:2px 4px 2px 14px;border-top:1px solid #F2F2F7;';
+        const dot = document.createElement(l.setCor ? 'button' : 'span');
+        dot.style.cssText = 'flex-shrink:0;width:22px;height:22px;border-radius:5px;margin-right:2px;background:' + (l.cor || '#8E8E93') + ';border:1px solid rgba(0,0,0,0.25);padding:0;' + (l.setCor ? 'cursor:pointer;' : '');
+        if (l.setCor) { dot.type = 'button'; dot.setAttribute('aria-label', 'Cor de ' + l.nome); dot.onclick = ev => { ev.stopPropagation(); const r = dot.getBoundingClientRect(); cvAbrirPaletaCor(r.left, r.bottom + 6, l.cor, async c => { await l.setCor(c); grDrawChart(); cvAbrirMenuDesenhos(); }); }; }
         const txt = document.createElement('div');
         txt.style.cssText = 'flex:1;min-width:0;padding:7px 0;';
         txt.innerHTML = '<div style="font-size:14px;font-weight:400;color:#1C1C1E;">' + l.nome + '</div><div style="font-size:11px;color:#8E8E93;">' + l.det + '</div>';
@@ -6478,7 +6554,7 @@ function cvAbrirMenuDesenhos(clientX, clientY) {
         x.type = 'button'; x.textContent = '✕'; x.setAttribute('aria-label', 'Apagar ' + l.nome);
         x.style.cssText = 'flex-shrink:0;width:44px;height:44px;background:none;border:none;color:#EF5350;font-size:18px;cursor:pointer;';
         x.onclick = async ev => { ev.stopPropagation(); await l.apagar(); grDrawChart(); cvAbrirMenuDesenhos(); };
-        row.appendChild(dot); row.appendChild(txt); row.appendChild(x);
+        row.appendChild(txt); row.appendChild(dot); row.appendChild(x);
         menu.appendChild(row);
     });
     document.body.appendChild(overlay);
@@ -6777,6 +6853,14 @@ function grInitTouch() {
                 e.preventDefault();
                 return;
             }
+            // Modo Linha Horizontal — toque posiciona, arrasto ajusta, soltar fixa
+            if (_indState.hlinha) {
+                _hlDrawing = true;
+                _hlAtual = { p: grToPrice(ey2) };
+                grDrawChart();
+                e.preventDefault();
+                return;
+            }
             // Modo Medida ativo — descartável, suspende outros gestos
             if (_indState.medida) {
                 const idx0 = grXToIndex(ex2);
@@ -7031,6 +7115,12 @@ function grInitTouch() {
             if (window._grMetricasDrag) { // arrastando a tabela de métricas
                 const rc = canvas.getBoundingClientRect();
                 grMetricasToqueMove((e.touches[0].clientX - rc.left) * (grLW(canvas) / rc.width), (e.touches[0].clientY - rc.top) * (grLH(canvas) / rc.height));
+                e.preventDefault();
+                return;
+            }
+            if (_hlDrawing && _hlAtual) {
+                _hlAtual.p = grToPrice(toCanvasY(e.touches[0].clientY));
+                grDrawChart();
                 e.preventDefault();
                 return;
             }
@@ -7317,6 +7407,18 @@ function grInitTouch() {
     if (window._grPincaY && e.touches.length < 2) { window._grPincaY = null; grYFatorSalvar(); } // fim da pinça no eixo Y: guarda o fator
     if (window._grPincaX && e.touches.length < 2) { window._grPincaX = null; grYFatorSalvar(); } // fim da pinça no eixo X: guarda o fator (compensado)
     isDragging = false;
+    if (_hlDrawing) {
+        _hlDrawing = false;
+        if (_hlAtual && isFinite(_hlAtual.p) && _hlAtual.p > 0) {
+            grHLinhas().push({ id: Date.now(), p: _hlAtual.p, cor: _hlColor });
+            grHLinhasSalvar();
+        }
+        _hlAtual = null;
+        _indState.hlinha = false;
+        const bh = document.getElementById('cv-ind-hlinha'); if (bh) bh.classList.remove('active');
+        grDrawChart();
+        return;
+    }
     if (_medidaDrawing) {
         _medidaDrawing = false;
         grDrawChart(); // mostra o resultado final fixo por um instante
@@ -8472,6 +8574,7 @@ const _indState = {
     trend:     false,
     bandeira:  false,
     medida:    false,
+    hlinha:    false,
     freehand:  false,
     reg:       false,
 };
@@ -9181,6 +9284,13 @@ function cvToggleMedida() {
     document.getElementById('cv-ind-medida').classList.toggle('active', _indState.medida);
     grDrawChart();
 }
+function cvToggleHLinha() {
+    _indState.hlinha = !_indState.hlinha;
+    if (!_indState.hlinha) { _hlAtual = null; _hlDrawing = false; }
+    document.getElementById('cv-ind-hlinha').classList.toggle('active', _indState.hlinha);
+    try { cvFecharMenuGrupo(); } catch (e) {}
+    grDrawChart();
+}
 function cvTrendColorPressStart() {
     _trendLongPressFired = false;
     _trendColorPressTimer = setTimeout(() => {
@@ -9248,6 +9358,7 @@ function grAmbienteColetar() {
         exaustao: _indState.exaustao,
         eficiencia: _indState.eficiencia,
         ambExpandido: _grAmbExpandido,
+        hLinhas: _grHLinhasMapa,
         barraTopo: _grBarraTopo,
         footprint: _grFootprintAtivo,
         reguaLockS: _grReguaLock.S,
@@ -9326,6 +9437,7 @@ async function grAmbienteCarregar() {
     if (!!ambiente.deltaAtr !== _indState.deltaAtr) cvToggleInd('deltaAtr');
     if (!!ambiente.exaustao !== _indState.exaustao) cvToggleInd('exaustao');
     if (!!ambiente.eficiencia !== _indState.eficiencia) cvToggleInd('eficiencia');
+    if (ambiente.hLinhas && typeof ambiente.hLinhas === 'object') { _grHLinhasMapa = Object.assign({}, ambiente.hLinhas, _grHLinhasMapa); try { localStorage.setItem('gr_hlinhas', JSON.stringify(_grHLinhasMapa)); } catch (e) {} }
     if (typeof ambiente.ambExpandido === 'boolean') { _grAmbExpandido = ambiente.ambExpandido; try { localStorage.setItem('gr_amb_expandido', _grAmbExpandido ? '1' : '0'); } catch (e) {} }
     if (typeof ambiente.barraTopo === 'boolean') { _grBarraTopo = ambiente.barraTopo; try { localStorage.setItem('gr_barra_topo', _grBarraTopo ? '1' : '0'); } catch (e) {} grAplicarBarraTopo(); }
     if (ambiente.footprint === true && !_grFootprintAtivo) grFootprintAtivar(); // roda em 2º plano; ver "libera a trava" abaixo
