@@ -3569,7 +3569,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = '04/10 09:10 · 15545 linhas · CANAL-REGRESSAO v96';
+const APP_VERSAO = '04/10 07:10 · 15575 linhas · 15583 linhas · FERRAMENTA-AUTO-OFF v98';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = 'Versão ' + APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -5902,10 +5902,16 @@ if (fibsParaDesenhar.length > 0) {
         ctx.fillText(label, bxC, y + 4);
     });
 }
+        if (_canalModo && _canalP1) {   // início do canal marcado: linha vertical até escolher o fim
+            const xi = PAD.left + ((grTimeToIndex(_canalP1.t) - startIdx) / totalSlots) * chartW + cW / 2;
+            ctx.save(); ctx.strokeStyle = '#00BCD4'; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]);
+            ctx.beginPath(); ctx.moveTo(xi, PAD.top); ctx.lineTo(xi, PAD.top + chartH); ctx.stroke(); ctx.restore();
+        }
         // ── Linhas de Tendência ────────────────────────────────────
         const trendsSalvasComoIdx = _trendlines.map(tl => ({
             i1: grTimeToIndex(tl.t1), p1: tl.p1, i2: grTimeToIndex(tl.t2), p2: tl.p2, cor: tl.cor || '#FFD700', canal: !!tl.canal
         }));
+        _trendlines.forEach((tl, k) => { if (tl.canal && tl.vivo) { grCanalAjustar(tl); trendsSalvasComoIdx[k].i2 = grTimeToIndex(tl.t2); trendsSalvasComoIdx[k].p2 = tl.p2; trendsSalvasComoIdx[k].p1 = tl.p1; } });
         const trendsParaDesenhar = [...trendsSalvasComoIdx, ...(_trendAtual ? [_trendAtual] : [])];
         if (trendsParaDesenhar.length > 0) {
             const toXIdx = absIdx => PAD.left + ((absIdx - startIdx) / totalSlots) * chartW + cW / 2;
@@ -6575,7 +6581,7 @@ function grEdToqueMove(x, y) {
     const idx = grXToIndex(nx), preco = grToPrice(ny);
     if (!(preco > 0)) return true;
     const tp = _edSel.tipo;
-    if (tp === 'tl') { if (d.k === 'a') { o.t1 = grIndexToTime(idx); o.p1 = preco; } else { o.t2 = grIndexToTime(idx); o.p2 = preco; } if (o.canal) grCanalAjustar(o); }
+    if (tp === 'tl') { if (d.k === 'a') { o.t1 = grIndexToTime(idx); o.p1 = preco; } else { o.t2 = grIndexToTime(idx); o.p2 = preco; if (o.canal) o.vivo = false; } if (o.canal) grCanalAjustar(o); }
     else if (tp === 'bd') {
         const m = o.mastro;
         if (d.k === 'a') { m.t1 = grIndexToTime(idx); m.p1 = preco; }
@@ -6742,6 +6748,17 @@ function cvAbrirMenuCandle(clientX, clientY, snap) {
             grAreaMarcarCanto(window._grCrosshairPrecoAtual, grAreaCandleNoX(_grCrosshairX));
             grDrawChart();
         } });
+    }
+    if (_canalModo && snap.cross && window._longPressActive) {
+        if (!_canalP1) {
+            itens.push({ txt: 'Canal: marcar início aqui', icone: HEROICON_BOOKMARK, acao: () => {
+                _canalP1 = { t: candle.t }; grAreaToast('Início marcado. Mova o crosshair e abra Ações', '#00ACC1'); grDrawChart();
+            } });
+        } else {
+            itens.push({ txt: 'Canal: marcar fim aqui', icone: HEROICON_BOOKMARK, acao: () => grCanalFinalizar(candle.t, false) });
+            itens.push({ txt: 'Canal: até o candle atual (ao vivo)', icone: HEROICON_BOOKMARK, acao: () => grCanalFinalizar(null, true) });
+            itens.push({ txt: 'Canal: cancelar início', icone: HEROICON_XMARK, acao: () => { _canalP1 = null; grDrawChart(); } });
+        }
     }
     if (temBotaoFootprint) {
         const jaEAncora = _grVwapAncoras.some(a => a.ts === candle.t);
@@ -7065,7 +7082,7 @@ function grInitTouch() {
                 return;
             }
             // Modo Trendline ativo — suspende outros gestos
-            if (_indState.trend) {
+            if (_indState.trend && !_canalModo) {
                 const HITT = 40;
                 let foundDrag = null;
                 for (let li = 0; li < _trendlines.length; li++) {
@@ -7596,6 +7613,7 @@ function grInitTouch() {
     }
     if (_medidaDrawing) {
         _medidaDrawing = false;
+        grFerramentaDesligar('medida', ['cv-ind-medida']);
         grDrawChart(); // mostra o resultado final fixo por um instante
         clearTimeout(_medidaFlashTimer);
         _medidaFlashTimer = setTimeout(() => { _medidaAtual = null; grDrawChart(); }, 1200);
@@ -7616,6 +7634,7 @@ function grInitTouch() {
         _bandeiraStep = null;
         _bandeiraMastroFinal = null;
         _bandeiraOffsetAtual = 0;
+        grFerramentaDesligar('bandeira', ['cv-ind-bandeira']);
         grDrawChart();
         return;
     }
@@ -7658,6 +7677,7 @@ function grInitTouch() {
             if (novo.canal) { if (!grCanalCalc(_trendAtual.i1, _trendAtual.i2)) { _trendAtual = null; grDrawChart(); return; } grCanalAjustar(novo); }
             _trendlines.push(novo);
             cvSalvarTrendline(novo);
+            _canalModo = false; grFerramentaDesligar('trend', ['cv-ind-tl', 'cv-ind-canal']);
         }
         _trendAtual = null;
         grDrawChart();
@@ -7678,6 +7698,7 @@ function grInitTouch() {
             };
             _freehands.push(novo);
             cvSalvarFreehand(novo);
+            grFerramentaDesligar('freehand', ['cv-ind-freehand']);
         }
         _freehandAtual = null;
         grDrawChart();
@@ -8957,7 +8978,7 @@ async function cvCarregarTrendlines() {
     window._grTlOk = _ativoId;
     const d = (window._grDesenhosMapa || {})[_ativoId];
     if (d) { // v93: vem do JSON de preferencias
-        _trendlines = (d.trendlines || []).map(t => ({ id: null, t1: t.t1, p1: parseFloat(t.p1), t2: t.t2, p2: parseFloat(t.p2), cor: t.cor || '#FFD700', canal: !!t.canal }));
+        _trendlines = (d.trendlines || []).map(t => ({ id: null, t1: t.t1, p1: parseFloat(t.p1), t2: t.t2, p2: parseFloat(t.p2), cor: t.cor || '#FFD700', canal: !!t.canal, vivo: !!t.vivo }));
         _bandeiras = (d.bandeiras || []).map(b => ({ id: null, mastro: { t1: b.t1, p1: parseFloat(b.p1), t2: b.t2, p2: parseFloat(b.p2) }, offset: parseFloat(b.offset), cor: b.cor || '#26A69A' }));
         return;
     }
@@ -9342,6 +9363,7 @@ function grCanalCalc(i1, i2) {
 }
 // prende as pontas do canal na mediana (p1/p2 = preço da mediana nos candles inicial e final)
 function grCanalAjustar(tl) {
+    if (tl.vivo && _grAllCandles.length) tl.t2 = _grAllCandles[_grAllCandles.length - 1].t;   // ao vivo: ponta final = candle em formação
     const c = grCanalCalc(grTimeToIndex(tl.t1), grTimeToIndex(tl.t2)); if (!c) return;
     const i1 = grTimeToIndex(tl.t1), i2 = grTimeToIndex(tl.t2);
     tl.p1 = Math.exp(c.inter + c.slope * (i1 - c.a)); tl.p2 = Math.exp(c.inter + c.slope * (i2 - c.a));
@@ -9356,17 +9378,33 @@ function grCanalDesenhar(ctx, tl, toXIdx, toY, cor) {   // tl: {i1,i2}
     ctx.globalAlpha = 1; ctx.strokeStyle = cor; ctx.lineWidth = 1.5;
     [[up, [5, 4]], [dn, [5, 4]], [md, []]].forEach(([pts, dash]) => { ctx.setLineDash(dash); ctx.lineWidth = dash.length ? 1.3 : 2; ctx.beginPath(); pts.forEach((q, j) => j ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])); ctx.stroke(); });
     ctx.setLineDash([]);
-    // rótulo: N barras, ±2σ em %, inclinação por barra em %
-    const q = md[md.length - 1]; ctx.font = '10px -apple-system, sans-serif'; ctx.fillStyle = cor; ctx.textAlign = 'right';
-    ctx.fillText(c.n + ' barras · ±' + GR_CANAL_K + 'σ=' + (GR_CANAL_K * c.sg * 100).toFixed(2) + '% · ' + (c.slope * 100 >= 0 ? '+' : '') + (c.slope * 100).toFixed(3) + '%/barra', Math.min(q[0], (window._grPADLeft || 0) + (window._grChartW || 400) - 4), up[up.length - 1][1] - 6);
     // pontas na mediana
     ctx.fillStyle = cor; [md[0], md[md.length - 1]].forEach(pt => { ctx.beginPath(); ctx.arc(pt[0], pt[1], 3.5, 0, Math.PI * 2); ctx.fill(); });
     ctx.restore(); return true;
 }
+// Depois de concluir UM desenho, a ferramenta se desliga sozinha (pra poder fazer outras coisas); pra desenhar de novo, liga no menu lateral.
+function grFerramentaDesligar(flag, ids) {
+    try { _indState[flag] = false; (ids || []).forEach(id => { const b = document.getElementById(id); if (b) b.classList.remove('active'); }); } catch (e) {}
+}
+let _canalP1 = null;   // {t}: candle inicial marcado pelo crosshair
+function grCanalFinalizar(tFim, vivo) {
+    if (!_canalP1) return;
+    const arr = _grAllCandles, ultimo = arr[arr.length - 1];
+    let t1 = _canalP1.t, t2 = vivo ? ultimo.t : tFim;
+    if (t2 < t1) { const x = t1; t1 = t2; t2 = x; }
+    const novo = { id: null, t1, p1: 0, t2, p2: 0, cor: _trendColor, canal: true, vivo: !!vivo };
+    if (!grCanalCalc(grTimeToIndex(t1), grTimeToIndex(t2))) { grAreaToast('Escolha um intervalo de pelo menos 5 candles', '#DC2626'); return; }
+    grCanalAjustar(novo);
+    _trendlines.push(novo);
+    try { cvSalvarTrendline(novo); } catch (e) {}
+    _canalP1 = null;
+    window._longPressActive = false;
+    cvToggleCanal();   // desliga a ferramenta (como a Área)
+}
 function cvToggleCanal() {
     const ligar = !(_indState.trend && _canalModo);
     _canalModo = ligar; _indState.trend = ligar;
-    if (!ligar) { _trendAtual = null; _trendDrawing = false; _trendDragging = null; }
+    if (!ligar) { _trendAtual = null; _trendDrawing = false; _trendDragging = null; _canalP1 = null; }
     const bt = document.getElementById('cv-ind-tl'); if (bt) bt.classList.remove('active');
     const bc = document.getElementById('cv-ind-canal'); if (bc) bc.classList.toggle('active', ligar);
     try { cvFecharMenuGrupo(); } catch (e) {}
@@ -9538,7 +9576,7 @@ window._grDesenhosMapa = {};
 function grDesenhosColetar() {
     if (_ativoId && window._grTlOk === _ativoId) {
         window._grDesenhosMapa[_ativoId] = {
-            trendlines: _trendlines.map(t => ({ t1: t.t1, p1: t.p1, t2: t.t2, p2: t.p2, cor: t.cor, canal: !!t.canal })),
+            trendlines: _trendlines.map(t => ({ t1: t.t1, p1: t.p1, t2: t.t2, p2: t.p2, cor: t.cor, canal: !!t.canal, vivo: !!t.vivo })),
             bandeiras: _bandeiras.map(b => ({ t1: b.mastro.t1, p1: b.mastro.p1, t2: b.mastro.t2, p2: b.mastro.p2, offset: b.offset, cor: b.cor })),
             fibs: _fibs.map(f => ({ p1: f.p1, p2: f.p2, tipo: f.tipo }))
         };
