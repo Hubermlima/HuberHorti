@@ -5106,6 +5106,9 @@ if (_grTipoGrafico === 'linha') {
             if (_indState.rsi)       grBarraChip('RSI', '#000000', (cx, cy) => cvAbrirMenuFpCfg('rsi', cx, cy));
             // Com configuração/modal próprio — tocar abre.
             if (_fibs && _fibs.length)         grBarraChip('Fibonacci', '#000000', (cx, cy) => cvToggleFib(cx, cy));
+            // Lista de desenhos (tendência, bandeira, desenho livre, fibonacci) com ✕ pra apagar — não depende de acertar o toque na linha.
+            if ((_trendlines && _trendlines.length) || (_bandeiras && _bandeiras.length) || (_freehands && _freehands.length) || (_fibs && _fibs.length))
+                grBarraChip('Desenhos', '#000000', (cx, cy) => cvAbrirMenuDesenhos(cx, cy));
             if (_grAlertas && _grAlertas.length) grBarraChip('Alertas', '#000000', (cx, cy) => cvToggleAlerta(cx, cy));
             if (_grFootprintAtivo) grBarraChip('Fluxo', '#000000', (cx, cy) => cvAbrirMenuFpCfg('fluxo', cx, cy));
             if (_grFootprintAtivo && _indState.exaustao) grBarraChip('Exaustão', '#000000', (cx, cy) => cvAbrirMenuFpCfg('exaustao', cx, cy));
@@ -6375,19 +6378,26 @@ function grDesenharLinhaOhlc(ctx, W, info) {
         ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
     });
     window._grBarraSuperiorChips.push({ x: x0 - 6, y: yTopB - 6, w: wChev + 12, h: hB + 12, abrir: () => grSetAmbExpandido(!_grAmbExpandido) });
+    // "Sair": independente da seta — sempre visível, à direita da linha da seta
+    ctx.font = 'bold ' + fs + 'px -apple-system';
+    const wSair = ctx.measureText('Sair').width + 16, xSair = xMax - wSair;
+    desenharBadge(xSair, wSair, () => {
+        ctx.textAlign = 'left'; ctx.font = 'bold ' + fs + 'px -apple-system'; ctx.fillStyle = '#EF5350';
+        ctx.fillText('Sair', xSair + 8, yTopB + 0.5 + hB / 2 + fs * 0.35);
+    });
+    window._grBarraSuperiorChips.push({ x: xSair - 4, y: yTopB - 6, w: wSair + 8, h: hB + 12, abrir: () => { try { grAmbienteSalvar(); } catch (e) {} setTimeout(function () { window.location.href = 'dashboard.html'; }, 400); } });
     if (_grAmbExpandido) {
         const itens = [
             { rot: 'TF ', val: grTfSiglaAtual(), abrir: (cx, cy) => cvAbrirMenuTf(cx, cy) },
             { rot: 'Escala ', val: _grEscalaLog ? 'Log' : 'Normal', abrir: (cx, cy) => cvAbrirMenuEscala(cx, cy) },
             { rot: 'Barra ', val: _grBarraTopo ? 'Visível' : 'Oculta', abrir: () => grSetBarraTopo(!_grBarraTopo) },
-            { rot: '', val: 'Sair', cor: '#EF5350', abrir: () => { try { grAmbienteSalvar(); } catch (e) {} setTimeout(function () { window.location.href = 'dashboard.html'; }, 400); } },
         ];
         let xb = x0 + wChev + 8;
         itens.forEach(it => {
             ctx.font = fs + 'px -apple-system'; const wRot = ctx.measureText(it.rot).width;
             ctx.font = 'bold ' + fs + 'px -apple-system'; const wVal = ctx.measureText(it.val).width;
             const wB = wRot + wVal + 16;
-            if (xb + wB > xMax + 4 && xb > x0 + wChev + 8) { xb = x0; yRow += hB + 6; }  // não coube: quebra para a linha de baixo
+            if (xb + wB > (yRow === yTopB ? xSair - 4 : xMax + 4) && xb > x0 + wChev + 8) { xb = x0; yRow += hB + 6; }  // não coube: quebra para a linha de baixo
             desenharBadge(xb, wB, () => {
                 const yTxt = yRow + 0.5 + hB / 2 + fs * 0.35;
                 ctx.textAlign = 'left';
@@ -6422,6 +6432,67 @@ function grSetAmbExpandido(v, salvar) {
 grAplicarBarraTopo();
 document.addEventListener('DOMContentLoaded', grAplicarBarraTopo);
 // Menu do candle (no lugar dos botões da antiga janela do crosshair): lista de ações para o candle que a linha OHLC está mostrando.
+// ── Lista de desenhos geométricos: cada linha tem um ✕ que apaga na hora ──
+function cvFecharMenuDesenhos() {
+    const o = document.getElementById('cv-desenhos-menu-overlay'); if (o) o.remove();
+    const m = document.getElementById('cv-desenhos-menu'); if (m) m.remove();
+}
+async function cvFibExcluirIdx(idx) {
+    const f = _fibs[idx]; if (!f) return;
+    if (f.tipo && _ativoId) { try { await db.from('alertas').delete().eq('ativo_id', _ativoId).eq('tipo', f.tipo); } catch (e) {} }
+    _fibs.splice(idx, 1);
+    if (_fibs.length === 0) { _indState.fib = false; const b = document.getElementById('cv-ind-fib'); if (b) b.classList.remove('active'); }
+    try { await cvCarregarAlertasGrafico(); } catch (e) {}
+}
+function cvAbrirMenuDesenhos(clientX, clientY) {
+    const mantida = document.getElementById('cv-desenhos-menu');
+    const pos = mantida ? { x: parseFloat(mantida.style.left), y: parseFloat(mantida.style.top) } : null;
+    cvFecharMenuDesenhos();
+    const fmtD = t => { const d = new Date(t); const p = n => String(n).padStart(2, '0'); return p(d.getDate()) + '/' + p(d.getMonth() + 1) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()); };
+    const linhas = [];
+    _trendlines.forEach((tl, i) => linhas.push({ cor: tl.cor, nome: 'Tendência ' + (i + 1), det: fmtN(tl.p1) + ' → ' + fmtN(tl.p2) + ' · ' + fmtD(tl.t1), apagar: () => cvApagarTrendline(i) }));
+    _bandeiras.forEach((b, i) => linhas.push({ cor: b.cor, nome: 'Bandeira ' + (i + 1), det: fmtN(b.mastro.p1) + ' → ' + fmtN(b.mastro.p2) + ' · ' + fmtD(b.mastro.t1), apagar: () => cvApagarBandeira(i) }));
+    _freehands.forEach((fh, i) => { const p0 = fh.pontos && fh.pontos[0]; linhas.push({ cor: fh.cor, nome: 'Desenho livre ' + (i + 1), det: p0 ? fmtN(p0.p) + ' · ' + fmtD(p0.t) : '', apagar: () => cvApagarFreehand(i) }); });
+    _fibs.forEach((f, i) => linhas.push({ cor: FIB_CORES[i % FIB_CORES.length], nome: 'Fibonacci ' + (i + 1), det: '0%: ' + fmtN(f.p1) + ' · 100%: ' + fmtN(f.p2), apagar: () => cvFibExcluirIdx(i) }));
+    if (!linhas.length) return;
+    const overlay = document.createElement('div');
+    overlay.id = 'cv-desenhos-menu-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:9700;background:transparent;';
+    overlay.onclick = cvFecharMenuDesenhos;
+    const menu = document.createElement('div');
+    menu.id = 'cv-desenhos-menu';
+    menu.style.cssText = 'position:fixed;z-index:9701;background:#FFFFFF;border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,0.22);min-width:250px;max-width:calc(100vw - 16px);max-height:60vh;overflow-y:auto;font-family:-apple-system,sans-serif;padding:4px 0;';
+    const cab = document.createElement('div');
+    cab.textContent = 'Desenhos';
+    cab.style.cssText = 'padding:8px 14px 6px;font-size:11px;font-weight:700;color:#8E8E93;text-transform:uppercase;letter-spacing:0.4px;';
+    menu.appendChild(cab);
+    linhas.forEach(l => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:2px 4px 2px 14px;border-top:1px solid #F2F2F7;';
+        const dot = document.createElement('span');
+        dot.style.cssText = 'flex-shrink:0;width:10px;height:10px;border-radius:50%;background:' + (l.cor || '#8E8E93') + ';border:1px solid rgba(0,0,0,0.15);';
+        const txt = document.createElement('div');
+        txt.style.cssText = 'flex:1;min-width:0;padding:7px 0;';
+        txt.innerHTML = '<div style="font-size:14px;font-weight:400;color:#1C1C1E;">' + l.nome + '</div><div style="font-size:11px;color:#8E8E93;">' + l.det + '</div>';
+        const x = document.createElement('button');
+        x.type = 'button'; x.textContent = '✕'; x.setAttribute('aria-label', 'Apagar ' + l.nome);
+        x.style.cssText = 'flex-shrink:0;width:44px;height:44px;background:none;border:none;color:#EF5350;font-size:18px;cursor:pointer;';
+        x.onclick = async ev => { ev.stopPropagation(); await l.apagar(); grDrawChart(); cvAbrirMenuDesenhos(); };
+        row.appendChild(dot); row.appendChild(txt); row.appendChild(x);
+        menu.appendChild(row);
+    });
+    document.body.appendChild(overlay);
+    document.body.appendChild(menu);
+    requestAnimationFrame(() => {
+        const r = menu.getBoundingClientRect();
+        const W = window.innerWidth, H = window.innerHeight;
+        let x = pos ? pos.x : (clientX != null ? clientX : 8), y = pos ? pos.y : ((clientY != null ? clientY : 60) + 8);
+        if (x + r.width > W - 8) x = W - r.width - 8;
+        if (y + r.height > H - 8) y = Math.max(8, H - r.height - 8);
+        menu.style.left = Math.max(8, x) + 'px';
+        menu.style.top = Math.max(8, y) + 'px';
+    });
+}
 function cvFecharMenuCandle() {
     const overlay = document.getElementById('cv-candle-menu-overlay'); if (overlay) overlay.remove();
     const menu = document.getElementById('cv-candle-menu'); if (menu) menu.remove();
