@@ -5981,6 +5981,7 @@ if (fibsParaDesenhar.length > 0) {
                 ctx.restore();
             });
         }
+        grEdAlcasDesenhar(ctx, t => toXIdx2(grTimeToIndex(t)), p => toY(p));
         // ── Régua de Medição: descartável, linha + caixa com % e USD ──
         if (_medidaAtual) {
             const corMedida = '#8B5CF6';
@@ -6485,6 +6486,107 @@ const GR_PALETA = [
  ['#B22833','#F57C00','#FBC02D','#388E3C','#056656','#0097A7','#1848CC','#512DA8','#7B1FA2','#C2185B'],
  ['#801922','#E65100','#F57F17','#1B5E20','#00332A','#006064','#0C3299','#311B92','#4A148C','#880E4F'],
 ];
+// ── Modo edição de desenho: selecionado pela lista "Desenhos"; alças grandes; arrasto RELATIVO (o dedo não cobre o ponto) ──
+let _edSel = null;    // {tipo:'tl'|'bd'|'fh'|'hl', idx}
+let _edDrag = null;   // {k, hx, hy, fx, fy, snap}
+function grEdObjeto(sel) {
+    sel = sel || _edSel; if (!sel) return null;
+    return sel.tipo === 'tl' ? _trendlines[sel.idx] : sel.tipo === 'bd' ? _bandeiras[sel.idx] : sel.tipo === 'fh' ? _freehands[sel.idx] : sel.tipo === 'hl' ? grHLinhas()[sel.idx] : null;
+}
+// fx(t) → x em tela, fy(preço) → y em tela. O desenho e o toque passam funções equivalentes.
+function grEdAlcas(fx, fy) {
+    const o = grEdObjeto(); if (!o) return [];
+    const t = _edSel.tipo;
+    if (t === 'tl') return [{ k: 'a', x: fx(o.t1), y: fy(o.p1) }, { k: 'b', x: fx(o.t2), y: fy(o.p2) }];
+    if (t === 'bd') { const m = o.mastro, xa = fx(m.t1), xb = fx(m.t2); return [{ k: 'a', x: xa, y: fy(m.p1) }, { k: 'b', x: xb, y: fy(m.p2) }, { k: 'c', x: (xa + xb) / 2, y: fy((m.p1 + m.p2) / 2 + o.offset) }]; }
+    if (t === 'fh') { const p = o.pontos[Math.floor(o.pontos.length / 2)]; return p ? [{ k: 'm', x: fx(p.t), y: fy(p.p) }] : []; }
+    if (t === 'hl') return [{ k: 'm', x: grPadL() + (window._grChartW || 200) / 2, y: fy(o.p) }];
+    return [];
+}
+function grEdCor() { const o = grEdObjeto(); return (o && (o.cor || '#FFD700')) || '#FFD700'; }
+function grEdAlcasDesenhar(ctx, fx, fy) {
+    if (!_edSel) return;
+    const cor = grEdCor();
+    grEdAlcas(fx, fy).forEach(a => {
+        ctx.save();
+        ctx.beginPath(); ctx.arc(a.x, a.y, 16, 0, Math.PI * 2); ctx.fillStyle = 'rgba(255,255,255,0.18)'; ctx.fill();
+        ctx.beginPath(); ctx.arc(a.x, a.y, 9, 0, Math.PI * 2); ctx.fillStyle = '#FFFFFF'; ctx.fill();
+        ctx.lineWidth = 3; ctx.strokeStyle = cor; ctx.stroke();
+        ctx.restore();
+    });
+}
+function grEdToqueInicio(x, y) {   // x,y em coordenadas do canvas; devolve true se consumiu
+    if (!_edSel) return false;
+    const alcas = grEdAlcas(t => grIndexToX(grTimeToIndex(t)), p => grLineY(p));
+    if (!alcas.length) return false;
+    let best = alcas[0], bd = Infinity;
+    alcas.forEach(a => { const d = Math.hypot(a.x - x, a.y - y); if (d < bd) { bd = d; best = a; } });
+    _edDrag = { k: best.k, hx: best.x, hy: best.y, fx: x, fy: y, snap: JSON.parse(JSON.stringify(grEdObjeto())) };
+    return true;
+}
+function grEdToqueMove(x, y) {
+    if (!_edDrag || !_edSel) return false;
+    const o = grEdObjeto(); if (!o) return true;
+    const d = _edDrag, nx = d.hx + (x - d.fx), ny = d.hy + (y - d.fy);
+    const idx = grXToIndex(nx), preco = grToPrice(ny);
+    if (!(preco > 0)) return true;
+    const tp = _edSel.tipo;
+    if (tp === 'tl') { if (d.k === 'a') { o.t1 = grIndexToTime(idx); o.p1 = preco; } else { o.t2 = grIndexToTime(idx); o.p2 = preco; } }
+    else if (tp === 'bd') {
+        const m = o.mastro;
+        if (d.k === 'a') { m.t1 = grIndexToTime(idx); m.p1 = preco; }
+        else if (d.k === 'b') { m.t2 = grIndexToTime(idx); m.p2 = preco; }
+        else { const i1 = grTimeToIndex(m.t1), i2 = grTimeToIndex(m.t2), slope = (m.p2 - m.p1) / (i2 - i1 || 1); o.offset = preco - (m.p1 + slope * (idx - i1)); }
+    }
+    else if (tp === 'fh') {
+        const dIdx = grXToIndex(nx) - grXToIndex(d.hx), dP = grToPrice(ny) - grToPrice(d.hy);
+        o.pontos = d.snap.pontos.map(pt => ({ t: grIndexToTime(grTimeToIndex(pt.t) + dIdx), p: pt.p + dP }));
+    }
+    else if (tp === 'hl') o.p = preco;
+    grDrawChart();
+    return true;
+}
+async function grEdToqueFim() {
+    if (!_edDrag) return false;
+    _edDrag = null;
+    const o = grEdObjeto(); if (!o) return true;
+    try {
+        if (_edSel.tipo === 'tl') await cvSalvarTrendline(o);
+        else if (_edSel.tipo === 'bd') await cvSalvarBandeira(o);
+        else if (_edSel.tipo === 'fh') cvSalvarFreehandLocal();
+        else if (_edSel.tipo === 'hl') grHLinhasSalvar();
+    } catch (e) {}
+    return true;
+}
+const GR_ED_NOMES = { tl: 'Tendência', bd: 'Bandeira', fh: 'Desenho livre', hl: 'Linha horizontal' };
+function cvEdicaoIniciar(tipo, idx) {
+    cvEdicaoSair(true);
+    _edSel = { tipo, idx };
+    const wrap = document.getElementById('gr-chart-canvas-wrap'); if (!wrap) return;
+    const bar = document.createElement('div');
+    bar.id = 'cv-edicao-bar';
+    bar.style.cssText = 'position:absolute;left:50%;bottom:14px;transform:translateX(-50%);z-index:20;display:flex;align-items:center;gap:6px;background:#1E222D;border:1px solid rgba(255,255,255,0.14);border-radius:14px;padding:6px 8px 6px 14px;box-shadow:0 6px 20px rgba(0,0,0,0.4);font-family:-apple-system,sans-serif;color:#E5E7EB;font-size:13px;white-space:nowrap;';
+    const nome = document.createElement('span'); nome.textContent = GR_ED_NOMES[tipo] + ' ' + (idx + 1); nome.style.cssText = 'margin-right:4px;';
+    const mk = (txt, css) => { const b = document.createElement('button'); b.type = 'button'; b.innerHTML = txt; b.style.cssText = 'height:38px;min-width:38px;border-radius:10px;border:none;cursor:pointer;font-size:15px;' + (css || ''); return b; };
+    const cor = mk('', 'width:38px;background:' + grEdCor() + ';border:2px solid rgba(255,255,255,0.7);'); cor.id = 'cv-edicao-cor'; cor.setAttribute('aria-label', 'Cor');
+    cor.onclick = () => { const r = cor.getBoundingClientRect(); cvAbrirPaletaCor(Math.max(8, r.left - 120), Math.max(8, r.top - 330), grEdCor(), async c => { const o = grEdObjeto(); if (!o) return; o.cor = c; cor.style.background = c; try { if (tipo === 'tl') await cvSalvarTrendline(o); else if (tipo === 'bd') await cvSalvarBandeira(o); else if (tipo === 'fh') cvSalvarFreehandLocal(); else grHLinhasSalvar(); } catch (e) {} grDrawChart(); }); };
+    const del = mk('🗑', 'background:rgba(239,83,80,0.18);color:#EF5350;'); del.setAttribute('aria-label', 'Apagar');
+    del.onclick = async () => {
+        const tp = _edSel && _edSel.tipo, ix = _edSel && _edSel.idx; cvEdicaoSair(true);
+        try { if (tp === 'tl') await cvApagarTrendline(ix); else if (tp === 'bd') await cvApagarBandeira(ix); else if (tp === 'fh') cvApagarFreehand(ix); else if (tp === 'hl') { grHLinhas().splice(ix, 1); grHLinhasSalvar(); } } catch (e) {}
+        grDrawChart();
+    };
+    const ok = mk('OK', 'background:#2962FF;color:#FFFFFF;font-weight:700;padding:0 14px;'); ok.onclick = () => cvEdicaoSair();
+    bar.appendChild(nome); bar.appendChild(cor); bar.appendChild(del); bar.appendChild(ok);
+    wrap.appendChild(bar);
+    grDrawChart();
+}
+function cvEdicaoSair(silencioso) {
+    _edSel = null; _edDrag = null;
+    const b = document.getElementById('cv-edicao-bar'); if (b) b.remove();
+    cvFecharPaletaCor();
+    if (!silencioso) grDrawChart();
+}
 function cvFecharPaletaCor() {
     const o = document.getElementById('cv-paleta-overlay'); if (o) o.remove();
     const p = document.getElementById('cv-paleta'); if (p) p.remove();
@@ -6519,16 +6621,17 @@ function cvAbrirPaletaCor(x, y, corAtual, onEscolher) {
     box.style.top = Math.max(8, Math.min(y, H - r.height - 8)) + 'px';
 }
 function cvAbrirMenuDesenhos(clientX, clientY) {
+    if (_edSel) cvEdicaoSair(true);  // índices podem mudar ao apagar pela lista
     const mantida = document.getElementById('cv-desenhos-menu');
     const pos = mantida ? { x: parseFloat(mantida.style.left), y: parseFloat(mantida.style.top) } : null;
     cvFecharMenuDesenhos();
     const fmtD = t => { const d = new Date(t); const p = n => String(n).padStart(2, '0'); return p(d.getDate()) + '/' + p(d.getMonth() + 1) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()); };
     const linhas = [];
-    _trendlines.forEach((tl, i) => linhas.push({ cor: tl.cor, nome: 'Tendência ' + (i + 1), det: fmtN(tl.p1) + ' → ' + fmtN(tl.p2) + ' · ' + fmtD(tl.t1), apagar: () => cvApagarTrendline(i), setCor: async c => { tl.cor = c; try { await cvSalvarTrendline(tl); } catch (e) {} } }));
-    grHLinhas().forEach((h, i) => linhas.push({ cor: h.cor, nome: 'Linha horizontal ' + (i + 1), det: fmtN(h.p), apagar: () => { grHLinhas().splice(i, 1); grHLinhasSalvar(); }, setCor: c => { h.cor = c; grHLinhasSalvar(); } }));
-    _bandeiras.forEach((b, i) => linhas.push({ cor: b.cor, nome: 'Bandeira ' + (i + 1), det: fmtN(b.mastro.p1) + ' → ' + fmtN(b.mastro.p2) + ' · ' + fmtD(b.mastro.t1), apagar: () => cvApagarBandeira(i), setCor: async c => { b.cor = c; try { await cvSalvarBandeira(b); } catch (e) {} } }));
-    _freehands.forEach((fh, i) => { const p0 = fh.pontos && fh.pontos[0]; linhas.push({ cor: fh.cor, nome: 'Desenho livre ' + (i + 1), det: p0 ? fmtN(p0.p) + ' · ' + fmtD(p0.t) : '', apagar: () => cvApagarFreehand(i), setCor: c => { fh.cor = c; cvSalvarFreehandLocal(); } }); });
-    _fibs.forEach((f, i) => linhas.push({ cor: FIB_CORES[i % FIB_CORES.length], nome: 'Fibonacci ' + (i + 1), det: '0%: ' + fmtN(f.p1) + ' · 100%: ' + fmtN(f.p2), apagar: () => cvFibExcluirIdx(i) }));
+    _trendlines.forEach((tl, i) => linhas.push({ cor: tl.cor, nome: 'Tendência ' + (i + 1), det: fmtN(tl.p1) + ' → ' + fmtN(tl.p2) + ' · ' + fmtD(tl.t1), edit: () => cvEdicaoIniciar('tl', i), apagar: () => cvApagarTrendline(i), setCor: async c => { tl.cor = c; try { await cvSalvarTrendline(tl); } catch (e) {} } }));
+    grHLinhas().forEach((h, i) => linhas.push({ cor: h.cor, nome: 'Linha horizontal ' + (i + 1), det: fmtN(h.p), edit: () => cvEdicaoIniciar('hl', i), apagar: () => { grHLinhas().splice(i, 1); grHLinhasSalvar(); }, setCor: c => { h.cor = c; grHLinhasSalvar(); } }));
+    _bandeiras.forEach((b, i) => linhas.push({ cor: b.cor, nome: 'Bandeira ' + (i + 1), det: fmtN(b.mastro.p1) + ' → ' + fmtN(b.mastro.p2) + ' · ' + fmtD(b.mastro.t1), edit: () => cvEdicaoIniciar('bd', i), apagar: () => cvApagarBandeira(i), setCor: async c => { b.cor = c; try { await cvSalvarBandeira(b); } catch (e) {} } }));
+    _freehands.forEach((fh, i) => { const p0 = fh.pontos && fh.pontos[0]; linhas.push({ cor: fh.cor, nome: 'Desenho livre ' + (i + 1), det: p0 ? fmtN(p0.p) + ' · ' + fmtD(p0.t) : '', edit: () => cvEdicaoIniciar('fh', i), apagar: () => cvApagarFreehand(i), setCor: c => { fh.cor = c; cvSalvarFreehandLocal(); } }); });
+    _fibs.forEach((f, i) => linhas.push({ cor: FIB_CORES[i % FIB_CORES.length], nome: 'Fibonacci ' + (i + 1), det: '0%: ' + fmtN(f.p1) + ' · 100%: ' + fmtN(f.p2), edit: () => cvFibAbrirEditar(i), apagar: () => cvFibExcluirIdx(i) }));
     if (!linhas.length) return;
     const overlay = document.createElement('div');
     overlay.id = 'cv-desenhos-menu-overlay';
@@ -6548,7 +6651,8 @@ function cvAbrirMenuDesenhos(clientX, clientY) {
         dot.style.cssText = 'flex-shrink:0;width:22px;height:22px;border-radius:5px;margin-right:2px;background:' + (l.cor || '#8E8E93') + ';border:1px solid rgba(0,0,0,0.25);padding:0;' + (l.setCor ? 'cursor:pointer;' : '');
         if (l.setCor) { dot.type = 'button'; dot.setAttribute('aria-label', 'Cor de ' + l.nome); dot.onclick = ev => { ev.stopPropagation(); const r = dot.getBoundingClientRect(); cvAbrirPaletaCor(r.left, r.bottom + 6, l.cor, async c => { await l.setCor(c); grDrawChart(); cvAbrirMenuDesenhos(); }); }; }
         const txt = document.createElement('div');
-        txt.style.cssText = 'flex:1;min-width:0;padding:7px 0;';
+        txt.style.cssText = 'flex:1;min-width:0;padding:7px 0;cursor:pointer;';
+        if (l.edit) txt.onclick = ev => { ev.stopPropagation(); cvFecharMenuDesenhos(); l.edit(); };
         txt.innerHTML = '<div style="font-size:14px;font-weight:400;color:#1C1C1E;">' + l.nome + '</div><div style="font-size:11px;color:#8E8E93;">' + l.det + '</div>';
         const x = document.createElement('button');
         x.type = 'button'; x.textContent = '✕'; x.setAttribute('aria-label', 'Apagar ' + l.nome);
@@ -6759,6 +6863,8 @@ function grInitTouch() {
             _liveTouchY = e.touches[0].clientY;
             const ex2 = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (grLW(canvas) / canvas.getBoundingClientRect().width);
             const ey2 = (e.touches[0].clientY - canvas.getBoundingClientRect().top) * (grLH(canvas) / canvas.getBoundingClientRect().height);
+            // Modo edição de desenho: arrasto relativo da alça mais próxima
+            if (_edSel && grEdToqueInicio(ex2, ey2)) { e.preventDefault(); return; }
             // Tabela de métricas: tocar e arrastar por cima dela move a janela (o ✕ é tratado como toque, pelos chips)
             if (grMetricasToqueInicio(ex2, ey2)) { e.preventDefault(); return; }
             // Chip "Ações" da linha OHLC com o crosshair aberto: não fecha o crosshair (o menu abre no touchend e age sobre o candle marcado)
@@ -7112,6 +7218,7 @@ function grInitTouch() {
         if (e.touches.length === 1) {
             _liveTouchX = e.touches[0].clientX;
             _liveTouchY = e.touches[0].clientY;
+            if (_edDrag) { const rc0 = canvas.getBoundingClientRect(); grEdToqueMove((e.touches[0].clientX - rc0.left) * (grLW(canvas) / rc0.width), (e.touches[0].clientY - rc0.top) * (grLH(canvas) / rc0.height)); e.preventDefault(); return; }
             if (window._grMetricasDrag) { // arrastando a tabela de métricas
                 const rc = canvas.getBoundingClientRect();
                 grMetricasToqueMove((e.touches[0].clientX - rc.left) * (grLW(canvas) / rc.width), (e.touches[0].clientY - rc.top) * (grLH(canvas) / rc.height));
@@ -7403,6 +7510,7 @@ function grInitTouch() {
     let _lastTapTime = 0;
     let _lastTapTarget = null;
     canvas.addEventListener('touchend', e => {
+    if (_edDrag) { grEdToqueFim(); isDragging = false; return; }
     if (window._grMetricasDrag) { grMetricasToqueFim(); isDragging = false; return; } // soltou a tabela de métricas (ou tocou num ⓘ/✕)
     if (window._grPincaY && e.touches.length < 2) { window._grPincaY = null; grYFatorSalvar(); } // fim da pinça no eixo Y: guarda o fator
     if (window._grPincaX && e.touches.length < 2) { window._grPincaX = null; grYFatorSalvar(); } // fim da pinça no eixo X: guarda o fator (compensado)
