@@ -9,6 +9,40 @@
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="supabase.js"></script>
+<script>
+/* v92: o servidor (tabela preferencias, id=1) é a ÚNICA fonte. Antes de qualquer código do app rodar, lê o JSON de lá
+   e passa a servir localStorage.getItem/setItem das chaves que começam com gr ou cv a partir da memória -- nada fica gravado no aparelho. */
+window._grMem = {}; window._grBootStatus = 'não lido'; window._grServidorFalhou = false;
+(function () {
+    var real = window.localStorage, sp = Storage.prototype, g0 = sp.getItem, s0 = sp.setItem, r0 = sp.removeItem;
+    function gerida(k) { return typeof k === 'string' && (k.indexOf('gr') === 0 || k.indexOf('cv') === 0); }
+    window._grGerida = gerida;
+    window._grMemExcluiSnap = function (k) { return k === 'gr_hlinhas' || k === 'gr_alertas_json' || k.indexOf('gr_area_marcada_') === 0; };
+    var ambiente = null;
+    try {
+        var base = (window.db && (window.db.supabaseUrl || (window.db.rest && window.db.rest.url && window.db.rest.url.replace(/\/rest\/v1\/?$/, '')))) || null;
+        var key = (window.db && (window.db.supabaseKey || (window.db.rest && window.db.rest.headers && window.db.rest.headers.apikey))) || null;
+        if (!base || !key) throw new Error('sem URL/chave do Supabase');
+        var x = new XMLHttpRequest();
+        x.open('GET', base + '/rest/v1/preferencias?id=eq.1&select=indicadores', false);
+        x.setRequestHeader('apikey', key); x.setRequestHeader('Authorization', 'Bearer ' + key);
+        x.send();
+        if (x.status >= 200 && x.status < 300) {
+            var arr = JSON.parse(x.responseText); ambiente = arr && arr[0] && arr[0].indicadores || null;
+            window._grBootStatus = ambiente ? 'servidor ok' : 'servidor sem registro';
+        } else { window._grServidorFalhou = true; window._grBootStatus = 'ERRO HTTP ' + x.status; }
+    } catch (e) { window._grServidorFalhou = true; window._grBootStatus = 'FALHOU: ' + (e && e.message || e); }
+    window._grAmbienteBoot = ambiente;
+    if (ambiente && ambiente.ls && typeof ambiente.ls === 'object') { for (var k in ambiente.ls) if (gerida(k)) window._grMem[k] = String(ambiente.ls[k]); }
+    else if (!window._grServidorFalhou) { // migração única: servidor ainda sem 'ls' -> semeia com o que estava no aparelho
+        try { for (var i = 0; i < real.length; i++) { var kk = real.key(i); if (gerida(kk) && kk !== 'gr_ambiente_bkp_v1' && !window._grMemExcluiSnap(kk)) window._grMem[kk] = g0.call(real, kk); } } catch (e) {}
+        window._grMigrou = true;
+    }
+    sp.getItem = function (k) { if (this === real && gerida(k)) return Object.prototype.hasOwnProperty.call(window._grMem, k) ? window._grMem[k] : null; return g0.apply(this, arguments); };
+    sp.setItem = function (k, v) { if (this === real && gerida(k)) { window._grMem[k] = String(v); if (window._grMemMudou) window._grMemMudou(k); return; } return s0.apply(this, arguments); };
+    sp.removeItem = function (k) { if (this === real && gerida(k)) { delete window._grMem[k]; if (window._grMemMudou) window._grMemMudou(k); return; } return r0.apply(this, arguments); };
+})();
+</script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{ --od-tabs-altura: calc(env(safe-area-inset-top) + 52px); }
@@ -882,7 +916,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <span class="cv-menu-item-label">Help</span>
     </button>
     <div class="cv-menu-divider"></div>
-    <button class="cv-menu-item" onclick="cvFecharMenu();try{grAmbienteSalvar();}catch(e){};setTimeout(function(){window.location.href='dashboard.html';},400);">
+    <button class="cv-menu-item" onclick="grSair();">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
       <span class="cv-menu-item-label" style="color:#EF5350;">Sair</span>
     </button>
@@ -3207,7 +3241,7 @@ function grValueAreaSalvarAncora() {
 function grValueAreaChavesAncora() {
     const prefixo = 'gr_va_ancora_' + (_ativoId || 'default') + '_';
     const chaves = [];
-    try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.indexOf(prefixo) === 0) chaves.push(k); } } catch (e) {}
+    Object.keys(window._grMem).forEach(k => { if (k.indexOf(prefixo) === 0) chaves.push(k); });
     return chaves;
 }
 function grValueAreaAtualizarRotuloMenu() {
@@ -3534,7 +3568,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = '02/10 13:05 · 15117 linhas · SALVAR-SAIR v88';
+const APP_VERSAO = '04/10 08:05 · 15648 linhas · ALERTAS-TABELA+SAIR v94';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = 'Versão ' + APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -6420,7 +6454,7 @@ function grDesenharLinhaOhlc(ctx, W, info) {
         ctx.textAlign = 'left'; ctx.font = 'bold ' + fs + 'px -apple-system'; ctx.fillStyle = '#EF5350';
         ctx.fillText('Sair', xSair + 8, yTopB + 0.5 + hB / 2 + fs * 0.35);
     });
-    window._grBarraSuperiorChips.push({ x: xSair - 4, y: yTopB - 6, w: wSair + 8, h: hB + 12, abrir: () => { try { grAmbienteSalvar(); } catch (e) {} setTimeout(function () { window.location.href = 'dashboard.html'; }, 400); } });
+    window._grBarraSuperiorChips.push({ x: xSair - 4, y: yTopB - 6, w: wSair + 8, h: hB + 12, abrir: () => { grSair(); } });
     if (_grAmbExpandido) {
         const itens = [
             { rot: 'TF ', val: grTfSiglaAtual(), abrir: (cx, cy) => cvAbrirMenuTf(cx, cy) },
@@ -8509,9 +8543,9 @@ function grAreaApagar(btn) {
         let sobrou = 0;
         try {
             const ks = [];
-            for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.indexOf('gr_area_marcada_') === 0) ks.push(k); }
+            Object.keys(window._grMem).forEach(k => { if (k.indexOf('gr_area_marcada_') === 0) ks.push(k); });
             ks.forEach(k => localStorage.removeItem(k));
-            for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.indexOf('gr_area_marcada_') === 0) sobrou++; }
+            Object.keys(window._grMem).forEach(k => { if (k.indexOf('gr_area_marcada_') === 0) sobrou++; });
         } catch (e) { sobrou = -1; }
         _grAreasMapa = {}; try { grAmbienteSalvar(); } catch (e) {}
         grAreaFecharRelatorio();
@@ -8915,42 +8949,31 @@ function grIndexToTime(idx) {
 }
 async function cvCarregarTrendlines() {
     if (!_ativoId) return;
+    window._grTlOk = _ativoId;
+    const d = (window._grDesenhosMapa || {})[_ativoId];
+    if (d) { // v93: vem do JSON de preferencias
+        _trendlines = (d.trendlines || []).map(t => ({ id: null, t1: t.t1, p1: parseFloat(t.p1), t2: t.t2, p2: parseFloat(t.p2), cor: t.cor || '#FFD700' }));
+        _bandeiras = (d.bandeiras || []).map(b => ({ id: null, mastro: { t1: b.t1, p1: parseFloat(b.p1), t2: b.t2, p2: parseFloat(b.p2) }, offset: parseFloat(b.offset), cor: b.cor || '#26A69A' }));
+        return;
+    }
+    // migração única: o JSON ainda não tem desenhos desse ativo -> lê uma vez da tabela; passa a valer o JSON a partir do próximo Sair
     const { data } = await db.from('trendlines').select('*').eq('ativo_id', _ativoId);
     const rows = data || [];
     _trendlines = rows.filter(r => r.offset_preco === null || r.offset_preco === undefined)
-        .map(r => ({ id: r.id, t1: r.t1, p1: parseFloat(r.p1), t2: r.t2, p2: parseFloat(r.p2), cor: r.cor || '#FFD700' }));
+        .map(r => ({ id: null, t1: r.t1, p1: parseFloat(r.p1), t2: r.t2, p2: parseFloat(r.p2), cor: r.cor || '#FFD700' }));
     _bandeiras = rows.filter(r => r.offset_preco !== null && r.offset_preco !== undefined)
-        .map(r => ({ id: r.id, mastro: { t1: r.t1, p1: parseFloat(r.p1), t2: r.t2, p2: parseFloat(r.p2) }, offset: parseFloat(r.offset_preco), cor: r.cor || '#26A69A' }));
+        .map(r => ({ id: null, mastro: { t1: r.t1, p1: parseFloat(r.p1), t2: r.t2, p2: parseFloat(r.p2) }, offset: parseFloat(r.offset_preco), cor: r.cor || '#26A69A' }));
 }
-async function cvSalvarTrendline(tl) {
-    if (!_ativoId) return;
-    if (tl.id) {
-        await db.from('trendlines').update({ t1: tl.t1, p1: tl.p1, t2: tl.t2, p2: tl.p2, cor: tl.cor }).eq('id', tl.id);
-    } else {
-        const { data } = await db.from('trendlines').insert({ ativo_id: _ativoId, t1: tl.t1, p1: tl.p1, t2: tl.t2, p2: tl.p2, cor: tl.cor }).select().single();
-        if (data) tl.id = data.id;
-    }
-}
+async function cvSalvarTrendline(tl) { grAmbienteSalvar(); }   // v93: só marca pendente; grava ao clicar em Sair
 async function cvApagarTrendline(idx) {
-    const tl = _trendlines[idx];
-    if (tl && tl.id) await db.from('trendlines').delete().eq('id', tl.id);
     _trendlines.splice(idx, 1);
+    grAmbienteSalvar();
     grDrawChart();
 }
-async function cvSalvarBandeira(b) {
-    if (!_ativoId) return;
-    const m = b.mastro;
-    if (b.id) {
-        await db.from('trendlines').update({ t1: m.t1, p1: m.p1, t2: m.t2, p2: m.p2, cor: b.cor, offset_preco: b.offset }).eq('id', b.id);
-    } else {
-        const { data } = await db.from('trendlines').insert({ ativo_id: _ativoId, t1: m.t1, p1: m.p1, t2: m.t2, p2: m.p2, cor: b.cor, offset_preco: b.offset }).select().single();
-        if (data) b.id = data.id;
-    }
-}
+async function cvSalvarBandeira(b) { grAmbienteSalvar(); }
 async function cvApagarBandeira(idx) {
-    const b = _bandeiras[idx];
-    if (b && b.id) await db.from('trendlines').delete().eq('id', b.id);
     _bandeiras.splice(idx, 1);
+    grAmbienteSalvar();
     grDrawChart();
 }
 async function cvCarregarAlertasGrafico() {
@@ -9443,6 +9466,28 @@ grEmaCustomCarregar();
 // do jeito que você deixou. Grava local na hora (rápido, sem esperar rede) e manda uma cópia pro
 // Supabase em segundo plano (debounced, sem travar nada) — se limpar os dados do navegador ou trocar
 // de aparelho, o ambiente volta de lá.
+// ── v91: TUDO no JSON de `preferencias` ──────────────────────────────────────────────────
+// (1) `ls`: espelho de TODAS as configurações guardadas no aparelho (chaves gr*/cv*: tema, footprint, velocidades,
+//     desenho livre, trades salvos, âncoras VWAP/VP/VA...). Ao abrir, o servidor manda: se algo difere, aplica e recarrega 1x.
+// (2) `espelhoDb`: cópia das linhas das tabelas `trendlines` e `alertas` (alertas manuais + fibonacci) por ativo. As tabelas
+//     continuam sendo gravadas normalmente (o Cloudflare lê `alertas` pra mandar mensagem); o JSON só repõe se a tabela estiver vazia.
+function grLsColetar() {
+    const o = {}; Object.keys(window._grMem).forEach(k => { if (!window._grMemExcluiSnap(k)) o[k] = window._grMem[k]; }); return o;
+}
+window._grMemMudou = function (k) { if (window._grMemExcluiSnap(k)) return; try { grAmbienteSalvar(); } catch (e) {} };
+// v93: desenhos (tendências, bandeiras, Fibonacci) vivem no JSON de preferencias (ambiente.desenhos[ativo]).
+// Exceção: alertas e Fibonacci são lidos e gravados NA HORA só na tabela `alertas` (Cloudflare lê dela). Tendências/bandeiras só no JSON (gravado no Sair).
+window._grDesenhosMapa = {};
+function grDesenhosColetar() {
+    if (_ativoId && window._grTlOk === _ativoId) {
+        window._grDesenhosMapa[_ativoId] = {
+            trendlines: _trendlines.map(t => ({ t1: t.t1, p1: t.p1, t2: t.t2, p2: t.p2, cor: t.cor })),
+            bandeiras: _bandeiras.map(b => ({ t1: b.mastro.t1, p1: b.mastro.p1, t2: b.mastro.t2, p2: b.mastro.p2, offset: b.offset, cor: b.cor })),
+            fibs: _fibs.map(f => ({ p1: f.p1, p2: f.p2, tipo: f.tipo }))
+        };
+    }
+    return window._grDesenhosMapa;
+}
 function grAmbienteColetar() {
     return {
         v: 1,
@@ -9469,51 +9514,59 @@ function grAmbienteColetar() {
         areas: _grAreasMapa,
         tfCustom: { u: _grTfCustomUnit, a: _grTfCustomAmount },
         footprintContraste: FOOTPRINT_CONTRASTE,
+        ls: grLsColetar(),
+        desenhos: grDesenhosColetar(),
     };
 }
 let _grAmbienteRestaurando = false; // true enquanto grAmbienteCarregar() está aplicando os campos -- evita gravar o ambiente pela metade
 let _grAmbienteCarregado = false;   // só grava depois da tentativa de leitura -- senão um save logo na abertura sobrescreve o salvo com o padrão
 let _grAmbientePendente = false;
 // Garantia extra: grava também quando o app vai pra segundo plano / a tela bloqueia / a página fecha.
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') { try { grAmbienteSalvar(); } catch (e) {} } });
-window.addEventListener('pagehide', () => { try { grAmbienteSalvar(); } catch (e) {} });
 function grAmbStatusMostrar() {
     const el = document.getElementById('cv-menu-versao'); if (!el || !window._grAmbStatus || typeof APP_VERSAO === 'undefined') return;
     const base = 'Versão ' + APP_VERSAO;
     el.innerHTML = base + '<br>Carga: ' + window._grAmbStatus.carga + '<br>Gravação: ' + window._grAmbStatus.save;
 }
 const GR_AMBIENTE_BKP = 'gr_ambiente_bkp_v1';
+// v93: NADA grava sozinho. grAmbienteSalvar() só marca "pendente"; a gravação de verdade é grAmbienteGravar(), chamada só pelo botão Sair.
 function grAmbienteSalvar() {
-    if (_grAmbienteRestaurando) return; // restauração em andamento -- não regrava por cima do que ainda está sendo aplicado
-    if (!_grAmbienteCarregado) { _grAmbientePendente = true; return; }
-    const ambiente = grAmbienteColetar();
-    // Duas cópias: Supabase (principal) e localStorage (reserva). O erro do Supabase vem em {error}, não como exceção.
-    try { localStorage.setItem(GR_AMBIENTE_BKP, JSON.stringify({ t: Date.now(), ambiente })); } catch (e) {}
-    Promise.resolve(db.from('preferencias').upsert({ id: 1, indicadores: ambiente, updated_at: new Date().toISOString() }))
-        .then(r => {
-            const hh = new Date().toTimeString().slice(0, 8);
-            window._grAmbStatus.save = (r && r.error) ? ('ERRO ' + hh + ' — ' + (r.error.message || JSON.stringify(r.error))) : ('ok no servidor ' + hh + ' (' + (Object.keys(_grAreasMapa).length) + ' área)');
-            grAmbStatusMostrar();
-            if (r && r.error) { console.log('[ambiente] ERRO Supabase:', JSON.stringify(r.error)); try { grAreaToast('Não salvou no servidor: ' + (r.error.message || 'erro'), '#DC2626'); } catch (e) {} }
-            else console.log('[ambiente] salvo no Supabase, tf=' + ambiente.tf);
-        })
-        .catch(e => { window._grAmbStatus.save = 'FALHOU: ' + (e && e.message ? e.message : e); grAmbStatusMostrar(); console.log('[ambiente] ERRO ao salvar no Supabase:', e); try { grAreaToast('Sem conexão pra salvar (ficou só neste aparelho)', '#DC2626'); } catch (er) {} });
+    if (_grAmbienteRestaurando || !_grAmbienteCarregado) return;
+    window._grSujo = true;
+    if (window._grAmbStatus && window._grAmbStatus.save.indexOf('pendente') !== 0) { window._grAmbStatus.save = 'pendente — só grava ao clicar em Sair'; try { grAmbStatusMostrar(); } catch (e) {} }
 }
-// Roda uma vez ao abrir o app: Supabase primeiro; se vier vazio ou der erro, usa a cópia reserva do localStorage.
-async function grAmbienteCarregar() {
-    let ambiente = null;
+async function grAmbienteGravar() {
+    if (!_grAmbienteCarregado) return false;
+    if (window._grServidorFalhou) { window._grAmbStatus.save = 'NÃO gravou: leitura do servidor falhou (protege o que está salvo)'; grAmbStatusMostrar(); return false; }
+    const ambiente = grAmbienteColetar();
     try {
-        const { data, error } = await db.from('preferencias').select('indicadores').eq('id', 1).maybeSingle();
-        if (data && data.indicadores) { ambiente = data.indicadores; window._grAmbStatus.carga = 'servidor ok (tf=' + ambiente.tf + ', áreas=' + Object.keys(ambiente.areas || {}).length + ')'; }
-        else window._grAmbStatus.carga = error ? ('ERRO no servidor: ' + (error.message || JSON.stringify(error))) : 'servidor sem registro (id 1 vazio)';
-        console.log('[ambiente] busquei do Supabase:', JSON.stringify(data), error ? ('erro=' + JSON.stringify(error)) : '');
-    } catch(e) { window._grAmbStatus.carga = 'FALHOU: ' + (e && e.message ? e.message : e); console.log('[ambiente] ERRO buscando do Supabase:', e); }
-    if (!ambiente) {
-        try { const b = JSON.parse(localStorage.getItem(GR_AMBIENTE_BKP) || 'null'); if (b && b.ambiente) { ambiente = b.ambiente; window._grAmbStatus.carga += ' → usou cópia do aparelho'; console.log('[ambiente] usando a cópia reserva do localStorage'); } } catch (e) {}
+        const r = await db.from('preferencias').upsert({ id: 1, indicadores: ambiente, updated_at: new Date().toISOString() });
+        if (r && r.error) throw new Error(r.error.message || JSON.stringify(r.error));
+        const aviso = '';
+        window._grSujo = false;
+        window._grAmbStatus.save = 'ok no servidor ' + new Date().toTimeString().slice(0, 8) + aviso;
+        grAmbStatusMostrar();
+        return aviso === '';
+    } catch (e) {
+        window._grAmbStatus.save = 'FALHOU: ' + (e && e.message ? e.message : e); grAmbStatusMostrar(); return false;
     }
+}
+// Botão Sair (menu e barra do topo): grava tudo no servidor e só então sai. Se falhar, pergunta antes de sair sem gravar.
+async function grSair() {
+    try { cvFecharMenu(); } catch (e) {}
+    try { grAreaToast('Gravando…', '#2563EB'); } catch (e) {}
+    const ok = await grAmbienteGravar();
+    if (!ok && !confirm('Não consegui gravar tudo no servidor:\n' + window._grAmbStatus.save + '\n\nSair mesmo assim e perder as alterações desta sessão?')) return;
+    window.location.href = 'dashboard.html';
+}
+// Roda uma vez ao abrir o app: lê do servidor (sem cópia no aparelho).
+async function grAmbienteCarregar() {
+    // v92: uma única leitura, feita no boot (script no topo da página) direto da tabela preferencias.
+    const ambiente = window._grAmbienteBoot || null;
+    window._grAmbStatus.carga = ambiente ? ('servidor ok (tf=' + ambiente.tf + ', áreas=' + Object.keys(ambiente.areas || {}).length + ', retas=' + Object.values(ambiente.hLinhas || {}).reduce((t, l) => t + (Array.isArray(l) ? l.length : 0), 0) + ', configs=' + Object.keys(window._grMem).length + (window._grMigrou ? ', migrou do aparelho' : '') + ')') : (window._grBootStatus || 'sem dados');
     if (!ambiente) { console.log('[ambiente] NADA encontrado -- fica no padrão'); _grAmbienteCarregado = true; if (_grAmbientePendente) { _grAmbientePendente = false; grAmbienteSalvar(); } return; }
+    if (ambiente.desenhos && typeof ambiente.desenhos === 'object') window._grDesenhosMapa = ambiente.desenhos;
     if (ambiente.areas && typeof ambiente.areas === 'object') {
-        _grAreasMapa = Object.assign({}, ambiente.areas, _grAreasMapa); // o que já está no aparelho não é perdido
+        _grAreasMapa = ambiente.areas; // servidor é a fonte única 
         if (!_grAreaMarcada) { try { grAreaCarregar(); } catch (e) {} }
     }
     if (typeof ambiente.footprintContraste === 'number' && ambiente.footprintContraste >= 0 && ambiente.footprintContraste <= 10) FOOTPRINT_CONTRASTE = ambiente.footprintContraste;
@@ -9537,8 +9590,8 @@ async function grAmbienteCarregar() {
     if (!!ambiente.deltaAtr !== _indState.deltaAtr) cvToggleInd('deltaAtr');
     if (!!ambiente.exaustao !== _indState.exaustao) cvToggleInd('exaustao');
     if (!!ambiente.eficiencia !== _indState.eficiencia) cvToggleInd('eficiencia');
-    if (ambiente.alertas && typeof ambiente.alertas === 'object') { _grAlertasJson = Object.assign({}, ambiente.alertas, _grAlertasJson); try { localStorage.setItem('gr_alertas_json', JSON.stringify(_grAlertasJson)); } catch (e) {} grAlertasJsonAplicar(); try { grDrawChart(); } catch (e) {} }
-    if (ambiente.hLinhas && typeof ambiente.hLinhas === 'object') { _grHLinhasMapa = Object.assign({}, ambiente.hLinhas, _grHLinhasMapa); try { localStorage.setItem('gr_hlinhas', JSON.stringify(_grHLinhasMapa)); } catch (e) {} }
+    if (ambiente.alertas && typeof ambiente.alertas === 'object') { _grAlertasJson = ambiente.alertas; try { localStorage.setItem('gr_alertas_json', JSON.stringify(_grAlertasJson)); } catch (e) {} grAlertasJsonAplicar(); try { grDrawChart(); } catch (e) {} }
+    if (ambiente.hLinhas && typeof ambiente.hLinhas === 'object') { _grHLinhasMapa = ambiente.hLinhas; try { localStorage.setItem('gr_hlinhas', JSON.stringify(_grHLinhasMapa)); } catch (e) {} }
     if (typeof ambiente.ambExpandido === 'boolean') { _grAmbExpandido = ambiente.ambExpandido; try { localStorage.setItem('gr_amb_expandido', _grAmbExpandido ? '1' : '0'); } catch (e) {} }
     if (typeof ambiente.barraTopo === 'boolean') { _grBarraTopo = ambiente.barraTopo; try { localStorage.setItem('gr_barra_topo', _grBarraTopo ? '1' : '0'); } catch (e) {} grAplicarBarraTopo(); }
     if (ambiente.footprint === true && !_grFootprintAtivo) grFootprintAtivar(); // roda em 2º plano; ver "libera a trava" abaixo
