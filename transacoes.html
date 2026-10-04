@@ -637,7 +637,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <button class="cv-ind-btn macd" id="cv-ind-macd" onclick="cvToggleSubInd('macd')">
 <span class="btn-sigla">MACD</span><span class="btn-nome">Convergência</span></button>
       <button class="cv-ind-btn fib" id="cv-ind-fib" onclick="cvToggleFib()"><span class="btn-sigla">Fib</span><span class="btn-nome">Fibonacci</span></button>
-      <button class="cv-ind-btn" id="cv-ind-alerta" onclick="cvToggleAlerta()"><span class="btn-sigla"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0"/></svg></span><span class="btn-nome">Alerta</span></button>
+      <button class="cv-ind-btn" id="cv-ind-alerta" onclick="cvToggleAlertaFerramenta()"><span class="btn-sigla"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0"/></svg></span><span class="btn-nome">Alerta</span></button>
       <button class="cv-ind-btn" id="cv-ind-desenho" onclick="cvAbrirMenuGrupo('desenho', event.clientX, event.clientY)"><span class="btn-sigla">✎</span><span class="btn-nome">Desenho</span></button>
       <button class="cv-ind-btn vwap-limpar" id="cv-vwap-limpar-btn" onclick="grVwapLimparAncora()" style="display:none;"><span class="btn-sigla">✕</span><span class="btn-nome">Limpar Âncoras</span></button>
       <button class="cv-ind-btn" id="cv-ind-footprint-tab" onclick="cvAbrirMenuGrupo('footprint', event.clientX, event.clientY)"><span class="btn-sigla">FP</span><span class="btn-nome">Footprint</span></button>
@@ -4193,6 +4193,23 @@ let _bandeiraDeletePending = null;
 let _medidaAtual = null;     // {i1,p1,i2,p2} durante o arrasto
 let _medidaDrawing = false;
 // ── Linha Horizontal: toque e arraste pra posicionar, solta pra fixar (a ferramenta desliga sozinha) ──
+let _alAtual = null, _alDrawing = false;   // Alerta: mesma ferramenta da linha horizontal (toque, arrasto, soltar grava)
+let _grAlertaCores = (function () { try { return JSON.parse(localStorage.getItem('gr_alerta_cores') || '{}') || {}; } catch (e) { return {}; } })();
+const GR_ALERTA_COR_PADRAO = '#FF9500';
+function grAlertaCor(a) { return (a && a.id != null && _grAlertaCores[a.id]) || GR_ALERTA_COR_PADRAO; }
+// Alertas também ficam em JSON no ambiente (por ativo), igual às linhas horizontais — a tabela 'alertas' continua sendo gravada normalmente.
+let _grAlertasJson = (function () { try { return JSON.parse(localStorage.getItem('gr_alertas_json') || '{}') || {}; } catch (e) { return {}; } })();
+function grAlertasJsonChave() { return String(_ativoId || 'default'); }
+function grAlertasJsonSalvar() {   // chamar depois de QUALQUER mudança nos alertas (criar, mover, cor, ligar/desligar, apagar)
+    _grAlertasJson[grAlertasJsonChave()] = _grAlertas.map(a => ({ id: a.id, preco: a.preco, habilitado: a.habilitado !== false, cor: grAlertaCor(a), created_at: a.created_at || null }));
+    try { localStorage.setItem('gr_alertas_json', JSON.stringify(_grAlertasJson)); } catch (e) {}
+    try { grAmbienteSalvar(); } catch (e) {}
+}
+function grAlertasJsonAplicar() {  // cores (e, se a tabela não respondeu, os próprios alertas) vindos do JSON
+    const lista = _grAlertasJson[grAlertasJsonChave()] || [];
+    lista.forEach(j => { if (j && j.id != null && j.cor) _grAlertaCores[j.id] = j.cor; });
+}
+function grAlertaCoresSalvar() { grAlertasJsonSalvar(); }
 let _hlAtual = null;          // {p} durante o toque
 let _hlDrawing = false;
 let _hlColor = '#FFD700';
@@ -4897,20 +4914,25 @@ function grDrawCandles(candles, emptyRight) {
                 }
             }
         }
-       // ── Alertas ──────────────────────────────────────────────────
-        _grAlertas.forEach((alerta, i) => {
-            const y = toY(alerta.preco);
-            if (y < PAD.top || y > PAD.top + _grChartH) return;
-            ctx.save();
-            ctx.strokeStyle = alerta.habilitado !== false ? 'rgba(255,149,0,0.9)' : 'rgba(255,149,0,0.35)';
-            ctx.lineWidth = 1.5;
-            ctx.setLineDash([6, 4]);
-            ctx.beginPath();
-            ctx.moveTo(PAD.left, y);
-            ctx.lineTo(W - PAD.right, y);
-            ctx.stroke();
-            ctx.restore();
-        });
+       // ── Alertas: linha contínua + pílula de preço no eixo (igual à linha horizontal) ──
+        {
+            const als = _grAlertas.map(al => ({ p: al.preco, cor: grAlertaCor(al), on: al.habilitado !== false }));
+            if (_alAtual) als.push({ p: _alAtual.p, cor: GR_ALERTA_COR_PADRAO, on: true });
+            als.forEach(h => {
+                const y = toY(h.p);
+                if (y < PAD.top - 1 || y > PAD.top + _grChartH + 1) return;
+                ctx.save();
+                if (!h.on) ctx.globalAlpha = 0.35;
+                ctx.strokeStyle = h.cor; ctx.lineWidth = 1.5; ctx.setLineDash([]);
+                ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(W - PAD.right, y); ctx.stroke();
+                const bH = 16, bW = Math.max(PAD.right - 4, 40), bX = W - PAD.right + 1, bY = y - bH / 2;
+                ctx.fillStyle = h.cor; ctx.beginPath(); ctx.roundRect(bX, bY, bW, bH, 3); ctx.fill();
+                const rgb = parseInt(h.cor.slice(1), 16), lum = (0.299 * (rgb >> 16) + 0.587 * ((rgb >> 8) & 255) + 0.114 * (rgb & 255));
+                ctx.fillStyle = lum > 150 ? '#131722' : '#FFFFFF'; ctx.font = 'bold 10px -apple-system'; ctx.textAlign = 'right';
+                ctx.fillText(fmtN(h.p), bX + bW - 4, bY + bH - 4);
+                ctx.restore();
+            });
+        }
        // Candles ou Linha
 if (_grTipoGrafico === 'linha') {
     ctx.setLineDash([]);
@@ -5118,7 +5140,7 @@ if (_grTipoGrafico === 'linha') {
             // Com configuração/modal próprio — tocar abre.
             if (_fibs && _fibs.length)         grBarraChip('Fibonacci', '#000000', (cx, cy) => cvToggleFib(cx, cy));
             // Lista de desenhos (tendência, bandeira, desenho livre, fibonacci) com ✕ pra apagar — não depende de acertar o toque na linha.
-            if ((_trendlines && _trendlines.length) || (_bandeiras && _bandeiras.length) || (_freehands && _freehands.length) || (_fibs && _fibs.length) || grHLinhas().length)
+            if ((_trendlines && _trendlines.length) || (_bandeiras && _bandeiras.length) || (_freehands && _freehands.length) || (_fibs && _fibs.length) || grHLinhas().length || (_grAlertas && _grAlertas.length))
                 grBarraChip('Desenhos', '#000000', (cx, cy) => cvAbrirMenuDesenhos(cx, cy));
             if (_grAlertas && _grAlertas.length) grBarraChip('Alertas', '#000000', (cx, cy) => cvToggleAlerta(cx, cy));
             if (_grFootprintAtivo) grBarraChip('Fluxo', '#000000', (cx, cy) => cvAbrirMenuFpCfg('fluxo', cx, cy));
@@ -5439,6 +5461,19 @@ if (_grTipoGrafico === 'linha') {
             ctx.font = 'bold 10px -apple-system';
             ctx.textAlign = 'right';
 ctx.fillText(fmtN(stopPrice), bX + bW - 4, bY + bH - 3);
+            // Stop fora da faixa de preço visível: pílula presa na borda (▲/▼); tocar nela centraliza o gráfico no Stop
+            if (y < PAD.top || y > PAD.top + chartH) {
+                const acima = y < PAD.top, yE = acima ? PAD.top + 12 : PAD.top + chartH - 12;
+                const txtE = (acima ? '▲ S ' : '▼ S ') + fmtN(stopPrice);
+                ctx.save();
+                ctx.font = 'bold 11px -apple-system';
+                const wE = Math.max(PAD.right - 4, ctx.measureText(txtE).width + 12), xE = W - PAD.right + 1 - (wE - (PAD.right - 4));
+                ctx.fillStyle = color; ctx.beginPath(); ctx.roundRect(xE, yE - 11, wE, 22, 6); ctx.fill();
+                ctx.fillStyle = '#FFFFFF'; ctx.textAlign = 'center'; ctx.fillText(txtE, xE + wE / 2, yE + 4);
+                ctx.restore();
+                if (!window._grBarraSuperiorChips) window._grBarraSuperiorChips = [];
+                window._grBarraSuperiorChips.push({ x: xE - 6, y: yE - 18, w: wE + 12, h: 36, abrir: () => { _grYAxisCenter = stopPrice; try { grDrawChart(); } catch (e) {} } });
+            }
             // Handle direito — alinhado no eixo Y, letra S
             const hW = 18;
             const hX = W - PAD.right;
@@ -6491,7 +6526,7 @@ let _edSel = null;    // {tipo:'tl'|'bd'|'fh'|'hl', idx}
 let _edDrag = null;   // {k, hx, hy, fx, fy, snap}
 function grEdObjeto(sel) {
     sel = sel || _edSel; if (!sel) return null;
-    return sel.tipo === 'tl' ? _trendlines[sel.idx] : sel.tipo === 'bd' ? _bandeiras[sel.idx] : sel.tipo === 'fh' ? _freehands[sel.idx] : sel.tipo === 'hl' ? grHLinhas()[sel.idx] : null;
+    return sel.tipo === 'tl' ? _trendlines[sel.idx] : sel.tipo === 'bd' ? _bandeiras[sel.idx] : sel.tipo === 'fh' ? _freehands[sel.idx] : sel.tipo === 'hl' ? grHLinhas()[sel.idx] : sel.tipo === 'al' ? _grAlertas[sel.idx] : null;
 }
 // fx(t) → x em tela, fy(preço) → y em tela. O desenho e o toque passam funções equivalentes.
 function grEdAlcas(fx, fy) {
@@ -6501,9 +6536,10 @@ function grEdAlcas(fx, fy) {
     if (t === 'bd') { const m = o.mastro, xa = fx(m.t1), xb = fx(m.t2); return [{ k: 'a', x: xa, y: fy(m.p1) }, { k: 'b', x: xb, y: fy(m.p2) }, { k: 'c', x: (xa + xb) / 2, y: fy((m.p1 + m.p2) / 2 + o.offset) }]; }
     if (t === 'fh') { const p = o.pontos[Math.floor(o.pontos.length / 2)]; return p ? [{ k: 'm', x: fx(p.t), y: fy(p.p) }] : []; }
     if (t === 'hl') return [{ k: 'm', x: grPadL() + (window._grChartW || 200) / 2, y: fy(o.p) }];
+    if (t === 'al') return [{ k: 'm', x: grPadL() + (window._grChartW || 200) / 2, y: fy(o.preco) }];
     return [];
 }
-function grEdCor() { const o = grEdObjeto(); return (o && (o.cor || '#FFD700')) || '#FFD700'; }
+function grEdCor() { const o = grEdObjeto(); if (o && _edSel.tipo === 'al') return grAlertaCor(o); return (o && (o.cor || '#FFD700')) || '#FFD700'; }
 function grEdAlcasDesenhar(ctx, fx, fy) {
     if (!_edSel) return;
     const cor = grEdCor();
@@ -6545,6 +6581,7 @@ function grEdToqueMove(x, y) {
         o.pontos = d.snap.pontos.map(pt => ({ t: grIndexToTime(grTimeToIndex(pt.t) + dIdx), p: pt.p + dP }));
     }
     else if (tp === 'hl') o.p = preco;
+    else if (tp === 'al') o.preco = preco;
     grDrawChart();
     return true;
 }
@@ -6559,6 +6596,7 @@ async function grEdToqueFim() {
         else if (_edSel.tipo === 'bd') await cvSalvarBandeira(o);
         else if (_edSel.tipo === 'fh') cvSalvarFreehandLocal();
         else if (_edSel.tipo === 'hl') grHLinhasSalvar();
+        else if (_edSel.tipo === 'al') { grAlertasJsonSalvar(); if (o.id) await db.from('alertas').update({ preco: o.preco }).eq('id', o.id); }
     } catch (e) {}
     return true;
 }
@@ -6615,6 +6653,7 @@ function cvAbrirMenuDesenhos(clientX, clientY) {
     const fmtD = t => { const d = new Date(t); const p = n => String(n).padStart(2, '0'); return p(d.getDate()) + '/' + p(d.getMonth() + 1) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()); };
     const linhas = [];
     _trendlines.forEach((tl, i) => linhas.push({ cor: tl.cor, nome: 'Tendência ' + (i + 1), det: fmtN(tl.p1) + ' → ' + fmtN(tl.p2) + ' · ' + fmtD(tl.t1), edit: () => cvEdicaoIniciar('tl', i), apagar: () => cvApagarTrendline(i), setCor: async c => { tl.cor = c; try { await cvSalvarTrendline(tl); } catch (e) {} } }));
+    _grAlertas.forEach((al, i) => linhas.push({ cor: grAlertaCor(al), nome: 'Alerta ' + (i + 1), det: fmtN(al.preco) + (al.habilitado === false ? ' · desativado' : ''), edit: () => cvEdicaoIniciar('al', i), apagar: () => cvExcluirAlertaDireto(i), setCor: c => { if (al.id != null) { _grAlertaCores[al.id] = c; grAlertaCoresSalvar(); } } }));
     grHLinhas().forEach((h, i) => linhas.push({ cor: h.cor, nome: 'Linha horizontal ' + (i + 1), det: fmtN(h.p), edit: () => cvEdicaoIniciar('hl', i), apagar: () => { grHLinhas().splice(i, 1); grHLinhasSalvar(); }, setCor: c => { h.cor = c; grHLinhasSalvar(); } }));
     _bandeiras.forEach((b, i) => linhas.push({ cor: b.cor, nome: 'Bandeira ' + (i + 1), det: fmtN(b.mastro.p1) + ' → ' + fmtN(b.mastro.p2) + ' · ' + fmtD(b.mastro.t1), edit: () => cvEdicaoIniciar('bd', i), apagar: () => cvApagarBandeira(i), setCor: async c => { b.cor = c; try { await cvSalvarBandeira(b); } catch (e) {} } }));
     _freehands.forEach((fh, i) => { const p0 = fh.pontos && fh.pontos[0]; linhas.push({ cor: fh.cor, nome: 'Desenho livre ' + (i + 1), det: p0 ? fmtN(p0.p) + ' · ' + fmtD(p0.t) : '', edit: () => cvEdicaoIniciar('fh', i), apagar: () => cvApagarFreehand(i), setCor: c => { fh.cor = c; cvSalvarFreehandLocal(); } }); });
@@ -6947,6 +6986,14 @@ function grInitTouch() {
                 e.preventDefault();
                 return;
             }
+            // Modo Alerta novo — igual à linha horizontal: toque posiciona, arrasto ajusta, soltar grava
+            if (_indState.alertaNovo) {
+                _alDrawing = true;
+                _alAtual = { p: grToPrice(ey2) };
+                grDrawChart();
+                e.preventDefault();
+                return;
+            }
             // Modo Linha Horizontal — toque posiciona, arrasto ajusta, soltar fixa
             if (_indState.hlinha) {
                 _hlDrawing = true;
@@ -7213,6 +7260,12 @@ function grInitTouch() {
                 e.preventDefault();
                 return;
             }
+            if (_alDrawing && _alAtual) {
+                _alAtual.p = grToPrice(toCanvasY(e.touches[0].clientY));
+                grDrawChart();
+                e.preventDefault();
+                return;
+            }
             if (_hlDrawing && _hlAtual) {
                 _hlAtual.p = grToPrice(toCanvasY(e.touches[0].clientY));
                 grDrawChart();
@@ -7317,7 +7370,7 @@ function grInitTouch() {
             }
             if (_grDragLineCandidato) {
                 const dxCand = e.touches[0].clientX - touchStartX, dyCand = e.touches[0].clientY - touchStartY;
-                if (Math.abs(dxCand) > 6 || Math.abs(dyCand) > 6) { // espera um mínimo de movimento pra não decidir por tremedeira
+                if (Math.abs(dxCand) > 12 || Math.abs(dyCand) > 12) { // espera um mínimo de movimento pra não decidir por tremedeira
                     if (Math.abs(dyCand) > Math.abs(dxCand) * 1.3) { _grDragLine = _grDragLineCandidato; isDragging = false; } // vertical → arrasta a linha
                     // horizontal (ou misto): continua isDragging=true, já rolando o gráfico normalmente — não mexe em mais nada aqui
                     _grDragLineCandidato = null;
@@ -7514,6 +7567,15 @@ function grInitTouch() {
     if (window._grPincaY && e.touches.length < 2) { window._grPincaY = null; grYFatorSalvar(); } // fim da pinça no eixo Y: guarda o fator
     if (window._grPincaX && e.touches.length < 2) { window._grPincaX = null; grYFatorSalvar(); } // fim da pinça no eixo X: guarda o fator (compensado)
     isDragging = false;
+    if (_alDrawing) {
+        _alDrawing = false;
+        const pNovo = _alAtual && _alAtual.p;
+        _alAtual = null;
+        _indState.alertaNovo = false;
+        if (pNovo > 0 && isFinite(pNovo)) cvAlertaCriarEm(pNovo);
+        else { const b0 = document.getElementById('cv-ind-alerta'); if (b0) b0.classList.toggle('active', _grAlertas.length > 0); grDrawChart(); }
+        return;
+    }
     if (_hlDrawing) {
         _hlDrawing = false;
         if (_hlAtual && isFinite(_hlAtual.p) && _hlAtual.p > 0) {
@@ -7629,6 +7691,11 @@ function grInitTouch() {
         _grDragLine = null; _grDragLineCandidato = null;
         grDrawChart();
         return;
+    }
+    if (_grDragLine && String(_grDragLine).startsWith('alerta_')) {   // arrastou a linha do alerta: grava o novo preço
+        const aDrag = _grAlertas[parseInt(String(_grDragLine).split('_')[1])];
+        if (aDrag && aDrag.id) { try { Promise.resolve(db.from('alertas').update({ preco: aDrag.preco }).eq('id', aDrag.id)).catch(() => {}); } catch (e) {} }
+        if (aDrag) grAlertasJsonSalvar();
     }
     _grDragLine = null; _grDragLineCandidato = null; // se soltou antes de mover (toque rápido perto de uma linha), não fica lixo pro próximo gesto
     if (!window._longPressActive) clearTimeout(_longPressTimer);
@@ -8688,6 +8755,7 @@ const _indState = {
     bandeira:  false,
     medida:    false,
     hlinha:    false,
+    alertaNovo: false,
     freehand:  false,
     reg:       false,
 };
@@ -8921,6 +8989,11 @@ async function cvCarregarAlertasGrafico() {
         // Alertas manuais
         _grAlertas = data.filter(a => !a.tipo || a.tipo === 'manual')
             .map(a => ({ preco: a.preco, id: a.id, habilitado: a.habilitado, created_at: a.created_at }));
+        grAlertasJsonAplicar();
+        if (!_grAlertas.length && (_grAlertasJson[grAlertasJsonChave()] || []).length && !data.some(a => !a.tipo || a.tipo === 'manual')) {
+            // tabela sem alertas manuais mas o JSON tem: mantém os do JSON (a tabela pode ter falhado numa gravação anterior)
+            _grAlertas = (_grAlertasJson[grAlertasJsonChave()] || []).map(j => ({ preco: j.preco, id: j.id, habilitado: j.habilitado !== false, created_at: j.created_at }));
+        }
         // Fibs — carrega fibo_1, fibo_2... e também o tipo antigo 'fibo'
         // Reseta e reconstrói a partir do banco (fonte da verdade), guardando o
         // "tipo" real de cada um — nunca mais recalculado pela posição no array.
@@ -9070,11 +9143,23 @@ function cvFecharModalAlertaGrafico() {
     _alertaEditIdx = null;
 }
 // Apaga um alerta direto do submenu (X), sem precisar abrir o modal de edição.
+// Cria o alerta no ponto escolhido (mesma gravação de sempre: tabela 'alertas')
+async function cvAlertaCriarEm(preco) {
+    const a = { preco, habilitado: true, created_at: new Date().toISOString(), id: null };
+    try {
+        const { data, error } = await db.from('alertas').insert({ ativo_id: _ativoId, preco, habilitado: true }).select().single();
+        if (error) { alert('Erro: ' + error.message); }
+        else { if (data) a.id = data.id; _grAlertas.push(a); grAlertasJsonSalvar(); }
+    } catch (e) { alert('Erro ao gravar o alerta'); }
+    const b = document.getElementById('cv-ind-alerta'); if (b) b.classList.toggle('active', _grAlertas.length > 0);
+    grDrawChart();
+}
 async function cvExcluirAlertaDireto(idx) {
     const a = _grAlertas[idx];
     if (!a) return;
     if (a.id) await db.from('alertas').delete().eq('id', a.id);
     _grAlertas.splice(idx, 1);
+    grAlertasJsonSalvar();
     const sub = document.getElementById('cv-alerta-submenu');
     if (_grAlertas.length === 0) {
         document.getElementById('cv-ind-alerta').classList.remove('active');
@@ -9093,6 +9178,7 @@ async function cvExcluirAlertaGrafico() {
         await db.from('alertas').delete().eq('id', a.id);
     }
     _grAlertas.splice(_alertaEditIdx, 1);
+    grAlertasJsonSalvar();
     if (_grAlertas.length === 0) {
         document.getElementById('cv-ind-alerta').classList.remove('active');
     }
@@ -9126,6 +9212,7 @@ async function cvGravarAlertaGrafico() {
     }
     if (error) { alert('Erro: ' + error.message); return; }
     if (isNovo) _grAlertas.push(a);
+    grAlertasJsonSalvar();
     document.getElementById('cv-ind-alerta').classList.add('active');
     cvFecharModalAlertaGrafico();
     grDrawChart();
@@ -9397,6 +9484,14 @@ function cvToggleMedida() {
     document.getElementById('cv-ind-medida').classList.toggle('active', _indState.medida);
     grDrawChart();
 }
+function cvToggleAlertaFerramenta() {
+    _indState.alertaNovo = !_indState.alertaNovo;
+    if (!_indState.alertaNovo) { _alAtual = null; _alDrawing = false; }
+    const b = document.getElementById('cv-ind-alerta');
+    if (b) b.classList.toggle('active', _indState.alertaNovo || _grAlertas.length > 0);
+    try { cvFecharMenuGrupo(); } catch (e) {}
+    grDrawChart();
+}
 function cvToggleHLinha() {
     _indState.hlinha = !_indState.hlinha;
     if (!_indState.hlinha) { _hlAtual = null; _hlDrawing = false; }
@@ -9472,6 +9567,7 @@ function grAmbienteColetar() {
         eficiencia: _indState.eficiencia,
         ambExpandido: _grAmbExpandido,
         hLinhas: _grHLinhasMapa,
+        alertas: _grAlertasJson,
         barraTopo: _grBarraTopo,
         footprint: _grFootprintAtivo,
         reguaLockS: _grReguaLock.S,
@@ -9550,6 +9646,7 @@ async function grAmbienteCarregar() {
     if (!!ambiente.deltaAtr !== _indState.deltaAtr) cvToggleInd('deltaAtr');
     if (!!ambiente.exaustao !== _indState.exaustao) cvToggleInd('exaustao');
     if (!!ambiente.eficiencia !== _indState.eficiencia) cvToggleInd('eficiencia');
+    if (ambiente.alertas && typeof ambiente.alertas === 'object') { _grAlertasJson = Object.assign({}, ambiente.alertas, _grAlertasJson); try { localStorage.setItem('gr_alertas_json', JSON.stringify(_grAlertasJson)); } catch (e) {} grAlertasJsonAplicar(); }
     if (ambiente.hLinhas && typeof ambiente.hLinhas === 'object') { _grHLinhasMapa = Object.assign({}, ambiente.hLinhas, _grHLinhasMapa); try { localStorage.setItem('gr_hlinhas', JSON.stringify(_grHLinhasMapa)); } catch (e) {} }
     if (typeof ambiente.ambExpandido === 'boolean') { _grAmbExpandido = ambiente.ambExpandido; try { localStorage.setItem('gr_amb_expandido', _grAmbExpandido ? '1' : '0'); } catch (e) {} }
     if (typeof ambiente.barraTopo === 'boolean') { _grBarraTopo = ambiente.barraTopo; try { localStorage.setItem('gr_barra_topo', _grBarraTopo ? '1' : '0'); } catch (e) {} grAplicarBarraTopo(); }
