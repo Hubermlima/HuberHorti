@@ -2856,7 +2856,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = '05/10 08:40 · 13849 linhas · POSICAO-APORTES v204';
+const APP_VERSAO = '05/10 08:40 · 13849 linhas · POSICAO-APORTES v206';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = 'Versão ' + APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3864,6 +3864,7 @@ async function cvPosCarregarTrades() {
 // Status/cores da caixa: sem tradeId = Em Análise (cinza); trade sem data_fechamento = Ativo (verde/vermelho); com = Encerrado (tom do resultado)
 // Linha central da caixa: com PM (posição aberta) é o PM, travado; a PE vira só informação
 function cvPosPivo(pz) { return pz.pm > 0 ? pz.pm : pz.entrada; }
+const GR_MARGEM_ANALISE = 1000;   // margem simulada (USDT) da caixa Em Análise
 const GR_RISCO_ANALISE_PCT = 50;   // risco usado na alavancagem sugerida da caixa Em Análise (% da margem)
 function cvPosCores(pz) {
     const G = '120,123,134', V = '38,166,154', R = '239,83,80';
@@ -6141,7 +6142,7 @@ if (fibsParaDesenhar.length > 0) {
         {
             const ps = grPosicoes().slice();
             if (_psAtual) ps.push(Object.assign(grPosNova(_psAtual.lado, _psAtual.i1, _psAtual.p), { previa: true }));
-            window._grBadgeHits = []; window._grPosRects = []; let _ctxMostrado = false;
+            window._grBadgeHits = []; window._grPosRects = []; window._grPosSel = null; let _ctxMostrado = false;
             ps.forEach(pz => {
                 if (pz.oculta) return;
                 let xa = toXIdx2(grTimeToIndex(pz.t1)), xb = toXIdx2(grTimeToIndex(pz.t2)); if (xb < xa) { const tx = xa; xa = xb; xb = tx; }
@@ -6154,7 +6155,7 @@ if (fibsParaDesenhar.length > 0) {
                 { const ipz = grPosicoes().indexOf(pz); if (ipz >= 0) {
                     const rx0 = Math.min(xa, xb), ry0 = Math.min(yE, yA, yS), rh0 = Math.max(yE, yA, yS) - ry0;
                     window._grPosRects.push({ x: rx0, y: ry0, w: Math.abs(xb - xa), h: rh0, abrir: () => { if (!(_edSel && _edSel.tipo === 'ps' && _edSel.idx === ipz) && !_indState.posLong && !_indState.posShort) cvEdicaoIniciar('ps', ipz); } });
-                    if (_edSel && _edSel.tipo === 'ps' && _edSel.idx === ipz) { _ctxMostrado = true; cvPosCtxMenu(ipz, rx0, ry0, Math.abs(xb - xa), rh0); }
+                    if (_edSel && _edSel.tipo === 'ps' && _edSel.idx === ipz) { _ctxMostrado = true; cvPosCtxMenu(ipz, rx0, ry0, Math.abs(xb - xa), rh0); window._grPosSel = { yE, yA, yS, tA, tS, pvt, alvo: pz.alvo, stop: pz.stop, cz }; }
                 } }
                 if (tA) { ctx.fillStyle = cz.fa; ctx.fillRect(xa, Math.min(yE, yA), xb - xa, Math.abs(yA - yE));
                     // gradação sutil: cada faixa entre alvos fica um pouco mais carregada que a anterior
@@ -6192,8 +6193,22 @@ if (fibsParaDesenhar.length > 0) {
                 if (!pz.previa) {
                     let rr = '';
                     { const ref = pz.pm > 0 ? pz.pm : pz.entrada, sg = pz.alvo > pz.stop ? 1 : -1, rw = (pz.alvo - ref) * sg, rk = (ref - pz.stop) * sg; if (tA && tS && rw > 0 && rk > 0) rr = ' · R/R ' + (rw / rk).toFixed(1).replace('.', ','); }
-                    if (tA) rot('Alvo ' + fmtN(pz.alvo) + ' (' + pc((pz.alvo - pvt) / pvt) + ')' + rr, yA, cz.ca, yA <= yE);
-                    if (tS) rot('Stop ' + fmtN(pz.stop) + ' (' + pc((pz.stop - pvt) / pvt) + ')', yS, cz.cs, yS < yE);
+                    // Em Análise: simulação com margem fixa e a alavancagem sugerida (tudo recalculado a cada desenho)
+                    let ana = null;
+                    if (cz.st === 'analise' && tS && pz.entrada > 0 && pz.stop !== pz.entrada) {
+                        const dist = Math.abs(pz.entrada - pz.stop) / pz.entrada * 100, al = Math.max(1, Math.floor(GR_RISCO_ANALISE_PCT / dist)), nt = GR_MARGEM_ANALISE * al, sgn = pz.stop < pz.entrada ? 1 : -1;
+                        ana = { al, nt, lucro: tA ? nt * (pz.alvo - pz.entrada) / pz.entrada * sgn : null, perda: nt * (pz.stop - pz.entrada) / pz.entrada * sgn };
+                    }
+                    const fu = v => (v >= 0 ? '+' : '−') + Math.abs(Math.round(v)).toLocaleString('pt-BR');
+                    if (tA) rot('Alvo ' + fmtN(pz.alvo) + ' (' + pc((pz.alvo - pvt) / pvt) + ')' + rr + (ana && ana.lucro != null ? ' · ' + fu(ana.lucro) : ''), yA, cz.ca, yA <= yE);
+                    if (tS) rot('Stop ' + fmtN(pz.stop) + ' (' + pc((pz.stop - pvt) / pvt) + ')' + (ana ? ' · ' + fu(ana.perda) : ''), yS, cz.cs, yS < yE);
+                    if (ana) {
+                        ctx.save(); ctx.font = 'bold 10px -apple-system'; ctx.textAlign = 'left'; ctx.fillStyle = '#5C5F6B';
+                        const sobe = !(yS > yE);   // lado oposto ao da badge PE
+                        const tx = GR_MARGEM_ANALISE.toLocaleString('pt-BR') + ' × ' + ana.al + 'x = ' + ana.nt.toLocaleString('pt-BR') + ' USDT';
+                        ctx.fillText(tx, Math.max(PAD.left + 4, Math.min(Math.min(xa, xb) + 6, W - PAD.right - ctx.measureText(tx).width - 4)), yE + (sobe ? -6 : 14));
+                        ctx.restore();
+                    }
                     const inter = (lista, cor, pref, ref) => (lista || []).forEach((it, ix) => {
                         if (!(it.preco > 0) || Math.abs(it.preco - ref) < 1e-9) return;
                         const y = toY(it.preco);
@@ -6201,11 +6216,30 @@ if (fibsParaDesenhar.length > 0) {
                         ctx.font = 'bold 9px -apple-system'; ctx.textAlign = 'right'; ctx.textBaseline = 'middle'; const sgl = pz.alvo > pz.stop ? 1 : -1, lc = pz.qty > 0 && pz.pm > 0 ? pz.qty * (it.pct || 0) / 100 * (it.preco - pz.pm) * sgl : null; ctx.fillText((it.pct || 0) + '%' + (lc == null ? '' : ' · ' + (lc >= 0 ? '+' : '-') + Math.abs(lc).toFixed(2)), xb - 10, y); ctx.restore();
                     });
                     if (tA) inter(pz.alvos, 'rgba(38,166,154,0.95)', 'A', pz.alvo); if (tS) inter(pz.stops, 'rgba(239,83,80,0.95)', 'S', pz.stop);
-                    rot(pz.pm > 0 ? 'PM ' + fmtN(pz.pm) + ' · PE ' + fmtN(pz.entrada) : 'PE ' + fmtN(pz.entrada) + (cz.st === 'analise' && tS && pz.entrada > 0 && Math.abs(pz.entrada - pz.stop) > 0 ? ' · ' + Math.max(1, Math.floor(GR_RISCO_ANALISE_PCT / (Math.abs(pz.entrada - pz.stop) / pz.entrada * 100))) + 'x' : ''), yE, cz.st === 'analise' ? '#787B86' : '#26A69A', tS ? yS > yE : pz.lado !== 'short');   // conferência: entrada da caixa × preço médio
+                    rot(pz.pm > 0 ? 'PM ' + fmtN(pz.pm) + ' · PE ' + fmtN(pz.entrada) : 'PE ' + fmtN(pz.entrada) + (ana ? ' · ' + ana.al + 'x' : ''), yE, cz.st === 'analise' ? '#787B86' : '#26A69A', tS ? yS > yE : pz.lado !== 'short');   // conferência: entrada da caixa × preço médio
                 }
                 ctx.restore();
             });
             if (!_ctxMostrado) cvPosCtxRemover();
+            else if (window._grPosSel) {   // caixa selecionada: guia tracejada + etiqueta com o preço no eixo Y de cada nível (quem está sendo arrastado fica destacado)
+                const g = window._grPosSel, dk = _edDrag && _edDrag.moved ? _edDrag.k : null, an = g.cz.st === 'analise';
+                const nivs = [];
+                if (g.tA) nivs.push({ y: g.yA, p: g.alvo, cor: an ? '#8B8E99' : g.cz.ca, k: 'a' });
+                nivs.push({ y: g.yE, p: g.pvt, cor: '#787B86', k: 'e' });
+                if (g.tS) nivs.push({ y: g.yS, p: g.stop, cor: an ? '#5C5F6B' : g.cz.cs, k: 's' });
+                nivs.forEach(n => {
+                    if (n.y < PAD.top - 1 || n.y > PAD.top + chartH + 1) return;
+                    const forte = dk === n.k || dk === 'm';
+                    ctx.save(); ctx.beginPath(); ctx.rect(PAD.left, PAD.top, W - PAD.left - PAD.right, chartH); ctx.clip();
+                    ctx.strokeStyle = n.cor; ctx.globalAlpha = forte ? 0.95 : 0.6; ctx.lineWidth = forte ? 1.5 : 1; ctx.setLineDash([5, 4]);
+                    ctx.beginPath(); ctx.moveTo(PAD.left, n.y); ctx.lineTo(W - PAD.right, n.y); ctx.stroke(); ctx.restore();
+                    ctx.save(); const bH = 16, bW = Math.max(PAD.right - 4, 40), bX = W - PAD.right + 1, bY = n.y - bH / 2;
+                    if (forte) { ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 3; ctx.beginPath(); ctx.roundRect(bX, bY, bW, bH, 3); ctx.stroke(); }
+                    ctx.fillStyle = n.cor; ctx.beginPath(); ctx.roundRect(bX, bY, bW, bH, 3); ctx.fill();
+                    ctx.fillStyle = '#FFFFFF'; ctx.font = 'bold 10px -apple-system'; ctx.textAlign = 'right'; ctx.fillText(fmtN(n.p), bX + bW - 4, bY + bH - 4);
+                    ctx.restore();
+                });
+            }
         }
         grEdAlcasDesenhar(ctx, t => toXIdx2(grTimeToIndex(t)), p => toY(p));
         // ── Régua de Medição: descartável, linha + caixa com % e USD ──
