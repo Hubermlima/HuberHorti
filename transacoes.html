@@ -627,26 +627,53 @@ async function cvSelecionarAtivo(id, ticker) {
     // Fecha dropdown
     document.getElementById('cv-ticker-dropdown').style.display = 'none';
     _tickerDropdownAberto = false;
+    const mudou = String(id) !== String(_ativoId);
+    // v94: ambiente POR ATIVO. Guarda (só em memória; vai pro servidor no Sair) o ambiente de quem está saindo e escolhe o de quem entra.
+    const fatiaSaindo = grAmbAtivoGuardar();
     // Atualiza globals
     _ativoId = id;
     _ticker  = ticker;
     // Atualiza topbar
     document.getElementById('cv-ticker').textContent = ticker;
+    const fatiaEntrando = grAmbAtivoDoMapa(id, ticker, fatiaSaindo);
     // Reinicia o ambiente para o novo ativo
     _grAllCandles = [];
-_grOffset = 999999;
-_grEntrada = 0; _grStop = 0; _grAlvo = 0;
-_grTf = '4h';
-_precoAtual = 0;
- // reseta timeframe para 4H
+    window._grBaseCandles = []; window._grHistFim = false;
+    _grOffset = 999999;
+    _grEntrada = 0; _grStop = 0; _grAlvo = 0;
+    _precoAtual = 0;
+    _grZonasCache = null; window._grClusterCache = new Map();
+    // O Fluxo (footprint/R2) só existe para o BTC: ao sair do BTC desliga (a fatia do BTC já guardou footprint:true e volta
+    // sozinho ao retornar). Também aborta qualquer carregamento do Fluxo que ainda estivesse em andamento.
+    if (mudou) {
+        window._grFluxoGeracao = (window._grFluxoGeracao || 0) + 1;
+        if (!grAtivoTemFluxo()) {
+            if (_grFootprintAtivo) grFootprintPararOverlay();
+            const bFx = document.getElementById('cv-ind-footprint'); if (bFx) bFx.classList.remove('active');
+        }
+    }
+    // Aplica TF, zoom, escalas e indicadores do ativo que entra (zera também a calibração da escala vertical, que ficava no
+    // preço do ativo anterior e jogava os candles do novo para fora da tela).
+    grAmbAtivoAplicar(fatiaEntrando);
     // Para realtime do ativo anterior
     if (window._cvTickerInterval)   clearInterval(window._cvTickerInterval);
-    // Recarrega tudo para o novo ativo
-    grDrawChart(); // limpa o canvas
+    // Limpa o canvas de verdade: o grDrawChart() sai sem desenhar quando não há candles, então o gráfico do ativo
+    // anterior ficava congelado na tela enquanto o novo carregava (ou para sempre, se a busca falhasse).
+    try {
+        const cvLimpar = document.getElementById('gr-chart-canvas');
+        if (cvLimpar) { const cx = cvLimpar.getContext('2d'); cx.save(); cx.setTransform(1, 0, 0, 1, 0, 0); cx.clearRect(0, 0, cvLimpar.width, cvLimpar.height); cx.restore(); }
+    } catch (e) {}
     grPerfIniciar();
     cvAtualizarPrecoRealTime();
     cvIniciarRealTime();
     await grRenderChart();
+    // Busca vazia = o par não existe na Binance Futures (ex.: ticker fora do padrão BASE+USDT): avisa em vez de ficar mudo.
+    if (_grAllCandles.length === 0) {
+        try { grAreaToast('Sem candles de ' + ticker + ' na Binance Futures (' + grBinSymbolAtual() + ')', '#EF5350'); } catch (e) {}
+    }
+    // Voltou pro BTC com o Fluxo ligado no ambiente dele: religa (baixa de novo os dias do R2 em segundo plano).
+    if (mudou && fatiaEntrando.footprint === true && grAtivoTemFluxo() && !_grFootprintAtivo) grFootprintAtivar();
+    grAmbienteSalvar(); // marca como pendente: o servidor só é gravado no Sair
     await Promise.all([carregarTransacoes(), fetchFxRate()]);
     grDrawChart();
 }
@@ -8364,6 +8391,7 @@ function cvInitDrawer() {
     }, { passive: false });
 }
 function cvToggleSubInd(key) {
+    if (key === 'absorcao' && _indState.subInd !== 'absorcao' && !grAtivoTemFluxo()) { grAvisoSoBtc(); return; } // usa o footprint (só BTC)
     _indOculto.painel = false;
     const era = _indState.subInd;
     _indState.subInd = (era === key) ? null : key;
@@ -9049,6 +9077,7 @@ function cvTrendColorPressEnd() {
     if (_trendColorPressTimer) { clearTimeout(_trendColorPressTimer); _trendColorPressTimer = null; }
 }
 function cvToggleInd(key) {
+    if (!_indState[key] && GR_IND_SO_BTC.includes(key) && !grAtivoTemFluxo()) { grAvisoSoBtc(); return; } // depende do Fluxo/R2 (só BTC)
     _indState[key] = !_indState[key];
     document.getElementById('cv-ind-' + key).classList.toggle('active', _indState[key]);
     grAmbienteSalvar();
@@ -9108,30 +9137,128 @@ function grDesenhosColetar() {
     }
     return window._grDesenhosMapa;
 }
-function grAmbienteColetar() {
+// ── v94: AMBIENTE POR ATIVO ──────────────────────────────────────────────────────────────────────────────────────
+// Cada ativo tem a sua fatia em `preferencias.indicadores.porAtivo[ativo_id]` (mesmo registro id=1, sem tabela nova) com o que
+// é do CANVAS (tf, tfCustom, zoom, fator da escala vertical por TF, escala log) e dos INDICADORES (bollinger, rsi, níveis, painel
+// de baixo, CVD, OI, Delta ATR, Eficiência, Fluxo). Continua global: tema, velocidades, ajustes do footprint, EMAs, réguas.
+// Trocar de ativo só mexe na memória (guarda a fatia de quem sai, aplica a de quem entra); o servidor só é gravado no Sair.
+// O Fluxo (footprint/R2) e tudo que depende dele só existe para o BTC: em outro ativo ficam desligados e bloqueados.
+window._grAmbPorAtivo = window._grAmbPorAtivo || {};
+window._grAmbRaizLegada = window._grAmbRaizLegada || null; // campos antigos da raiz do JSON, vistos no carregamento (= ambiente do BTC)
+const GR_IND_SO_BTC = ['cvdPA', 'oiPA', 'deltaAtr', 'eficiencia']; // dependem do Fluxo/R2 (que só tem BTC)
+function grAtivoTemFluxo() { return grBinSymbolAtual() === 'BTCUSDT'; }
+function grAvisoSoBtc() { try { grAreaToast('Fluxo, CVD, OI, Delta ATR, Eficiência e Absorção só existem para o BTC', '#EF5350'); } catch (e) {} }
+function grAmbAtivoColetar() {
     return {
-        v: 1,
+        t: _ticker,
         tf: _grTf,
+        tfCustom: { u: _grTfCustomUnit, a: _grTfCustomAmount },
+        zoom: _grZoom,
+        yFatorMapa: Object.assign({}, _grYFatorMapa),
+        escalaLog: _grEscalaLog,
         bollinger: _indState.bollinger,
         rsi: _indState.rsi,
-        rsiNiveis: _grRsiNiveis,
+        rsiNiveis: _grRsiNiveis.slice(),
         subInd: _indState.subInd,
         cvdPA: _indState.cvdPA,
         oiPA: _indState.oiPA,
         deltaAtr: _indState.deltaAtr,
         eficiencia: _indState.eficiencia,
+        footprint: _grFootprintAtivo
+    };
+}
+// Fatia equivalente aos campos antigos da raiz do JSON (ambiente que existia antes de ser por ativo = o do BTC).
+function grAmbAtivoDaRaiz(amb) {
+    if (!amb || typeof amb !== 'object') return null;
+    return {
+        t: 'BTC', tf: amb.tf, tfCustom: amb.tfCustom, zoom: amb.zoom, yFatorMapa: amb.yFatorMapa, escalaLog: _grEscalaLog,
+        bollinger: amb.bollinger, rsi: amb.rsi, rsiNiveis: amb.rsiNiveis, subInd: amb.subInd || null,
+        cvdPA: amb.cvdPA, oiPA: amb.oiPA, deltaAtr: amb.deltaAtr, eficiencia: amb.eficiencia, footprint: amb.footprint === true
+    };
+}
+// Fatia de um ativo que nunca foi aberto: herda o visual de `base` (a do ativo anterior), com escala vertical própria e sem
+// nada que dependa do Fluxo/R2.
+function grAmbAtivoPadrao(base) {
+    const b = base || {};
+    return {
+        tf: b.tf, tfCustom: b.tfCustom, zoom: b.zoom, yFatorMapa: {}, escalaLog: b.escalaLog === true,
+        bollinger: b.bollinger, rsi: b.rsi, rsiNiveis: b.rsiNiveis, subInd: b.subInd === 'absorcao' ? null : b.subInd,
+        cvdPA: false, oiPA: false, deltaAtr: false, eficiencia: false, footprint: false
+    };
+}
+// Fatia a aplicar ao abrir `id`: a salva; senão (BTC) os campos antigos da raiz; senão herda de `base`.
+function grAmbAtivoDoMapa(id, ticker, base) {
+    const f = id != null ? window._grAmbPorAtivo[String(id)] : null;
+    if (f && typeof f === 'object') return f;
+    if (/^BTC/i.test(String(ticker || '')) && window._grAmbRaizLegada) return window._grAmbRaizLegada;
+    return grAmbAtivoPadrao(base || window._grAmbRaizLegada);
+}
+// Guarda (em memória) a fatia do ativo aberto agora. Devolve a fatia.
+function grAmbAtivoGuardar() {
+    const f = grAmbAtivoColetar();
+    if (_ativoId != null) window._grAmbPorAtivo[String(_ativoId)] = f;
+    return f;
+}
+// Aplica uma fatia: define o estado e sincroniza os botões. NÃO busca candles nem liga o Fluxo (quem chama faz) e NÃO grava.
+function grAmbAtivoAplicar(f) {
+    f = f || {};
+    const fluxoOk = grAtivoTemFluxo();
+    // TF e canvas
+    if (f.tfCustom && f.tfCustom.u && f.tfCustom.a) { _grTfCustomUnit = f.tfCustom.u; _grTfCustomAmount = f.tfCustom.a; }
+    _grTf = (typeof f.tf === 'string' && f.tf) ? f.tf : '4h';
+    if (_grTf === 'custom' && !(_grTfCustomUnit && _grTfCustomAmount)) _grTf = '4h';
+    _grZoom = (typeof f.zoom === 'number' && f.zoom >= 1 && f.zoom <= 500) ? Math.round(f.zoom) : 15;
+    _grZoomAcumulado = _grZoom;
+    _grYFatorMapa = (f.yFatorMapa && typeof f.yFatorMapa === 'object') ? Object.assign({}, f.yFatorMapa) : {};
+    _grEscalaLog = f.escalaLog === true;
+    // A escala vertical é calibrada UMA vez (grCalibrarEixoYFixo) e só recalibra se estiver nula: sem zerar aqui, o eixo ficava
+    // centrado no preço do ativo anterior (BTC ~100k) e os candles do novo (ETH ~4k) eram desenhados fora da tela.
+    _grYAxisCenter = null; _grPxPerDollarReferencia = null; _grZoomReferencia = null; _grLogRef = null;
+    window._grAbsSerie = null;
+    try { grYFatorCarregar(); } catch (e) {}
+    // Indicadores (o que depende do Fluxo/R2 só liga no BTC)
+    const sw = (k, v, btnId) => { _indState[k] = !!v; const b = document.getElementById(btnId || ('cv-ind-' + k)); if (b) b.classList.toggle('active', !!v); };
+    sw('bollinger', f.bollinger !== false, 'cv-ind-bol');
+    sw('rsi', f.rsi !== false);
+    _grRsiNiveis = Array.isArray(f.rsiNiveis) ? f.rsiNiveis.filter(nv => RSI_NIVEIS_DISPONIVEIS.includes(nv)).sort((a, b) => a - b) : [30, 70];
+    let sub = f.subInd || null;
+    if (sub === 'absorcao' && !fluxoOk) sub = null;
+    _indState.subInd = sub;
+    const bMacd = document.getElementById('cv-ind-macd'), bAbs = document.getElementById('cv-ind-absorcao');
+    if (bMacd) bMacd.classList.toggle('active', sub === 'macd');
+    if (bAbs) bAbs.classList.toggle('active', sub === 'absorcao');
+    GR_IND_SO_BTC.forEach(k => sw(k, fluxoOk && f[k]));
+}
+function grAmbienteColetar() {
+    // A fatia do ativo aberto entra no mapa; os campos antigos da raiz continuam sendo gravados (do BTC) para o app antigo ainda abrir.
+    const atual = grAmbAtivoGuardar();
+    const mapa = window._grAmbPorAtivo;
+    const idBtc = Object.keys(mapa).find(k => mapa[k] && /^BTC/i.test(mapa[k].t || ''));
+    const raiz = (idBtc && mapa[idBtc]) || window._grAmbRaizLegada || atual;
+    return {
+        v: 1,
+        tf: raiz.tf,
+        bollinger: raiz.bollinger,
+        rsi: raiz.rsi,
+        rsiNiveis: raiz.rsiNiveis,
+        subInd: raiz.subInd,
+        cvdPA: raiz.cvdPA,
+        oiPA: raiz.oiPA,
+        deltaAtr: raiz.deltaAtr,
+        eficiencia: raiz.eficiencia,
+        porAtivo: mapa,
         ambExpandido: _grAmbExpandido,
         hLinhas: _grHLinhasMapa,
         posicoes: cvPosParaSalvar(),
         alertas: _grAlertasJson,
-        footprint: _grFootprintAtivo,
+        footprint: raiz.footprint,
         reguaLockS: _grReguaLock.S,
         reguaLockA: _grReguaLock.A,
         emaCustom: _grEmaCustom.map(e => ({ periodo: e.periodo, cor: e.cor })),
-        zoom: _grZoom,
-        yFatorMapa: _grYFatorMapa,
+        zoom: raiz.zoom,
+        yFatorMapa: raiz.yFatorMapa,
         areas: _grAreasMapa,
-        tfCustom: { u: _grTfCustomUnit, a: _grTfCustomAmount },
+        tfCustom: raiz.tfCustom,
         footprintContraste: FOOTPRINT_CONTRASTE,
         ls: grLsColetar(),
         desenhos: grDesenhosColetar(),
@@ -9191,28 +9318,18 @@ async function grAmbienteCarregar() {
     if (typeof ambiente.footprintContraste === 'number' && ambiente.footprintContraste >= 0 && ambiente.footprintContraste <= 10) FOOTPRINT_CONTRASTE = ambiente.footprintContraste;
     console.log('[ambiente] restaurando tf=' + ambiente.tf + ' (atual antes de restaurar: ' + _grTf + ')');
     _grAmbienteRestaurando = true; // a partir daqui, grAmbienteSalvar() não grava nada até liberar no fim
-    // Zoom horizontal e fator de escala vertical (por tf) -- restaura ANTES do cvSetTf/carregamento de candles usá-los.
-    if (ambiente.yFatorMapa && typeof ambiente.yFatorMapa === 'object') _grYFatorMapa = ambiente.yFatorMapa;
-    if (typeof ambiente.zoom === 'number' && ambiente.zoom >= 1 && ambiente.zoom <= 500) {
-        _grZoom = Math.round(ambiente.zoom);
-        _grZoomAcumulado = _grZoom;
-    }
-    // TF: 'custom' já traz amount/unit próprios restaurados do localStorage 'cvTfCustom' antes daqui.
-    if (ambiente.tfCustom && ambiente.tfCustom.u && ambiente.tfCustom.a && !(_grTfCustomUnit && _grTfCustomAmount)) { _grTfCustomUnit = ambiente.tfCustom.u; _grTfCustomAmount = ambiente.tfCustom.a; }
-    if (ambiente.tf && ambiente.tf !== _grTf) cvSetTf(ambiente.tf);
-    if (!!ambiente.bollinger !== _indState.bollinger) cvToggleBol();
-    if (Array.isArray(ambiente.rsiNiveis)) _grRsiNiveis = ambiente.rsiNiveis.filter(nv => RSI_NIVEIS_DISPONIVEIS.includes(nv)).sort((a, b) => a - b);
-    if (!!ambiente.rsi !== _indState.rsi) cvToggleInd('rsi');
-    if ((ambiente.subInd || null) !== _indState.subInd) cvToggleSubInd(ambiente.subInd || _indState.subInd || 'macd');
-    if (!!ambiente.cvdPA !== _indState.cvdPA) cvToggleInd('cvdPA');
-    if (!!ambiente.oiPA !== _indState.oiPA) cvToggleInd('oiPA');
-    if (!!ambiente.deltaAtr !== _indState.deltaAtr) cvToggleInd('deltaAtr');
-    if (!!ambiente.eficiencia !== _indState.eficiencia) cvToggleInd('eficiencia');
+    // v94: AMBIENTE POR ATIVO. TF, zoom, escalas (vertical e log), indicadores e Fluxo vêm da fatia do ativo aberto
+    // (ambiente.porAtivo[ativo_id]). Sem fatia: o BTC herda os campos antigos da raiz do JSON (migração sem perda) e qualquer
+    // outro ativo nasce a partir do BTC, só que sem o que depende do Fluxo/R2 (ver grAmbAtivoPadrao).
+    window._grAmbPorAtivo = (ambiente.porAtivo && typeof ambiente.porAtivo === 'object') ? ambiente.porAtivo : {};
+    window._grAmbRaizLegada = grAmbAtivoDaRaiz(ambiente);
+    const fatiaIni = grAmbAtivoDoMapa(_ativoId, _ticker, window._grAmbRaizLegada);
+    grAmbAtivoAplicar(fatiaIni); // define _grTf direto: os candles ainda não foram buscados (o cvAbrir busca já no TF certo)
     if (ambiente.alertas && typeof ambiente.alertas === 'object') { _grAlertasJson = ambiente.alertas; try { localStorage.setItem('gr_alertas_json', JSON.stringify(_grAlertasJson)); } catch (e) {} grAlertasJsonAplicar(); try { grDrawChart(); } catch (e) {} }
     if (ambiente.posicoes && typeof ambiente.posicoes === 'object') { _grPosMapa = ambiente.posicoes; try { grDrawChart(); } catch (e) {} }
     if (ambiente.hLinhas && typeof ambiente.hLinhas === 'object') { _grHLinhasMapa = ambiente.hLinhas; try { localStorage.setItem('gr_hlinhas', JSON.stringify(_grHLinhasMapa)); } catch (e) {} }
     if (typeof ambiente.ambExpandido === 'boolean') { _grAmbExpandido = ambiente.ambExpandido; try { localStorage.setItem('gr_amb_expandido', _grAmbExpandido ? '1' : '0'); } catch (e) {} }
-    if (ambiente.footprint === true && !_grFootprintAtivo) grFootprintAtivar(); // roda em 2º plano; ver "libera a trava" abaixo
+    if (fatiaIni.footprint === true && grAtivoTemFluxo() && !_grFootprintAtivo) grFootprintAtivar(); // roda em 2º plano; ver "libera a trava" abaixo
     _grReguaLock.S = ambiente.reguaLockS === true;
     _grReguaLock.A = ambiente.reguaLockA === true;
     // EMAs: se o localStorage próprio delas (gr_ema_custom) já tinha algo, deixa como está — só recupera
@@ -11084,6 +11201,9 @@ function grFootprintRecuperarDias(tentativa) {
     }, 15000);
 }
 async function grFootprintAtivar() {
+    if (!grAtivoTemFluxo()) { grAvisoSoBtc(); return; } // o R2 do Fluxo só tem BTC
+    const gerAtivar = window._grFluxoGeracao || 0; // se trocar de ativo / desligar no meio do download, este carregamento desiste
+    const abortou = () => gerAtivar !== (window._grFluxoGeracao || 0) || !grAtivoTemFluxo();
     document.getElementById('cv-ind-footprint').classList.add('active');
     // A barra de rodapé que mostrava esse progresso foi removida — mantém um
     // objeto substituto só pra não quebrar as atribuições de texto mais
@@ -11098,11 +11218,13 @@ async function grFootprintAtivar() {
         const recentesPrimeiro = dias.slice().sort().reverse();
         let restantes = recentesPrimeiro.slice(2);
         let baixados = await grFootprintBaixarDias(recentesPrimeiro.slice(0, 2), 2);
+        if (abortou()) return;
         window._grFluxoDias = recentesPrimeiro.map(d => { const b = baixados.find(x => x.dia === d); return { dia: d, estado: b ? b.estado : 'carregando' }; });
         const flat = [];
         baixados.forEach(b => b.candles.forEach(c => flat.push(c)));
         if (flat.length === 0 && restantes.length > 0) {
             const b2 = await grFootprintBaixarDias(restantes, 8);
+            if (abortou()) return;
             b2.forEach(b => { const it = window._grFluxoDias.find(d => d.dia === b.dia); if (it) it.estado = b.estado; b.candles.forEach(c => flat.push(c)); });
             baixados = baixados.concat(b2); restantes = [];
         }
