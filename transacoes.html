@@ -2218,7 +2218,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = '05/10 00:40 · 13702 linhas · POSICAO-APORTES v177';
+const APP_VERSAO = '05/10 06:55 · 13733 linhas · POSICAO-APORTES v181';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = 'Versão ' + APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -2890,12 +2890,17 @@ const GR_HEROICONS = {
 function grHeroicon(nome, tam, cor) {
     return '<svg xmlns="http://www.w3.org/2000/svg" width="' + tam + '" height="' + tam + '" viewBox="0 0 24 24" fill="none" stroke="' + (cor || 'currentColor') + '" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="' + GR_HEROICONS[nome] + '"/></svg>';
 }
+// Liquidação da Bitget (margem ISOLADA, one-way): LP = [margem − tam×PM×dir] ÷ [tam×(MMR + taxa taker − dir)], dir = +1 long / −1 short.
+// Com margem = tam×PM÷alav fica LP = PM × (1/alav − dir) ÷ (k − dir). k = MMR + taxa taker: valor ESTIMADO (MMR real varia com o tamanho da posição).
+const GR_LIQ_K = 0.0050 + 0.0006;
+function cvLiqPreco(pm, al, dir) { return al > 0 && pm > 0 ? pm * (1 / al - dir) / (GR_LIQ_K - dir) : null; }
+function cvLiqDistPct(al, dir) { const p = cvLiqPreco(1, al, dir); return p == null ? null : Math.abs(p - 1) * 100; }
 let _grStopLib = null;   // id da posição cujo stop foi liberado para UM arraste
 function grStopConfirmar(pz) {
     if (document.getElementById('gr-stop-conf')) return;
     const f = (v, d) => v.toLocaleString('pt-BR', { minimumFractionDigits: d, maximumFractionDigits: d });
     const perda = pz.qty > 0 ? pz.qty * Math.abs(pz.pm - pz.stop) : null, conta = pz.cfg && pz.cfg.conta, al = pz.cfg && pz.cfg.alav;
-    const txt = 'O stop está travado porque a posição já tem aportes. Mover o stop muda a perda máxima' + (perda != null ? ' (hoje ' + f(perda, 2) + ' USDT' + (conta ? ', ' + f(perda / conta * 100, 2) + '% da margem' : '') + ')' : '') + (al ? ' e a distância até a liquidação (aprox. ' + f(100 / al, 2) + '% do preço médio)' : '') + '.';
+    const txt = 'O stop está travado porque a posição já tem aportes. Mover o stop muda a perda máxima' + (perda != null ? ' (hoje ' + f(perda, 2) + ' USDT' + (conta ? ', ' + f(perda / conta * 100, 2) + '% da margem' : '') + ')' : '') + (al ? ' e a distância até a liquidação (aprox. ' + f(cvLiqDistPct(al, pz.lado === 'short' ? -1 : 1), 2) + '% do preço médio)' : '') + '.';
     const ov = document.createElement('div'); ov.id = 'gr-stop-conf';
     ov.style.cssText = 'position:fixed;inset:0;z-index:9900;background:rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;font-family:-apple-system,sans-serif;';
     ov.innerHTML = '<div style="background:#fff;width:100%;max-width:300px;border-radius:16px;padding:16px 16px 12px;box-shadow:0 8px 28px rgba(0,0,0,.28);">' +
@@ -3380,7 +3385,7 @@ function cvPosFormAbrir(idx) {
             L.push('Tamanho da posição: <b>' + f(est.cost, 2) + ' USDT</b>');
             if (al) {
                 const marg = est.cost / al;
-                g('pf-liq').value = cvMascaraDeNumero(est.pm * (1 - sgn / al));
+                g('pf-liq').value = cvMascaraDeNumero(cvLiqPreco(est.pm, al, sgn));
                 L.push('Total aportado: <b>' + f(marg, 2) + ' USDT</b>');
                 if (pos(st)) {
                     const perda = est.qty * Math.abs(est.pm - st);
@@ -3393,8 +3398,9 @@ function cvPosFormAbrir(idx) {
                     }
                     g('pf-risco-real').value = cvMascaraDeNumero(perda / marg * 100);
                     const d = Math.abs(est.pm - st) / est.pm * 100;
-                    if (d >= 100 / al) L.push('<span style="color:#EF5350;font-weight:600;">Bloqueado: o stop fica além da liquidação (aprox. ' + f(100 / al, 2) + '% do preço médio). A corretora liquidaria antes do stop.</span>');
-                    else if (d >= 0.9 * (100 / al)) L.push('<span style="color:#E08A00;">Atenção: o stop está perto da liquidação (aprox. ' + f(100 / al, 2) + '% do preço médio).</span>');
+                    const dLiq = cvLiqDistPct(al, sgn);
+                    if (d >= dLiq) L.push('<span style="color:#EF5350;font-weight:600;">Bloqueado: o stop fica além da liquidação (aprox. ' + f(dLiq, 2) + '% do preço médio). A corretora liquidaria antes do stop.</span>');
+                    else if (d >= 0.9 * dLiq) L.push('<span style="color:#E08A00;">Atenção: o stop está perto da liquidação (aprox. ' + f(dLiq, 2) + '% do preço médio).</span>');
                 }
             }
         }
@@ -3532,7 +3538,7 @@ function cvPosFormAbrir(idx) {
         const temA = pos(a), temS = pos(st), curto = pz.lado === 'short';   // alvo e stop são opcionais
         if (temA && !(curto ? a < e : a > e)) return erro(curto ? 'No short o alvo precisa ficar abaixo do preço médio.' : 'No long o alvo precisa ficar acima do preço médio.');
         if (temS && !(curto ? st > e : st < e)) return erro(curto ? 'No short o stop precisa ficar acima do preço médio.' : 'No long o stop precisa ficar abaixo do preço médio.');
-        if (temS && al && Math.abs(e - st) / e * 100 >= 100 / al) return erro('Bloqueado: com esse preço médio (' + e.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ') o stop fica além da liquidação. Ajuste o aporte.');
+        if (temS && al && Math.abs(e - st) / e * 100 >= cvLiqDistPct(al, curto ? -1 : 1)) return erro('Bloqueado: com esse preço médio (' + e.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ') o stop fica além da liquidação. Ajuste o aporte.');
         if (!pos(orig) || (temA && !(curto ? a < orig : a > orig)) || (temS && !(curto ? st > orig : st < orig))) return erro(curto ? 'No short: alvo < entrada < stop.' : 'No long: stop < entrada < alvo.');
         if (temA) dAlvos[farIdx(dAlvos, 'alvo')].preco = a;
         if (temS) dStops[farIdx(dStops, 'stop')].preco = st;
@@ -10121,6 +10127,15 @@ function odFmtDataTrade(d) {
     const x = new Date(d.length <= 10 ? d + 'T12:00:00' : d);
     return isNaN(x) ? '—' : x.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' });
 }
+// Dias entre abertura e fechamento (ou hoje, se ainda aberto). Datas só-dia valem meio-dia local para não escorregar de dia.
+function odDiasTrade(t) {
+    const d = v => v ? new Date(String(v).length <= 10 ? v + 'T12:00:00' : v) : null;
+    const a = d(t.data_abertura), b = t.data_fechamento ? d(t.data_fechamento) : new Date();
+    if (!a || isNaN(a) || isNaN(b)) return null;
+    const dia = x => new Date(x.getFullYear(), x.getMonth(), x.getDate());   // dias de calendário (fuso local)
+    const n = Math.round((dia(b) - dia(a)) / 86400000);
+    return n < 1 ? 'no mesmo dia' : n + (n === 1 ? ' dia' : ' dias');
+}
 function odRenderTradeRow(t) {
     const st = odStatusTrade(t), lado = (t.tipo || 'long').toLowerCase(), sg = lado === 'short' ? -1 : 1;
     const c = odConsolidadoTrade(t);
@@ -10130,10 +10145,10 @@ function odRenderTradeRow(t) {
     if (st === 'ativo') {
         cor = lado === 'short' ? '#EF5350' : '#26A69A'; rotulo = 'Ativo';
         const pct = pm > 0 && _precoAtual > 0 ? ((_precoAtual - pm) / pm * 100 * sg) : null;
-        det = (pct === null ? '' : '<span style="font-weight:700;color:' + (pct >= 0 ? '#26A69A' : '#EF5350') + ';">' + (pct >= 0 ? '+' : '') + pct.toFixed(2).replace('.', ',') + '%</span> · ') + 'PM ' + (pm > 0 ? fmtUSD(pm) : '—') + ' · Qtd ' + (qtd > 0 ? fmtQtd(qtd) : '—');
+        det = (pct === null ? '' : '<span style="font-weight:700;color:' + (pct >= 0 ? '#26A69A' : '#EF5350') + ';">' + (pct >= 0 ? '+' : '') + pct.toFixed(2).replace('.', ',') + '%</span> · ') + 'PM ' + (pm > 0 ? fmtUSD(pm) : '—') + ' · Qtd ' + (qtd > 0 ? fmtQtd(qtd) : '—') + '<br>Aberto em ' + odFmtDataTrade(t.data_abertura) + ' · ' + (odDiasTrade(t) || '—');
     } else if (st === 'encerrado') {
         cor = lucroReal > 0 ? '#26A69A' : lucroReal < 0 ? '#EF5350' : '#8E8E93'; rotulo = 'Encerrado';
-        det = 'Resultado ' + (lucroReal >= 0 ? '+' : '') + fmtUSD(lucroReal) + ' · ' + odFmtDataTrade(t.data_abertura) + ' → ' + odFmtDataTrade(t.data_fechamento);
+        det = 'Resultado ' + (lucroReal >= 0 ? '+' : '') + fmtUSD(lucroReal) + ' · ' + odFmtDataTrade(t.data_abertura) + ' → ' + odFmtDataTrade(t.data_fechamento) + ' · ' + (odDiasTrade(t) || '—');
     } else {
         det = (t.preco_entrada > 0 ? 'Entrada ' + fmtUSD(parseFloat(t.preco_entrada)) : 'Sem entrada definida');
     }
@@ -10144,7 +10159,9 @@ function odRenderTradeRow(t) {
     if (st === 'ativo' && pm > 0 && qtd > 0) {
         const tam = qtd * pm, usd = _precoAtual > 0 ? (_precoAtual - pm) * qtd * sg : null;
         let l = 'Tamanho <b>' + f2(tam) + '</b>';
-        if (alavN) l += ' · Margem <b>' + f2(tam / alavN) + '</b> · Liquidação <b>' + f2(pm * (1 - sg / alavN)) + '</b>';
+        if (alavN) l += ' · Margem <b>' + f2(tam / alavN) + '</b> · Liquidação <b>' + f2(cvLiqPreco(pm, alavN, sg)) + '</b>';
+        const riscoN = parseFloat(t.risco_planejado);
+        if (alavN && riscoN > 0) l += ' · Risco <b>' + f2(riscoN) + '%</b> (' + f2(tam / alavN * riscoN / 100) + ' USDT)';
         extra += '<div style="font-size:12px;color:#6C6C70;margin-top:3px;">' + l + '</div>';
         if (usd !== null) extra += '<div style="font-size:12px;color:#6C6C70;margin-top:3px;">Resultado em aberto <b style="color:' + (usd >= 0 ? '#26A69A' : '#EF5350') + ';">' + (usd >= 0 ? '+' : '') + f2(usd) + ' USDT</b></div>';
     }
@@ -10168,12 +10185,27 @@ function odRenderTradeRow(t) {
             }
         }
     }
+    // Destaque (só Ativo): o stop mais distante, em % do PM e em USDT — a primeira coisa que o olho precisa achar.
+    let destaque = '';
+    if (st === 'ativo' && pm > 0 && qtd > 0) {
+        const ss = (_odAlvosCache[t.id] || []).filter(a => a.tipo === 'stop' && parseFloat(a.preco) > 0);
+        if (ss.length) {
+            const sp = parseFloat(ss.reduce((m, a) => (Math.abs(a.preco - pm) > Math.abs(m.preco - pm) ? a : m)).preco);
+            const dp = (sp - pm) / pm * 100 * sg, du = (sp - pm) * qtd * sg, cs = du >= 0 ? '#26A69A' : '#EF5350';
+            const sinal = v => (v >= 0 ? '+' : '−') + f2(Math.abs(v));
+            const dAtual = _precoAtual > 0 ? (_precoAtual - sp) / _precoAtual * 100 * sg : null;
+            destaque = '<div style="margin-top:8px;padding:8px 10px;border-radius:10px;background:' + (du >= 0 ? 'rgba(38,166,154,0.10)' : 'rgba(239,83,80,0.10)') + ';">' +
+                '<div style="font-size:11px;font-weight:700;letter-spacing:.4px;color:' + cs + ';">STOP · ' + f2(sp) + '</div>' +
+                '<div style="font-size:22px;font-weight:800;line-height:1.15;color:' + cs + ';">' + sinal(dp) + '% <span style="font-size:15px;font-weight:700;">· ' + sinal(du) + ' USDT</span></div>' +
+                (dAtual !== null ? '<div style="font-size:11px;color:#6C6C70;margin-top:1px;">preço atual a ' + f2(Math.abs(dAtual)) + '% do stop' + (dAtual < 0 ? ' (já passou)' : '') + '</div>' : '') + '</div>';
+        } else destaque = '<div style="margin-top:8px;font-size:12px;font-weight:600;color:#8E8E93;">Sem stop</div>';
+    }
     const alav = parseFloat(t.alavancagem) > 0 ? ' · ' + parseFloat(t.alavancagem).toFixed(2).replace('.', ',') + 'x' : '';
     return '<div class="od-trade-row" style="padding:12px 4px;border-bottom:1px solid #F2F2F7;">' +
         '<div style="display:flex;align-items:center;gap:8px;"><span style="width:10px;height:10px;border-radius:3px;background:' + cor + ';flex-shrink:0;"></span>' +
         '<span style="font-size:14px;font-weight:600;color:#1C1C1E;">' + (lado === 'short' ? 'Short' : 'Long') + alav + '</span>' +
         '<span style="margin-left:auto;font-size:11px;font-weight:700;color:' + cor + ';">' + rotulo + '</span></div>' +
-        '<div style="font-size:12px;color:#6C6C70;margin-top:4px;">' + det + '</div>' + extra + '</div>';
+        '<div style="font-size:12px;color:#6C6C70;margin-top:4px;">' + det + '</div>' + destaque + extra + '</div>';
 }
 let _odTradesFiltro = 'ativo';   // 'analise' | 'ativo' | 'encerrado'
 let _odFiltroChave = '';
