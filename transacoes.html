@@ -649,7 +649,7 @@ function calcularConsolidado(tradeId, lista) {   // só as operações daquele t
     const qtd = parseFloat(t.quantidade_ativo) || 0;
     const valor = parseFloat(t.valor_total_usd) || 0;
     if (t.tipo_operacao === 'LA') {
-        const qtdLiquida = qtd - taxa; // taxa cobrada em ativo
+        const qtdLiquida = qtd; // futuros (MEXC/Bitget): a taxa é cobrada em USDT e NÃO reduz a quantidade
         const novoCusto = custoAberto + valor;
         const novaQtd = qtdAberta + qtdLiquida;
         pm = novaQtd > 0 ? novoCusto / novaQtd : 0;
@@ -2848,7 +2848,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = '05/10 08:40 · 13849 linhas · POSICAO-APORTES v193';
+const APP_VERSAO = '05/10 08:40 · 13849 linhas · POSICAO-APORTES v194';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = 'Versão ' + APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3572,10 +3572,15 @@ const GR_HEROICONS = {
 function grHeroicon(nome, tam, cor) {
     return '<svg xmlns="http://www.w3.org/2000/svg" width="' + tam + '" height="' + tam + '" viewBox="0 0 24 24" fill="none" stroke="' + (cor || 'currentColor') + '" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="' + GR_HEROICONS[nome] + '"/></svg>';
 }
-// Liquidação da Bitget (margem ISOLADA, one-way): LP = [margem − tam×PM×dir] ÷ [tam×(MMR + taxa taker − dir)], dir = +1 long / −1 short.
-// Com margem = tam×PM÷alav fica LP = PM × (1/alav − dir) ÷ (k − dir). k = MMR + taxa taker: valor ESTIMADO (MMR real varia com o tamanho da posição).
-const GR_LIQ_K = 0.0050 + 0.0006;
-function cvLiqPreco(pm, al, dir) { return al > 0 && pm > 0 ? pm * (1 / al - dir) / (GR_LIQ_K - dir) : null; }
+// Liquidação (margem ISOLADA, one-way), fórmula da MEXC: LP = [PM × qtd × (1 + dir×MMR) − dir×margem] ÷ qtd, dir = +1 long / −1 short.
+// Sem a margem real: margem = qtd×PM÷alav, e fica LP = PM × (1 + dir×MMR − dir/alav). A taxa de abertura NÃO entra na conta.
+// MMR = taxa de manutenção: ESTIMADA em 0,42% (calibrada num OIL da MEXC); o valor real varia por ativo e por tamanho da posição.
+const GR_LIQ_MMR = 0.0042;
+function cvLiqPreco(pm, al, dir, margem, qtd) {
+    if (!(pm > 0)) return null;
+    if (margem > 0 && qtd > 0) return pm * (1 + dir * GR_LIQ_MMR) - dir * margem / qtd;
+    return al > 0 ? pm * (1 + dir * GR_LIQ_MMR - dir / al) : null;
+}
 function cvLiqDistPct(al, dir) { const p = cvLiqPreco(1, al, dir); return p == null ? null : Math.abs(p - 1) * 100; }
 let _grStopLib = null;   // id da posição cujo stop foi liberado para UM arraste
 function grStopConfirmar(pz) {
@@ -3956,7 +3961,7 @@ function cvPosFormAbrir(idx) {
                 qty -= x.qtd; cost = qty * pm; qb = Math.max(0, qb - x.qtd);
                 if (qty <= 0.000001) { qty = 0; cost = 0; }
             } else {
-                qty += sgn === 1 ? x.qtd - taxa : x.qtd;                  // LA: a taxa em BTC sai da quantidade (política da corretora)
+                qty += x.qtd;                                            // futuros: a taxa é em USDT e não reduz a quantidade (igual à MEXC/Bitget)
                 cost += valor; qb += x.qtd;
             }
         });
@@ -4090,7 +4095,7 @@ function cvPosFormAbrir(idx) {
             L.push('Tamanho da posição: <b>' + f(est.cost, 2) + ' USDT</b>');
             if (al) {
                 const marg = est.cost / al;
-                g('pf-liq').value = cvMascaraDeNumero(cvLiqPreco(est.pm, al, sgn));
+                { const ab = ap.filter(x => x.tipo !== 'D'), mr = !ap.some(x => x.tipo === 'D') && ab.length && ab.every(x => pos(x.aporte)) ? ab.reduce((a, x) => a + x.aporte, 0) : null; g('pf-liq').value = cvMascaraDeNumero(cvLiqPreco(est.pm, al, sgn, mr, est.qty)); }
                 L.push('Total aportado: <b>' + f(marg, 4) + ' USDT</b>');
                 if (pos(st)) {
                     const perda = est.qty * Math.abs(est.pm - st);
