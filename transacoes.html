@@ -295,7 +295,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <button class="cva-aba" id="cva-aba-forex" onclick="cvAtivosSetAba('forex')">Forex</button>
       <div class="cva-ord"><button id="cva-ord-btn" onclick="cvAtivosToggleMenuOrd(event)"></button><div class="cva-menu" id="cva-ord-menu"></div></div>
     </div>
-    <div class="cva-lista" id="cv-ativos-lista" onclick="cvAtivosFecharMenuOrd()"></div>
+    <div class="cva-lista" id="cv-ativos-lista" onclick="cvAtivosFecharMenuOrd()" onscroll="cvAtivosMaisLinhas()"></div>
     <div class="cva-status" id="cv-ativos-status"></div>
     <div class="cva-barra">
       <div class="cva-busca"><span id="cva-lupa" style="display:flex;"></span><input id="cv-ativos-busca" type="search" placeholder="Buscar símbolo ou nome" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" oninput="cvAtivosEntrada()"></div>
@@ -812,6 +812,7 @@ let _cvAtivosQBruta = '';
 function cvAtivosEntrada() {
     const el = document.getElementById('cv-ativos-busca');
     _cvAtivosQBruta = String((el || {}).value || '').trim();
+    _cvAtivosLimite = CV_ATIVOS_PAGINA;
     cvAtivosRender();
     if (_cvTdTimerBusca) { clearTimeout(_cvTdTimerBusca); _cvTdTimerBusca = null; }
     const st = document.getElementById('cv-ativos-status');
@@ -918,6 +919,17 @@ function cvAtivosSparkSvg(c) {
     return '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '"><polyline fill="none" stroke="' + cor + '" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" points="' + pts + '"/></svg>';
 }
 let _cvAtivosObs = null, _cvAtivosFila = [], _cvAtivosFilaAtiva = 0;
+const CV_ATIVOS_PAGINA = 40;
+let _cvAtivosLimite = CV_ATIVOS_PAGINA, _cvAtivosTotal = 0;
+function cvAtivosMaisLinhas() {
+    const box = document.getElementById('cv-ativos-lista');
+    if (!box || _cvAtivosLimite >= _cvAtivosTotal) return;
+    if (box.scrollHeight - box.scrollTop - box.clientHeight > 600) return;
+    _cvAtivosLimite += CV_ATIVOS_PAGINA;
+    const topo = box.scrollTop;
+    cvAtivosRender();
+    box.scrollTop = topo;
+}
 const _cvAtivosSparkEmVoo = new Set();
 function cvAtivosPintarSpark(sym) {
     const svg = cvAtivosSparkSvg(_cvAtivosSpark[sym]);
@@ -997,7 +1009,10 @@ function cvAtivosRender() {
     if (!_grBinLista && (_cvAtivosAba === 'cripto' || _cvAtivosAba === 'fav')) {
         html += '<div class="cva-vazio">' + (_grBinListaCarregando ? 'Carregando a lista da Binance…' : 'Não consegui carregar a lista da Binance' + (_grBinListaErro ? ' (' + String(_grBinListaErro).replace(/</g, '&lt;') + ')' : '') + '.<br><button onclick="cvAtivosRecarregar()">Tentar de novo</button>') + '</div>';
     }
-    if (itens.length) html += itens.map(linha).join('');
+    // Só as primeiras linhas vão para a tela (o resto entra ao rolar até perto do fim): 500+ linhas com logo, estrela, seta e
+    // minigráfico deixavam milhares de elementos e centenas de imagens na memória do iPhone, mesmo com a janela fechada.
+    _cvAtivosTotal = itens.length;
+    if (itens.length) html += itens.slice(0, _cvAtivosLimite).map(linha).join('');
     else if (_cvAtivosAba === 'fav' && !q) html += '<div class="cva-vazio">Nenhum favorito ainda.<br>Toque na estrela de um ativo para marcá-lo.</div>';
     else html += '<div class="cva-vazio">Nenhum ativo encontrado' + (q ? ' para “' + q.replace(/</g, '&lt;') + '”' : '') + '.</div>';
     box.innerHTML = html;
@@ -1014,6 +1029,7 @@ function cvAtivosSetAba(a) {
     const stA = document.getElementById('cv-ativos-status'); if (stA) stA.textContent = '';
     if (_cvTdTimerBusca) { clearTimeout(_cvTdTimerBusca); _cvTdTimerBusca = null; }
     const box = document.getElementById('cv-ativos-lista'); if (box) box.scrollTop = 0;
+    _cvAtivosLimite = CV_ATIVOS_PAGINA;
     cvAtivosRender();
 }
 function cvAtivosToggleMenuOrd(ev) {
@@ -1027,6 +1043,7 @@ function cvAtivosFecharMenuOrd() { const m = document.getElementById('cva-ord-me
 function cvAtivosSetOrdem(o) {
     _cvAtivosOrdem = CV_ORDENS[o] ? o : 'vol';
     cvAtivosFecharMenuOrd();
+    _cvAtivosLimite = CV_ATIVOS_PAGINA;
     const box = document.getElementById('cv-ativos-lista'); if (box) box.scrollTop = 0;
     cvAtivosRender();
 }
@@ -1078,6 +1095,7 @@ async function cvAbrirBuscaAtivos() {
     const inp = document.getElementById('cv-ativos-busca'); inp.value = '';
     document.getElementById('cv-ativos-status').textContent = '';
     const sh = document.getElementById('cva-sheet'); if (sh) { sh.style.transform = ''; sh.style.transition = ''; }
+    _cvAtivosLimite = CV_ATIVOS_PAGINA;
     ov.classList.add('active'); _tickerDropdownAberto = true;
     cvAtivosAjustarViewport();
     cvAtivosSetAba(_cvAtivosAba);
@@ -1097,7 +1115,11 @@ function cvFecharBuscaAtivos() {
     _tickerDropdownAberto = false;
     cvAtivosFecharMenuOrd();
     if (_cvAtivosObs) { _cvAtivosObs.disconnect(); _cvAtivosObs = null; }
-    const destravar = () => { if (box) box.style.overflowY = ''; try { window.scrollTo(0, 0); } catch (e) {} };
+    _cvAtivosFila.length = 0;   // minigráficos que ainda não começaram não precisam mais ser buscados
+    const destravar = () => {
+        if (box) { box.style.overflowY = ''; if (!_tickerDropdownAberto) box.innerHTML = ''; }   // janela fechada: solta centenas de elementos e imagens da memória
+        try { window.scrollTo(0, 0); } catch (e) {}
+    };
     requestAnimationFrame(destravar);
     setTimeout(destravar, 350);
 }
