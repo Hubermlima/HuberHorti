@@ -2738,7 +2738,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = '04/10 22:11 · 14340 linhas · POSICAO-APORTES v166';
+const APP_VERSAO = '04/10 22:55 · 14389 linhas · POSICAO-APORTES v168';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = 'Versão ' + APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3453,6 +3453,7 @@ async function cvPosGravarTrade(pz, ap, v) {
     const lado = pz.lado === 'short' ? 'short' : 'long';
     const aberts = ap.filter(x => x.tipo !== 'D').map(x => x.data).sort();
     const dados = { alavancagem: v.alav, preco_entrada: v.entrada, risco_planejado: v.risco };
+    if (pz.tradeId && aberts[0]) dados.data_abertura = aberts[0];   // data do 1º aporte = âncora da caixa
     let tradeId = pz.tradeId, criou = false;
     if (!tradeId) {
         const vg = await cvPosVagaLivre(lado); if (vg.erro) return vg;
@@ -3524,10 +3525,54 @@ async function cvPosCarregarAportes(pz) {
     window._grPosAportes[pz.id] = data.map(t => ({ id: t.id, tipo: String(t.tipo_operacao).endsWith('F') ? 'D' : 'R', data: String(t.data).slice(0, 10), preco: t.valor_total_usd / t.quantidade_ativo, aporte: null, qtd: t.quantidade_ativo, taxa: t.taxa_operacao, taxaManual: true }));
     return true;
 }
+// Caixa com trade (Ativo/Encerrado): borda esquerda fixa no candle do 1º aporte; a direita continua livre.
+function cvPosAncorar(pz) {
+    if (!pz || !pz.tradeId) return false;
+    const ap = window._grPosAportes[pz.id], tr = window._grPosTrades[pz.tradeId];
+    const datas = ap ? ap.filter(x => x.tipo !== 'D').map(x => x.data).sort() : [];
+    const dia = datas[0] || (tr && tr.data_abertura ? String(tr.data_abertura).slice(0, 10) : null);
+    if (!dia) return false;
+    let t = new Date(dia + 'T12:00:00-04:00').getTime(); if (!(t > 0)) return false;
+    const arr = _grAllCandles;
+    if (arr && arr.length) { let k = -1; for (let i = arr.length - 1; i >= 0; i--) if (arr[i].t <= t) { k = i; break; } if (k >= 0) t = arr[k].t; }
+    const mudou = pz.t1 !== t;
+    pz.t1 = t;
+    if (grTimeToIndex(pz.t2) < grTimeToIndex(t) + 14) pz.t2 = grIndexToTime(grTimeToIndex(t) + 14);
+    return mudou;
+}
+// Trade ativo sem caixa no gráfico (ex.: o short antigo, ligado por SQL): cria a caixa a partir do trade.
+async function cvPosImportarOrfaos() {
+    if (!_ativoId) return false;
+    const r = await db.from('trades').select('*').eq('ativo_id', _ativoId).is('data_fechamento', null);
+    const lista = (r.data || []).filter(t => !grPosicoes().some(z => z.tradeId === t.id));
+    let criou = false;
+    for (const t of lista) {
+        window._grPosTrades[t.id] = t;
+        const sh = t.tipo === 'short', sg = sh ? -1 : 1, c = calcularConsolidado(t.id);
+        const pm = sh ? c.pmShort : c.pm, qty = sh ? c.qtdShort : c.qtdAberta;
+        if (!(pm > 0 && qty > 0)) continue;   // sem transações ligadas: nada a importar
+        const ra = (await db.from('alvos').select('*').eq('trade_id', t.id).order('ordem', { ascending: true })).data || [];
+        const mk = tp => ra.filter(a => a.tipo === tp).map(a => ({ preco: a.preco, pct: a.percentual, notif: a.habilitado !== false }));
+        const alvos = mk('alvo'), stops = mk('stop');
+        const far = (l, tp, def) => l.length ? l.reduce((m, x) => (tp === 'alvo' ? (x.preco - m) * sg > 0 : (m - x.preco) * sg > 0) ? x.preco : m, l[0].preco) : def;
+        const entrada = t.preco_entrada > 0 ? t.preco_entrada : pm;
+        const alvo = far(alvos, 'alvo', pm * (1 + sg * 0.10)), stop = far(stops, 'stop', pm * (1 - sg * 0.05));
+        const ult = (_grAllCandles || []).length - 1;
+        const pz = { id: Date.now() + Math.floor(Math.random() * 1000), lado: t.tipo, t1: 0, t2: grIndexToTime(ult + 14), entrada, alvo, stop, tradeId: t.id, pm, pmLim: pm, qty, cfg: { conta: t.alavancagem > 0 ? c.custoAberto / t.alavancagem : null, risco: t.risco_planejado, alav: t.alavancagem } };
+        if (alvos.length) pz.alvos = alvos; if (stops.length) pz.stops = stops;
+        grPosicoes().push(pz); cvPosAncorar(pz); criou = true;
+        if (!alvos.length || !stops.length) grAreaToast('Trade ' + t.tipo + ' importado: ajuste alvo e stop na caixa e dê Ok.', '#2563EB');
+    }
+    return criou;
+}
 async function cvPosCarregarTrades() {
+    let imp = false; try { imp = await cvPosImportarOrfaos(); } catch (e) { window._impErr = String(e); }
+    if (imp) { grPosSalvar(); try { await grAmbienteGravar(); } catch (e) {} }
     const ids = grPosicoes().map(z => z.tradeId).filter(Boolean); if (!ids.length) return;
     const { data } = await db.from('trades').select('*').in('id', ids);
     (data || []).forEach(t => { window._grPosTrades[t.id] = t; });
+    let mud = false; grPosicoes().forEach(z => { if (z.tradeId && cvPosAncorar(z)) mud = true; });
+    if (mud) grPosSalvar();
     try { grDrawChart(); } catch (e) {}
 }
 // Status/cores da caixa: sem tradeId = Em Análise (cinza); trade sem data_fechamento = Ativo (verde/vermelho); com = Encerrado (tom do resultado)
@@ -3701,6 +3746,9 @@ function cvPosFormAbrir(idx) {
         pg = Math.min(pg, ap.length - 1);
         const est = estado(null, gravados);   // recalcula a posição só com o que está no banco
         if (est.qty > 0) { pz.pm = est.pm; pz.pmLim = est.pmBruto; pz.qty = est.qty; if (pz.cfg && alav()) pz.cfg.conta = est.cost / alav(); }
+        const d0 = gravados.filter(a => a.tipo !== 'D').map(a => a.data).sort()[0];   // 1º aporte mudou? a âncora acompanha
+        if (d0 && tr && String(tr.data_abertura).slice(0, 10) !== d0) { await db.from('trades').update({ data_abertura: d0 }).eq('id', pz.tradeId); tr.data_abertura = d0; }
+        window._grPosAportes[pz.id] = gravados.map(a => Object.assign({}, a)); cvPosAncorar(pz);
         grPosSalvar(); grDrawChart();
         renderPag(); recalc('x');
     }
@@ -3920,6 +3968,7 @@ function cvPosFormAbrir(idx) {
         pz.entrada = orig; pz.pm = e; pz.pmLim = base.pmBruto; pz.qty = enc ? 0 : est.qty; pz.alvo = a; pz.stop = st;
         pz.cfg = { conta: al ? base.cost / al : (c.conta != null ? c.conta : null), risco: r, alav: al };
         window._grPosAportes[pz.id] = ap;
+        cvPosAncorar(pz);
         grPosSalvar(); if (sv.criou) grAmbienteGravar(); try { if (typeof odCarregarTrades === 'function') odCarregarTrades(); } catch (e) {}   // 1º Ok: grava a caixa já, para não perder o vínculo com o trade
         cvPosFormFechar(); grDrawChart();
     };
@@ -6358,12 +6407,12 @@ function grEdToqueMove(x, y) {
         if (d.k === 'a') o.alvo = preco;
         else if (d.k === 's') o.stop = preco;
         else if (d.k === 'e') o.entrada = preco;
-        else if (d.k === 'l') o.t1 = grIndexToTime(idx);
+        else if (d.k === 'l') { if (!o.tradeId) o.t1 = grIndexToTime(idx); }   // com trade, a borda esquerda é fixa no 1º aporte
         else if (d.k === 'r') o.t2 = grIndexToTime(idx);
         else if (d.k === 'm') {   // corpo: desloca tempo e preços juntos (em escala log mantém as distâncias em %)
             const dIdx = grXToIndex(nx) - grXToIndex(d.hx), p0 = grToPrice(d.hy), p1 = grToPrice(ny);
             const mv = v => _grEscalaLog ? v * (p1 / p0) : v + (p1 - p0);
-            o.t1 = grIndexToTime(grTimeToIndex(d.snap.t1) + dIdx); o.t2 = grIndexToTime(grTimeToIndex(d.snap.t2) + dIdx);
+            if (!o.tradeId) { o.t1 = grIndexToTime(grTimeToIndex(d.snap.t1) + dIdx); o.t2 = grIndexToTime(grTimeToIndex(d.snap.t2) + dIdx); }
             if (!(o.pm > 0)) { o.entrada = mv(d.snap.entrada); o.alvo = mv(d.snap.alvo); o.stop = mv(d.snap.stop); }   // com PM: só desloca na horizontal
         }
     }
