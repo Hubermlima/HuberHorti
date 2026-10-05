@@ -1203,7 +1203,7 @@ async function cvSelecionarAtivo(id, ticker, meta) {
     if (mudou) {
         window._grFluxoGeracao = (window._grFluxoGeracao || 0) + 1;
         if (!grAtivoTemFluxo()) {
-            if (_grFootprintAtivo) grFootprintPararOverlay();
+            if (_grFootprintAtivo) grFootprintSuspender();
             const bFx = document.getElementById('cv-ind-footprint'); if (bFx) bFx.classList.remove('active');
         }
     }
@@ -1229,7 +1229,7 @@ async function cvSelecionarAtivo(id, ticker, meta) {
         try { grAreaToast(_ativoFonte === 'td' ? ('Sem candles de ' + ticker + ' na Twelve Data' + (window._grErroFonte ? ': ' + window._grErroFonte : '')) : ('Sem candles de ' + ticker + ' na Binance Futures (' + grBinSymbolAtual() + ')'), '#EF5350'); } catch (e) {}
     }
     // Voltou pro BTC com o Fluxo ligado no ambiente dele: religa (baixa de novo os dias do R2 em segundo plano).
-    if (mudou && fatiaEntrando.footprint === true && grAtivoTemFluxo() && !_grFootprintAtivo) { window._fase = 'troca: religando o Fluxo'; grFootprintAtivar(); }
+    if (mudou && fatiaEntrando.footprint === true && grAtivoTemFluxo() && !_grFootprintAtivo) { window._fase = 'troca: religando o Fluxo'; grFootprintRetomar(); }
     grAmbienteSalvar(); // marca como pendente: o servidor só é gravado no Sair
     await Promise.all([carregarTransacoes(), fetchFxRate()]);
     // Trades/caixas do ativo que entrou: só LÊ do banco (PM, quantidade, alvos e stops das caixas existentes, e importa trade ativo
@@ -12096,6 +12096,7 @@ function grFootprintGarantirOverlayCanvas() {
     }
 }
 function grFootprintPararOverlay() {
+    window._grFpSusp = null;   // desligar de verdade descarta o que estava guardado de uma troca de ativo
     if (_grFootprintOverlayInterval) { clearInterval(_grFootprintOverlayInterval); _grFootprintOverlayInterval = null; }
     if (_grFootprintRefreshInterval) { clearInterval(_grFootprintRefreshInterval); _grFootprintRefreshInterval = null; }
     _grFootprintAtivo = false;
@@ -12113,6 +12114,49 @@ function grFootprintPararOverlay() {
     const btn = document.getElementById('cv-ind-footprint');
     if (btn) btn.classList.remove('active');
     grDrawChart(); // redesenha sem o painel Delta/Total
+}
+// ── Trocar de ativo e voltar ao BTC SEM rebaixar o Fluxo ──────────────────────────────────────────────────────────────────
+// Antes, sair do BTC jogava fora o Fluxo e voltar baixava e processava de novo TODOS os dias do R2 (JSON de dezenas de MB por dia,
+// processados na thread principal) — era isso que travava a tela inteira por minutos no celular. Agora o dado bruto fica guardado
+// em memória (uma cópia só) enquanto você olha outro ativo; ao voltar ele é recolocado na hora e só se baixa o que faltar.
+function grFootprintSuspender() {
+    if (!_grFootprintAtivo || !_grFootprintCandlesRaw || !_grFootprintCandlesRaw.length) { grFootprintPararOverlay(); return; }
+    const guardado = { raw: _grFootprintCandlesRaw, r2: window._grR2UltimoTs || 0, ts: Date.now(), dia: new Date().toISOString().slice(0, 10) };
+    grFootprintPararOverlay();   // desliga overlay, intervalos, ao vivo e caches derivados; só o bruto fica aqui
+    window._grFpSusp = guardado;
+}
+async function grFootprintRetomar() {
+    const sp = window._grFpSusp; window._grFpSusp = null;
+    const hoje = new Date().toISOString().slice(0, 10);
+    if (!sp || !grAtivoTemFluxo() || sp.dia !== hoje || Date.now() - sp.ts > 3 * 3600 * 1000) { grFootprintAtivar(); return; }   // virou o dia / ficou muito tempo fora: baixa do zero
+    window._fase = 'Fluxo: retomando da memória';
+    document.getElementById('cv-ind-footprint').classList.add('active');
+    _grFootprintAtivo = true;
+    grAmbienteSalvar();
+    _grFootprintCandlesRaw = sp.raw;
+    grFootprintInvalidarDerivados(); grFootprintDadosAntigosMudaram();
+    window._grR2UltimoTs = sp.r2 || sp.raw.reduce((m, c) => c.ts > m ? c.ts : m, 0);
+    // Dias que já estão no bruto x dias pedidos (a troca pode ter interrompido o carregamento em segundo plano)
+    const tem = new Set();
+    for (let i = 0; i < sp.raw.length; i += 60) tem.add(new Date(sp.raw[i].ts).toISOString().slice(0, 10));
+    const dias = grFootprintDiasEntre(Date.now() - FOOTPRINT_DIAS_AO_ATIVAR * 24 * 3600 * 1000, Date.now()).sort().reverse();
+    window._grFluxoDias = dias.map(d => ({ dia: d, estado: tem.has(d) || d === hoje ? 'ok' : 'carregando' }));
+    const faltam = dias.filter(d => !tem.has(d) && d !== hoje);
+    grFluxoStatusAtualizar();
+    _grFootprintUltimoRangeVisto = null; _grFootprintUltimoRangeCalc = null;
+    grFootprintGarantirOverlayCanvas();
+    if (_grFootprintOverlayInterval) clearInterval(_grFootprintOverlayInterval);
+    _grFootprintOverlayInterval = setInterval(grFootprintDesenharOverlay, 200);
+    grFootprintDesenharOverlay();
+    if (faltam.length) grFootprintCarregarRestante(faltam);
+    grFootprintLiveIniciar();                 // preenche o buraco do ao vivo desde o último minuto que temos
+    grFootprintRecalcularZonasExistentes();
+    window._grClusterCache = new Map();
+    grDrawChart();
+    if (_grFootprintRefreshInterval) clearInterval(_grFootprintRefreshInterval);
+    _grFootprintRefreshInterval = setInterval(grFootprintAtualizarSeAtivo, FOOTPRINT_REFRESH_MS);
+    grFootprintAtualizarSeAtivo();            // traz já o que o worker gravou enquanto você estava fora
+    window._fase = 'Fluxo: retomado';
 }
 // ══ VOLUME PROFILE ANCORADO ═══════════════════════════════════════════════════════════════════════
 // NÃO é a Value Area: a Value Area é uma zona restrita (com botão, âncora e cálculo próprios, inalterados); o Volume
