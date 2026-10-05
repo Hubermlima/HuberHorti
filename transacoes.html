@@ -601,6 +601,14 @@ async function init() {
     cvAbrir();
     try { await Promise.all([carregarTransacoes(), fetchFxRate()]); } catch(e) {}
 }
+// Só relê as transações do ativo (a aba Trades e os cards usam essa cópia). Chamada depois de gravar/apagar lançamentos pelo formulário da caixa.
+async function cvRecarregarTransacoes() {
+    try {
+        if (!_ativoId || cvAtivoEhVirtual()) return;
+        const r = await db.from('transacoes').select('*').eq('ativo_id', _ativoId).order('data', { ascending: true });
+        if (!r.error && r.data) _transacoes = r.data;
+    } catch (e) {}
+}
 async function carregarTransacoes() {
     if (!_ativoId) return;
     if (cvAtivoEhVirtual()) { _transacoes = []; await cvCarregarAlertasGrafico(); await cvCarregarTrendlines(); cvCarregarFreehandLocal(); grDrawChart(); return; }   // modo pesquisa: nada no banco ainda
@@ -2848,7 +2856,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = '05/10 08:40 · 13849 linhas · POSICAO-APORTES v194';
+const APP_VERSAO = '05/10 08:40 · 13849 linhas · POSICAO-APORTES v195';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = 'Versão ' + APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4029,6 +4037,7 @@ function cvPosFormAbrir(idx) {
         const e1 = (await db.from('transacoes').delete().eq('id', x.id)).error;
         if (e1) { g('pf-erro').textContent = 'Falha ao apagar: ' + e1.message; return; }
         ap.splice(pg, 1);
+        await cvRecarregarTransacoes();
         const gravados = ap.filter(a => a.id);
         if (!gravados.length) {   // nenhuma transação sobrou: o trade volta a Em Análise
             const r = await cvPosVoltarAnalise(pz);
@@ -4266,6 +4275,7 @@ function cvPosFormAbrir(idx) {
         pz.cfg = { conta: al ? base.cost / al : (c.conta != null ? c.conta : null), risco: r, alav: al };
         window._grPosAportes[pz.id] = ap;
         cvPosAncorar(pz);
+        await cvRecarregarTransacoes();
         grPosSalvar(); if (sv.criou) grAmbienteGravar(); try { if (typeof odCarregarTrades === 'function') odCarregarTrades(); } catch (e) {}   // 1º Ok: grava a caixa já, para não perder o vínculo com o trade
         cvPosFormFechar(); grDrawChart();
     };
