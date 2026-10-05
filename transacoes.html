@@ -1221,8 +1221,6 @@ async function cvSelecionarAtivo(id, ticker, meta) {
     // Atualiza globals
     _ativoId = id;
     _ticker  = ticker;
-    try { _odTradesCache = []; _odAlvosCache = {}; } catch (e) {}
-    try { const lt = document.getElementById('od-trades-list'); if (lt) lt.innerHTML = '<div style="padding:24px 0;text-align:center;color:#8E8E93;font-size:13px;">Carregando…</div>'; } catch (e) {}   // aba Trades: não mostra o ativo antigo enquanto o novo carrega
     // Atualiza topbar
     document.getElementById('cv-ticker').textContent = ticker;
     const fatiaEntrando = grAmbAtivoDoMapa(id, ticker, fatiaSaindo);
@@ -1271,7 +1269,6 @@ async function cvSelecionarAtivo(id, ticker, meta) {
     // sem caixa). Antes só rodava na abertura do app, então as caixas de outro ativo ficavam sem os números do banco.
     window._fase = 'troca: lendo trades';
     try { await cvPosCarregarTrades(); } catch (e) {}
-    try { await odCarregarTrades(); } catch (e) {}   // aba Trades do ativo que entrou (antes ficava com os trades do ativo anterior)
     window._fase = 'troca: concluída';
     grDrawChart();
 }
@@ -2859,7 +2856,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = '05/10 08:40 · 13849 linhas · POSICAO-APORTES v202';
+const APP_VERSAO = '05/10 08:40 · 13849 linhas · POSICAO-APORTES v203';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = 'Versão ' + APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -11040,9 +11037,29 @@ function odDesenharCombo() {
 // Status é derivado: sem data_abertura = Em Análise; com data_abertura = Ativo; com data_fechamento = Encerrado.
 let _odTradesCache = [];
 let _odAlvosCache = {};   // { [trade_id]: [linhas de alvos] }
+let _odAtivos = {};     // { [ativo_id]: { ticker, tipo } }
+let _odTxCache = [];    // transações de TODOS os trades listados
+let _odPrecos = {}, _odPrecosTs = 0;   // cotação dos outros ativos (o ativo aberto usa _precoAtual)
+function odPrecoDe(t) {
+    if (String(t.ativo_id) === String(_ativoId)) return _precoAtual > 0 ? _precoAtual : null;
+    const p = _odPrecos[t.ativo_id]; return p > 0 ? p : null;
+}
+function odTickerDe(ativoId) { const a = _odAtivos[ativoId]; return a ? a.ticker : ''; }
+function odTagTicker(ativoId) { const tk = odTickerDe(ativoId); return tk ? '<span style="font-size:12px;font-weight:500;color:#8E8E93;">' + String(tk).replace(/[<>&]/g, '') + '</span>' : ''; }
+async function odAtualizarPrecos(forcar) {   // cotação dos ativos com trade aberto que não são o ativo da tela (Binance numa chamada só; Twelve Data uma por ativo)
+    if (!forcar && Date.now() - _odPrecosTs < 15000) return;
+    _odPrecosTs = Date.now();
+    const ids = []; (_odTradesCache || []).forEach(t => { if (odStatusTrade(t) === 'ativo' && String(t.ativo_id) !== String(_ativoId) && ids.indexOf(t.ativo_id) < 0) ids.push(t.ativo_id); });
+    if (!ids.length) return;
+    const bin = [], td = [];
+    ids.forEach(id => { const a = _odAtivos[id]; if (a) (cvFonteDoTipo(a.tipo) === 'td' ? td : bin).push({ id, a }); });
+    if (bin.length) { try { const r = await fetch('https://fapi.binance.com/fapi/v1/ticker/price'); const arr = await r.json(); const m = {}; (arr || []).forEach(x => { m[x.symbol] = parseFloat(x.price); }); bin.forEach(o => { const v = m[grBinSymFromTicker(o.a.ticker)]; if (v > 0) _odPrecos[o.id] = v; }); } catch (e) {} }
+    for (const o of td) { try { const d = await tdFetch('https://api.twelvedata.com/price?symbol=' + encodeURIComponent(String(o.a.ticker))); const v = d && parseFloat(d.price); if (v > 0) _odPrecos[o.id] = v; } catch (e) {} }
+    try { odRenderTrades(); } catch (e) {}
+}
 function odStatusTrade(t) { return t.data_fechamento ? 'encerrado' : (t.data_abertura ? 'ativo' : 'analise'); }
 // Consolidado do trade: só as linhas com o trade_id dele
-function odConsolidadoTrade(t) { return calcularConsolidado(t.id); }
+function odConsolidadoTrade(t) { return calcularConsolidado(t.id, _odTxCache); }
 function odFmtDataTrade(d) {
     if (!d) return '—';
     const x = new Date(d.length <= 10 ? d + 'T12:00:00' : d);
@@ -11065,9 +11082,16 @@ function odToggleDet(id) {
     if (d) d.style.display = _odDetAbertos[k] ? '' : 'none';
     if (c) c.style.transform = _odDetAbertos[k] ? 'rotate(180deg)' : '';
 }
-function odBtnVerCaixa(id) {
+async function cvIrParaCaixaDe(ativoId, id) {   // a caixa pode ser de outro ativo: troca o ativo primeiro
+    try {
+        if (String(ativoId) !== String(_ativoId)) { const a = _odAtivos[ativoId]; if (!a) return; await cvSelecionarAtivo(ativoId, a.ticker, { fonte: cvFonteDoTipo(a.tipo), tipo: a.tipo }); }
+        await cvIrParaCaixa(id);
+    } catch (e) {}
+}
+function odBoxDe(t) { try { const z = (_grPosMapa[String(t.ativo_id)] || []).find(z => z.tradeId === t.id); return z ? z.id : null; } catch (e) { return null; } }
+function odBtnVerCaixa(id, ativoId) {
     if (id == null) return '';
-    return '<button type="button" aria-label="Ver caixa no gráfico" onclick="event.stopPropagation();cvIrParaCaixa(\'' + String(id).replace(/[^\w-]/g, '') + '\')" style="margin-left:8px;width:30px;height:30px;border:none;border-radius:15px;background:#F2F2F7;color:#007AFF;display:flex;align-items:center;justify-content:center;padding:0;flex-shrink:0;">' + grHeroicon('viewfinder-circle', 18, '#007AFF') + '</button>';
+    return '<button type="button" aria-label="Ver caixa no gráfico" onclick="event.stopPropagation();cvIrParaCaixaDe(\'' + String(ativoId == null ? _ativoId : ativoId).replace(/[^\w-]/g, '') + '\',\'' + String(id).replace(/[^\w-]/g, '') + '\')" style="margin-left:8px;width:30px;height:30px;border:none;border-radius:15px;background:#F2F2F7;color:#007AFF;display:flex;align-items:center;justify-content:center;padding:0;flex-shrink:0;">' + grHeroicon('viewfinder-circle', 18, '#007AFF') + '</button>';
 }
 // Card do trade Ativo: Sl/Tp com quanto falta o preço andar, Realizado (se já houve saída) e o resto recolhido sob a seta.
 // Único negrito: o valor do Realizado.
@@ -11078,12 +11102,12 @@ function odCardAtivo(t, o) {
     const cs = v => v >= 0 ? '#26A69A' : '#EF5350';
     const id = String(t.id).replace(/[^\w-]/g, ''), aberto = !!_odDetAbertos[t.id];
     const alavN = parseFloat(t.alavancagem) > 0 ? parseFloat(t.alavancagem) : null;
-    const preco = _precoAtual > 0 ? _precoAtual : null;
+    const preco = odPrecoDe(t);
     const lst = (_odAlvosCache[t.id] || []).filter(a => parseFloat(a.preco) > 0);
     const ord = (a, b) => (a.ordem || 0) - (b.ordem || 0);
     const sls = lst.filter(a => a.tipo === 'stop').sort(ord), tps = lst.filter(a => a.tipo !== 'stop').sort(ord);
     // Realizado: saídas (LF/SF) do trade, líquido da taxa de saída (no short a taxa de saída é em USDT, como no long).
-    const txs = (typeof _transacoes !== 'undefined' ? _transacoes : []).filter(x => x.trade_id === t.id);
+    const txs = _odTxCache.filter(x => x.trade_id === t.id);
     const saidas = txs.filter(x => String(x.tipo_operacao).endsWith('F'));
     const c = odConsolidadoTrade(t);
     const taxaSaidaShort = lado === 'short' ? saidas.reduce((m, x) => m + (parseFloat(x.taxa_operacao) || 0), 0) : 0;
@@ -11105,9 +11129,9 @@ function odCardAtivo(t, o) {
     if (!sls.length) grade = '<span style="font-weight:600;color:#EF5350;">Sl</span><span style="grid-column:2/5;color:#8E8E93;">não definido</span>' + grade;
     let h = '<div class="od-trade-row" style="padding:12px 4px;border-bottom:1px solid #F2F2F7;">' +
         '<div style="display:flex;align-items:center;gap:8px;"><span style="width:10px;height:10px;border-radius:3px;background:' + cor + ';flex-shrink:0;"></span>' +
-        '<span style="font-size:14px;font-weight:600;color:#1C1C1E;">' + (lado === 'short' ? 'Short' : 'Long') + (alavN ? ' · ' + alavN.toFixed(2).replace('.', ',') + 'x' : '') + '</span>' +
+        odTagTicker(t.ativo_id) + '<span style="font-size:14px;font-weight:600;color:#1C1C1E;">' + (lado === 'short' ? 'Short' : 'Long') + (alavN ? ' · ' + alavN.toFixed(2).replace('.', ',') + 'x' : '') + '</span>' +
         '<span style="margin-left:auto;font-size:11px;font-weight:700;color:' + cor + ';">Ativo</span>' +
-        odBtnVerCaixa((function () { try { const z = grPosicoes().find(z => z.tradeId === t.id); return z ? z.id : null; } catch (e) { return null; } })()) + '</div>' +
+        odBtnVerCaixa(odBoxDe(t), t.ativo_id) + '</div>' +
         '<div style="display:grid;grid-template-columns:62px 1fr 1fr 24px;column-gap:8px;row-gap:4px;margin-top:10px;font-size:13px;color:#1C1C1E;align-items:baseline;">' + grade + '</div>';
     if (realizado !== null) h += '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:8px;padding-top:7px;border-top:1px solid #F2F2F7;font-size:13px;"><span style="color:#8E8E93;">Realizado</span><span style="font-weight:800;color:' + cs(realizado) + ';">' + sn(realizado) + ' USDT</span></div>';
     h += '<button type="button" aria-label="Detalhes" onclick="event.stopPropagation();odToggleDet(\'' + id + '\')" style="display:flex;justify-content:center;width:100%;margin-top:4px;border:none;background:none;padding:2px 0;color:#3A3A3C;"><span id="od-chev-' + t.id + '" style="display:inline-flex;transition:transform .15s;' + (aberto ? 'transform:rotate(180deg);' : '') + '">' + grHeroicon('chevron-down', 20, '#3A3A3C') + '</span></button>';
@@ -11145,7 +11169,7 @@ async function odMarcarAlcancado(id, el) {   // grava na hora; se falhar, volta 
     let r = null; try { r = await db.from('alvos').update({ atingido: novo }).eq('id', id); } catch (e) { r = { error: e }; }
     if (r && r.error) { el.checked = !novo; try { grAreaToast('Não consegui gravar. Tente de novo.', '#DC2626'); } catch (e) {} return; }
     Object.keys(_odAlvosCache).forEach(k => (_odAlvosCache[k] || []).forEach(a => { if (String(a.id) === String(id)) a.atingido = novo; }));
-    try { const z = grPosicoes().find(z => z.alvos || z.stops); grPosicoes().forEach(z => { if (!z.tradeId) return; const t = (_odTradesCache || []).find(t => t.id === z.tradeId); if (!t) return; const ra = (_odAlvosCache[t.id] || []); [['alvo', z.alvos], ['stop', z.stops]].forEach(([tp, lista]) => { const ls = ra.filter(a => a.tipo === tp).sort((a, b) => a.ordem - b.ordem); (lista || []).forEach((x, k) => { if (ls[k]) x.atg = !!ls[k].atingido; }); }); }); grDrawChart(); } catch (e) {}
+    try { Object.keys(_grPosMapa).forEach(k => (_grPosMapa[k] || []).forEach(z => { if (!z.tradeId) return; const t = (_odTradesCache || []).find(t => t.id === z.tradeId); if (!t) return; const ra = (_odAlvosCache[t.id] || []); [['alvo', z.alvos], ['stop', z.stops]].forEach(([tp, lista]) => { const ls = ra.filter(a => a.tipo === tp).sort((a, b) => a.ordem - b.ordem); (lista || []).forEach((x, k) => { if (ls[k]) x.atg = !!ls[k].atingido; }); }); })); grDrawChart(); } catch (e) {}
     odRenderTrades();
 }
 function odRenderTradeRow(t) {
@@ -11156,7 +11180,7 @@ function odRenderTradeRow(t) {
     let cor = '#8E8E93', rotulo = 'Em Análise', det = '';
     if (st === 'ativo') {
         cor = lado === 'short' ? '#EF5350' : '#26A69A'; rotulo = 'Ativo';
-        const pct = pm > 0 && _precoAtual > 0 ? ((_precoAtual - pm) / pm * 100 * sg) : null;
+        const pxA = odPrecoDe(t), pct = pm > 0 && pxA > 0 ? ((pxA - pm) / pm * 100 * sg) : null;
         det = (pct === null ? '' : '<span style="font-weight:700;color:' + (pct >= 0 ? '#26A69A' : '#EF5350') + ';">' + (pct >= 0 ? '+' : '') + pct.toFixed(2).replace('.', ',') + '%</span> · ') + 'PM ' + (pm > 0 ? fmtUSD(pm) : '—') + ' · Qtd ' + (qtd > 0 ? fmtQtd(qtd) : '—') + '<br>Aberto em ' + odFmtDataTrade(t.data_abertura) + ' · ' + (odDiasTrade(t) || '—');
     } else if (st === 'encerrado') {
         cor = lucroReal > 0 ? '#26A69A' : lucroReal < 0 ? '#EF5350' : '#8E8E93'; rotulo = 'Encerrado';
@@ -11170,7 +11194,7 @@ function odRenderTradeRow(t) {
     const f2 = (v, d) => v.toLocaleString('pt-BR', { minimumFractionDigits: d == null ? 2 : d, maximumFractionDigits: d == null ? 2 : d });
     const alavN = parseFloat(t.alavancagem) > 0 ? parseFloat(t.alavancagem) : null;
     if (st === 'ativo' && pm > 0 && qtd > 0) {
-        const tam = qtd * pm, usd = _precoAtual > 0 ? (_precoAtual - pm) * qtd * sg : null;
+        const tam = qtd * pm, pxB = odPrecoDe(t), usd = pxB > 0 ? (pxB - pm) * qtd * sg : null;
         let l = 'Tamanho <b>' + f2(tam) + '</b>';
         if (alavN) l += ' · Margem <b>' + f2(tam / alavN) + '</b> · Liquidação <b>' + f2(cvLiqPreco(pm, alavN, sg)) + '</b>';
         const riscoN = parseFloat(t.risco_planejado);
@@ -11201,24 +11225,29 @@ function odRenderTradeRow(t) {
     const alav = parseFloat(t.alavancagem) > 0 ? ' · ' + parseFloat(t.alavancagem).toFixed(2).replace('.', ',') + 'x' : '';
     return '<div class="od-trade-row" style="padding:12px 4px;border-bottom:1px solid #F2F2F7;">' +
         '<div style="display:flex;align-items:center;gap:8px;"><span style="width:10px;height:10px;border-radius:3px;background:' + cor + ';flex-shrink:0;"></span>' +
-        '<span style="font-size:14px;font-weight:600;color:#1C1C1E;">' + (lado === 'short' ? 'Short' : 'Long') + alav + '</span>' +
-        '<span style="margin-left:auto;font-size:11px;font-weight:700;color:' + cor + ';">' + rotulo + '</span>' + odBtnVerCaixa((function () { try { const z = grPosicoes().find(z => z.tradeId === t.id); return z ? z.id : null; } catch (e) { return null; } })()) + '</div>' +
+        odTagTicker(t.ativo_id) + '<span style="font-size:14px;font-weight:600;color:#1C1C1E;">' + (lado === 'short' ? 'Short' : 'Long') + alav + '</span>' +
+        '<span style="margin-left:auto;font-size:11px;font-weight:700;color:' + cor + ';">' + rotulo + '</span>' + odBtnVerCaixa(odBoxDe(t), t.ativo_id) + '</div>' +
         '<div style="font-size:12px;color:#6C6C70;margin-top:4px;">' + det + '</div>' + extra + '</div>';
 }
 let _odTradesFiltro = 'ativo';   // 'analise' | 'ativo' | 'encerrado'
 let _odFiltroChave = '';
 function odSetFiltroTrades(f) { _odTradesFiltro = f; odRenderTrades(); }
 // Em Análise não tem linha no banco: são as caixas desenhadas no gráfico que ainda não receberam nenhum lançamento.
-function odCaixasAnalise() { try { return grPosicoes().filter(z => !z.tradeId); } catch (e) { return []; } }
-function odRenderAnaliseRow(pz) {
+function odCaixasAnalise() {   // caixas sem lançamento de TODOS os ativos (só ativos cadastrados; pesquisa virtual fica de fora)
+    const out = [];
+    try { Object.keys(_grPosMapa).forEach(k => { if (/^(bin|td):|^default$/.test(k)) return; (_grPosMapa[k] || []).forEach(z => { if (!z.tradeId) out.push({ pz: z, ativoId: k }); }); }); } catch (e) {}
+    return out;
+}
+function odRenderAnaliseRow(it) {
+    const pz = it.pz;
     const lado = pz.lado === 'short' ? 'short' : 'long', sg = lado === 'short' ? -1 : 1;
     const pc = v => (v >= 0 ? '+' : '') + (v * 100).toFixed(2).replace('.', ',') + '%';
     const rw = (pz.alvo - pz.entrada) * sg, rk = (pz.entrada - pz.stop) * sg;
     const rr = rw > 0 && rk > 0 ? ' · R/R ' + (rw / rk).toFixed(1).replace('.', ',') : '';
     return '<div class="od-trade-row" style="padding:12px 4px;border-bottom:1px solid #F2F2F7;">' +
         '<div style="display:flex;align-items:center;gap:8px;"><span style="width:10px;height:10px;border-radius:3px;background:#8E8E93;flex-shrink:0;"></span>' +
-        '<span style="font-size:14px;font-weight:600;color:#1C1C1E;">' + (lado === 'short' ? 'Short' : 'Long') + '</span>' +
-        '<span style="margin-left:auto;font-size:11px;font-weight:700;color:#8E8E93;">Em Análise</span>' + odBtnVerCaixa(pz.id) + '</div>' +
+        odTagTicker(it.ativoId) + '<span style="font-size:14px;font-weight:600;color:#1C1C1E;">' + (lado === 'short' ? 'Short' : 'Long') + '</span>' +
+        '<span style="margin-left:auto;font-size:11px;font-weight:700;color:#8E8E93;">Em Análise</span>' + odBtnVerCaixa(pz.id, it.ativoId) + '</div>' +
         '<div style="font-size:12px;color:#6C6C70;margin-top:4px;">Entrada ' + fmtUSD(pz.entrada) + rr + '</div>' +
         '<div style="display:flex;flex-direction:column;gap:2px;margin-top:6px;">' +
         '<div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#3A3A3C;"><span style="width:6px;height:6px;border-radius:50%;background:#26A69A;"></span><span style="font-weight:600;color:#26A69A;min-width:46px;">Alvo</span><span>' + fmtUSD(pz.alvo) + '</span><span style="color:#8E8E93;">(' + pc((pz.alvo - pz.entrada) / pz.entrada) + ')</span></div>' +
@@ -11251,28 +11280,34 @@ function odRenderTrades() {
 }
 async function odCarregarTrades() {
     const container = document.getElementById('od-trades-list');
-    if (!container || !_ativoId) return;
-    if (cvAtivoEhVirtual()) { _odTradesCache = []; container.innerHTML = '<div style="padding:24px 0;text-align:center;color:#8E8E93;font-size:13px;">Nenhum trade ativo</div>'; return; }
-    container.innerHTML = '<div style="padding:24px 0;text-align:center;color:#8E8E93;font-size:13px;">Carregando…</div>';
-    const { data, error } = await db.from('trades').select('*').eq('ativo_id', _ativoId);
+    if (!container) return;
+    if (!_odTradesCache.length) container.innerHTML = '<div style="padding:24px 0;text-align:center;color:#8E8E93;font-size:13px;">Carregando…</div>';
+    const { data, error } = await db.from('trades').select('*');   // todos os ativos
     if (error) { container.innerHTML = '<div style="padding:24px 0;text-align:center;color:#8E8E93;font-size:13px;">Erro ao carregar trades</div>'; return; }
     _odTradesCache = data || [];
     try {
+        const ra0 = await db.from('ativos').select('id, ticker, tipo');
+        const mapa = {}; (ra0.data || []).forEach(a => { mapa[a.id] = { ticker: a.ticker, tipo: a.tipo }; }); if (ra0.data) _odAtivos = mapa;
+    } catch (e) {}
+    try {
         const ids = _odTradesCache.map(t => t.id);
-        _odAlvosCache = {};
+        _odAlvosCache = {}; _odTxCache = [];
         if (ids.length) {
             const ra = await db.from('alvos').select('*').in('trade_id', ids).order('ordem', { ascending: true });
             (ra.data || []).forEach(a => { (_odAlvosCache[a.trade_id] = _odAlvosCache[a.trade_id] || []).push(a); });
+            const rt = await db.from('transacoes').select('*').in('trade_id', ids).order('data', { ascending: true });
+            _odTxCache = rt.data || [];
         }
     } catch (e) {}
     odRenderTrades();
+    odAtualizarPrecos(true);
 }
 // Atualização ao vivo da aba Trades (só redesenha, sem rede)
 let _odTradesRefreshInterval = null;
 const OD_TRADES_REFRESH_MS = 2000;
 function odIniciarRefreshTrades() {
     if (_odTradesRefreshInterval) return;
-    _odTradesRefreshInterval = setInterval(() => { odRenderTrades(); }, OD_TRADES_REFRESH_MS);
+    _odTradesRefreshInterval = setInterval(() => { odRenderTrades(); odAtualizarPrecos(false); }, OD_TRADES_REFRESH_MS);
 }
 function odPararRefreshTrades() {
     if (_odTradesRefreshInterval) { clearInterval(_odTradesRefreshInterval); _odTradesRefreshInterval = null; }
