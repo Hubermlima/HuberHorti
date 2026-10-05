@@ -2218,7 +2218,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = '04/10 01:10 · 13631 linhas · POSICAO-APORTES v174';
+const APP_VERSAO = '05/10 00:40 · 13702 linhas · POSICAO-APORTES v177';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = 'Versão ' + APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -2929,7 +2929,18 @@ async function cvPosVagaLivre(lado) {
     if (data && data.length) return { erro: 'Já existe um ' + lado + ' ativo. Feche o atual antes de abrir outro.' };
     return {};
 }
+// Se o trade foi criado agora e alguma etapa falhou, desfaz tudo o que esta tentativa criou (nada fica pela metade).
 async function cvPosGravarTrade(pz, ap, v) {
+    const r = await cvPosGravarTradeInterno(pz, ap, v);
+    if (!r.erro || !r.criou || !r.tradeId) return r;
+    const id = r.tradeId; let falhou = false;
+    for (const t of ['alvos', 'transacoes']) { try { if ((await db.from(t).delete().eq('trade_id', id)).error) falhou = true; } catch (e) { falhou = true; } }
+    if (!falhou) { try { if ((await db.from('trades').delete().eq('id', id)).error) falhou = true; } catch (e) { falhou = true; } }
+    if (falhou) return r;   // não deu para desfazer: mantém o vínculo, o próximo Ok completa
+    delete window._grPosTrades[id];
+    return { erro: r.erro + ' Nada foi criado, tente de novo.' };
+}
+async function cvPosGravarTradeInterno(pz, ap, v) {
     const lado = pz.lado === 'short' ? 'short' : 'long';
     const aberts = ap.filter(x => x.tipo !== 'D').map(x => x.data).sort();
     const dados = { alavancagem: v.alav, preco_entrada: v.entrada, risco_planejado: v.risco };
@@ -2939,6 +2950,13 @@ async function cvPosGravarTrade(pz, ap, v) {
         const vg = await cvPosVagaLivre(lado); if (vg.erro) return vg;
         const r = await db.from('trades').insert(Object.assign({ ativo_id: _ativoId, tipo: lado, data_abertura: aberts[0] || cvPosHoje() }, dados)).select().single();
         if (r.error || !r.data) return { erro: 'Falha ao criar o trade: ' + (r.error ? r.error.message : '') };
+        // Conferência depois de criar: se outro aparelho criou o mesmo lado no mesmo instante, desfaz o meu e avisa.
+        const ck = await db.from('trades').select('id').eq('ativo_id', _ativoId).eq('tipo', lado).not('data_abertura', 'is', null).is('data_fechamento', null);
+        if (ck.error || (ck.data && ck.data.length > 1)) {
+            const del = await db.from('trades').delete().eq('id', r.data.id);
+            if (del.error) return { erro: 'Dois trades ' + lado + ' ativos ao mesmo tempo e não consegui desfazer o novo. Avise o suporte antes de continuar.', tradeId: r.data.id, criou: true };
+            return { erro: ck.error ? 'Não consegui confirmar a vaga do ' + lado + '. Nada foi criado, tente de novo.' : 'Outro aparelho acabou de abrir um ' + lado + '. Nada foi criado aqui.' };
+        }
         tradeId = r.data.id; criou = true; window._grPosTrades[tradeId] = r.data;
     } else {
         const r = await db.from('trades').update(dados).eq('id', tradeId).select().single();
@@ -3005,10 +3023,24 @@ function cvPosConfirmar(msg) {
 // Apagar o último lançamento: o trade volta a Em Análise (apaga alvos, transações e a linha de trades; solta a vaga) e a caixa passa a poder ser apagada.
 async function cvPosVoltarAnalise(pz) {
     const id = pz.tradeId; if (!id) return {};
-    for (const t of ['alvos', 'transacoes']) { const e = (await db.from(t).delete().eq('trade_id', id)).error; if (e) return { erro: 'Falha ao apagar ' + t + ': ' + e.message }; }
-    const e3 = (await db.from('trades').delete().eq('id', id)).error; if (e3) return { erro: 'Falha ao apagar o trade: ' + e3.message };
+    // Guarda uma cópia do que vai apagar; se alguma etapa falhar, devolve tudo ao banco.
+    const copia = {};
+    for (const t of ['alvos', 'transacoes']) {
+        const r = await db.from(t).select('*').eq('trade_id', id);
+        if (r.error) return { erro: 'Não consegui ler ' + t + ': ' + r.error.message + ' Nada foi apagado.' };
+        copia[t] = r.data || [];
+    }
+    const feitos = [];
+    const restaurar = async () => { let ok = true; for (const t of feitos) { if (copia[t].length) { try { if ((await db.from(t).insert(copia[t])).error) ok = false; } catch (e) { ok = false; } } } return ok; };
+    for (const t of ['alvos', 'transacoes']) {
+        const e = (await db.from(t).delete().eq('trade_id', id)).error;
+        if (e) { const ok = await restaurar(); return { erro: 'Falha ao apagar ' + t + ': ' + e.message + (ok ? ' Nada foi apagado.' : ' Não consegui restaurar tudo, confira o trade.') }; }
+        feitos.push(t);
+    }
+    const e3 = (await db.from('trades').delete().eq('id', id)).error;
+    if (e3) { const ok = await restaurar(); return { erro: 'Falha ao apagar o trade: ' + e3.message + (ok ? ' Nada foi apagado.' : ' Não consegui restaurar tudo, confira o trade.') }; }
     delete window._grPosTrades[id]; delete window._grPosAportes[pz.id];
-    pz.tradeId = null; delete pz.pm; delete pz.pmLim; delete pz.qty;
+    pz.tradeId = null; delete pz.pm; delete pz.qty;
     grPosSalvar(); try { await grAmbienteGravar(); } catch (e) {}
     try { if (typeof odCarregarTrades === 'function') odCarregarTrades(); } catch (e) {}
     return {};
@@ -3045,40 +3077,78 @@ function cvPosAncorar(pz) {
     if (grTimeToIndex(pz.t2) < grTimeToIndex(t) + 14) pz.t2 = grIndexToTime(grTimeToIndex(t) + 14);
     return mudou;
 }
+// O BANCO MANDA: os números de uma caixa com trade (PM, quantidade, entrada, alvos, stops, alavancagem, risco) vêm sempre
+// de trades/transacoes/alvos. O JSON de preferências guarda só o desenho (lado, início/fim no gráfico, id do trade).
+function cvPosAplicarDoBanco(pz, t, rows, ra) {
+    const sh = t.tipo === 'short', sg = sh ? -1 : 1;
+    window._grPosTrades[t.id] = t;
+    window._grPosAportes[pz.id] = rows.slice().sort((a, b) => new Date(a.data) - new Date(b.data)).map(x => ({ id: x.id, tipo: String(x.tipo_operacao).endsWith('F') ? 'D' : 'R', data: String(x.data).slice(0, 10), preco: x.valor_total_usd / x.quantidade_ativo, aporte: null, qtd: x.quantidade_ativo, taxa: x.taxa_operacao, taxaManual: true }));
+    const c = calcularConsolidado(t.id, rows);
+    const ab = rows.filter(x => String(x.tipo_operacao).endsWith('A'));
+    const qA = ab.reduce((a, x) => a + (+x.quantidade_ativo || 0), 0), vA = ab.reduce((a, x) => a + (+x.valor_total_usd || 0), 0);
+    pz.lado = t.tipo;
+    pz.qty = t.data_fechamento ? 0 : (sh ? c.qtdShort : c.qtdAberta);
+    pz.pm = (sh ? c.pmShort : c.pm) || (qA > 0 ? vA / qA : 0);   // encerrado: média das aberturas
+    if (t.preco_entrada > 0) pz.entrada = t.preco_entrada; else if (!(pz.entrada > 0)) pz.entrada = pz.pm;
+    const mk = tp => ra.filter(a => a.tipo === tp).sort((a, b) => a.ordem - b.ordem).map(a => ({ preco: a.preco, pct: a.percentual, notif: a.habilitado !== false }));
+    const alvos = mk('alvo'), stops = mk('stop');
+    const far = (l, tp) => l.length ? l.reduce((m, x) => (tp === 'alvo' ? (x.preco - m) * sg > 0 : (m - x.preco) * sg > 0) ? x.preco : m, l[0].preco) : null;
+    pz.alvo = far(alvos, 'alvo'); pz.stop = far(stops, 'stop');
+    if (alvos.length) pz.alvos = alvos; else delete pz.alvos;
+    if (stops.length) pz.stops = stops; else delete pz.stops;
+    const custo = sh ? c.custoShort : c.custoAberto;
+    pz.cfg = { conta: t.alavancagem > 0 && custo > 0 ? custo / t.alavancagem : (pz.cfg && pz.cfg.conta) || null, risco: t.risco_planejado, alav: t.alavancagem };
+}
+// A caixa aponta para um trade que não existe mais no banco: volta a Em Análise, com os últimos preços que tinha
+function cvPosDesvincular(pz) {
+    delete window._grPosTrades[pz.tradeId]; delete window._grPosAportes[pz.id];
+    pz.tradeId = null; delete pz.pm; delete pz.qty; delete pz.cfg; delete pz.alvos; delete pz.stops;
+}
+// Versão enxuta para o JSON de preferências: caixa com trade guarda só o desenho (+ últimos preços, usados só se o trade sumir)
+function cvPosParaSalvar() {
+    const out = {};
+    Object.keys(_grPosMapa).forEach(k => { out[k] = (_grPosMapa[k] || []).map(z => z.tradeId ? { id: z.id, lado: z.lado, t1: z.t1, t2: z.t2, tradeId: z.tradeId, entrada: z.entrada, alvo: z.alvo, stop: z.stop } : z); });
+    return out;
+}
 // Trade ativo sem caixa no gráfico (ex.: o short antigo, ligado por SQL): cria a caixa a partir do trade.
-async function cvPosImportarOrfaos() {
+async function cvPosImportarOrfaos(rt) {
     if (!_ativoId) return false;
-    const r = await db.from('trades').select('*').eq('ativo_id', _ativoId).is('data_fechamento', null);
-    const lista = (r.data || []).filter(t => !grPosicoes().some(z => z.tradeId === t.id));
+    const lista = (rt || []).filter(t => !t.data_fechamento && t.ativo_id === _ativoId && !grPosicoes().some(z => z.tradeId === t.id));
     let criou = false;
     for (const t of lista) {
-        window._grPosTrades[t.id] = t;
-        const sh = t.tipo === 'short', sg = sh ? -1 : 1;
-        const rt = await db.from('transacoes').select('*').eq('trade_id', t.id);   // busca direto: no boot as transações ainda podem não ter carregado
-        const c = calcularConsolidado(t.id, rt.data || []);
-        const pm = sh ? c.pmShort : c.pm, qty = sh ? c.qtdShort : c.qtdAberta;
-        if (!(pm > 0 && qty > 0)) continue;   // sem transações ligadas: nada a importar
-        const ra = (await db.from('alvos').select('*').eq('trade_id', t.id).order('ordem', { ascending: true })).data || [];
-        const mk = tp => ra.filter(a => a.tipo === tp).map(a => ({ preco: a.preco, pct: a.percentual, notif: a.habilitado !== false }));
-        const alvos = mk('alvo'), stops = mk('stop');
-        const far = (l, tp, def) => l.length ? l.reduce((m, x) => (tp === 'alvo' ? (x.preco - m) * sg > 0 : (m - x.preco) * sg > 0) ? x.preco : m, l[0].preco) : def;
-        const entrada = t.preco_entrada > 0 ? t.preco_entrada : pm;
-        const alvo = far(alvos, 'alvo', null), stop = far(stops, 'stop', null);   // sem alvo/stop gravados: a caixa mostra só o PM
         const nc = (_grAllCandles || []).length;
-        const pz = { id: Date.now() + Math.floor(Math.random() * 1000), lado: t.tipo, t1: 0, t2: nc ? grIndexToTime(nc - 1 + 14) : Date.now() + 2 * 86400000, entrada, alvo, stop, tradeId: t.id, pm, pmLim: pm, qty, cfg: { conta: t.alavancagem > 0 ? c.custoAberto / t.alavancagem : null, risco: t.risco_planejado, alav: t.alavancagem } };
-        if (alvos.length) pz.alvos = alvos; if (stops.length) pz.stops = stops;
-        grPosicoes().push(pz); cvPosAncorar(pz); criou = true;
+        const pz = { id: Date.now() + Math.floor(Math.random() * 1000), lado: t.tipo, t1: 0, t2: nc ? grIndexToTime(nc - 1 + 14) : Date.now() + 2 * 86400000, entrada: 0, tradeId: t.id };
+        grPosicoes().push(pz); criou = true;
     }
     return criou;
 }
 async function cvPosCarregarTrades() {
-    let imp = false; try { imp = await cvPosImportarOrfaos(); } catch (e) { window._impErr = String(e); }
-    if (imp) { grPosSalvar(); try { await grAmbienteGravar(); } catch (e) {} }
-    const ids = grPosicoes().map(z => z.tradeId).filter(Boolean); if (!ids.length) return;
-    const { data } = await db.from('trades').select('*').in('id', ids);
-    (data || []).forEach(t => { window._grPosTrades[t.id] = t; });
-    let mud = false; grPosicoes().forEach(z => { if (z.tradeId && cvPosAncorar(z)) mud = true; });
-    if (mud) grPosSalvar();
+    if (!_ativoId) return;
+    let mud = false;
+    try {
+        const rt = await db.from('trades').select('*').eq('ativo_id', _ativoId);
+        if (rt.error) throw rt.error;
+        if (await cvPosImportarOrfaos(rt.data)) mud = true;
+        const caixas = grPosicoes().filter(z => z.tradeId);
+        if (caixas.length) {
+            const ids = caixas.map(z => z.tradeId);
+            const [tr, rx, ra] = await Promise.all([
+                db.from('trades').select('*').in('id', ids),
+                db.from('transacoes').select('*').in('trade_id', ids).order('data', { ascending: true }),
+                db.from('alvos').select('*').in('trade_id', ids).order('ordem', { ascending: true })
+            ]);
+            if (!tr.error && !rx.error && !ra.error) {   // só mexe se as três leituras deram certo
+                caixas.forEach(pz => {
+                    const t = (tr.data || []).find(r => r.id === pz.tradeId);
+                    if (!t) { cvPosDesvincular(pz); mud = true; return; }
+                    cvPosAplicarDoBanco(pz, t, (rx.data || []).filter(x => x.trade_id === t.id), (ra.data || []).filter(a => a.trade_id === t.id));
+                    if (!(pz.pm > 0) && !(pz.entrada > 0)) { const l = grPosicoes(); l.splice(l.indexOf(pz), 1); mud = true; return; }   // trade sem nenhuma transação: nada para desenhar
+                    cvPosAncorar(pz); mud = true;
+                });
+            }
+        }
+    } catch (e) {}
+    if (mud) { grPosSalvar(); }
     try { grDrawChart(); } catch (e) {}
 }
 // Status/cores da caixa: sem tradeId = Em Análise (cinza); trade sem data_fechamento = Ativo (verde/vermelho); com = Encerrado (tom do resultado)
@@ -3253,7 +3323,7 @@ function cvPosFormAbrir(idx) {
         }
         pg = Math.min(pg, ap.length - 1);
         const est = estado(null, gravados);   // recalcula a posição só com o que está no banco
-        if (est.qty > 0) { pz.pm = est.pm; pz.pmLim = est.pmBruto; pz.qty = est.qty; if (pz.cfg && alav()) pz.cfg.conta = est.cost / alav(); }
+        if (est.qty > 0) { pz.pm = est.pm; pz.qty = est.qty; if (pz.cfg && alav()) pz.cfg.conta = est.cost / alav(); }
         const d0 = gravados.filter(a => a.tipo !== 'D').map(a => a.data).sort()[0];   // 1º aporte mudou? a âncora acompanha
         if (d0 && tr && String(tr.data_abertura).slice(0, 10) !== d0) { await db.from('trades').update({ data_abertura: d0 }).eq('id', pz.tradeId); tr.data_abertura = d0; }
         window._grPosAportes[pz.id] = gravados.map(a => Object.assign({}, a)); cvPosAncorar(pz);
@@ -3474,7 +3544,7 @@ function cvPosFormAbrir(idx) {
         if (sv.tradeId && !pz.tradeId) pz.tradeId = sv.tradeId;       // trade criado: a caixa fica ligada mesmo se algo falhar depois
         if (sv.erro) { if (sv.criou) { grPosSalvar(); grAmbienteGravar(); } return erro(sv.erro); }
         pz.alvos = nAlvos; pz.stops = nStops;
-        pz.entrada = orig; pz.pm = e; pz.pmLim = base.pmBruto; pz.qty = enc ? 0 : est.qty; pz.alvo = temA ? a : null; pz.stop = temS ? st : null;
+        pz.entrada = orig; pz.pm = e; pz.qty = enc ? 0 : est.qty; pz.alvo = temA ? a : null; pz.stop = temS ? st : null;
         pz.cfg = { conta: al ? base.cost / al : (c.conta != null ? c.conta : null), risco: r, alav: al };
         window._grPosAportes[pz.id] = ap;
         cvPosAncorar(pz);
@@ -8995,7 +9065,7 @@ function grAmbienteColetar() {
         eficiencia: _indState.eficiencia,
         ambExpandido: _grAmbExpandido,
         hLinhas: _grHLinhasMapa,
-        posicoes: _grPosMapa,
+        posicoes: cvPosParaSalvar(),
         alertas: _grAlertasJson,
         footprint: _grFootprintAtivo,
         reguaLockS: _grReguaLock.S,
