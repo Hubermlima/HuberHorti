@@ -1043,7 +1043,7 @@ function cvSetTf(tf) {
     window._grAbsSerie = null;
     _wsLastDraw = Date.now();
     if (typeof grAmbienteSalvar === 'function') grAmbienteSalvar(); // persiste o TF escolhido no ambiente
-    grRenderChart().then(() => {
+    return grRenderChart().then(() => {
         grInitTouch();
     });
 }
@@ -2218,7 +2218,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = '05/10 06:55 · 13733 linhas · POSICAO-APORTES v181';
+const APP_VERSAO = '05/10 07:10 · 13780 linhas · POSICAO-APORTES v182';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = 'Versão ' + APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -2868,6 +2868,47 @@ function grAlertaCoresSalvar() { grAlertasJsonSalvar(); }
 //    movimento por enquanto (sem cálculo de risco). Várias por ativo, em JSON no ambiente (gravado no Sair). ──
 let _grPosMapa = {};
 let _psAtual = null, _psDrawing = false;   // posição sendo colocada pelo toque: { lado, i1, p }
+// Botão "Ver caixa" (aba Trades): vai para o gráfico, escolhe o timeframe que comporta o período da caixa (diário como padrão),
+// ajusta a rolagem/zoom horizontal e a escala de preço para a caixa e o price action dela caberem na tela, e seleciona a caixa.
+async function cvIrParaCaixa(id) {
+    const lista = grPosicoes(), idx = lista.findIndex(z => String(z.id) === String(id)), pz = lista[idx];
+    if (!pz || !(pz.t1 > 0) || !(pz.t2 > 0)) return;
+    const t1 = Math.min(pz.t1, pz.t2), t2 = Math.max(pz.t1, pz.t2), dia = 86400000;
+    odSetTab(0);
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    // Timeframe: diário, salvo se a caixa for muito curta (poucas velas) ou muito longa (velas demais).
+    const span = t2 - t1;
+    let tf = '1day';
+    if (span / dia > 220) tf = '1week';
+    else if (span / dia < 12) tf = span / 14400000 >= 12 ? '4h' : (span / 3600000 >= 12 ? '1h' : '15m');
+    if (_grTf !== tf) await cvSetTf(tf);
+    // Garante histórico até o começo da caixa (página por página, com teto de tentativas).
+    for (let k = 0; k < 12 && _grAllCandles.length && _grAllCandles[0].t > t1 && !window._grHistFim; k++) await grCarregarHistoricoAnterior();
+    const arr = _grAllCandles, total = arr.length; if (!total) return;
+    const i1 = grTimeToIndex(t1), i2 = grTimeToIndex(t2), larg = Math.max(i2 - i1, 3);
+    const n = Math.max(20, Math.round(larg * 1.5) + 6);
+    _grZoom = n; _grZoomAcumulado = n;
+    const extra = Math.floor(n * 0.15), maxOff = total + extra - n;
+    _grOffset = Math.max(0, Math.min(maxOff, Math.round(i1 - (n - larg) / 2)));
+    // Faixa de preço: linhas da caixa + máximas/mínimas das velas do período dela.
+    const ps = [pz.alvo, pz.stop, pz.entrada, pz.pm].filter(v => v > 0);
+    const a = Math.max(0, Math.floor(i1)), b = Math.min(total - 1, Math.ceil(i2));
+    for (let k = a; k <= b; k++) { if (arr[k].h > 0) ps.push(arr[k].h); if (arr[k].l > 0) ps.push(arr[k].l); }
+    grDrawChart();   // desenha uma vez para calibrar a escala vertical com o novo zoom
+    if (ps.length && _grPxPerDollarReferencia != null && _grChartH > 0) {
+        const mx = Math.max.apply(null, ps), mn = Math.min.apply(null, ps);
+        if (mx > mn) {
+            const base = _grPxPerDollarReferencia * (_grZoomReferencia / Math.max(1, _grZoom));
+            let alvoPx;
+            if (_grEscalaLog) { _grYAxisCenter = Math.sqrt(mx * mn); alvoPx = _grChartH / (Math.log(mx / mn) * 1.3 * grLogRefAtual()); }
+            else { _grYAxisCenter = (mx + mn) / 2; alvoPx = _grChartH / ((mx - mn) * 1.3); }
+            _grYFator = Math.max(0.02, Math.min(100, alvoPx / base));
+            grAtualizarPxPerDollar(); grYFatorSalvar();
+        }
+    }
+    _edSel = { tipo: 'ps', idx: idx };
+    grDrawChart();
+}
 function grPosicoes() { const k = String(_ativoId || 'default'); return _grPosMapa[k] || (_grPosMapa[k] = []); }
 function grPosSalvar() { try { grAmbienteSalvar(); } catch (e) {} }
 // monta uma posição com medidas padrão (largura 14 candles, stop 2%, alvo 4%) a partir de um ponto
@@ -2885,6 +2926,7 @@ const GR_HEROICONS = {
     'plus': 'M12 4.5v15m7.5-7.5h-15',
     'flag': 'M3 3v1.5M3 21v-6m0 0 2.77-.693a9 9 0 0 1 6.208.682l.108.054a9 9 0 0 0 6.086.71l3.114-.732a48.524 48.524 0 0 1-.005-10.499l-3.11.732a9 9 0 0 1-6.085-.711l-.108-.054a9 9 0 0 0-6.208-.682L3 4.5M3 15V4.5',
     'trash': 'm14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0',
+    'viewfinder-circle': 'M7.5 3.75H6A2.25 2.25 0 0 0 3.75 6v1.5M16.5 3.75H18A2.25 2.25 0 0 1 20.25 6v1.5m0 9V18A2.25 2.25 0 0 1 18 20.25h-1.5m-9 0H6A2.25 2.25 0 0 1 3.75 18v-1.5M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z',
     'lock-closed': 'M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z'
 };
 function grHeroicon(nome, tam, cor) {
@@ -10136,6 +10178,10 @@ function odDiasTrade(t) {
     const n = Math.round((dia(b) - dia(a)) / 86400000);
     return n < 1 ? 'no mesmo dia' : n + (n === 1 ? ' dia' : ' dias');
 }
+function odBtnVerCaixa(id) {
+    if (id == null) return '';
+    return '<button type="button" aria-label="Ver caixa no gráfico" onclick="event.stopPropagation();cvIrParaCaixa(\'' + String(id).replace(/[^\w-]/g, '') + '\')" style="margin-left:8px;width:30px;height:30px;border:none;border-radius:15px;background:#F2F2F7;color:#007AFF;display:flex;align-items:center;justify-content:center;padding:0;flex-shrink:0;">' + grHeroicon('viewfinder-circle', 18, '#007AFF') + '</button>';
+}
 function odRenderTradeRow(t) {
     const st = odStatusTrade(t), lado = (t.tipo || 'long').toLowerCase(), sg = lado === 'short' ? -1 : 1;
     const c = odConsolidadoTrade(t);
@@ -10204,7 +10250,7 @@ function odRenderTradeRow(t) {
     return '<div class="od-trade-row" style="padding:12px 4px;border-bottom:1px solid #F2F2F7;">' +
         '<div style="display:flex;align-items:center;gap:8px;"><span style="width:10px;height:10px;border-radius:3px;background:' + cor + ';flex-shrink:0;"></span>' +
         '<span style="font-size:14px;font-weight:600;color:#1C1C1E;">' + (lado === 'short' ? 'Short' : 'Long') + alav + '</span>' +
-        '<span style="margin-left:auto;font-size:11px;font-weight:700;color:' + cor + ';">' + rotulo + '</span></div>' +
+        '<span style="margin-left:auto;font-size:11px;font-weight:700;color:' + cor + ';">' + rotulo + '</span>' + odBtnVerCaixa((function () { try { const z = grPosicoes().find(z => z.tradeId === t.id); return z ? z.id : null; } catch (e) { return null; } })()) + '</div>' +
         '<div style="font-size:12px;color:#6C6C70;margin-top:4px;">' + det + '</div>' + destaque + extra + '</div>';
 }
 let _odTradesFiltro = 'ativo';   // 'analise' | 'ativo' | 'encerrado'
@@ -10220,7 +10266,7 @@ function odRenderAnaliseRow(pz) {
     return '<div class="od-trade-row" style="padding:12px 4px;border-bottom:1px solid #F2F2F7;">' +
         '<div style="display:flex;align-items:center;gap:8px;"><span style="width:10px;height:10px;border-radius:3px;background:#8E8E93;flex-shrink:0;"></span>' +
         '<span style="font-size:14px;font-weight:600;color:#1C1C1E;">' + (lado === 'short' ? 'Short' : 'Long') + '</span>' +
-        '<span style="margin-left:auto;font-size:11px;font-weight:700;color:#8E8E93;">Em Análise</span></div>' +
+        '<span style="margin-left:auto;font-size:11px;font-weight:700;color:#8E8E93;">Em Análise</span>' + odBtnVerCaixa(pz.id) + '</div>' +
         '<div style="font-size:12px;color:#6C6C70;margin-top:4px;">Entrada ' + fmtUSD(pz.entrada) + rr + '</div>' +
         '<div style="display:flex;flex-direction:column;gap:2px;margin-top:6px;">' +
         '<div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#3A3A3C;"><span style="width:6px;height:6px;border-radius:50%;background:#26A69A;"></span><span style="font-weight:600;color:#26A69A;min-width:46px;">Alvo</span><span>' + fmtUSD(pz.alvo) + '</span><span style="color:#8E8E93;">(' + pc((pz.alvo - pz.entrada) / pz.entrada) + ')</span></div>' +
