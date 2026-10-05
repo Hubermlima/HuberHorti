@@ -2218,7 +2218,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = '05/10 07:10 · 13780 linhas · POSICAO-APORTES v182';
+const APP_VERSAO = '05/10 07:20 · 13796 linhas · POSICAO-APORTES v185';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = 'Versão ' + APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -2922,6 +2922,7 @@ const GR_HEROICONS = {
     'x-mark': 'M6 18 18 6M6 6l12 12',
     'cog-6-tooth': 'M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7.723 7.723 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28ZM15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z',
     'chevron-left': 'M15.75 19.5 8.25 12l7.5-7.5',
+    'chevron-down': 'm19.5 8.25-7.5 7.5-7.5-7.5',
     'chevron-right': 'm8.25 4.5 7.5 7.5-7.5 7.5',
     'plus': 'M12 4.5v15m7.5-7.5h-15',
     'flag': 'M3 3v1.5M3 21v-6m0 0 2.77-.693a9 9 0 0 1 6.208.682l.108.054a9 9 0 0 0 6.086.71l3.114-.732a48.524 48.524 0 0 1-.005-10.499l-3.11.732a9 9 0 0 1-6.085-.711l-.108-.054a9 9 0 0 0-6.208-.682L3 4.5M3 15V4.5',
@@ -10178,6 +10179,14 @@ function odDiasTrade(t) {
     const n = Math.round((dia(b) - dia(a)) / 86400000);
     return n < 1 ? 'no mesmo dia' : n + (n === 1 ? ' dia' : ' dias');
 }
+const _odDetAbertos = {};   // { [trade_id]: true } — detalhes expandidos (só em memória; sobrevive às atualizações da lista)
+function odToggleDet(id) {
+    const k = Object.keys(_odDetAbertos).concat((_odTradesCache || []).map(t => String(t.id))).find(x => String(x).replace(/[^\w-]/g, '') === id) || id;
+    _odDetAbertos[k] = !_odDetAbertos[k];
+    const d = document.getElementById('od-det-' + k), c = document.getElementById('od-chev-' + k);
+    if (d) d.style.display = _odDetAbertos[k] ? '' : 'none';
+    if (c) c.style.transform = _odDetAbertos[k] ? 'rotate(180deg)' : '';
+}
 function odBtnVerCaixa(id) {
     if (id == null) return '';
     return '<button type="button" aria-label="Ver caixa no gráfico" onclick="event.stopPropagation();cvIrParaCaixa(\'' + String(id).replace(/[^\w-]/g, '') + '\')" style="margin-left:8px;width:30px;height:30px;border:none;border-radius:15px;background:#F2F2F7;color:#007AFF;display:flex;align-items:center;justify-content:center;padding:0;flex-shrink:0;">' + grHeroicon('viewfinder-circle', 18, '#007AFF') + '</button>';
@@ -10231,27 +10240,34 @@ function odRenderTradeRow(t) {
             }
         }
     }
-    // Destaque (só Ativo): o stop mais distante, em % do PM e em USDT — a primeira coisa que o olho precisa achar.
-    let destaque = '';
+    // Visível no card Ativo: só o stop (distância ao PM e perda/ganho em USDT) e os alvos com quanto falta o preço andar até eles.
+    // Todo o resto fica recolhido (toque em "Detalhes").
+    let destaque = '', alvosVis = '';
     if (st === 'ativo' && pm > 0 && qtd > 0) {
-        const ss = (_odAlvosCache[t.id] || []).filter(a => a.tipo === 'stop' && parseFloat(a.preco) > 0);
+        const sinal = v => (v >= 0 ? '+' : '−') + f2(Math.abs(v));
+        const lst = _odAlvosCache[t.id] || [];
+        const ss = lst.filter(a => a.tipo === 'stop' && parseFloat(a.preco) > 0);
         if (ss.length) {
             const sp = parseFloat(ss.reduce((m, a) => (Math.abs(a.preco - pm) > Math.abs(m.preco - pm) ? a : m)).preco);
             const dp = (sp - pm) / pm * 100 * sg, du = (sp - pm) * qtd * sg, cs = du >= 0 ? '#26A69A' : '#EF5350';
-            const sinal = v => (v >= 0 ? '+' : '−') + f2(Math.abs(v));
-            const dAtual = _precoAtual > 0 ? (_precoAtual - sp) / _precoAtual * 100 * sg : null;
-            destaque = '<div style="margin-top:8px;padding:8px 10px;border-radius:10px;background:' + (du >= 0 ? 'rgba(38,166,154,0.10)' : 'rgba(239,83,80,0.10)') + ';">' +
-                '<div style="font-size:11px;font-weight:700;letter-spacing:.4px;color:' + cs + ';">STOP · ' + f2(sp) + '</div>' +
-                '<div style="font-size:22px;font-weight:800;line-height:1.15;color:' + cs + ';">' + sinal(dp) + '% <span style="font-size:15px;font-weight:700;">· ' + sinal(du) + ' USDT</span></div>' +
-                (dAtual !== null ? '<div style="font-size:11px;color:#6C6C70;margin-top:1px;">preço atual a ' + f2(Math.abs(dAtual)) + '% do stop' + (dAtual < 0 ? ' (já passou)' : '') + '</div>' : '') + '</div>';
-        } else destaque = '<div style="margin-top:8px;font-size:12px;font-weight:600;color:#8E8E93;">Sem stop</div>';
+            destaque = '<div style="margin-top:8px;font-size:13px;color:' + cs + ';"><span style="font-weight:600;">Stop</span> ' + f2(sp) + ' · ' + sinal(dp) + '% · ' + sinal(du) + ' USDT</div>';
+        } else destaque = '<div style="margin-top:8px;font-size:13px;color:#8E8E93;">Sem stop</div>';
+        alvosVis = lst.filter(a => a.tipo !== 'stop' && parseFloat(a.preco) > 0).sort((a, b) => (a.ordem || 0) - (b.ordem || 0)).map(a => {
+            const p = parseFloat(a.preco), falta = _precoAtual > 0 ? (p - _precoAtual) / _precoAtual * 100 * sg : null;
+            const txt = a.atingido ? 'atingido' : (falta === null ? '' : (falta <= 0 ? 'já passou' : 'faltam <b>' + f2(falta) + '%</b>'));
+            return '<div style="margin-top:3px;font-size:13px;color:#3A3A3C;display:flex;align-items:baseline;gap:8px;"><span style="font-weight:600;color:#26A69A;">Alvo ' + (a.ordem || '') + '</span><span>' + f2(p) + '</span><span style="color:#6C6C70;">' + txt + '</span></div>';
+        }).join('');
     }
     const alav = parseFloat(t.alavancagem) > 0 ? ' · ' + parseFloat(t.alavancagem).toFixed(2).replace('.', ',') + 'x' : '';
     return '<div class="od-trade-row" style="padding:12px 4px;border-bottom:1px solid #F2F2F7;">' +
         '<div style="display:flex;align-items:center;gap:8px;"><span style="width:10px;height:10px;border-radius:3px;background:' + cor + ';flex-shrink:0;"></span>' +
         '<span style="font-size:14px;font-weight:600;color:#1C1C1E;">' + (lado === 'short' ? 'Short' : 'Long') + alav + '</span>' +
         '<span style="margin-left:auto;font-size:11px;font-weight:700;color:' + cor + ';">' + rotulo + '</span>' + odBtnVerCaixa((function () { try { const z = grPosicoes().find(z => z.tradeId === t.id); return z ? z.id : null; } catch (e) { return null; } })()) + '</div>' +
-        '<div style="font-size:12px;color:#6C6C70;margin-top:4px;">' + det + '</div>' + destaque + extra + '</div>';
+        (st === 'ativo' && (destaque || alvosVis) ?
+            destaque + alvosVis +
+            '<button type="button" onclick="event.stopPropagation();odToggleDet(\'' + String(t.id).replace(/[^\w-]/g, '') + '\')" style="margin-top:8px;border:none;background:none;padding:2px 0;font-size:12px;font-weight:600;color:#007AFF;display:flex;align-items:center;gap:4px;">Detalhes <span id="od-chev-' + t.id + '" style="display:inline-flex;transition:transform .15s;' + (_odDetAbertos[t.id] ? 'transform:rotate(180deg);' : '') + '">' + grHeroicon('chevron-down', 14, '#007AFF') + '</span></button>' +
+            '<div id="od-det-' + t.id + '" style="' + (_odDetAbertos[t.id] ? '' : 'display:none;') + '"><div style="font-size:12px;color:#6C6C70;margin-top:4px;">' + det + '</div>' + extra + '</div>'
+            : '<div style="font-size:12px;color:#6C6C70;margin-top:4px;">' + det + '</div>' + extra) + '</div>';
 }
 let _odTradesFiltro = 'ativo';   // 'analise' | 'ativo' | 'encerrado'
 let _odFiltroChave = '';
