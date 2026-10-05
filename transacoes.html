@@ -2848,7 +2848,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = '05/10 08:40 · 13849 linhas · POSICAO-APORTES v190';
+const APP_VERSAO = '05/10 08:40 · 13849 linhas · POSICAO-APORTES v193';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = 'Versão ' + APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3601,6 +3601,13 @@ function cvMascaraValor(v) {
     while (d.length < 3) d = '0' + d;
     return d.slice(0, -2).replace(/\B(?=(\d{3})+(?!\d))/g, '.') + ',' + d.slice(-2);
 }
+function cvMascaraValorN(v, dec) {   // mesma máscara por dígitos, com 'dec' casas decimais
+    let d = String(v == null ? '' : v).replace(/\D/g, '').replace(/^0+/, '');
+    if (!d) return '';
+    while (d.length < dec + 1) d = '0' + d;
+    return d.slice(0, -dec).replace(/\B(?=(\d{3})+(?!\d))/g, '.') + ',' + d.slice(-dec);
+}
+function cvMascaraDeNumeroN(n, dec) { return (n == null || isNaN(n)) ? '' : cvMascaraValorN(Math.round(n * Math.pow(10, dec)), dec); }
 function cvMascaraDeNumero(n) { return (n == null || isNaN(n)) ? '' : cvMascaraValor(Math.round(n * 100)); }
 function cvMascaraLer(t) { t = String(t || '').trim(); if (!t) return null; const n = parseFloat(t.replace(/\./g, '').replace(',', '.')); return isFinite(n) ? n : NaN; }
 // Aportes da posição (por enquanto SÓ EM MEMÓRIA — não vão para o ambiente nem para o banco):
@@ -3907,7 +3914,7 @@ function cvPosFormAbrir(idx) {
         '<div style="grid-column:1 / -1;height:1px;background:#F2F2F7;margin:2px 0;"></div>' +
         lin('Risco planejado (%)', 'pf-risco') +
         lin('Risco real (%)', 'pf-risco-real', true) +
-        lin('Alavancagem (x)', 'pf-alav', true) +
+        lin('Alavancagem (x)', 'pf-alav') +
         lin('Liquidação (aprox.)', 'pf-liq', true) +
         '</div>' +
         '<div id="pf-info" style="margin-top:10px;padding:8px 10px;background:#F2F2F7;border-radius:8px;font-size:12px;color:#1C1C1E;line-height:1.5;"></div>' +
@@ -3922,9 +3929,11 @@ function cvPosFormAbrir(idx) {
     const sgn = pz.lado === 'short' ? -1 : 1;
     const setv = (id, n) => { g(id).value = cvMascaraDeNumero(n); };
     const set8 = (id, n) => { g(id).value = cvFmt8(n); };
-    g('pf-risco').value = cvMascaraDeNumero(c.risco); g('pf-alav').value = cvMascaraDeNumero(c.alav);
+    g('pf-risco').value = cvMascaraDeNumero(c.risco); g('pf-alav').value = c.alav == null ? '' : (Number.isInteger(c.alav) ? String(c.alav) : cvMascaraDeNumero(c.alav));
     g('pf-alvo').value = cvMascaraDeNumero(pz.alvo); g('pf-stop').value = cvMascaraDeNumero(pz.stop);
-    ['pf-orig', 'pf-ap-preco', 'pf-ap-margem', 'pf-risco', 'pf-alav', 'pf-alvo', 'pf-stop'].forEach(id => {
+    g('pf-ap-margem').addEventListener('input', () => { const el = g('pf-ap-margem'); el.value = cvMascaraValorN(el.value, 4); try { el.setSelectionRange(el.value.length, el.value.length); } catch (e) {} });
+    g('pf-alav').addEventListener('input', () => { const el = g('pf-alav'); if (/^\d*$/.test(el.value)) return; el.value = el.value.replace(/\D/g, '').slice(0, 3); });   // como na Bitget: alavancagem inteira
+    ['pf-orig', 'pf-ap-preco', 'pf-risco', 'pf-alvo', 'pf-stop'].forEach(id => {
         const el = g(id);
         el.addEventListener('input', () => { el.value = cvMascaraValor(el.value); try { el.setSelectionRange(el.value.length, el.value.length); } catch (e) {} });
     });
@@ -3955,6 +3964,16 @@ function cvPosFormAbrir(idx) {
     }
     const alav = () => { const v = num('pf-alav'); return pos(v) ? v : null; };
     const calc = () => ap[pg].tipo !== 'D';   // aporte de abertura: preço SEMPRE calculado (aporte × alavancagem ÷ quantidade) e só leitura; sem alavancagem fica vazio
+    // Planejamento (app primeiro, corretora depois): aporte novo, sem quantidade digitada, ganha quantidade = aporte × alavancagem ÷ preço de referência
+    // (1º aporte: Preço de Entrada; os demais: cotação atual). Aí o preço do aporte volta a ser a própria referência.
+    function qtdDoPlano() {
+        const al = alav();
+        ap.forEach((x, i) => {
+            if (x.tipo === 'D' || x.id || x.qtdManual || !pos(x.aporte) || !al) return;
+            const ref = i === 0 ? (pos(orig) ? orig : _precoAtual) : (_precoAtual > 0 ? _precoAtual : orig);
+            if (pos(ref)) { x.qtd = x.aporte * al / ref; autoTaxa(x); }
+        });
+    }
     function calcPreco(x) {
         const al = alav();
         x.preco = pos(x.aporte) && pos(x.qtd) && al ? x.aporte * al / x.qtd : null;
@@ -3985,7 +4004,7 @@ function cvPosFormAbrir(idx) {
         ov.querySelector('label[for="pf-ap-preco"]').firstChild.innerHTML = cm ? '' : grHeroicon('chevron-right', 10, '#3A3A3C');
         if (skip !== 'pf-ap-preco') setv('pf-ap-preco', x.preco);
         if (skip !== 'pf-ap-qtd') set8('pf-ap-qtd', x.qtd);
-        if (skip !== 'pf-ap-margem') setv('pf-ap-margem', cm && pos(x.aporte) ? x.aporte : (pos(x.qtd) && pos(x.preco) && al ? x.qtd * x.preco / al : null));
+        if (skip !== 'pf-ap-margem') g('pf-ap-margem').value = cvMascaraDeNumeroN(cm && pos(x.aporte) ? x.aporte : (pos(x.qtd) && pos(x.preco) && al ? x.qtd * x.preco / al : null), 4);
         g('pf-ap-valor').value = pos(x.qtd) && pos(x.preco) ? cvMascaraDeNumero(x.qtd * x.preco) : '';
         if (skip !== 'pf-ap-taxa') { if (x.tipo === 'D') setv('pf-ap-taxa', x.taxa); else set8('pf-ap-taxa', x.taxa); }
     }
@@ -4037,7 +4056,7 @@ function cvPosFormAbrir(idx) {
         g('pf-ap-add').onclick = addAporte;
         g('pf-ap-del').onclick = delAporte;
     }
-    let lastChave = '';
+    let lastChave = '', alavManual = false;   // alavancagem: o Huber digita a da corretora; a do plano (risco ÷ distância do stop) é só sugestão enquanto ele não mexe
     function recalc(origem) {
         const st = num('pf-stop'), r = num('pf-risco');
         // alavancagem pela entrada: risco ÷ distância até o stop. Recalcula só quando entrada/stop/risco mudam;
@@ -4046,9 +4065,10 @@ function cvPosFormAbrir(idx) {
         if (chave !== lastChave) {
             lastChave = chave;
             const temQtd = ap.some(x => x.tipo !== 'D' && pos(x.qtd));
-            const congela = pz.pm > 0 || (origem === 'orig' && temQtd);
-            if (!congela && pos(orig) && pos(st) && pos(r) && orig !== st) g('pf-alav').value = cvMascaraDeNumero(r / (Math.abs(orig - st) / orig * 100));
+            const congela = alavManual || pz.pm > 0 || (origem === 'orig' && temQtd);
+            if (!congela && pos(orig) && pos(st) && pos(r) && orig !== st) g('pf-alav').value = String(Math.max(1, Math.floor(r / (Math.abs(orig - st) / orig * 100))));   // inteira, para baixo (como a Bitget aceita): nunca arrisca mais que o planejado
         }
+        qtdDoPlano();
         ap.forEach(x => { if (x.tipo !== 'D' && alav() && pos(x.aporte) && pos(x.qtd)) calcPreco(x); });
         refreshPagina(document.activeElement && document.activeElement.id && document.activeElement.id.indexOf('pf-ap-') === 0 ? document.activeElement.id : null);
         info();
@@ -4071,7 +4091,7 @@ function cvPosFormAbrir(idx) {
             if (al) {
                 const marg = est.cost / al;
                 g('pf-liq').value = cvMascaraDeNumero(cvLiqPreco(est.pm, al, sgn));
-                L.push('Total aportado: <b>' + f(marg, 2) + ' USDT</b>');
+                L.push('Total aportado: <b>' + f(marg, 4) + ' USDT</b>');
                 if (pos(st)) {
                     const perda = est.qty * Math.abs(est.pm - st);
                     let t = 'Perda no stop: <b>' + f(perda, 2) + ' USDT</b> (' + f(perda / marg * 100, 2) + '% da margem)';
@@ -4098,10 +4118,10 @@ function cvPosFormAbrir(idx) {
     // ── eventos ──
     const X = () => ap[pg];
     g('pf-ap-preco').addEventListener('input', () => { if (calc()) return; X().preco = num('pf-ap-preco'); if (X().tipo === 'D' || ap.length > 1) autoTaxa(X()); recalc('x'); });
-    g('pf-ap-qtd').addEventListener('input', () => { X().qtd = num('pf-ap-qtd'); if (ap.length === 1) fonte = 'qtd'; if (calc()) calcPreco(X()); autoTaxa(X()); recalc('x'); });
+    g('pf-ap-qtd').addEventListener('input', () => { X().qtd = num('pf-ap-qtd'); X().qtdManual = true; if (ap.length === 1) fonte = 'qtd'; if (calc()) calcPreco(X()); autoTaxa(X()); recalc('x'); });
     g('pf-ap-margem').addEventListener('input', () => {
         const m = num('pf-ap-margem'), al = alav();
-        X().aporte = m;
+        X().aporte = m; X().qtdManual = false;
         if (calc()) calcPreco(X());
         else if (pos(m) && al && pos(X().preco)) X().qtd = m * al / X().preco;
         if (ap.length === 1) { margemUni = m; fonte = 'margem'; }
@@ -4120,7 +4140,7 @@ function cvPosFormAbrir(idx) {
     };
     g('pf-alvo').addEventListener('input', () => { const v = num('pf-alvo'); if (pos(v)) dAlvos[farIdx(dAlvos, 'alvo')].preco = v; info(); });
     g('pf-stop').addEventListener('input', () => { const v = num('pf-stop'); if (pos(v)) dStops[farIdx(dStops, 'stop')].preco = v; });
-    g('pf-alav').addEventListener('input', () => recalc('alav'));
+    g('pf-alav').addEventListener('input', () => { alavManual = true; recalc('alav'); });
 
     // ── Modal Alvos / Stops (saídas parciais) ──
     function abrirAlvos() {
