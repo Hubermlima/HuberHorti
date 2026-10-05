@@ -2859,7 +2859,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = '05/10 08:40 · 13849 linhas · POSICAO-APORTES v201';
+const APP_VERSAO = '05/10 08:40 · 13849 linhas · POSICAO-APORTES v202';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = 'Versão ' + APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3803,7 +3803,7 @@ function cvPosAplicarDoBanco(pz, t, rows, ra) {
     pz.qty = t.data_fechamento ? 0 : (sh ? c.qtdShort : c.qtdAberta);
     pz.pm = (sh ? c.pmShort : c.pm) || (qA > 0 ? vA / qA : 0);   // encerrado: média das aberturas
     if (t.preco_entrada > 0) pz.entrada = t.preco_entrada; else if (!(pz.entrada > 0)) pz.entrada = pz.pm;
-    const mk = tp => ra.filter(a => a.tipo === tp).sort((a, b) => a.ordem - b.ordem).map(a => ({ preco: a.preco, pct: a.percentual, notif: a.habilitado !== false }));
+    const mk = tp => ra.filter(a => a.tipo === tp).sort((a, b) => a.ordem - b.ordem).map(a => ({ preco: a.preco, pct: a.percentual, notif: a.habilitado !== false, atg: !!a.atingido }));
     const alvos = mk('alvo'), stops = mk('stop');
     const far = (l, tp) => l.length ? l.reduce((m, x) => (tp === 'alvo' ? (x.preco - m) * sg > 0 : (m - x.preco) * sg > 0) ? x.preco : m, l[0].preco) : null;
     pz.alvo = far(alvos, 'alvo'); pz.stop = far(stops, 'stop');
@@ -4267,8 +4267,8 @@ function cvPosFormAbrir(idx) {
         if (!pos(orig) || (temA && !(curto ? a < orig : a > orig)) || (temS && !(curto ? st > orig : st < orig))) return erro(curto ? 'No short: alvo < entrada < stop.' : 'No long: stop < entrada < alvo.');
         if (temA) dAlvos[farIdx(dAlvos, 'alvo')].preco = a;
         if (temS) dStops[farIdx(dStops, 'stop')].preco = st;
-        const nAlvos = temA ? dAlvos.filter(x => pos(x.preco)).map(x => ({ preco: x.preco, pct: x.pct, notif: x.notif !== false })) : [];
-        const nStops = temS ? dStops.filter(x => pos(x.preco)).map(x => ({ preco: x.preco, pct: x.pct, notif: x.notif !== false })) : [];
+        const nAlvos = temA ? dAlvos.filter(x => pos(x.preco)).map(x => ({ preco: x.preco, pct: x.pct, notif: x.notif !== false, atg: !!x.atg })) : [];
+        const nStops = temS ? dStops.filter(x => pos(x.preco)).map(x => ({ preco: x.preco, pct: x.pct, notif: x.notif !== false, atg: !!x.atg })) : [];
         g('pf-ok').disabled = true; erro('Gravando…');
         const sv = await cvPosGravarTrade(pz, ap, { alav: al, entrada: orig, risco: r, alvos: nAlvos, stops: nStops, encerrar: enc });
         g('pf-ok').disabled = false;
@@ -6199,7 +6199,7 @@ if (fibsParaDesenhar.length > 0) {
                     const inter = (lista, cor, pref, ref) => (lista || []).forEach((it, ix) => {
                         if (!(it.preco > 0) || Math.abs(it.preco - ref) < 1e-9) return;
                         const y = toY(it.preco);
-                        ctx.save(); ctx.fillStyle = cor; ctx.beginPath(); ctx.moveTo(xb, y - 4); ctx.lineTo(xb - 7, y); ctx.lineTo(xb, y + 4); ctx.closePath(); ctx.fill();
+                        ctx.save(); if (it.atg) ctx.globalAlpha = 0.4; ctx.fillStyle = cor; ctx.beginPath(); ctx.moveTo(xb, y - 4); ctx.lineTo(xb - 7, y); ctx.lineTo(xb, y + 4); ctx.closePath(); ctx.fill();
                         ctx.font = 'bold 9px -apple-system'; ctx.textAlign = 'right'; ctx.textBaseline = 'middle'; const sgl = pz.alvo > pz.stop ? 1 : -1, lc = pz.qty > 0 && pz.pm > 0 ? pz.qty * (it.pct || 0) / 100 * (it.preco - pz.pm) * sgl : null; ctx.fillText((it.pct || 0) + '%' + (lc == null ? '' : ' · ' + (lc >= 0 ? '+' : '-') + Math.abs(lc).toFixed(2)), xb - 10, y); ctx.restore();
                     });
                     if (tA) inter(pz.alvos, 'rgba(38,166,154,0.95)', 'A', pz.alvo); if (tS) inter(pz.stops, 'rgba(239,83,80,0.95)', 'S', pz.stop);
@@ -11096,18 +11096,19 @@ function odCardAtivo(t, o) {
     };
     const linhaSlTp = (a, sl) => {
         const p = parseFloat(a.preco), rot = (sl ? 'Sl ' : 'Tp ') + (a.ordem || ''), ok = !!a.atingido;
+        const alc = '<input type="checkbox" ' + (ok ? 'checked ' : '') + 'aria-label="Alcançado" onclick="event.stopPropagation()" onchange="odMarcarAlcancado(\'' + a.id + '\', this)" style="width:18px;height:18px;margin:0;justify-self:end;accent-color:#8E8E93;">';
         const vs = sl ? (preco === null ? 0 : (preco - p) * sg) : 0;   // stop: positivo = preço do lado seguro
-        const txt = ok ? 'atingido' : (sl ? (preco === null ? '' : (vs > 0 ? 'faltam ' + f2(Math.abs(vs) / preco * 100) + '%' : 'já passou')) : falta(p));
-        return '<span style="font-weight:600;color:' + (sl ? '#EF5350' : '#26A69A') + ';">' + rot + '</span><span>' + f2(p) + '</span><span style="text-align:right;color:#6C6C70;">' + txt + '</span>';
+        const txt = ok ? 'alcançado' : (sl ? (preco === null ? '' : (vs > 0 ? 'faltam ' + f2(Math.abs(vs) / preco * 100) + '%' : 'já passou')) : falta(p));
+        return '<span style="font-weight:600;color:' + (sl ? '#EF5350' : '#26A69A') + ';">' + rot + '</span><span>' + f2(p) + '</span><span style="text-align:right;color:#6C6C70;">' + txt + '</span>' + alc;
     };
     let grade = sls.map(a => linhaSlTp(a, true)).join('') + tps.map(a => linhaSlTp(a, false)).join('');
-    if (!sls.length) grade = '<span style="font-weight:600;color:#EF5350;">Sl</span><span style="grid-column:2/4;color:#8E8E93;">não definido</span>' + grade;
+    if (!sls.length) grade = '<span style="font-weight:600;color:#EF5350;">Sl</span><span style="grid-column:2/5;color:#8E8E93;">não definido</span>' + grade;
     let h = '<div class="od-trade-row" style="padding:12px 4px;border-bottom:1px solid #F2F2F7;">' +
         '<div style="display:flex;align-items:center;gap:8px;"><span style="width:10px;height:10px;border-radius:3px;background:' + cor + ';flex-shrink:0;"></span>' +
         '<span style="font-size:14px;font-weight:600;color:#1C1C1E;">' + (lado === 'short' ? 'Short' : 'Long') + (alavN ? ' · ' + alavN.toFixed(2).replace('.', ',') + 'x' : '') + '</span>' +
         '<span style="margin-left:auto;font-size:11px;font-weight:700;color:' + cor + ';">Ativo</span>' +
         odBtnVerCaixa((function () { try { const z = grPosicoes().find(z => z.tradeId === t.id); return z ? z.id : null; } catch (e) { return null; } })()) + '</div>' +
-        '<div style="display:grid;grid-template-columns:62px 1fr 1fr;column-gap:8px;row-gap:4px;margin-top:10px;font-size:13px;color:#1C1C1E;align-items:baseline;">' + grade + '</div>';
+        '<div style="display:grid;grid-template-columns:62px 1fr 1fr 24px;column-gap:8px;row-gap:4px;margin-top:10px;font-size:13px;color:#1C1C1E;align-items:baseline;">' + grade + '</div>';
     if (realizado !== null) h += '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:8px;padding-top:7px;border-top:1px solid #F2F2F7;font-size:13px;"><span style="color:#8E8E93;">Realizado</span><span style="font-weight:800;color:' + cs(realizado) + ';">' + sn(realizado) + ' USDT</span></div>';
     h += '<button type="button" aria-label="Detalhes" onclick="event.stopPropagation();odToggleDet(\'' + id + '\')" style="display:flex;justify-content:center;width:100%;margin-top:4px;border:none;background:none;padding:2px 0;color:#3A3A3C;"><span id="od-chev-' + t.id + '" style="display:inline-flex;transition:transform .15s;' + (aberto ? 'transform:rotate(180deg);' : '') + '">' + grHeroicon('chevron-down', 20, '#3A3A3C') + '</span></button>';
     // Detalhes (recolhidos)
@@ -11138,6 +11139,14 @@ function odCardAtivo(t, o) {
     }
     d += '<div style="display:grid;grid-template-columns:1fr 1fr;column-gap:16px;row-gap:6px;margin-top:8px;font-size:12px;">' + itens.join('') + '</div>';
     return h + '<div id="od-det-' + t.id + '" style="' + (aberto ? '' : 'display:none;') + '">' + d + '</div></div>';
+}
+async function odMarcarAlcancado(id, el) {   // grava na hora; se falhar, volta o checkbox
+    const novo = !!el.checked;
+    let r = null; try { r = await db.from('alvos').update({ atingido: novo }).eq('id', id); } catch (e) { r = { error: e }; }
+    if (r && r.error) { el.checked = !novo; try { grAreaToast('Não consegui gravar. Tente de novo.', '#DC2626'); } catch (e) {} return; }
+    Object.keys(_odAlvosCache).forEach(k => (_odAlvosCache[k] || []).forEach(a => { if (String(a.id) === String(id)) a.atingido = novo; }));
+    try { const z = grPosicoes().find(z => z.alvos || z.stops); grPosicoes().forEach(z => { if (!z.tradeId) return; const t = (_odTradesCache || []).find(t => t.id === z.tradeId); if (!t) return; const ra = (_odAlvosCache[t.id] || []); [['alvo', z.alvos], ['stop', z.stops]].forEach(([tp, lista]) => { const ls = ra.filter(a => a.tipo === tp).sort((a, b) => a.ordem - b.ordem); (lista || []).forEach((x, k) => { if (ls[k]) x.atg = !!ls[k].atingido; }); }); }); grDrawChart(); } catch (e) {}
+    odRenderTrades();
 }
 function odRenderTradeRow(t) {
     const st = odStatusTrade(t), lado = (t.tipo || 'long').toLowerCase(), sg = lado === 'short' ? -1 : 1;
@@ -11179,7 +11188,7 @@ function odRenderTradeRow(t) {
                     '<span style="font-weight:600;color:' + cr + ';min-width:46px;">' + (eAlvo ? 'Alvo' : 'Stop') + ' ' + (a.ordem || '') + '</span>' +
                     '<span>' + f2(parseFloat(a.preco)) + '</span>' +
                     (dist !== null ? '<span style="color:#8E8E93;">(' + (dist >= 0 ? '+' : '') + f2(dist) + '%)</span>' : '') +
-                    '<span style="margin-left:auto;color:#8E8E93;">' + (a.percentual != null ? a.percentual + '%' : '') + (a.atingido ? ' · atingido' : '') + '</span></div>';
+                    '<span style="margin-left:auto;color:#8E8E93;">' + (a.percentual != null ? a.percentual + '%' : '') + (a.atingido ? ' · alcançado' : '') + '</span></div>';
             }).join('') + '</div>';
             const aa = al.filter(a => a.tipo !== 'stop'), ss = al.filter(a => a.tipo === 'stop');
             if (st === 'ativo' && pm > 0 && aa.length && ss.length) {
