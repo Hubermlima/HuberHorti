@@ -251,7 +251,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
 .cva-menu.on{display:block;}
 .cva-menu button{display:block;width:100%;text-align:left;border:none;background:none;padding:9px 12px;font-size:12.5px;color:#1C1C1E;}
 .cva-menu button.on{font-weight:700;color:#007AFF;}
-.cva-lista{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;}
+.cva-lista{flex:1;overflow-y:auto;overscroll-behavior:contain;}
 .cva-row{display:flex;align-items:center;gap:7px;padding:7px 10px 7px 4px;cursor:pointer;}
 .cva-row.atual{background:#EDF4FF;}
 .cva-star{border:none;background:none;padding:6px 4px;display:flex;flex-shrink:0;}
@@ -1087,11 +1087,19 @@ async function cvAbrirBuscaAtivos() {
 }
 function cvFecharBuscaAtivos() {
     const ov = document.getElementById('cv-ativos-overlay');
+    const box = document.getElementById('cv-ativos-lista');
+    // iOS: esconder uma lista rolável (ou deixar o teclado aberto) no meio do toque pode deixar a página inteira sem responder ao toque
+    // até outro toque. Por isso: tira o foco da busca, encerra a inércia da rolagem ANTES de esconder e devolve a página ao topo depois.
+    try { document.getElementById('cv-ativos-busca').blur(); } catch (e) {}
+    try { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); } catch (e) {}
+    if (box) box.style.overflowY = 'hidden';
     if (ov) { ov.classList.remove('active'); ov.style.top = ''; ov.style.height = ''; }
     _tickerDropdownAberto = false;
     cvAtivosFecharMenuOrd();
     if (_cvAtivosObs) { _cvAtivosObs.disconnect(); _cvAtivosObs = null; }
-    try { document.getElementById('cv-ativos-busca').blur(); } catch (e) {}
+    const destravar = () => { if (box) box.style.overflowY = ''; try { window.scrollTo(0, 0); } catch (e) {} };
+    requestAnimationFrame(destravar);
+    setTimeout(destravar, 350);
 }
 function cvToggleTickerDropdown() { if (_tickerDropdownAberto) cvFecharBuscaAtivos(); else cvAbrirBuscaAtivos(); }
 // Escolher um ativo na busca NÃO cadastra nada. Só consulta se ele já existe em "ativos" (para reaproveitar trades/desenhos/alertas
@@ -1110,6 +1118,7 @@ async function cvAtivosEscolher(k) {
         try { cad = await cvAtivosAcharCadastrado(x.sym, fonte); }
         catch (e) { throw new Error('não consegui consultar o cadastro (' + ((e && e.message) || e) + ')'); }
         cvFecharBuscaAtivos();
+        await new Promise(r => setTimeout(r, 300));   // deixa o toque terminar e a folha sumir antes de redesenhar o gráfico (evita o travamento de toque do iOS)
         if (fonte === 'td') {
             if (cad) await cvSelecionarAtivo(cad.id, cad.ticker, { fonte: 'td', tipo: cad.tipo });
             else await cvSelecionarAtivo('td:' + x.sym, x.sym, { fonte: 'td', tipo: x.tipo, nome: x.nome });
@@ -3005,6 +3014,7 @@ function grFootprintClusterDoCandle(candle, tick, getTodos) {
     // dos outros candles. Candle normal (até FOOTPRINT_NIVEIS_MAX linhas) fica no tick do ATR (agrup = 1).
     let agrup = 1;
     if (FOOTPRINT_LINHAS_MODO === 'atr' || FOOTPRINT_LINHAS_MODO === 'manual') { // só ATR e Manual; o modo Auto mostra todos os níveis que a tela comporta, sem teto
+        agrup = Math.max(1, Math.floor((kMax - kMin + 1) / FOOTPRINT_NIVEIS_MAX) - 1);   // parte perto da resposta (mesmo resultado do laço de 1 em 1, sem rodar milhões de voltas se a grade ficar fina demais)
         while (Math.floor(kMax / agrup) - Math.floor(kMin / agrup) + 1 > FOOTPRINT_NIVEIS_MAX) agrup++;
     }
     const linhas = [];
@@ -4552,7 +4562,9 @@ function grDrawCandles(candles, emptyRight) {
         const gridStep = grPassoEixoY(maxP - minP, chartH, fsEixo);
         const ticksEixo = []; // marcas do eixo: [{price, step}] — passo único no normal, passo crescente no log
         if (_grEscalaLog) grTicksLog(minP, maxP, chartH, fsEixo).forEach(t => ticksEixo.push(t));
-        else for (let k = Math.ceil(minP / gridStep); k * gridStep <= maxP; k++) ticksEixo.push({ price: Math.round(k * gridStep * 1e8) / 1e8, step: gridStep });
+        else if (isFinite(minP) && isFinite(maxP) && gridStep > 0) {   // limitado: eixo com calibração absurda (NaN/infinito) nunca pode virar laço sem fim
+            for (let k = Math.ceil(minP / gridStep), n = 0; k * gridStep <= maxP && n < 600; k++, n++) ticksEixo.push({ price: Math.round(k * gridStep * 1e8) / 1e8, step: gridStep });
+        }
         {
             ctx.font = fsEixo + 'px -apple-system';
             let maxW = 0;
