@@ -2828,7 +2828,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = '04/10 20:48 · 14289 linhas · POSICAO-APORTES v155';
+const APP_VERSAO = '04/10 20:59 · 14296 linhas · POSICAO-APORTES v156';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = 'Versão ' + APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -9174,7 +9174,8 @@ function cvToggleReg() {
 // ── Canal de Regressão Linear ────────────────────────────────────────────────────────────
 // Você arrasta do candle inicial ao final (igual à Tendência); o app ajusta a reta de mínimos quadrados sobre o LOG dos
 // fechamentos desses candles (mediana) e desenha mediana ± K·σ, com σ = desvio-padrão dos resíduos. Tudo calculado, nada manual.
-const GR_CANAL_K = 2;
+// Bandas = PERCENTIS EMPÍRICOS dos resíduos (ln fechamento − mediana): não supõe curva normal. [externa baixa, interna baixa, interna alta, externa alta]
+const GR_CANAL_PCT = [2.5, 10, 90, 97.5];
 const GR_CANAL_PROJ = 0.5;   // projeção à frente = metade do tamanho do canal (entre 5 e 60 barras)
 let _canalModo = false;   // true = a ferramenta Tendência está criando canais em vez de retas
 function grCanalCalc(i1, i2) {
@@ -9188,7 +9189,11 @@ function grCanalCalc(i1, i2) {
     const slope = (sty - tb * sy) / stt, my = sy / n, inter = my - slope * tb;   // y(k) = inter + slope*k
     let ss = 0; for (let k = 0; k < n; k++) { const r = y[k] - (inter + slope * k); ss += r * r; }
     const sg = Math.sqrt(ss / Math.max(n - 2, 1));
-    return { a, b, n, inter, slope, sg };
+    const res = new Array(n); for (let k = 0; k < n; k++) res[k] = y[k] - (inter + slope * k);
+    res.sort((u, w) => u - w);
+    const pct = q => { const h = (n - 1) * q / 100, f = Math.floor(h), c2 = Math.min(n - 1, f + 1); return res[f] + (res[c2] - res[f]) * (h - f); };   // interpolação linear
+    const q = GR_CANAL_PCT.map(pct);   // deslocamentos em ln: [ext baixa, int baixa, int alta, ext alta]
+    return { a, b, n, inter, slope, sg, q };
 }
 // prende as pontas do canal na mediana (p1/p2 = preço da mediana nos candles inicial e final)
 function grCanalAjustar(tl) {
@@ -9198,22 +9203,24 @@ function grCanalAjustar(tl) {
 }
 function grCanalDesenhar(ctx, tl, toXIdx, toY, cor) {   // tl: {i1,i2}
     const c = grCanalCalc(tl.i1, tl.i2); if (!c) return false;
-    const seg = Math.min(48, c.n), lin = off => { const pts = []; for (let j = 0; j <= seg; j++) { const k = (c.n - 1) * j / seg; pts.push([toXIdx(c.a + k), toY(Math.exp(c.inter + c.slope * k + off * c.sg))]); } return pts; };
-    const up = lin(GR_CANAL_K), md = lin(0), dn = lin(-GR_CANAL_K);
+    const seg = Math.min(48, c.n), lin = off => { const pts = []; for (let j = 0; j <= seg; j++) { const k = (c.n - 1) * j / seg; pts.push([toXIdx(c.a + k), toY(Math.exp(c.inter + c.slope * k + off))]); } return pts; };
+    const up = lin(c.q[3]), up1 = lin(c.q[2]), md = lin(0), dn1 = lin(c.q[1]), dn = lin(c.q[0]);
     ctx.save();
     ctx.globalAlpha = 0.08; ctx.fillStyle = cor; ctx.beginPath();
     up.forEach((q, j) => j ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])); for (let j = dn.length - 1; j >= 0; j--) ctx.lineTo(dn[j][0], dn[j][1]); ctx.closePath(); ctx.fill();
+    ctx.globalAlpha = 0.08; ctx.fillStyle = cor; ctx.beginPath();
+    up1.forEach((q, j) => j ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])); for (let j = dn1.length - 1; j >= 0; j--) ctx.lineTo(dn1[j][0], dn1[j][1]); ctx.closePath(); ctx.fill();
     ctx.globalAlpha = 1; ctx.strokeStyle = cor; ctx.lineWidth = 1.5;
-    [[up, [5, 4]], [dn, [5, 4]], [md, []]].forEach(([pts, dash]) => { ctx.setLineDash(dash); ctx.lineWidth = dash.length ? 1.3 : 2; ctx.beginPath(); pts.forEach((q, j) => j ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])); ctx.stroke(); });
+    [[up, [5, 4]], [dn, [5, 4]], [up1, [2, 3]], [dn1, [2, 3]], [md, []]].forEach(([pts, dash]) => { ctx.setLineDash(dash); ctx.lineWidth = dash.length ? 1.3 : 2; ctx.beginPath(); pts.forEach((q, j) => j ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])); ctx.stroke(); });
     ctx.setLineDash([]);
     // projeção para a frente (mesma reta e mesma largura, SEM recalcular com os candles novos): serve pra ver como o preço se comporta depois do fim
     const P = Math.max(5, Math.min(60, Math.round(c.n * GR_CANAL_PROJ)));
-    const proj = off => { const pts = []; for (let j = 0; j <= 12; j++) { const k = (c.n - 1) + P * j / 12; pts.push([toXIdx(c.a + k), toY(Math.exp(c.inter + c.slope * k + off * c.sg))]); } return pts; };
-    const pu = proj(GR_CANAL_K), pm = proj(0), pd = proj(-GR_CANAL_K);
+    const proj = off => { const pts = []; for (let j = 0; j <= 12; j++) { const k = (c.n - 1) + P * j / 12; pts.push([toXIdx(c.a + k), toY(Math.exp(c.inter + c.slope * k + off))]); } return pts; };
+    const pu = proj(c.q[3]), pu1 = proj(c.q[2]), pm = proj(0), pd1 = proj(c.q[1]), pd = proj(c.q[0]);
     ctx.globalAlpha = 0.04; ctx.fillStyle = cor; ctx.beginPath();
     pu.forEach((q, j) => j ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])); for (let j = pd.length - 1; j >= 0; j--) ctx.lineTo(pd[j][0], pd[j][1]); ctx.closePath(); ctx.fill();
     ctx.globalAlpha = 0.55; ctx.strokeStyle = cor;
-    [[pu, [2, 4]], [pd, [2, 4]], [pm, [2, 4]]].forEach(([pts, dash]) => { ctx.setLineDash(dash); ctx.lineWidth = 1.3; ctx.beginPath(); pts.forEach((q, j) => j ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])); ctx.stroke(); });
+    [[pu, [2, 4]], [pd, [2, 4]], [pu1, [1, 4]], [pd1, [1, 4]], [pm, [2, 4]]].forEach(([pts, dash]) => { ctx.setLineDash(dash); ctx.lineWidth = 1.3; ctx.beginPath(); pts.forEach((q, j) => j ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])); ctx.stroke(); });
     ctx.globalAlpha = 1; ctx.setLineDash([]);
     // pontas na mediana
     ctx.fillStyle = cor; [md[0], md[md.length - 1]].forEach(pt => { ctx.beginPath(); ctx.arc(pt[0], pt[1], 3.5, 0, Math.PI * 2); ctx.fill(); });
