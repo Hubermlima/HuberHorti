@@ -2944,7 +2944,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v239';
+const APP_VERSAO = 'v240';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3235,7 +3235,7 @@ function grMeMontarRelatorio(r) {
         + '<div style="font-size:26px;font-weight:800;margin:2px 0;">' + fp(r.lo) + ' – ' + fp(r.hi) + '</div>'
         + '<div style="font-size:13px;">Entrada ~' + fp(r.entrada) + ' · Stop ' + fp(r.stop) + (r.alvo != null ? ' · Alvo ' + fp(r.alvo) + ' · R:R ' + n1(r.rr) + ':1' : '') + '</div></div>'
         + '<div style="font-size:12.5px;margin-top:8px;">Faixa mais estreita: <b>' + fp(r.estreita.lo) + ' – ' + fp(r.estreita.hi) + '</b></div>'
-        + '<button onclick="grMelhorCriarCaixa()" style="width:100%;margin-top:10px;border:2px solid ' + cor + ';border-radius:12px;padding:12px;font-size:15px;font-weight:800;background:#fff;color:' + cor + ';">Criar Caixa</button>'
+        + '<button onclick="grMelhorCriarCaixa()" style="width:100%;margin-top:10px;border:2px solid ' + cor + ';border-radius:12px;padding:12px;font-size:15px;font-weight:800;background:#fff;color:' + cor + ';">Criar Caixas (principal + estreita)</button>'
         + '<div style="font-size:12.5px;margin-top:10px;line-height:1.45;"><b>Para conferir:</b> ' + conferir + '</div>'
         + '<div style="font-size:11.5px;color:#8E8E93;margin-top:4px;line-height:1.4;">' + testadas + '</div>'
         + sec('A favor', '#16A34A') + '<ul style="margin:0;padding-left:18px;font-size:13px;line-height:1.45;">' + li(pros) + '</ul>'
@@ -3251,19 +3251,24 @@ function grMeMontarRelatorio(r) {
 function grMelhorCriarCaixa() {
     const r = _grMeUltimo; if (!r || r.erro) return;
     const e = r.estreita, s = r.s, atr = r.lider.atr, L = r.lider;
-    const folga = Math.max(10, 0.5 * (e.hi - e.lo)), entrada = s > 0 ? e.lo : e.hi, stop = s > 0 ? e.hi + folga : e.lo - folga;   // stop colado na faixa estreita (meia largura de folga): distância curta = alavancagem altíssima
-    let alvo = grMeAlvo(L.niv, s, (e.lo + e.hi) / 2, atr, L.loW, L.hiW), fallback = false;
-    if (alvo == null || (s > 0 ? alvo >= entrada : alvo <= entrada)) { alvo = entrada - s * 2 * Math.abs(stop - entrada); fallback = true; }   // sem nó de volume do outro lado: alvo 2R
     const n = _grAllCandles.length; if (!n) return;
+    const dois = (lo, hi, stop) => {   // entrada na borda de entrada da faixa (short: embaixo; long: em cima); alvo = próximo nó de alto volume, senão 2R
+        const entrada = s > 0 ? lo : hi;
+        let alvo = grMeAlvo(L.niv, s, (lo + hi) / 2, atr, L.loW, L.hiW);
+        if (alvo == null || (s > 0 ? alvo >= entrada : alvo <= entrada)) alvo = entrada - s * 2 * Math.abs(stop - entrada);
+        return { entrada, stop, alvo };
+    };
+    const folga = Math.max(10, 0.5 * (e.hi - e.lo));
+    const nar = dois(e.lo, e.hi, s > 0 ? e.hi + folga : e.lo - folga);   // estreita: stop colado na faixa = alavancagem altíssima
+    const prin = dois(r.lo, r.hi, r.stop);                               // principal: stop do relatório (além da faixa + 0,5 ATR)
     const lista = grPosicoes();
-    for (let i = lista.length - 1; i >= 0; i--) if (lista[i].origem === 'melhor' && !lista[i].tradeId) lista.splice(i, 1);   // só uma caixa do Melhor por vez
-    const pz = grPosNova(r.lado, n - 1, entrada);
-    pz.entrada = entrada; pz.stop = stop; pz.alvo = alvo; pz.origem = 'melhor';
-    lista.push(pz); grPosSalvar();
+    for (let i = lista.length - 1; i >= 0; i--) if (lista[i].origem === 'melhor' && !lista[i].tradeId) lista.splice(i, 1);   // só o par do Melhor por vez
+    const mk = (v, larg) => { const pz = grPosNova(r.lado, n - 1, v.entrada); pz.entrada = v.entrada; pz.stop = v.stop; pz.alvo = v.alvo; pz.origem = 'melhor'; pz.t2 = grIndexToTime(n - 1 + larg); return pz; };
+    lista.push(mk(prin, 14)); lista.push(mk(nar, 7));   // a estreita fica mais curta, dentro da principal, pra textos não se sobreporem
+    grPosSalvar();
     grMelhorFechar(); cvFecharMenuFpCfg();
     try { cvEdicaoIniciar('ps', lista.length - 1); } catch (err) {}
     grDrawChart();
-    if (fallback) console.log('[Melhor] alvo da caixa = 2R (sem nó de alto volume do outro lado)');
 }
 function grMelhorFechar() { const ov = document.getElementById('melhor-relatorio-overlay'); if (ov) ov.style.display = 'none'; }
 function grMelhorCopiar() { try { navigator.clipboard.writeText((_grMeUltimo && _grMeUltimo.texto) || ''); } catch (e) {} }
