@@ -2935,7 +2935,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v231';
+const APP_VERSAO = 'v232';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3083,15 +3083,17 @@ function grDeltaPorFaixaATR(tick) {
     if (cache && cache.chave === chave) return cache.resultado;
     const inicio = Date.now() - janelaDias * 24 * 60 * 60 * 1000;
     const mapa = new Map(); // chave: Math.round(preco / tick) -> delta (compra - venda) acumulado na faixa
+    const totais = new Map(); // mesma chave -> volume TOTAL (compra + venda) da faixa, mostrado embaixo do delta
     grFootprintParaCadaMinuto(inicio, Date.now(), m => {
         (m.niveis || []).forEach(n => {
             const k = Math.round(n.p / tick);
             mapa.set(k, (mapa.get(k) || 0) + (n.c - n.v));
+            totais.set(k, (totais.get(k) || 0) + (n.c + n.v));
         });
     });
     let maxAbs = 0;
     mapa.forEach(v => { const a = Math.abs(v); if (a > maxAbs) maxAbs = a; });
-    const resultado = { mapa, maxAbs };
+    const resultado = { mapa, totais, maxAbs };
     window._grDeltaAtrCache[tick] = { chave, resultado };
     return resultado;
 }
@@ -4935,7 +4937,19 @@ function grDrawCandles(candles, emptyRight) {
                     let lumInfoDA = 255;
                     { const mRgb = corInfoDA.cor.match(/rgb\((\d+),(\d+),(\d+)\)/); if (mRgb) lumInfoDA = 0.299*(+mRgb[1]) + 0.587*(+mRgb[2]) + 0.114*(+mRgb[3]); }
                     ctx.fillStyle = lumInfoDA > 210 ? (deltaFaixa >= 0 ? '#00695C' : '#C62828') : '#FFFFFF';
-                    ctx.fillText(grFmtVolCompacto(Math.abs(deltaFaixa), 0), xDA, y + 3);
+                    // Faixa alta o bastante (>= 22 px): delta em cima e, embaixo dele, o volume TOTAL (compra + venda) da faixa, menor e sem
+                    // negrito (volume profile + delta na mesma régua, sem alargá-la). Faixa baixa: só o delta, como sempre.
+                    const totalFaixa = resultadoDA && resultadoDA.totais ? resultadoDA.totais.get(k) : undefined;
+                    if (totalFaixa !== undefined && (yBaseDA - yTopoDA) >= 22) {
+                        ctx.fillText(grFmtVolCompacto(Math.abs(deltaFaixa), 0), xDA, y - 2);
+                        ctx.save();
+                        ctx.font = '600 9px -apple-system';
+                        ctx.fillStyle = lumInfoDA > 210 ? '#48484A' : 'rgba(255,255,255,0.85)';
+                        ctx.fillText(grFmtVolCompacto(totalFaixa, 0), xDA, y + 9);
+                        ctx.restore();
+                    } else {
+                        ctx.fillText(grFmtVolCompacto(Math.abs(deltaFaixa), 0), xDA, y + 3);
+                    }
                 }
                 ctx.textAlign = 'left';
             }
