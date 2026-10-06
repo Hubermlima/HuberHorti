@@ -2946,7 +2946,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v251';
+const APP_VERSAO = 'v255';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3091,18 +3091,24 @@ function grMeAvaliar(lado, preco, tick, mapa, totais, candles, atr) {
         n.rej = rej; n.rup = rup; n.toq = rej + rup + neu; n.rr = (rej + 1) / (rej + rup + 2);
         n.gate = n.dist >= -0.25 * atr;
         n.alc = Math.exp(-Math.max(0, n.dist) / (2.5 * atr));
+        // 4 critérios DUROS (não relativos): volume entre os 25% maiores da janela; delta do lado certo com ≥ 5% do volume do nível;
+        // reação (≥ 2 toques e mais rejeições que rompimentos); topo/fundo da janela. A faixa é montada pelo nº de critérios atendidos.
+        n.c1 = n.pv >= 0.75; n.c2 = s * n.dp >= 0.05; n.c3 = n.toq >= 2 && n.rej >= 1 && n.rej >= n.rup; n.c4 = n.pos >= 0.6 || n.ext >= 0.5;
+        n.pisos = (n.c1 ? 1 : 0) + (n.c2 ? 1 : 0) + (n.c3 ? 1 : 0) + (n.c4 ? 1 : 0);
         n.score = n.gate ? 0.20 * n.pv + 0.22 * n.pd * (n.fav ? 1 : 0.3) + 0.16 * (0.5 * n.pos + 0.5 * n.ext) + 0.20 * n.rr + 0.22 * n.alc : 0;
     });
     let ib = -1;
-    niv.forEach((n, i) => { if (n.score > 0 && (ib < 0 || n.score > niv[ib].score)) ib = i; });
+    niv.forEach(n => { n.rank = n.gate ? n.pisos + n.score : 0; });   // critérios atendidos mandam; a nota (< 1) só desempata
+    niv.forEach((n, i) => { if (n.rank > 0 && (ib < 0 || n.rank > niv[ib].rank)) ib = i; });
     if (ib < 0) return null;
     let a = ib, b = ib;
-    while (b - a < 2) {   // estende pra níveis vizinhos de nota parecida (faixa de até 3 níveis)
+    while (b - a < 2) {   // estende só pra vizinhos de ALTO VOLUME que atendem quase tantos critérios quanto o principal (faixa de até 3 níveis)
         const e = niv[a - 1], d = niv[b + 1];
-        const okE = e && e.k === niv[a].k - 1 && e.score >= 0.85 * niv[ib].score, okD = d && d.k === niv[b].k + 1 && d.score >= 0.85 * niv[ib].score;
-        if (okD && (!okE || d.score >= e.score)) b++; else if (okE) a--; else break;
+        const bom = x => x && x.gate && x.c1 && x.pisos >= Math.max(2, niv[ib].pisos - 1);
+        const okE = bom(e) && e.k === niv[a].k - 1, okD = bom(d) && d.k === niv[b].k + 1;
+        if (okD && (!okE || d.rank >= e.rank)) b++; else if (okE) a--; else break;
     }
-    const banda = { lo: niv[a].lo, hi: niv[b].hi, score: niv[ib].score, chave: niv[ib] };
+    const banda = { lo: niv[a].lo, hi: niv[b].hi, score: niv[ib].score, rank: niv[ib].rank, chave: niv[ib] };
     const entrada = (banda.lo + banda.hi) / 2;
     const stop = s > 0 ? banda.hi + 0.5 * atr : banda.lo - 0.5 * atr;
     const alvo = grMeAlvo(niv, s, entrada, atr, loW, hiW);
@@ -3158,7 +3164,7 @@ async function grMelhorCalcular(lado) {
     if (!combos.length) return { erro: 'Nenhuma combinação achou faixa do lado certo do preço (' + (lado === 'short' ? 'acima' : 'abaixo') + ').' };
     // Votação: cada combinação soma a sua nota nos degraus de $10 da sua faixa; a faixa final é o pico + vizinhos com ≥ 60% do pico.
     const G = 10, votos = new Map();
-    combos.forEach(c => { for (let p = Math.floor(c.banda.lo / G); p < Math.ceil(c.banda.hi / G); p++) votos.set(p, (votos.get(p) || 0) + c.banda.score); });
+    combos.forEach(c => { for (let p = Math.floor(c.banda.lo / G); p < Math.ceil(c.banda.hi / G); p++) votos.set(p, (votos.get(p) || 0) + c.banda.rank); });
     let pico = null, vPico = 0;
     votos.forEach((v, p) => { if (v > vPico) { vPico = v; pico = p; } });
     let pa = pico, pb = pico;
@@ -3166,8 +3172,8 @@ async function grMelhorCalcular(lado) {
     while ((votos.get(pb + 1) || 0) >= 0.6 * vPico) pb++;
     const lo = pa * G, hi = (pb + 1) * G, s = lado === 'short' ? 1 : -1;
     const acertos = combos.filter(c => c.banda.lo < hi && c.banda.hi > lo);
-    const lider = acertos.slice().sort((a, b) => b.banda.score - a.banda.score)[0];
-    const chave = lider.niv.filter(n => n.lo < hi && n.hi > lo && n.gate).sort((a, b) => b.score - a.score)[0] || lider.banda.chave;
+    const lider = acertos.slice().sort((a, b) => b.banda.rank - a.banda.rank)[0];
+    const chave = lider.niv.filter(n => n.lo < hi && n.hi > lo && n.gate).sort((a, b) => b.rank - a.rank)[0] || lider.banda.chave;
     // Só vale a parte da faixa do LADO CERTO do preço atual (acima no short, abaixo no long): entrada do outro lado do preço seria ordem que já nasce executada/stopada.
     let loF = lo, hiF = hi;
     if (s > 0) { loF = Math.max(lo, preco); if (hiF <= loF) hiF = loF + lider.tick; } else { hiF = Math.min(hi, preco); if (loF >= hiF) loF = hiF - lider.tick; }
@@ -3176,7 +3182,7 @@ async function grMelhorCalcular(lado) {
     const stop = s > 0 ? hiF + 0.5 * atr : loF - 0.5 * atr, alvo = grMeAlvo(lider.niv, s, entrada, atr, lider.loW, lider.hiW);
     // Outras faixas (do combo líder), fora da escolhida: as 3 de maior nota, não coladas entre si.
     const outras = [];
-    lider.niv.filter(n => n.gate && n.score > 0 && !(n.hi > lo - lider.tick && n.lo < hi + lider.tick)).sort((a, b) => b.score - a.score).forEach(n => {
+    lider.niv.filter(n => n.gate && n.rank > 0 && !(n.hi > lo - lider.tick && n.lo < hi + lider.tick)).sort((a, b) => b.rank - a.rank).forEach(n => {
         if (outras.length < 3 && outras.every(o => Math.abs(o.k - n.k) >= 2)) outras.push(n);
     });
     // Estreita = a faixa da própria combinação líder (a que o usuário confere na régua), recortada do lado certo do preço e com largura mínima de 0,1% do preço.
@@ -3200,7 +3206,8 @@ async function grMelhorCalcular(lado) {
 function grMeRazoesContra(n, s, atr, lado) {
     const r = [], fmtS = x => (x >= 0 ? '+' : '−') + grFmtVolCompacto(Math.abs(x), 0);
     if (!n.fav) r.push('delta contrário (' + fmtS(n.d) + '): domina a agressão ' + (s > 0 ? 'vendedora, sem compradores presos ali' : 'compradora, sem vendedores presos ali'));
-    if (n.pv < 0.5) r.push('volume baixo (percentil ' + Math.round(n.pv * 100) + '): o preço tende a atravessar com pouca defesa');
+    else if (!n.c2) r.push('delta fraco (' + fmtS(n.d) + ', ' + Math.round(Math.abs(n.dp) * 100) + '% do volume): ' + (s > 0 ? 'não há compradores presos de verdade' : 'não há vendedores presos de verdade'));
+    if (!n.c1) r.push('volume fora dos 25% maiores (percentil ' + Math.round(n.pv * 100) + '): não é zona quente, o preço tende a atravessar com pouca defesa');
     if (n.dist / atr > 3) r.push('longe do preço (' + (n.dist / atr).toFixed(1).replace('.', ',') + ' ATR): baixa chance de ser tocada');
     if (n.dist / atr < 0.3) r.push('colada no preço: sem folga pro stop');
     if (n.toq >= 2 && n.rr < 0.45) r.push('rompida em ' + n.rup + ' de ' + n.toq + ' toques');
@@ -3211,13 +3218,13 @@ function grMeMontarRelatorio(r) {
     const fp = x => Math.round(x).toLocaleString('pt-BR'), n1 = x => x.toFixed(1).replace('.', ','), pc = x => Math.round(x * 100) + '%';
     const fmtS = x => (x >= 0 ? '+' : '−') + grFmtVolCompacto(Math.abs(x), 0);
     const short = r.lado === 'short', cor = short ? '#DC2626' : '#16A34A', L = r.lider, K = r.chave, s = r.s;
-    const confTxt = r.conf >= 0.65 ? 'Alta' : (r.conf >= 0.4 ? 'Média' : 'Baixa');
+    const confTxt = K.pisos >= 4 ? 'Forte' : (K.pisos === 3 ? 'Moderado' : 'Fraco');   // força = critérios duros atendidos pelo nível-chave
     const pros = [], contras = [];
     pros.push('Confluência: ' + r.nAcertos + ' de ' + r.nCombos + ' combinações de dias × timeframe apontam esta faixa (' + pc(r.conf) + ').');
-    if (K.pv >= 0.6) pros.push('Volume no percentil ' + Math.round(K.pv * 100) + ' dos níveis da janela' + (K.pv >= 0.75 ? ' (nó de alto volume: onde houve negócio, há interesse e defesa).' : '.'));
-    if (K.fav) pros.push('Delta ' + fmtS(K.d) + ' (' + pc(Math.abs(K.dp)) + ' do volume): ' + (short ? 'compradores agressivos que não conseguiram subir o preço = vendedores passivos absorvendo; quem comprou ali está preso e tende a vender na volta.' : 'vendedores agressivos que não conseguiram derrubar o preço = compradores passivos absorvendo; quem vendeu ali está preso e tende a recomprar na volta.'));
-    if (K.pos >= 0.7 || K.ext >= 0.5) pros.push((short ? 'Região de topo' : 'Região de fundo') + ' da janela de ' + L.d + ' dias (' + pc(K.pos) + ' do range; máx./mín. do período a ' + n1(Math.max(0, short ? L.hiW - K.hi : K.lo - L.loW) / L.atr) + ' ATR).');
-    if (K.toq >= 1 && K.rr >= 0.5) pros.push('Reação no ' + L.tf.rot + ': de ' + K.toq + ' toque(s), ' + K.rej + ' rejeitaram e ' + K.rup + ' romperam.');
+    if (K.c1) pros.push('Volume no percentil ' + Math.round(K.pv * 100) + ' dos níveis da janela' + (K.pv >= 0.75 ? ' (nó de alto volume: onde houve negócio, há interesse e defesa).' : '.'));
+    if (K.c2) pros.push('Delta ' + fmtS(K.d) + ' (' + pc(Math.abs(K.dp)) + ' do volume): ' + (short ? 'compradores agressivos que não conseguiram subir o preço = vendedores passivos absorvendo; quem comprou ali está preso e tende a vender na volta.' : 'vendedores agressivos que não conseguiram derrubar o preço = compradores passivos absorvendo; quem vendeu ali está preso e tende a recomprar na volta.'));
+    if (K.c4) pros.push((short ? 'Região de topo' : 'Região de fundo') + ' da janela de ' + L.d + ' dias (' + pc(K.pos) + ' do range; máx./mín. do período a ' + n1(Math.max(0, short ? L.hiW - K.hi : K.lo - L.loW) / L.atr) + ' ATR).');
+    if (K.c3) pros.push('Reação no ' + L.tf.rot + ': de ' + K.toq + ' toque(s), ' + K.rej + ' rejeitaram e ' + K.rup + ' romperam.');
     pros.push('A ' + n1(Math.max(0, (short ? r.entrada - r.preco : r.preco - r.entrada)) / L.atr) + ' ATR do preço atual (' + fp(r.preco) + '): alcançável.');
     if (r.rr != null && r.rr >= 1.5) pros.push('Relação risco/retorno de ' + n1(r.rr) + ':1 até o alvo (' + fp(r.alvo) + ').');
     grMeRazoesContra(K, s, L.atr, r.lado).filter(x => !/^colada/.test(x) || true).forEach(x => contras.push(x.charAt(0).toUpperCase() + x.slice(1) + '.'));
@@ -3237,7 +3244,7 @@ function grMeMontarRelatorio(r) {
     // texto puro (Copiar)
     const T = [];
     T.push('MELHOR FAIXA PARA ' + nome + ' — pergunta: qual a faixa de preços mais favorável para entrar ' + (short ? 'shortado' : 'longado') + '?');
-    T.push('Resposta: ' + fp(r.lo) + ' – ' + fp(r.hi) + ' | confluência ' + confTxt + ' (' + r.nAcertos + '/' + r.nCombos + ')');
+    T.push('Resposta: ' + fp(r.lo) + ' – ' + fp(r.hi) + ' | sinal ' + confTxt + ' (' + K.pisos + ' de 4 critérios) | confluência ' + r.nAcertos + '/' + r.nCombos);
     T.push('Caixa: entrada ' + fp(r.cxP.entrada) + ' | stop ' + fp(r.cxP.stop) + ' | alvo ' + fp(r.cxP.alvo) + ' | R:R ' + n1(r.cxP.rr) + ':1');
     T.push('Para conferir: ' + conferir); T.push(testadas);
     T.push('\nA FAVOR:'); pros.forEach(x => T.push('• ' + x));
@@ -3249,7 +3256,7 @@ function grMeMontarRelatorio(r) {
     const sec = (t, c) => '<div style="font-size:13px;font-weight:800;margin:16px 0 4px;color:' + c + ';">' + t + '</div>';
     const html = '<div style="font-size:12px;color:#8E8E93;">Pergunta</div><div style="font-size:15px;font-weight:700;margin-bottom:10px;">Qual a faixa de preços mais favorável para entrar ' + (short ? 'shortado' : 'longado') + '?</div>'
         + '<div style="border:2px solid ' + cor + ';border-radius:12px;padding:12px 14px;background:' + (short ? '#FEF2F2' : '#F0FDF4') + ';">'
-        + '<div style="font-size:12px;font-weight:700;color:' + cor + ';">' + nome + ' · confluência ' + confTxt + ' (' + r.nAcertos + ' de ' + r.nCombos + ')</div>'
+        + '<div style="font-size:12px;font-weight:700;color:' + cor + ';">' + nome + ' · sinal ' + confTxt + ' (' + K.pisos + ' de 4 critérios) · confluência ' + r.nAcertos + ' de ' + r.nCombos + '</div>'
         + '<div style="font-size:26px;font-weight:800;margin:2px 0;">' + fp(r.lo) + ' – ' + fp(r.hi) + '</div>'
         + '<div style="font-size:13px;line-height:1.5;"><b>Caixa</b> · Entrada ' + fp(r.cxP.entrada) + ' · Stop ' + fp(r.cxP.stop) + ' · Alvo ' + fp(r.cxP.alvo) + ' · R:R ' + n1(r.cxP.rr) + ':1</div></div>'
         + (r.recortada ? '<div style="font-size:11.5px;color:#8E8E93;margin-top:6px;">Faixa da régua: ' + fp(r.loOrig) + ' – ' + fp(r.hiOrig) + '. Recortada ' + (short ? 'acima' : 'abaixo') + ' do preço atual (' + fp(r.preco) + '): entrar do outro lado do preço não faz sentido.</div>' : '')
@@ -4028,6 +4035,7 @@ function grPosSalvar() { try { grAmbienteSalvar(); } catch (e) {} }
 // monta uma posição com medidas padrão (largura 14 candles, stop 2%, alvo 4%) a partir de um ponto
 // Limite de alcance: a rolagem lateral só vai até alguns slots depois do último candle (zoom × 15%). A borda direita da caixa não é desenhada além
 // disso (senão fica fora de alcance quando o zoom é alto). Só afeta o desenho: o t2 salvo continua o mesmo, e ao diminuir o zoom a caixa volta ao tamanho real.
+function grPosLimIdx() { const n = _grAllCandles.length; return (n - 1) + Math.max(1, Math.floor((_grZoom || 15) * 0.15) - 1); }   // índice do limite de rolagem à direita (mesma conta de grPosAplicarLimite)
 function grPosAplicarLimite(pz) {
     const n = _grAllCandles.length;
     pz.t2v = null;
@@ -7162,6 +7170,18 @@ if (fibsParaDesenhar.length > 0) {
     // Régua Delta ATR por ÚLTIMO no canvas principal: nada do que foi desenhado antes (candles, canal de regressão, tendências,
     // áreas, zonas, linhas) aparece por cima nem por baixo dela. Fundo opaco na faixa inteira.
     try { ctx.save(); ctx.globalAlpha = 1; ctx.setLineDash([]); if (window._grDesenharReguaDA) window._grDesenharReguaDA(); ctx.restore(); } catch (e) { console.log('Régua DA error:', e.message); }
+    // Zonas marcadas na régua também no EIXO Y (coluna de preços à direita): mesma cor da zona, por cima dos rótulos (translúcida, o número continua legível).
+    try {
+        if (_indState.deltaAtr && window._grFaixasDA && window._grFaixasDA.length) {
+            ctx.save(); ctx.beginPath(); ctx.rect(W - PAD.right, PAD.top, PAD.right, chartH); ctx.clip();
+            window._grFaixasDA.forEach(f => {
+                const yT = toY(f.hi), yB = toY(f.lo);
+                ctx.globalAlpha = 1; ctx.fillStyle = f.cor || (f.s < 0 ? '#EF5350' : '#26A69A');
+                ctx.fillRect(W - PAD.right, yT, 6, Math.max(2, yB - yT));   // trilho sólido (sem translucidez) na borda esquerda do eixo
+            });
+            ctx.restore();
+        }
+    } catch (e) { console.log('Zona no eixo Y error:', e.message); }
     // Redesenha o footprint JUNTO com o gráfico principal — não só no timer de
     // 200ms dele. Isso garante que a barra sempre usa a MESMA escala de eixo Y
     // (_grMinP/_grMaxP/_grChartH) que acabou de ser calculada aqui em cima,
@@ -7422,12 +7442,16 @@ function grEdToqueMove(x, y) {
         if (d.k === 'a') o.alvo = preco;
         else if (d.k === 's') o.stop = preco;
         else if (d.k === 'e') { if (!(o.pm > 0)) o.entrada = preco; }   // com PM a linha central é o PM: travada
-        else if (d.k === 'l') { if (!o.tradeId) o.t1 = grIndexToTime(idx); }   // com trade, a borda esquerda é fixa no 1º aporte
+        else if (d.k === 'l') { if (!o.tradeId) o.t1 = grIndexToTime(o.origem === 'melhor' ? idx : Math.min(idx, grPosLimIdx() - 1)); }   // a borda esquerda não passa do limite de rolagem (senão a caixa 'reaparece' inteira ao cruzá-lo)   // com trade, a borda esquerda é fixa no 1º aporte
         else if (d.k === 'r') o.t2 = grIndexToTime(idx);
         else if (d.k === 'm') {   // corpo: desloca tempo e preços juntos (em escala log mantém as distâncias em %)
             const dIdx = grXToIndex(nx) - grXToIndex(d.hx), p0 = grToPrice(d.hy), p1 = grToPrice(ny);
             const mv = v => _grEscalaLog ? v * (p1 / p0) : v + (p1 - p0);
-            if (!o.tradeId) { o.t1 = grIndexToTime(grTimeToIndex(d.snap.t1) + dIdx); o.t2 = grIndexToTime(grTimeToIndex(d.snap.t2) + dIdx); }
+            // Arrastar a caixa pra direita: a borda esquerda para no limite de rolagem. Antes, ao cruzá-lo a caixa deixava de ser cortada e a largura
+            // inteira reaparecia de uma vez (o "estranho" ao passar do último candle). A largura guardada não muda: voltando, a caixa reaparece inteira.
+            let dI = dIdx;
+            if (o.origem !== 'melhor') { const i1s = Math.min(grTimeToIndex(d.snap.t1), grTimeToIndex(d.snap.t2)), lm = grPosLimIdx() - 1; if (i1s + dI > lm) dI = Math.max(lm - i1s, Math.min(0, dI)); }
+            if (!o.tradeId) { o.t1 = grIndexToTime(grTimeToIndex(d.snap.t1) + dI); o.t2 = grIndexToTime(grTimeToIndex(d.snap.t2) + dI); }
             if (!(o.pm > 0)) { o.entrada = mv(d.snap.entrada); o.alvo = mv(d.snap.alvo); o.stop = mv(d.snap.stop); }   // com PM: só desloca na horizontal
         }
     }
