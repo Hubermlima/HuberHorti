@@ -1671,6 +1671,17 @@ function grConfigAbrir() { grConfigRender(); }
 function grConfigFechar() { const ov = document.getElementById('config-overlay'); if (ov) ov.style.display = 'none'; }
 
 function cvSetTf(tf) {
+    // Âncora de tempo: o horário que está no CENTRO da tela. Depois de recarregar no novo TF, o gráfico volta a centralizar nele.
+    // Se o gráfico estava colado no candle atual (borda direita), não há âncora: continua indo pro candle atual.
+    let _ancoraT = null;
+    try {
+        const arr0 = _grAllCandles;
+        if (arr0 && arr0.length && window._grStartIdx != null && window._grTotalSlots && _grOffset !== 999999
+            && window._grStartIdx + (window._grVisCount || 0) < arr0.length) {
+            const ic = Math.max(0, Math.min(arr0.length - 1, Math.floor(window._grStartIdx + window._grTotalSlots / 2)));
+            _ancoraT = arr0[ic].t;
+        }
+    } catch (e) { _ancoraT = null; }
     _grTf = tf;
     _grOffset = 999999;
     _grAllCandles = [];
@@ -1680,8 +1691,20 @@ function cvSetTf(tf) {
     window._grAbsSerie = null;
     _wsLastDraw = Date.now();
     if (typeof grAmbienteSalvar === 'function') grAmbienteSalvar(); // persiste o TF escolhido no ambiente
-    return grRenderChart().then(() => {
+    return grRenderChart().then(async () => {
         grInitTouch();
+        if (_ancoraT != null && _grTf === tf && _grAllCandles.length) {
+            try {
+                // garante histórico até a âncora (página por página, com teto de tentativas)
+                for (let k = 0; k < 12 && _grAllCandles.length && _grAllCandles[0].t > _ancoraT && !window._grHistFim; k++) await grCarregarHistoricoAnterior();
+                if (_grTf !== tf) return;
+                const total = _grAllCandles.length, z = _grZoom;
+                const maxOff = total + Math.floor(z * 0.15) - Math.min(z, total);
+                _grOffset = Math.max(0, Math.min(maxOff, Math.round(grTimeToIndex(_ancoraT) - z / 2)));
+                _grYAxisCenter = null; _grPxPerDollarReferencia = null; _grZoomReferencia = null; // recalibra a escala vertical pra janela nova
+                await grRenderChart();
+            } catch (e) { console.log('ancora TF:', e && e.message); }
+        }
     });
 }
 // Menu de seleção de timeframe: aberto ao tocar no rótulo "TF ..." desenhado no gráfico (ver _grTfLabelHit,
@@ -2856,7 +2879,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = '05/10 08:40 · 13849 linhas · POSICAO-APORTES v211';
+const APP_VERSAO = '05/10 08:40 · 13849 linhas · POSICAO-APORTES v212';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = 'Versão ' + APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
