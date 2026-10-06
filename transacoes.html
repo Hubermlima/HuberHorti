@@ -2946,7 +2946,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v262';
+const APP_VERSAO = 'v263';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3891,6 +3891,25 @@ function grPosEscalarZoom(r) {
         w = Math.max(1, w * r); pz._w = w;
         pz[key] = grIndexToTime(Math.round(fixo + (dir ? w : -w))); pz._wChk = pz[key];
     });
+}
+// Ímã nas bordas da régua Delta ATR: ao arrastar a alça de stop / entrada / alvo da caixa, o preço gruda na borda de nível da régua mais próxima
+// (até 12 px de distância do dedo). A borda é onde a zona de absorção termina, o preço que importa pro stop, e não depende da resolução do pixel
+// (1 pt da tela vale dezenas de dólares). Sem régua ligada/formada, ou longe de qualquer borda, o preço segue exato do dedo.
+function grMagnetRegua(yCanvas, preco) {
+    try {
+        const u = window._grDaUltima;
+        if (!_indState.deltaAtr || !u || !u.mapa || !(u.tick > 0)) return preco;
+        let melhor = null, bd = 12;
+        const vistos = new Set();
+        u.mapa.forEach((d, k) => {
+            [k * u.tick - u.tick / 2, k * u.tick + u.tick / 2].forEach(e => {
+                if (vistos.has(e)) return; vistos.add(e);
+                const dy = Math.abs(grLineY(e) - yCanvas);
+                if (dy <= bd) { bd = dy; melhor = e; }
+            });
+        });
+        return melhor != null ? melhor : preco;
+    } catch (e) { return preco; }
 }
 function grPosAplicarLimite(pz) {
     const n = _grAllCandles.length;
@@ -7287,7 +7306,8 @@ function grEdToqueMove(x, y) {
     if (d.bloq) return true;
     if (_edSel.tipo === 'ps' && o.trancada) { d.bloq = true; return true; }   // caixa trancada: seleciona e toca normal, mas não deixa mexer nas dimensões
     if (_edSel.tipo === 'ps' && d.k === 's' && o.pm > 0 && _grStopLib !== o.id) { d.bloq = true; grStopConfirmar(o); return true; }   // stop travado
-    const idx = grXToIndex(nx), preco = grToPrice(ny);
+    const idx = grXToIndex(nx); let preco = grToPrice(ny);
+    if (_edSel.tipo === 'ps' && (d.k === 'a' || d.k === 's' || d.k === 'e')) preco = grMagnetRegua(ny, preco);   // stop/entrada/alvo grudam nas bordas da régua
     if (!(preco > 0)) return true;
     const tp = _edSel.tipo;
     if (tp === 'tl') { if (d.k === 'a') { o.t1 = grIndexToTime(idx); o.p1 = preco; } else { o.t2 = grIndexToTime(idx); o.p2 = preco; } if (o.canal) grCanalAjustar(o); }
