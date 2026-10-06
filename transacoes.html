@@ -294,6 +294,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
     </div>
     <div class="cva-topo">
       <button class="cva-aba" id="cva-aba-fav" onclick="cvAtivosSetAba('fav')" aria-label="Favoritos"></button>
+      <button class="cva-aba" id="cva-aba-trd" onclick="cvAtivosSetAba('trd')" aria-label="Trades"></button>
       <button class="cva-aba on" id="cva-aba-cripto" onclick="cvAtivosSetAba('cripto')">Crypto</button>
       <button class="cva-aba" id="cva-aba-acoes" onclick="cvAtivosSetAba('acoes')">Ações</button>
       <button class="cva-aba" id="cva-aba-forex" onclick="cvAtivosSetAba('forex')">Forex</button>
@@ -705,7 +706,8 @@ let _tickerDropdownAberto = false;
 // máx/mín/volume. Ao escolher um ativo que ainda não está em `ativos`, ele é cadastrado na hora (trades, alvos, transações e
 // desenhos são amarrados ao ativo_id). Favoritos ficam no JSON de preferências (chave `favoritos`) e, como o resto do ambiente,
 // só vão para o servidor ao clicar em Sair.
-window._grFavoritos = window._grFavoritos || [];   // chaves = símbolo da Binance ('ETHUSDT')
+window._grFavoritos = window._grFavoritos || [];
+window._grTradesLista = window._grTradesLista || [];   // grupo Trades da busca de ativos (marcado na mão com o botão T); chaves iguais às dos favoritos   // chaves = símbolo da Binance ('ETHUSDT')
 let _grBinLista = null;            // { ts, itens:[{sym, base, quote, preco, pct, qv, hi, lo}] }
 let _grBinListaCarregando = null;
 let _grBinListaErro = null;
@@ -808,7 +810,7 @@ function cvAtivosMontarItens() {
     }
     // favoritos: Binance (da lista) + Twelve Data (chave 'td:tipo:SYM', reconstruída sem gastar chamada)
     const out = bin();
-    (window._grFavoritos || []).forEach(ch => {
+    (aba === 'trd' ? (window._grTradesLista || []) : (window._grFavoritos || [])).forEach(ch => {
         const m = /^td:(acao|etf|forex):(.+)$/.exec(String(ch)); if (!m) return;
         const conhecido = cvAtivosListaTd(m[1]).find(x => x.sym === m[2]);
         out.push(conhecido || cvAtivosItemTd(m[1], m[2], ''));
@@ -970,9 +972,9 @@ function cvAtivosObservarSparks() {
 function cvAtivosRender() {
     const box = document.getElementById('cv-ativos-lista'); if (!box) return;
     const q = String((document.getElementById('cv-ativos-busca') || {}).value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toUpperCase().replace(/[\/\-\s]/g, '');
-    const favs = new Set(window._grFavoritos), atual = grBinSymbolAtual();
+    const favs = new Set(window._grFavoritos), trds = new Set(window._grTradesLista), atual = grBinSymbolAtual();
     _cvAtivosQBruta = String((document.getElementById('cv-ativos-busca') || {}).value || '').trim();
-    let itens = cvAtivosMontarItens().map(x => { x.fav = favs.has(x.chave); return x; });
+    let itens = cvAtivosMontarItens().map(x => { x.fav = favs.has(x.chave); x.trd = trds.has(x.chave); return x; });
     _cvAtivosMapa = {};
     const cmp = {
         vol: (a, b) => (b.qv - a.qv) || a.base.localeCompare(b.base),
@@ -981,12 +983,13 @@ function cvAtivosRender() {
         az: (a, b) => a.base.localeCompare(b.base) || a.sym.localeCompare(b.sym)
     }[_cvAtivosOrdem];
     if (_cvAtivosAba === 'fav') itens = itens.filter(x => x.fav);
+    if (_cvAtivosAba === 'trd') itens = itens.filter(x => x.trd);
     if (q) {
         itens = itens.filter(x => (x.bq || x.base).toUpperCase().includes(q) || x.sym.replace(/[\/\-\s]/g, '').toUpperCase().includes(q) || String((x.td ? x.nome : cvAtivosNome(x.base)) || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, '').includes(q));
         itens.sort((a, b) => (((b.bq || b.base) === q) - ((a.bq || a.base) === q)) || (((b.bq || b.base).startsWith(q)) - ((a.bq || a.base).startsWith(q))) || cmp(a, b));
     } else {
         itens.sort(cmp);
-        if (_cvAtivosAba !== 'fav') itens = itens.filter(x => x.fav).concat(itens.filter(x => !x.fav));   // favoritos sempre no começo (a ordem de cada grupo se mantém)
+        if (_cvAtivosAba !== 'fav' && _cvAtivosAba !== 'trd') itens = itens.filter(x => x.fav).concat(itens.filter(x => !x.fav));   // favoritos sempre no começo (a ordem de cada grupo se mantém)
     }
     const estrela = fav => fav
         ? '<svg width="22" height="22" viewBox="0 0 24 24" fill="#1C1C1E" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="' + HEROICON_STAR_SOLID + '"/></svg>'
@@ -1008,6 +1011,7 @@ function cvAtivosRender() {
         return '<div class="cva-item">'
             + '<div class="cva-row' + ((x.td ? _ativoFonte === 'td' : _ativoFonte === 'bin') && x.sym === atual ? ' atual' : '') + '" onclick="cvAtivosEscolher(\'' + k + '\')">'
             + '<button type="button" class="cva-star" aria-label="Favorito" onclick="event.stopPropagation();cvAtivosFavoritar(\'' + k + '\')">' + estrela(x.fav) + '</button>'
+            + '<button type="button" class="cva-star" aria-label="Trades" onclick="event.stopPropagation();cvAtivosTrade(\'' + k + '\')">' + cvTIcone(x.trd, 22) + '</button>'
             + (x.td ? '<div class="cva-logo cva-letra" style="background:' + cvAtivosCorLetra(x.base) + '">' + x.base.charAt(0) + '</div>' : cvAtivosLogoHtml(x.base))
             + '<div class="cva-nome"><b>' + x.base + '</b><small>' + sub + '</small></div>'
             + '<div class="cva-spark"' + (x.binance ? ' data-sym="' + x.sym + '"' : '') + '>' + (x.binance ? cvAtivosSparkSvg(_cvAtivosSpark[x.sym]) : '') + '</div>'
@@ -1017,7 +1021,7 @@ function cvAtivosRender() {
             + '<div class="cva-det' + (aberto ? ' on' : '') + '" id="cva-det-' + k + '">' + det + '</div></div>';
     };
     let html = '';
-    if (!_grBinLista && (_cvAtivosAba === 'cripto' || _cvAtivosAba === 'fav')) {
+    if (!_grBinLista && (_cvAtivosAba === 'cripto' || _cvAtivosAba === 'fav' || _cvAtivosAba === 'trd')) {
         html += '<div class="cva-vazio">' + (_grBinListaCarregando ? 'Carregando a lista da Binance…' : 'Não consegui carregar a lista da Binance' + (_grBinListaErro ? ' (' + String(_grBinListaErro).replace(/</g, '&lt;') + ')' : '') + '.<br><button onclick="cvAtivosRecarregar()">Tentar de novo</button>') + '</div>';
     }
     // Só as primeiras linhas vão para a tela (o resto entra ao rolar até perto do fim): 500+ linhas com logo, estrela, seta e
@@ -1025,18 +1029,21 @@ function cvAtivosRender() {
     _cvAtivosTotal = itens.length;
     if (itens.length) html += itens.slice(0, _cvAtivosLimite).map(linha).join('');
     else if (_cvAtivosAba === 'fav' && !q) html += '<div class="cva-vazio">Nenhum favorito ainda.<br>Toque na estrela de um ativo para marcá-lo.</div>';
+    else if (_cvAtivosAba === 'trd' && !q) html += '<div class="cva-vazio">Nenhum ativo no grupo Trades ainda.<br>Toque no T de um ativo para marcá-lo.</div>';
     else html += '<div class="cva-vazio">Nenhum ativo encontrado' + (q ? ' para “' + q.replace(/</g, '&lt;') + '”' : '') + '.</div>';
     box.innerHTML = html;
     const fb = document.getElementById('cva-aba-fav');
     if (fb) fb.innerHTML = (_cvAtivosAba === 'fav' ? '<svg width="20" height="20" viewBox="0 0 24 24" fill="#1C1C1E" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="' + HEROICON_STAR_SOLID + '"/></svg>' : grHeroicon('star', 20, '#6C6C70')) + (favs.size ? '<span style="font-size:11px;">' + favs.size + '</span>' : '');
+    const tb = document.getElementById('cva-aba-trd');
+    if (tb) tb.innerHTML = cvTIcone(_cvAtivosAba === 'trd', 20) + (trds.size ? '<span style="font-size:11px;">' + trds.size + '</span>' : '');
     const ob = document.getElementById('cva-ord-btn');
-    if (ob) ob.style.display = (_cvAtivosAba === 'cripto' || _cvAtivosAba === 'fav') ? '' : 'none';   // ordenar por volume/alta só faz sentido com dados da Binance
+    if (ob) ob.style.display = (_cvAtivosAba === 'cripto' || _cvAtivosAba === 'fav' || _cvAtivosAba === 'trd') ? '' : 'none';   // ordenar por volume/alta só faz sentido com dados da Binance
     if (ob) ob.innerHTML = CV_ORDENS[_cvAtivosOrdem] + grHeroicon('chevron-down', 14, '#6C6C70');
     cvAtivosObservarSparks();
 }
 function cvAtivosSetAba(a) {
-    _cvAtivosAba = ['fav', 'cripto', 'acoes', 'forex'].indexOf(a) >= 0 ? a : 'cripto';
-    ['fav', 'cripto', 'acoes', 'forex'].forEach(n => { const el = document.getElementById('cva-aba-' + n); if (el) el.classList.toggle('on', _cvAtivosAba === n); });
+    _cvAtivosAba = ['fav', 'trd', 'cripto', 'acoes', 'forex'].indexOf(a) >= 0 ? a : 'cripto';
+    ['fav', 'trd', 'cripto', 'acoes', 'forex'].forEach(n => { const el = document.getElementById('cva-aba-' + n); if (el) el.classList.toggle('on', _cvAtivosAba === n); });
     const stA = document.getElementById('cv-ativos-status'); if (stA) stA.textContent = '';
     if (_cvTdTimerBusca) { clearTimeout(_cvTdTimerBusca); _cvTdTimerBusca = null; }
     const box = document.getElementById('cv-ativos-lista'); if (box) box.scrollTop = 0;
@@ -1068,6 +1075,19 @@ async function cvAtivosRecarregar() {
     cvAtivosRender();
     await grBinCarregarLista(true);
     cvAtivosRender();
+}
+// Ícone "T" (o heroicons não tem letra): traço no mesmo estilo dos outros ícones. Escuro = ativo marcado no grupo Trades; cinza = não marcado.
+function cvTIcone(on, tam) {
+    return '<svg width="' + tam + '" height="' + tam + '" viewBox="0 0 24 24" fill="none" stroke="' + (on ? '#1C1C1E' : '#8E8E93') + '" stroke-width="' + (on ? 2.2 : 1.8) + '" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.25 6.75h13.5M12 6.75v11.5"/></svg>';
+}
+function cvAtivosTrade(k) {
+    const x = _cvAtivosMapa[k]; if (!x) return;
+    const i = window._grTradesLista.indexOf(x.chave);
+    if (i >= 0) window._grTradesLista.splice(i, 1); else window._grTradesLista.push(x.chave);
+    try { grAmbienteSalvar(); } catch (e) {}   // pendente: vai para o servidor ao clicar em Sair
+    const box = document.getElementById('cv-ativos-lista'), topo = box ? box.scrollTop : 0;
+    cvAtivosRender();
+    if (box) box.scrollTop = topo;
 }
 function cvAtivosFavoritar(k) {
     const x = _cvAtivosMapa[k]; if (!x) return;
@@ -1693,13 +1713,13 @@ function cvSetTf(tf, semAncora) {
     if (typeof grAmbienteSalvar === 'function') grAmbienteSalvar(); // persiste o TF escolhido no ambiente
     return grRenderChart().then(async () => {
         grInitTouch();
-        // Troca de TF: caixa Em Análise que ficou larga demais no TF novo (> 40 candles) volta a ter 14 candles (o começo fica onde está; nunca aumenta)
+        // Troca de TF: caixa Em Análise que ficou larga demais no TF novo (quase a tela inteira ou mais) volta à largura padrão (o começo fica onde está; nunca aumenta)
         if (!semAncora) try {
             let mudou = false;
             grPosicoes().forEach(z => {
                 if (z.tradeId || !(z.t1 > 0) || !(z.t2 > 0)) return;
                 const ta = Math.min(z.t1, z.t2), i1 = grTimeToIndex(ta), i2 = grTimeToIndex(Math.max(z.t1, z.t2));
-                if (i2 - i1 > 40) { z.t1 = ta; z.t2 = grIndexToTime(i1 + 14); mudou = true; }
+                if (i2 - i1 > Math.max(grPosLargura(), (_grZoom || 15) * 0.9)) { z.t1 = ta; z.t2 = grIndexToTime(i1 + grPosLargura()); mudou = true; }
             });
             if (mudou) { grPosSalvar(); grDrawChart(); }
         } catch (e) {}
@@ -2889,7 +2909,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = '05/10 08:40 · 13849 linhas · POSICAO-APORTES v220';
+const APP_VERSAO = '05/10 08:40 · 13849 linhas · POSICAO-APORTES v221';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = 'Versão ' + APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3599,9 +3619,11 @@ function grFaixaDAAlternar(lo, hi, s) {
 }
 function grPosSalvar() { try { grAmbienteSalvar(); } catch (e) {} }
 // monta uma posição com medidas padrão (largura 14 candles, stop 2%, alvo 4%) a partir de um ponto
+// Largura padrão da caixa: 14 candles, mas no máximo 60% dos candles que cabem na tela (com zoom alto o lado direito não pode fugir do alcance).
+function grPosLargura() { return Math.max(4, Math.min(14, Math.floor((_grZoom || 15) * 0.6))); }
 function grPosNova(lado, i1, p) {
     const s = lado === 'short' ? -1 : 1;
-    return { id: Date.now() + Math.floor(Math.random() * 1000), lado, t1: grIndexToTime(i1), t2: grIndexToTime(i1 + 14), entrada: p, alvo: p * (1 + s * 0.04), stop: p * (1 - s * 0.02) };
+    return { id: Date.now() + Math.floor(Math.random() * 1000), lado, t1: grIndexToTime(i1), t2: grIndexToTime(i1 + grPosLargura()), entrada: p, alvo: p * (1 + s * 0.04), stop: p * (1 - s * 0.02) };
 }
 // ── Formulário de valores da Posição (estilo TradingView). Fase 2: só campos e sincronia de preços com a caixa; sem cálculo de risco/qtd. ──
 // Ícones Heroicons v2 (outline, 24x24, stroke 1.5) — sempre por aqui, para manter o padrão
@@ -10173,6 +10195,7 @@ function grAmbienteColetar() {
         eficiencia: raiz.eficiencia,
         porAtivo: mapa,
         favoritos: (window._grFavoritos || []).slice(),
+        tradesLista: (window._grTradesLista || []).slice(),
         faixasDA: (window._grFaixasDA || []).slice(),
         ambExpandido: _grAmbExpandido,
         hLinhas: _grHLinhasMapa,
@@ -10251,6 +10274,7 @@ async function grAmbienteCarregar() {
     window._grAmbPorAtivo = (ambiente.porAtivo && typeof ambiente.porAtivo === 'object') ? ambiente.porAtivo : {};
     window._grAmbRaizLegada = grAmbAtivoDaRaiz(ambiente);
     if (Array.isArray(ambiente.faixasDA)) window._grFaixasDA = ambiente.faixasDA.filter(f => f && f.hi > f.lo);
+    if (Array.isArray(ambiente.tradesLista)) window._grTradesLista = ambiente.tradesLista.filter(f => typeof f === 'string' && f);
     if (Array.isArray(ambiente.favoritos)) window._grFavoritos = ambiente.favoritos.filter(f => typeof f === 'string' && f);
     const fatiaIni = grAmbAtivoDoMapa(_ativoId, _ticker, window._grAmbRaizLegada);
     grAmbAtivoAplicar(fatiaIni); // define _grTf direto: os candles ainda não foram buscados (o cvAbrir busca já no TF certo)
