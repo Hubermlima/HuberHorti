@@ -2899,7 +2899,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = '05/10 08:40 · 13849 linhas · POSICAO-APORTES v222';
+const APP_VERSAO = '05/10 08:40 · 13849 linhas · POSICAO-APORTES v223';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = 'Versão ' + APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3609,18 +3609,19 @@ function grFaixaDAAlternar(lo, hi, s) {
 }
 function grPosSalvar() { try { grAmbienteSalvar(); } catch (e) {} }
 // monta uma posição com medidas padrão (largura 14 candles, stop 2%, alvo 4%) a partir de um ponto
-// Caixa Em Análise: a largura é uma FRAÇÃO da tela (fracL), não um intervalo de tempo fixo. Mexeu no zoom (pinça) ou trocou de TF, a caixa
-// acompanha na mesma proporção e nunca foge da tela. O t2 é recalculado a cada desenho a partir de t1 + fracL × candles visíveis.
-const GR_FRAC_CAIXA = 0.35;
-function grPosAplicarFrac(pz, slots) {
-    if (pz.tradeId || !(slots > 0) || !(pz.t1 > 0) || !(pz.t2 > 0)) return;
-    const ta = Math.min(pz.t1, pz.t2), i1 = grTimeToIndex(ta);
-    if (!(pz.fracL > 0)) pz.fracL = Math.max(0.03, Math.min(0.6, (grTimeToIndex(Math.max(pz.t1, pz.t2)) - i1) / slots));   // caixa antiga: converte a largura atual (no máximo 60% da tela)
-    pz.t1 = ta; pz.t2 = grIndexToTime(i1 + pz.fracL * slots);
+// Limite de alcance: a rolagem lateral só vai até alguns slots depois do último candle (zoom × 15%). A borda direita da caixa não é desenhada além
+// disso (senão fica fora de alcance quando o zoom é alto). Só afeta o desenho: o t2 salvo continua o mesmo, e ao diminuir o zoom a caixa volta ao tamanho real.
+function grPosAplicarLimite(pz) {
+    const n = _grAllCandles.length;
+    pz.t2v = null;
+    if (!n || !(pz.t1 > 0) || !(pz.t2 > 0)) return;
+    const ext = Math.floor((_grZoom || 15) * 0.15), lim = (n - 1) + Math.max(1, ext - 1);
+    const i1 = grTimeToIndex(Math.min(pz.t1, pz.t2)), i2 = grTimeToIndex(Math.max(pz.t1, pz.t2));
+    if (i2 > lim && i1 < lim) pz.t2v = grIndexToTime(lim);
 }
 function grPosNova(lado, i1, p) {
     const s = lado === 'short' ? -1 : 1;
-    return { id: Date.now() + Math.floor(Math.random() * 1000), lado, t1: grIndexToTime(i1), t2: grIndexToTime(i1 + GR_FRAC_CAIXA * (window._grTotalSlots || 40)), fracL: GR_FRAC_CAIXA, entrada: p, alvo: p * (1 + s * 0.04), stop: p * (1 - s * 0.02) };
+    return { id: Date.now() + Math.floor(Math.random() * 1000), lado, t1: grIndexToTime(i1), t2: grIndexToTime(i1 + 14), entrada: p, alvo: p * (1 + s * 0.04), stop: p * (1 - s * 0.02) };
 }
 // ── Formulário de valores da Posição (estilo TradingView). Fase 2: só campos e sincronia de preços com a caixa; sem cálculo de risco/qtd. ──
 // Ícones Heroicons v2 (outline, 24x24, stroke 1.5) — sempre por aqui, para manter o padrão
@@ -6249,9 +6250,9 @@ if (fibsParaDesenhar.length > 0) {
             if (_psAtual) ps.push(Object.assign(grPosNova(_psAtual.lado, _psAtual.i1, _psAtual.p), { previa: true }));
             window._grBadgeHits = []; window._grPosRects = []; window._grPosSel = null; let _ctxMostrado = false;
             ps.forEach(pz => {
-                grPosAplicarFrac(pz, totalSlots);
+                grPosAplicarLimite(pz);
                 if (pz.oculta) return;
-                let xa = toXIdx2(grTimeToIndex(pz.t1)), xb = toXIdx2(grTimeToIndex(pz.t2)); if (xb < xa) { const tx = xa; xa = xb; xb = tx; }
+                let xa = toXIdx2(grTimeToIndex(pz.t1)), xb = toXIdx2(grTimeToIndex(pz.t2v || pz.t2)); if (xb < xa) { const tx = xa; xa = xb; xb = tx; }
                 if (xb < PAD.left || xa > W - PAD.right) return;
                 const pvt = cvPosPivo(pz), tA = pz.alvo > 0, tS = pz.stop > 0, yE = toY(pvt), yA = tA ? toY(pz.alvo) : yE, yS = tS ? toY(pz.stop) : yE;   // sem alvo/stop definidos: sem zona nem linha
                 ctx.save();
@@ -6879,7 +6880,7 @@ function grEdAlcas(fx, fy) {
         // Caixa mais larga que a tela (ex.: criada no 3D e vista no 4h): as alças são presas à parte VISÍVEL, pra sempre dar pra alcançar e encolher.
         const L = grPadL() + 16, R = grPadL() + (window._grChartW || 300) - 16;
         const cl = x => Math.max(L, Math.min(R, x));
-        const xa0 = fx(o.t1), xb0 = fx(o.t2), xa = cl(xa0), xb = cl(xb0), xm = (cl(Math.min(xa0, xb0)) + cl(Math.max(xa0, xb0))) / 2; const hs = []; if (o.alvo > 0) hs.push({ k: 'a', x: xm, y: fy(o.alvo) }); if (o.stop > 0) hs.push({ k: 's', x: xm, y: fy(o.stop) }); hs.push({ k: 'e', x: xm, y: fy(cvPosPivo(o)) }, { k: 'l', x: xa, y: fy(cvPosPivo(o)) }, { k: 'r', x: xb, y: fy(cvPosPivo(o)) }); return hs; }
+        const xa0 = fx(o.t1), xb0 = fx(o.t2v || o.t2), xa = cl(xa0), xb = cl(xb0), xm = (cl(Math.min(xa0, xb0)) + cl(Math.max(xa0, xb0))) / 2; const hs = []; if (o.alvo > 0) hs.push({ k: 'a', x: xm, y: fy(o.alvo) }); if (o.stop > 0) hs.push({ k: 's', x: xm, y: fy(o.stop) }); hs.push({ k: 'e', x: xm, y: fy(cvPosPivo(o)) }, { k: 'l', x: xa, y: fy(cvPosPivo(o)) }, { k: 'r', x: xb, y: fy(cvPosPivo(o)) }); return hs; }
     return [];
 }
 function grEdCor() { const o = grEdObjeto(); if (o && _edSel.tipo === 'ps') return o.lado === 'short' ? '#EF5350' : '#26A69A'; if (o && _edSel.tipo === 'al') return grAlertaCor(o); return (o && (o.cor || '#FFD700')) || '#FFD700'; }
@@ -6903,7 +6904,7 @@ function grEdToqueInicio(x, y) {   // x,y em coordenadas do canvas; devolve true
     alcas.forEach(a => { const d = Math.hypot(a.x - x, a.y - y); if (d < bd) { bd = d; best = a; } });
     if (_edSel.tipo === 'ps' && bd > 30) {   // longe das alças e dentro da caixa: arrasta a caixa inteira
         const o = grEdObjeto(), fxx = t => grIndexToX(grTimeToIndex(t));
-        const xa = Math.min(fxx(o.t1), fxx(o.t2)), xb = Math.max(fxx(o.t1), fxx(o.t2));
+        const xa = Math.min(fxx(o.t1), fxx(o.t2v || o.t2)), xb = Math.max(fxx(o.t1), fxx(o.t2v || o.t2));
         const ys = [grLineY(cvPosPivo(o))].concat(o.alvo > 0 ? [grLineY(o.alvo)] : [], o.stop > 0 ? [grLineY(o.stop)] : []), ya = Math.min(...ys), yb = Math.max(...ys);
         if (x >= xa && x <= xb && y >= ya && y <= yb) { best = { k: 'm', x, y }; }
     }
@@ -6947,7 +6948,6 @@ function grEdToqueMove(x, y) {
             if (!o.tradeId) { o.t1 = grIndexToTime(grTimeToIndex(d.snap.t1) + dIdx); o.t2 = grIndexToTime(grTimeToIndex(d.snap.t2) + dIdx); }
             if (!(o.pm > 0)) { o.entrada = mv(d.snap.entrada); o.alvo = mv(d.snap.alvo); o.stop = mv(d.snap.stop); }   // com PM: só desloca na horizontal
         }
-        if (!o.tradeId && (d.k === 'l' || d.k === 'r') && window._grTotalSlots > 0) o.fracL = Math.max(0.03, Math.abs(grTimeToIndex(o.t2) - grTimeToIndex(o.t1)) / window._grTotalSlots);   // a nova largura vira a fração da tela
     }
     grDrawChart();
     return true;
