@@ -2856,7 +2856,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = '05/10 08:40 · 13849 linhas · POSICAO-APORTES v209';
+const APP_VERSAO = '05/10 08:40 · 13849 linhas · POSICAO-APORTES v210';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = 'Versão ' + APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -6196,7 +6196,7 @@ if (fibsParaDesenhar.length > 0) {
                     // Em Análise: simulação com margem fixa e a alavancagem sugerida (tudo recalculado a cada desenho)
                     let ana = null;
                     if (cz.st === 'analise' && tS && pz.entrada > 0 && pz.stop !== pz.entrada) {
-                        const dist = Math.abs(pz.entrada - pz.stop) / pz.entrada * 100, al = Math.max(1, Math.floor(GR_RISCO_ANALISE_PCT / dist)), nt = GR_MARGEM_ANALISE * al, sgn = pz.stop < pz.entrada ? 1 : -1;
+                        const rk = pz.simRisco > 0 ? pz.simRisco : GR_RISCO_ANALISE_PCT, mg = pz.simAporte > 0 ? pz.simAporte : GR_MARGEM_ANALISE, dist = Math.abs(pz.entrada - pz.stop) / pz.entrada * 100, al = Math.max(1, Math.floor(rk / dist)), nt = mg * al, sgn = pz.stop < pz.entrada ? 1 : -1;
                         ana = { al, nt, lucro: tA ? nt * (pz.alvo - pz.entrada) / pz.entrada * sgn : null, perda: nt * (pz.stop - pz.entrada) / pz.entrada * sgn };
                     }
                     const fu = v => (v >= 0 ? '+' : '−') + Math.abs(Math.round(v)).toLocaleString('pt-BR');
@@ -6846,23 +6846,49 @@ function cvEdicaoIniciar(tipo, idx) {
     grDrawChart();
 }
 function cvPosCtxRemover() { const m = document.getElementById('cv-pos-ctx'); if (m) m.remove(); }
-function cvPosCtxMenu(i, rx, ry, rw, rh) {   // menu de contexto da caixa selecionada (igual ao TradingView): olho, engrenagem, lixeira
+function cvPosCtxMenu(i, rx, ry, rw, rh) {   // menu de contexto da caixa selecionada (igual ao TradingView): olho, engrenagem, lixeira (+ risco e aporte na caixa Em Análise)
     const pz = grPosicoes()[i]; if (!pz) return cvPosCtxRemover();
     const cv = document.getElementById('gr-chart-canvas'); if (!cv) return;
     const rc = cv.getBoundingClientRect(), sx = rc.width / grLW(cv), sy = rc.height / grLH(cv);
     let m = document.getElementById('cv-pos-ctx');
     if (!m) {
         m = document.createElement('div'); m.id = 'cv-pos-ctx';
-        m.style.cssText = 'position:fixed;z-index:9690;display:flex;gap:2px;background:#FFFFFF;border-radius:12px;padding:3px 4px;box-shadow:0 2px 12px rgba(0,0,0,0.25);';
-        const bt = (id, svg, cor, fn) => { const b = document.createElement('button'); b.type = 'button'; b.id = id; b.innerHTML = svg; b.style.cssText = 'width:42px;height:38px;background:none;border:none;color:' + cor + ';display:flex;align-items:center;justify-content:center;padding:0;'; b.onclick = ev => { ev.stopPropagation(); fn(); }; m.appendChild(b); };
+        m.style.cssText = 'position:fixed;z-index:9690;display:flex;align-items:center;gap:1px;background:#FFFFFF;border-radius:9px;padding:2px 4px;box-shadow:0 1px 8px rgba(0,0,0,0.25);font-family:-apple-system,sans-serif;font-size:11px;color:#3A3A3C;';
+        const bt = (id, svg, cor, fn) => { const b = document.createElement('button'); b.type = 'button'; b.id = id; b.innerHTML = svg; b.style.cssText = 'width:26px;height:26px;background:none;border:none;color:' + cor + ';display:flex;align-items:center;justify-content:center;padding:0;'; b.onclick = ev => { ev.stopPropagation(); fn(); }; m.appendChild(b); };
         bt('cv-pos-ctx-olho', '', '#1C1C1E', () => { const z = grPosicoes()[m._i]; if (!z) return; z.oculta = !z.oculta; if (z.oculta) cvEdicaoSair(true); grDrawChart(); });
-        bt('cv-pos-ctx-cfg', grHeroicon('cog-6-tooth', 22), '#1C1C1E', () => cvPosFormAbrir(m._i));
-        bt('cv-pos-ctx-del', grHeroicon('trash', 22), '#EF5350', async () => { await cvPosApagarCaixa(m._i); cvEdicaoSair(true); grDrawChart(); });
+        bt('cv-pos-ctx-cfg', grHeroicon('cog-6-tooth', 16), '#1C1C1E', () => cvPosFormAbrir(m._i));
+        bt('cv-pos-ctx-del', grHeroicon('trash', 16), '#EF5350', async () => { await cvPosApagarCaixa(m._i); cvEdicaoSair(true); grDrawChart(); });
+        const sim = document.createElement('div'); sim.id = 'cv-pos-ctx-sim'; sim.style.cssText = 'display:none;align-items:center;gap:3px;margin-left:4px;padding-left:6px;border-left:1px solid #E5E5EA;';
+        const campo = (id, rot, w, sufixo, chave, dec) => {
+            const l = document.createElement('span'); l.textContent = rot; sim.appendChild(l);
+            const inp = document.createElement('input'); inp.id = id; inp.type = 'text'; inp.inputMode = 'decimal'; inp.autocomplete = 'off';
+            inp.style.cssText = 'width:' + w + 'px;height:22px;box-sizing:border-box;border:1px solid #D1D1D6;border-radius:6px;padding:0 4px;font-size:11px;text-align:right;background:#fff;color:#1C1C1E;';
+            inp.addEventListener('focus', () => setTimeout(() => { try { inp.setSelectionRange(0, inp.value.length); } catch (e) {} }, 0));
+            inp.addEventListener('input', () => {
+                const v = parseFloat(String(inp.value).replace(/\./g, '').replace(',', '.'));
+                const z = grPosicoes()[m._i]; if (!z) return;
+                if (v > 0) z[chave] = chave === 'simRisco' ? Math.min(v, 100) : v; else delete z[chave];
+                grDrawChart();
+            });
+            inp.addEventListener('change', () => { try { grPosSalvar(); } catch (e) {} });
+            sim.appendChild(inp); if (sufixo) { const u = document.createElement('span'); u.textContent = sufixo; sim.appendChild(u); }
+        };
+        campo('cv-pos-ctx-risco', 'Risco', 34, '%', 'simRisco');
+        campo('cv-pos-ctx-aporte', 'Aporte', 52, '', 'simAporte');
+        m.appendChild(sim);
         document.body.appendChild(m);
     }
     m._i = i;
-    m.querySelector('#cv-pos-ctx-olho').innerHTML = grHeroicon(pz.oculta ? 'eye-slash' : 'eye', 22);
-    const mw = 3 * 42 + 8 + 4, mh = 44;
+    m.querySelector('#cv-pos-ctx-olho').innerHTML = grHeroicon(pz.oculta ? 'eye-slash' : 'eye', 16);
+    const sm = m.querySelector('#cv-pos-ctx-sim'), analise = !pz.tradeId;
+    sm.style.display = analise ? 'flex' : 'none';
+    if (analise) {   // não mexe no campo que você está digitando
+        const fmt = v => String(v).replace('.', ',');
+        const ri = m.querySelector('#cv-pos-ctx-risco'), ai = m.querySelector('#cv-pos-ctx-aporte');
+        if (document.activeElement !== ri) ri.value = fmt(pz.simRisco > 0 ? pz.simRisco : GR_RISCO_ANALISE_PCT);
+        if (document.activeElement !== ai) ai.value = fmt(pz.simAporte > 0 ? pz.simAporte : GR_MARGEM_ANALISE);
+    }
+    const mw = m.offsetWidth || 90, mh = m.offsetHeight || 30;
     let x = rc.left + (rx + rw / 2) * sx - mw / 2, y = rc.top + ry * sy - mh - 30;
     if (y < rc.top + 4) y = Math.min(rc.bottom - mh - 4, rc.top + (ry + rh) * sy + 34);
     x = Math.max(rc.left + 4, Math.min(rc.right - mw - 4, x)); y = Math.max(rc.top + 4, Math.min(rc.bottom - mh - 4, y));
