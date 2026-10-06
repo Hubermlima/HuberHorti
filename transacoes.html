@@ -2944,7 +2944,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v240';
+const APP_VERSAO = 'v241';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3165,16 +3165,20 @@ async function grMelhorCalcular(lado) {
     const acertos = combos.filter(c => c.banda.lo < hi && c.banda.hi > lo);
     const lider = acertos.slice().sort((a, b) => b.banda.score - a.banda.score)[0];
     const chave = lider.niv.filter(n => n.lo < hi && n.hi > lo && n.gate).sort((a, b) => b.score - a.score)[0] || lider.banda.chave;
-    const entrada = (lo + hi) / 2, atr = lider.atr;
-    const stop = s > 0 ? hi + 0.5 * atr : lo - 0.5 * atr, alvo = grMeAlvo(lider.niv, s, entrada, atr, lider.loW, lider.hiW);
+    // Só vale a parte da faixa do LADO CERTO do preço atual (acima no short, abaixo no long): entrada do outro lado do preço seria ordem que já nasce executada/stopada.
+    let loF = lo, hiF = hi;
+    if (s > 0) { loF = Math.max(lo, preco); if (hiF <= loF) hiF = loF + lider.tick; } else { hiF = Math.min(hi, preco); if (loF >= hiF) loF = hiF - lider.tick; }
+    const recortada = loF !== lo || hiF !== hi;
+    const entrada = (loF + hiF) / 2, atr = lider.atr;
+    const stop = s > 0 ? hiF + 0.5 * atr : loF - 0.5 * atr, alvo = grMeAlvo(lider.niv, s, entrada, atr, lider.loW, lider.hiW);
     // Outras faixas (do combo líder), fora da escolhida: as 3 de maior nota, não coladas entre si.
     const outras = [];
     lider.niv.filter(n => n.gate && n.score > 0 && !(n.hi > lo - lider.tick && n.lo < hi + lider.tick)).sort((a, b) => b.score - a.score).forEach(n => {
         if (outras.length < 3 && outras.every(o => Math.abs(o.k - n.k) >= 2)) outras.push(n);
     });
-    const estreita = acertos.map(c => ({ lo: Math.max(c.banda.lo, lo), hi: Math.min(c.banda.hi, hi), sc: c.banda.score })).filter(b => b.hi > b.lo)
-        .sort((a, b) => (a.hi - a.lo) - (b.hi - b.lo) || b.sc - a.sc)[0] || { lo, hi, sc: 0 };   // a faixa mais estreita entre as combinações que concordam
-    return { lado, s, preco, lo, hi, estreita, entrada, stop, alvo, rr: alvo != null ? Math.abs(alvo - entrada) / Math.abs(stop - entrada) : null, atr,
+    const estreita = acertos.map(c => ({ lo: Math.max(c.banda.lo, loF), hi: Math.min(c.banda.hi, hiF), sc: c.banda.score })).filter(b => b.hi > b.lo)
+        .sort((a, b) => (a.hi - a.lo) - (b.hi - b.lo) || b.sc - a.sc)[0] || { lo: loF, hi: hiF, sc: 0 };   // a faixa mais estreita entre as combinações que concordam
+    return { lado, s, preco, lo: loF, hi: hiF, recortada, loOrig: lo, hiOrig: hi, estreita, entrada, stop, alvo, rr: alvo != null ? Math.abs(alvo - entrada) / Math.abs(stop - entrada) : null, atr,
         conf: acertos.length / combos.length, nAcertos: acertos.length, nCombos: combos.length, lider, chave, outras, combos, acertos,
         janelas, tfs: tfs.map(t => t.rot), cobertura, tick: lider.tick };
 }
@@ -3234,6 +3238,7 @@ function grMeMontarRelatorio(r) {
         + '<div style="font-size:12px;font-weight:700;color:' + cor + ';">' + nome + ' · confluência ' + confTxt + ' (' + r.nAcertos + ' de ' + r.nCombos + ')</div>'
         + '<div style="font-size:26px;font-weight:800;margin:2px 0;">' + fp(r.lo) + ' – ' + fp(r.hi) + '</div>'
         + '<div style="font-size:13px;">Entrada ~' + fp(r.entrada) + ' · Stop ' + fp(r.stop) + (r.alvo != null ? ' · Alvo ' + fp(r.alvo) + ' · R:R ' + n1(r.rr) + ':1' : '') + '</div></div>'
+        + (r.recortada ? '<div style="font-size:11.5px;color:#8E8E93;margin-top:6px;">Faixa da régua: ' + fp(r.loOrig) + ' – ' + fp(r.hiOrig) + '. Recortada ' + (short ? 'acima' : 'abaixo') + ' do preço atual (' + fp(r.preco) + '): entrar do outro lado do preço não faz sentido.</div>' : '')
         + '<div style="font-size:12.5px;margin-top:8px;">Faixa mais estreita: <b>' + fp(r.estreita.lo) + ' – ' + fp(r.estreita.hi) + '</b></div>'
         + '<button onclick="grMelhorCriarCaixa()" style="width:100%;margin-top:10px;border:2px solid ' + cor + ';border-radius:12px;padding:12px;font-size:15px;font-weight:800;background:#fff;color:' + cor + ';">Criar Caixas (principal + estreita)</button>'
         + '<div style="font-size:12.5px;margin-top:10px;line-height:1.45;"><b>Para conferir:</b> ' + conferir + '</div>'
