@@ -1760,6 +1760,12 @@ function cvAbrirMenuTf(clientX, clientY, opts) {
         // Modo "escolher": devolve o TF a quem chamou (ex.: régua Delta ATR) e NÃO troca o timeframe do gráfico.
         if (opts.igual) menu.appendChild(linha('Igual ao gráfico', () => opts.aoEscolher(null), opts.atual == null));
         itens.forEach(it => menu.appendChild(linha(it.label, () => opts.aoEscolher(it.tf), it.tf === opts.atual)));
+        if (opts.personalizado) {
+            const sep2 = document.createElement('div');
+            sep2.style.cssText = 'height:1px;background:#F2F2F7;margin:4px 2px;';
+            menu.appendChild(sep2);
+            menu.appendChild(linha('Personalizado', opts.personalizado, opts.atual === 'custom'));
+        }
     } else {
         itens.forEach(it => menu.appendChild(linha(it.label, () => cvSetTf(it.tf), it.tf === _grTf)));
         const sep = document.createElement('div');
@@ -2106,17 +2112,22 @@ function cvTfCustomSetUnit(unit) {
         b.style.borderColor = ativo ? 'rgba(38,166,154,0.4)' : 'rgba(0,0,0,0.1)';
     });
 }
-function cvAbrirModalTfCustom() {
+let _cvTfCustomDestino = null;   // null = timeframe do gráfico; 'da' = timeframe próprio da régua Delta ATR
+function cvAbrirModalTfCustom(destino) {
     const overlay = document.getElementById('cv-tfcustom-overlay');
     const nInput = document.getElementById('cv-tfcustom-n');
-    _cvTfCustomUnitSel = _grTfCustomUnit || 'min';
-    nInput.value = _grTfCustomAmount || '';
+    _cvTfCustomDestino = destino === 'da' ? 'da' : null;
+    overlay.style.zIndex = _cvTfCustomDestino ? '9800' : '';   // da régua: abre por cima do popup do chip
+    const ref = _cvTfCustomDestino ? (_grDaTfCustom || {}) : { u: _grTfCustomUnit, a: _grTfCustomAmount };
+    _cvTfCustomUnitSel = ref.u || 'min';
+    nInput.value = ref.a || '';
     document.getElementById('cv-tfcustom-erro').style.display = 'none';
     cvTfCustomSetUnit(_cvTfCustomUnitSel);
     overlay.classList.add('active');
 }
 function cvFecharModalTfCustom() {
     document.getElementById('cv-tfcustom-overlay').classList.remove('active');
+    _cvTfCustomDestino = null;
 }
 function cvAplicarTfCustom() {
     const n = parseInt(document.getElementById('cv-tfcustom-n').value, 10);
@@ -2126,6 +2137,15 @@ function cvAplicarTfCustom() {
     if (!n || isNaN(n) || n < minV || n > maxV) {
         erro.textContent = `Informe um número entre ${minV} e ${maxV}.`;
         erro.style.display = 'block';
+        return;
+    }
+    if (_cvTfCustomDestino === 'da') {   // timeframe da RÉGUA: não mexe no gráfico
+        _grDaTf = 'custom'; _grDaTfCustom = { u: unit, a: n };
+        cvFecharModalTfCustom();
+        if (typeof grAmbienteSalvar === 'function') grAmbienteSalvar();   // só marca pendente; grava ao clicar em Sair
+        window._grDeltaAtrCache = {};
+        if (_grFpCfgMenuQual === 'deltaatr') cvRenderMenuFpCfg();
+        grDrawChart();
         return;
     }
     _grTfCustomAmount = n;
@@ -2915,7 +2935,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v230';
+const APP_VERSAO = 'v231';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -2939,31 +2959,46 @@ function grTickAtr() {
 // null = a régua segue o gráfico (comportamento de sempre). Com um TF escolhido, SÓ o degrau (altura de cada nível) da régua passa a
 // vir do ATR desse timeframe (mesma conta do tick do gráfico: 0,2 × ATR, múltiplo de 10); candles, footprint e o resto não mudam.
 // Os candles desse TF vêm da Binance (a régua só existe no BTC), cacheados por 1 min; enquanto o 1º download não chega, usa o degrau de sempre.
-let _grDaTf = null;
+let _grDaTf = null;            // null | '15m'...'1month' | 'custom'
+let _grDaTfCustom = null;      // { u: 'min'|'hor'|'dia'|'mes', a: n } quando _grDaTf === 'custom'
 const GR_DA_TFS = [
     { tf: '15m', bin: '15m', label: '15 Minutos' }, { tf: '1h', bin: '1h', label: '1 Hora' }, { tf: '4h', bin: '4h', label: '4 Horas' },
     { tf: '1day', bin: '1d', label: 'Diário' }, { tf: '1week', bin: '1w', label: 'Semanal' }, { tf: '1month', bin: '1M', label: 'Mensal' }
 ];
-function grDaTfRotulo() { const x = GR_DA_TFS.find(t => t.tf === _grDaTf); return x ? x.label : 'Igual ao gráfico'; }
+function grDaTfRotulo() {
+    if (_grDaTf === 'custom' && _grDaTfCustom) return _grDaTfCustom.a + ' ' + (_cvTfCustomNomes[_grDaTfCustom.u] ? _cvTfCustomNomes[_grDaTfCustom.u](_grDaTfCustom.a) : _grDaTfCustom.u);
+    const x = GR_DA_TFS.find(t => t.tf === _grDaTf); return x ? x.label : 'Igual ao gráfico';
+}
+// Duração (ms) de um bloco do TF personalizado — só pra dimensionar quantos candles-base baixar.
+function grDaCustomMs(c) { return c.a * (c.u === 'min' ? 60000 : c.u === 'hor' ? 3600000 : c.u === 'dia' ? 86400000 : 30.4 * 86400000); }
 window._grDaTickCache = window._grDaTickCache || {};
 function grDaTickProprio() {
     if (!_grDaTf) return null;
-    if (_grDaTf === _grTf) return grTickAtr();   // mesmo TF do gráfico: é exatamente o ATR que o gráfico já tem
-    const def = GR_DA_TFS.find(t => t.tf === _grDaTf); if (!def) return null;
-    const periodo = FOOTPRINT_ATR_PERIODO, sym = grBinSymbolAtual(), chave = sym + '|' + def.bin + '|' + periodo;
+    const custom = _grDaTf === 'custom' ? _grDaTfCustom : null;
+    if (_grDaTf === 'custom' && !custom) return null;
+    if (_grDaTf === _grTf && (!custom || (_grTfCustomUnit === custom.u && _grTfCustomAmount === custom.a))) return grTickAtr();   // mesmo TF do gráfico: é exatamente o ATR que o gráfico já tem
+    const def = custom ? { bin: grBaseIntervalCustom(custom.u, custom.a), tf: 'custom' } : GR_DA_TFS.find(t => t.tf === _grDaTf);
+    if (!def) return null;
+    const periodo = FOOTPRINT_ATR_PERIODO, sym = grBinSymbolAtual(), chave = sym + '|' + def.bin + '|' + periodo + (custom ? '|' + custom.u + custom.a : '');
     const c = window._grDaTickCache[chave];
     if (!c || (!c.carregando && Date.now() - c.ts >= 60000)) {
         window._grDaTickCache[chave] = Object.assign({}, c, { carregando: true, ts: c ? c.ts : 0 });
-        grBuscarKlines(sym, def.bin, periodo + 3).then(arr => {
-            const k = (arr || []).slice(0, -1);   // só candles FECHADOS (o último é o em formação), igual ao ATR do gráfico
+        // Personalizado: baixa candles-base (o maior intervalo nativo que divide o bloco) e agrupa igual ao gráfico.
+        const nBase = custom ? Math.min(1500, Math.ceil((periodo + 4) * grDaCustomMs(custom) / (grMsDoIntervaloBinance(def.bin) || 86400000))) : periodo + 3;
+        grBuscarKlines(sym, def.bin, nBase).then(arr => {
+            let k = arr || [];
+            if (custom) k = grAgruparCandles(k.map(grMapearKline), custom.u, custom.a).map(x => [x.t, x.o, x.h, x.l, x.c]);
+            k = k.slice(0, -1);   // só candles FECHADOS (o último é o em formação), igual ao ATR do gráfico
             let tick = null;
-            if (k.length >= periodo + 1) {
+            // Bloco muito longo: se a Binance não entrega candles-base pra ter período+1 blocos, usa o período que couber (mín. 3).
+            const per = Math.min(periodo, k.length - 1);
+            if (per >= 3) {
                 let soma = 0;
-                for (let i = k.length - periodo; i < k.length; i++) {
+                for (let i = k.length - per; i < k.length; i++) {
                     const h = parseFloat(k[i][2]), l = parseFloat(k[i][3]), cAnt = parseFloat(k[i - 1][4]);
                     soma += Math.max(h - l, Math.abs(h - cAnt), Math.abs(l - cAnt));
                 }
-                const bruto = Math.max(1, Math.round(0.2 * (soma / periodo) / 5) * 5);
+                const bruto = Math.max(1, Math.round(0.2 * (soma / per) / 5) * 5);
                 tick = Math.max(10, Math.round(bruto / 10) * 10);
             }
             const antes = window._grDaTickCache[chave];
@@ -2982,6 +3017,7 @@ function grDaAbrirMenuTf(ev) {
     cvAbrirMenuTf(r ? r.left : 40, r ? r.bottom : 120, {
         atual: _grDaTf,
         igual: true,
+        personalizado: () => cvAbrirModalTfCustom('da'),
         aoEscolher: tf => {
             _grDaTf = tf || null;
             if (typeof grAmbienteSalvar === 'function') grAmbienteSalvar();   // só marca pendente; grava ao clicar em Sair
@@ -10293,6 +10329,7 @@ function grAmbienteColetar() {
         tradesLista: (window._grTradesLista || []).slice(),
         faixasDA: (window._grFaixasDA || []).slice(),
         daTf: _grDaTf,
+        daTfCustom: _grDaTfCustom,
         ambExpandido: _grAmbExpandido,
         hLinhas: _grHLinhasMapa,
         posicoes: cvPosParaSalvar(),
@@ -10369,7 +10406,8 @@ async function grAmbienteCarregar() {
     window._grAmbPorAtivo = (ambiente.porAtivo && typeof ambiente.porAtivo === 'object') ? ambiente.porAtivo : {};
     window._grAmbRaizLegada = grAmbAtivoDaRaiz(ambiente);
     if (Array.isArray(ambiente.faixasDA)) window._grFaixasDA = ambiente.faixasDA.filter(f => f && f.hi > f.lo);
-    _grDaTf = GR_DA_TFS.some(t => t.tf === ambiente.daTf) ? ambiente.daTf : null;
+    _grDaTfCustom = (ambiente.daTfCustom && _cvTfCustomLimites[ambiente.daTfCustom.u] && ambiente.daTfCustom.a >= 1) ? { u: ambiente.daTfCustom.u, a: parseInt(ambiente.daTfCustom.a, 10) } : null;
+    _grDaTf = (ambiente.daTf === 'custom' && _grDaTfCustom) ? 'custom' : (GR_DA_TFS.some(t => t.tf === ambiente.daTf) ? ambiente.daTf : null);
     if (Array.isArray(ambiente.tradesLista)) window._grTradesLista = ambiente.tradesLista.filter(f => typeof f === 'string' && f);
     if (Array.isArray(ambiente.favoritos)) window._grFavoritos = ambiente.favoritos.filter(f => typeof f === 'string' && f);
     const fatiaIni = grAmbAtivoDoMapa(_ativoId, _ticker, window._grAmbRaizLegada);
