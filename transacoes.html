@@ -2946,7 +2946,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v248';
+const APP_VERSAO = 'v250';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3185,7 +3185,15 @@ async function grMelhorCalcular(lado) {
     const minL = 0.001 * preco;
     if (eHi - eLo < minL) { if (s > 0) eHi = eLo + minL; else eLo = eHi - minL; }
     const estreita = { lo: eLo, hi: eHi, sc: lider.banda.score };
-    return { lado, s, preco, lo: loF, hi: hiF, recortada, loOrig: lo, hiOrig: hi, estreita, entrada, stop, alvo, rr: alvo != null ? Math.abs(alvo - entrada) / Math.abs(stop - entrada) : null, atr,
+    // Números das CAIXAS (e do relatório): entrada na borda de entrada da faixa, stop na borda oposta, alvo = próximo nó de alto volume (senão 2R).
+    const cx = (a, b) => {
+        const ent = s > 0 ? a : b, stp = s > 0 ? b : a;
+        let alv = grMeAlvo(lider.niv, s, (a + b) / 2, atr, lider.loW, lider.hiW);
+        if (alv == null || (s > 0 ? alv >= ent : alv <= ent)) alv = ent - s * 2 * Math.abs(stp - ent);
+        return { entrada: ent, stop: stp, alvo: alv, rr: Math.abs(ent - alv) / Math.abs(stp - ent), lo: a, hi: b };
+    };
+    const cxP = cx(loF, hiF), cxN = cx(estreita.lo, estreita.hi);
+    return { lado, s, preco, lo: loF, hi: hiF, recortada, loOrig: lo, hiOrig: hi, estreita, cxP, cxN, entrada: cxP.entrada, stop: cxP.stop, alvo: cxP.alvo, rr: cxP.rr, atr,
         conf: acertos.length / combos.length, nAcertos: acertos.length, nCombos: combos.length, lider, chave, outras, combos, acertos,
         janelas, tfs: tfs.map(t => t.rot), cobertura, tick: lider.tick };
 }
@@ -3230,8 +3238,8 @@ function grMeMontarRelatorio(r) {
     const T = [];
     T.push('MELHOR FAIXA PARA ' + nome + ' — pergunta: qual a faixa de preços mais favorável para entrar ' + (short ? 'shortado' : 'longado') + '?');
     T.push('Resposta: ' + fp(r.lo) + ' – ' + fp(r.hi) + ' | confluência ' + confTxt + ' (' + r.nAcertos + '/' + r.nCombos + ')');
-    T.push('Faixa mais estreita: ' + fp(r.estreita.lo) + ' – ' + fp(r.estreita.hi));
-    T.push('Entrada ~' + fp(r.entrada) + ' | stop ' + fp(r.stop) + (r.alvo != null ? ' | alvo ' + fp(r.alvo) + ' | R:R ' + n1(r.rr) + ':1' : ''));
+    T.push('Caixa principal: entrada ' + fp(r.cxP.entrada) + ' | stop ' + fp(r.cxP.stop) + ' | alvo ' + fp(r.cxP.alvo) + ' | R:R ' + n1(r.cxP.rr) + ':1');
+    T.push('Caixa estreita (' + fp(r.estreita.lo) + ' – ' + fp(r.estreita.hi) + '): entrada ' + fp(r.cxN.entrada) + ' | stop ' + fp(r.cxN.stop) + ' | alvo ' + fp(r.cxN.alvo) + ' | R:R ' + n1(r.cxN.rr) + ':1');
     T.push('Para conferir: ' + conferir); T.push(testadas);
     T.push('\nA FAVOR:'); pros.forEach(x => T.push('• ' + x));
     T.push('\nCONTRA (esta faixa):'); contras.forEach(x => T.push('• ' + x));
@@ -3244,9 +3252,9 @@ function grMeMontarRelatorio(r) {
         + '<div style="border:2px solid ' + cor + ';border-radius:12px;padding:12px 14px;background:' + (short ? '#FEF2F2' : '#F0FDF4') + ';">'
         + '<div style="font-size:12px;font-weight:700;color:' + cor + ';">' + nome + ' · confluência ' + confTxt + ' (' + r.nAcertos + ' de ' + r.nCombos + ')</div>'
         + '<div style="font-size:26px;font-weight:800;margin:2px 0;">' + fp(r.lo) + ' – ' + fp(r.hi) + '</div>'
-        + '<div style="font-size:13px;">Entrada ~' + fp(r.entrada) + ' · Stop ' + fp(r.stop) + (r.alvo != null ? ' · Alvo ' + fp(r.alvo) + ' · R:R ' + n1(r.rr) + ':1' : '') + '</div></div>'
+        + '<div style="font-size:13px;line-height:1.5;"><b>Caixa principal</b> · Entrada ' + fp(r.cxP.entrada) + ' · Stop ' + fp(r.cxP.stop) + ' · Alvo ' + fp(r.cxP.alvo) + ' · R:R ' + n1(r.cxP.rr) + ':1</div>'
+        + '<div style="font-size:13px;line-height:1.5;margin-top:2px;"><b>Caixa estreita</b> (' + fp(r.estreita.lo) + ' – ' + fp(r.estreita.hi) + ') · Entrada ' + fp(r.cxN.entrada) + ' · Stop ' + fp(r.cxN.stop) + ' · Alvo ' + fp(r.cxN.alvo) + ' · R:R ' + n1(r.cxN.rr) + ':1</div></div>'
         + (r.recortada ? '<div style="font-size:11.5px;color:#8E8E93;margin-top:6px;">Faixa da régua: ' + fp(r.loOrig) + ' – ' + fp(r.hiOrig) + '. Recortada ' + (short ? 'acima' : 'abaixo') + ' do preço atual (' + fp(r.preco) + '): entrar do outro lado do preço não faz sentido.</div>' : '')
-        + '<div style="font-size:12.5px;margin-top:8px;">Faixa mais estreita: <b>' + fp(r.estreita.lo) + ' – ' + fp(r.estreita.hi) + '</b></div>'
         + '<button onclick="grMelhorCriarCaixa()" style="width:100%;margin-top:10px;border:2px solid ' + cor + ';border-radius:12px;padding:12px;font-size:15px;font-weight:800;background:#fff;color:' + cor + ';">Criar Caixas (principal + estreita)</button>'
         + '<div style="font-size:12.5px;margin-top:10px;line-height:1.45;"><b>Para conferir:</b> ' + conferir + '</div>'
         + '<div style="font-size:11.5px;color:#8E8E93;margin-top:4px;line-height:1.4;">' + testadas + '</div>'
@@ -3264,21 +3272,13 @@ function grMelhorCriarCaixa() {
     const r = _grMeUltimo; if (!r || r.erro) return;
     const e = r.estreita, s = r.s, atr = r.lider.atr, L = r.lider;
     const n = _grAllCandles.length; if (!n) return;
-    const dois = (lo, hi, stop) => {   // entrada na borda de entrada da faixa (short: embaixo; long: em cima); alvo = próximo nó de alto volume, senão 2R
-        const entrada = s > 0 ? lo : hi;
-        let alvo = grMeAlvo(L.niv, s, (lo + hi) / 2, atr, L.loW, L.hiW);
-        if (alvo == null || (s > 0 ? alvo >= entrada : alvo <= entrada)) alvo = entrada - s * 2 * Math.abs(stop - entrada);
-        return { entrada, stop, alvo };
-    };
-    // A caixa BATE com a faixa: da entrada (borda de entrada da faixa) até o stop (borda oposta da faixa) é exatamente a faixa.
-    const nar = dois(e.lo, e.hi, s > 0 ? e.hi : e.lo);   // estreita
-    const prin = dois(r.lo, r.hi, s > 0 ? r.hi : r.lo);  // principal
+    const nar = r.cxN, prin = r.cxP;   // exatamente os números mostrados no relatório
     const lista = grPosicoes();
     for (let i = lista.length - 1; i >= 0; i--) if (lista[i].origem === 'melhor' && !lista[i].tradeId) lista.splice(i, 1);   // só o par do Melhor por vez
     const mk = (v, larg, par) => { const pz = grPosNova(r.lado, n - 1, v.entrada); pz.entrada = v.entrada; pz.stop = v.stop; pz.alvo = v.alvo; pz.origem = 'melhor'; pz.par = par; pz.t2 = grIndexToTime(n - 1 + larg); return pz; };
     // Lado a lado, à direita do último candle. Começam no limite da rolagem (grPosAplicarLimite só corta caixa que começa ANTES dele), então não são cortadas
     // e têm largura de verdade (mín. 2 candles cada); as etiquetas ficam coladas nas bordas (par P/N) pra não se sobreporem.
-    const sala = Math.max(1, Math.floor((_grZoom || 15) * 0.15) - 1), w = Math.max(2, Math.floor(sala / 2)), ini = n - 1 + sala;
+    const sala = Math.max(1, Math.floor((_grZoom || 15) * 0.15) - 1), w = Math.max(2, Math.floor((_grZoom || 15) * 0.1)), ini = n;   // largura em candles acompanha o zoom (mín. 2); começa logo depois do último candle
     const pP = mk(prin, w, 'P'), pN = mk(nar, w, 'N');
     pP.t1 = grIndexToTime(ini); pP.t2 = grIndexToTime(ini + w);
     pN.t1 = grIndexToTime(ini + w); pN.t2 = grIndexToTime(ini + 2 * w);
@@ -4036,6 +4036,7 @@ function grPosSalvar() { try { grAmbienteSalvar(); } catch (e) {} }
 function grPosAplicarLimite(pz) {
     const n = _grAllCandles.length;
     pz.t2v = null;
+    if (pz.origem === 'melhor') return;   // caixas do Melhor (par lado a lado) não são cortadas: o limite muda com o zoom e achatava a caixa criada em outro zoom
     if (!n || !(pz.t1 > 0) || !(pz.t2 > 0)) return;
     const ext = Math.floor((_grZoom || 15) * 0.15), lim = (n - 1) + Math.max(1, ext - 1);
     const i1 = grTimeToIndex(Math.min(pz.t1, pz.t2)), i2 = grTimeToIndex(Math.max(pz.t1, pz.t2));
