@@ -2936,7 +2936,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v235';
+const APP_VERSAO = 'v236';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3094,7 +3094,9 @@ function grDeltaPorFaixaATR(tick) {
     });
     let maxAbs = 0;
     mapa.forEach(v => { const a = Math.abs(v); if (a > maxAbs) maxAbs = a; });
-    const resultado = { mapa, totais, maxAbs };
+    let pocK = null, pocVol = 0;   // POC: faixa de maior volume total (compra + venda) em TODA a janela, não só no que está visível
+    totais.forEach((v, k) => { if (v > pocVol) { pocVol = v; pocK = k; } });
+    const resultado = { mapa, totais, maxAbs, pocK };
     window._grDeltaAtrCache[tick] = { chave, resultado };
     return resultado;
 }
@@ -4943,18 +4945,39 @@ function grDrawCandles(candles, emptyRight) {
                     let lumInfoDA = 255;
                     { const mRgb = corInfoDA.cor.match(/rgb\((\d+),(\d+),(\d+)\)/); if (mRgb) lumInfoDA = 0.299*(+mRgb[1]) + 0.587*(+mRgb[2]) + 0.114*(+mRgb[3]); }
                     ctx.fillStyle = lumInfoDA > 210 ? (deltaFaixa >= 0 ? '#00695C' : '#C62828') : '#FFFFFF';
-                    // Faixa alta o bastante (>= 22 px): delta em cima e, embaixo dele, o volume TOTAL (compra + venda) da faixa, menor e sem
-                    // negrito (volume profile + delta na mesma régua, sem alargá-la). Faixa baixa: só o delta, como sempre.
+                    // Texto EMPILHADO conforme a altura da faixa:
+                    //   >= 36 px: delta com sinal (+/−) / delta em % do volume / volume total (compra + venda)
+                    //   >= 22 px: delta com sinal / volume total
+                    //   menos:    só o delta com sinal
+                    // O sinal vai escrito porque nos níveis escuros a cor não diz se foi compra ou venda.
                     const totalFaixa = resultadoDA && resultadoDA.totais ? resultadoDA.totais.get(k) : undefined;
-                    if (totalFaixa !== undefined && (yBaseDA - yTopoDA) >= 22) {
-                        ctx.fillText(grFmtVolCompacto(Math.abs(deltaFaixa), 0), xDA, y - 2);
+                    const hFaixaDA = yBaseDA - yTopoDA;
+                    const txtDelta = (deltaFaixa >= 0 ? '+' : '\u2212') + grFmtVolCompacto(Math.abs(deltaFaixa), 0);
+                    const corSecundaria = lumInfoDA > 210 ? '#48484A' : 'rgba(255,255,255,0.85)';
+                    if (totalFaixa !== undefined && totalFaixa > 0 && hFaixaDA >= 36) {
+                        ctx.fillText(txtDelta, xDA, y - 7);
                         ctx.save();
-                        ctx.font = '600 9px -apple-system';
-                        ctx.fillStyle = lumInfoDA > 210 ? '#48484A' : 'rgba(255,255,255,0.85)';
+                        ctx.font = '700 9px -apple-system'; ctx.fillStyle = corSecundaria;
+                        ctx.fillText((Math.abs(deltaFaixa) / totalFaixa * 100).toFixed(1).replace('.', ',') + '%', xDA, y + 4);
+                        ctx.font = '500 9px -apple-system';
+                        ctx.fillText(grFmtVolCompacto(totalFaixa, 0), xDA, y + 15);
+                        ctx.restore();
+                    } else if (totalFaixa !== undefined && hFaixaDA >= 22) {
+                        ctx.fillText(txtDelta, xDA, y - 2);
+                        ctx.save();
+                        ctx.font = '600 9px -apple-system'; ctx.fillStyle = corSecundaria;
                         ctx.fillText(grFmtVolCompacto(totalFaixa, 0), xDA, y + 9);
                         ctx.restore();
                     } else {
-                        ctx.fillText(grFmtVolCompacto(Math.abs(deltaFaixa), 0), xDA, y + 3);
+                        ctx.fillText(txtDelta, xDA, y + 3);
+                    }
+                    // POC da janela: contorno dourado na faixa de maior volume total (+ etiqueta quando cabe)
+                    if (resultadoDA && resultadoDA.pocK === k) {
+                        ctx.save();
+                        ctx.strokeStyle = '#FFB300'; ctx.lineWidth = 1.5;
+                        ctx.strokeRect(3, yTopoDA + 0.75, larguraFaixaDA - 2, Math.max(2, hFaixaDA - 1.5));
+                        if (hFaixaDA >= 22) { ctx.font = '800 8px -apple-system'; ctx.textAlign = 'left'; ctx.fillStyle = '#FFB300'; ctx.fillText('POC', 6, yTopoDA + 11); }
+                        ctx.restore();
                     }
                 }
                 ctx.textAlign = 'left';
