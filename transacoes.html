@@ -1670,11 +1670,11 @@ function grConfigAtualizarValores() {
 function grConfigAbrir() { grConfigRender(); }
 function grConfigFechar() { const ov = document.getElementById('config-overlay'); if (ov) ov.style.display = 'none'; }
 
-function cvSetTf(tf) {
+function cvSetTf(tf, semAncora) {
     // Âncora de tempo: o horário que está no CENTRO da tela. Depois de recarregar no novo TF, o gráfico volta a centralizar nele.
     // Se o gráfico estava colado no candle atual (borda direita), não há âncora: continua indo pro candle atual.
     let _ancoraT = null;
-    try {
+    if (!semAncora) try {
         const arr0 = _grAllCandles;
         if (arr0 && arr0.length && window._grStartIdx != null && window._grTotalSlots && _grOffset !== 999999
             && window._grStartIdx + (window._grVisCount || 0) < arr0.length) {
@@ -2879,7 +2879,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = '05/10 08:40 · 13849 linhas · POSICAO-APORTES v216';
+const APP_VERSAO = '05/10 08:40 · 13849 linhas · POSICAO-APORTES v219';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = 'Versão ' + APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3535,7 +3535,7 @@ let _grPosMapa = {};
 let _psAtual = null, _psDrawing = false;   // posição sendo colocada pelo toque: { lado, i1, p }
 // Botão "Ver caixa" (aba Trades): vai para o gráfico, escolhe o timeframe que comporta o período da caixa (diário como padrão),
 // ajusta a rolagem/zoom horizontal e a escala de preço para a caixa e o price action dela caberem na tela, e seleciona a caixa.
-async function cvIrParaCaixa(id) {
+async function cvIrParaCaixa(id, segunda) {
     const lista = grPosicoes(), idx = lista.findIndex(z => String(z.id) === String(id)), pz = lista[idx];
     if (!pz || !(pz.t1 > 0) || !(pz.t2 > 0)) return;
     pz.oculta = false;
@@ -3547,7 +3547,8 @@ async function cvIrParaCaixa(id) {
     let tf = '1day';
     if (span / dia > 220) tf = '1week';
     else if (span / dia < 12) tf = span / 14400000 >= 12 ? '4h' : (span / 3600000 >= 12 ? '1h' : '15m');
-    if (_grTf !== tf) await cvSetTf(tf);
+    const _tfAntes = _grTf;
+    if (_grTf !== tf) await cvSetTf(tf, true);
     // Garante histórico até o começo da caixa (página por página, com teto de tentativas).
     for (let k = 0; k < 12 && _grAllCandles.length && _grAllCandles[0].t > t1 && !window._grHistFim; k++) await grCarregarHistoricoAnterior();
     const arr = _grAllCandles, total = arr.length; if (!total) return;
@@ -3574,6 +3575,8 @@ async function cvIrParaCaixa(id) {
     }
     _edSel = { tipo: 'ps', idx: idx };
     grDrawChart();
+    // Se o timeframe mudou nesta chamada, repete uma vez (o primeiro enquadramento se perdia; o segundo toque sempre funcionava)
+    if (!segunda && _tfAntes !== _grTf) await cvIrParaCaixa(id, true);
 }
 function grPosicoes() { const k = String(_ativoId || 'default'); return _grPosMapa[k] || (_grPosMapa[k] = []); }
 window._grFaixasDA = window._grFaixasDA || [];   // faixas marcadas na régua Delta ATR: { lo, hi, s } (preço absoluto; s = sinal do delta)
@@ -3898,6 +3901,33 @@ async function cvPosCarregarTrades() {
 function cvPosPivo(pz) { return pz.pm > 0 ? pz.pm : pz.entrada; }
 const GR_MARGEM_ANALISE = 1000;   // margem simulada (USDT) da caixa Em Análise
 const GR_RISCO_ANALISE_PCT = 50;   // risco usado na alavancagem sugerida da caixa Em Análise (% da margem)
+// TESE INVÁLIDA (só da caixa Em Análise; só pinta, não bloqueia nada): o preço entrou na zona de captura (tocou a entrada) e depois chegou ao stop.
+// Conta pavio, só olha candles a partir do começo da caixa e, no mesmo candle que toca entrada e stop, assume que o stop veio depois.
+const _grTeseCache = new Map();
+function grTeseInvalida(pz) {
+    const arr = _grAllCandles;
+    if (!arr || !arr.length || pz.tradeId || pz.previa || !(pz.entrada > 0) || !(pz.stop > 0) || pz.stop === pz.entrada) return false;
+    const t0 = Math.min(pz.t1, pz.t2), u = arr[arr.length - 1];
+    const k = [pz.id, t0, pz.entrada, pz.stop, arr.length, u.h, u.l, _grTf].join('|');
+    if (_grTeseCache.has(k)) return _grTeseCache.get(k);
+    const curto = pz.stop > pz.entrada; let ent = false, inv = false;
+    for (let i = 0; i < arr.length; i++) {
+        const c = arr[i]; if (c.t < t0) continue;
+        if (curto ? c.h >= pz.entrada : c.l <= pz.entrada) ent = true;
+        if (ent && (curto ? c.h >= pz.stop : c.l <= pz.stop)) { inv = true; break; }
+    }
+    if (_grTeseCache.size > 300) _grTeseCache.clear();
+    _grTeseCache.set(k, inv);
+    return inv;
+}
+let _grListraPadrao = null;
+function grListraPadrao(ctx) {
+    if (_grListraPadrao) return _grListraPadrao;
+    const c = document.createElement('canvas'); c.width = c.height = 8; const g = c.getContext('2d');
+    g.strokeStyle = 'rgba(120,123,134,0.45)'; g.lineWidth = 1.2; g.beginPath(); g.moveTo(-1, 9); g.lineTo(9, -1); g.moveTo(-1, 1); g.lineTo(1, -1); g.moveTo(7, 9); g.lineTo(9, 7); g.stroke();
+    try { _grListraPadrao = ctx.createPattern(c, 'repeat'); } catch (e) { _grListraPadrao = null; }
+    return _grListraPadrao;
+}
 function cvPosCores(pz) {
     const G = '120,123,134', V = '38,166,154', R = '239,83,80';
     if (!pz.tradeId) return { st: 'analise', fa: 'rgba(190,193,203,0.30)', fs: 'rgba(80,83,94,0.40)', la: 'rgba(190,193,203,0.95)', ls: 'rgba(110,113,124,0.95)', ca: '#A9ACB8', cs: '#5C5F6B' };
@@ -6212,6 +6242,12 @@ if (fibsParaDesenhar.length > 0) {
                     if (rgbm && niv.length > 1) { let prev = yE; niv.forEach((pr, ix) => { const yy = toY(pr); if (ix > 0) { ctx.fillStyle = 'rgba(' + rgbm[1] + ',' + rgbm[2] + ',' + rgbm[3] + ',' + Math.min(0.32, 0.1 * ix) + ')'; ctx.fillRect(xa, Math.min(prev, yy), xb - xa, Math.abs(yy - prev)); } prev = yy; }); }
                 }
                 if (tS) { ctx.fillStyle = cz.fs; ctx.fillRect(xa, Math.min(yE, yS), xb - xa, Math.abs(yS - yE)); }
+                const teseInv = cz.st === 'analise' && !pz.previa && grTeseInvalida(pz);
+                if (teseInv) {   // tese inválida: cinza + listras diagonais por cima da caixa inteira
+                    const yTop = Math.min(yE, yA, yS), hTot = Math.max(yE, yA, yS) - yTop;
+                    ctx.fillStyle = 'rgba(150,155,165,0.22)'; ctx.fillRect(xa, yTop, xb - xa, hTot);
+                    const pat = grListraPadrao(ctx); if (pat) { ctx.fillStyle = pat; ctx.fillRect(xa, yTop, xb - xa, hTot); }
+                }
                 ctx.lineWidth = 1.5; ctx.setLineDash([]);
                 ctx.strokeStyle = '#787B86'; ctx.beginPath(); ctx.moveTo(xa, yE); ctx.lineTo(xb, yE); ctx.stroke();
                 if (tA) { ctx.strokeStyle = cz.la; ctx.beginPath(); ctx.moveTo(xa, yA); ctx.lineTo(xb, yA); ctx.stroke(); }
@@ -6241,7 +6277,7 @@ if (fibsParaDesenhar.length > 0) {
                     { const ref = pz.pm > 0 ? pz.pm : pz.entrada, sg = pz.alvo > pz.stop ? 1 : -1, rw = (pz.alvo - ref) * sg, rk = (ref - pz.stop) * sg; if (tA && tS && rw > 0 && rk > 0) rr = ' · R/R ' + (rw / rk).toFixed(1).replace('.', ','); }
                     // Em Análise: simulação com margem fixa e a alavancagem sugerida (tudo recalculado a cada desenho)
                     let ana = null;
-                    if (cz.st === 'analise' && tS && pz.entrada > 0 && pz.stop !== pz.entrada) {
+                    if (cz.st === 'analise' && !teseInv && tS && pz.entrada > 0 && pz.stop !== pz.entrada) {
                         const rk = pz.simRisco > 0 ? pz.simRisco : GR_RISCO_ANALISE_PCT, mg = pz.simAporte > 0 ? pz.simAporte : GR_MARGEM_ANALISE, dist = Math.abs(pz.entrada - pz.stop) / pz.entrada * 100, al = Math.max(1, Math.floor(rk / dist)), nt = mg * al, sgn = pz.stop < pz.entrada ? 1 : -1;
                         ana = { al, nt, lucro: tA ? nt * (pz.alvo - pz.entrada) / pz.entrada * sgn : null, perda: nt * (pz.stop - pz.entrada) / pz.entrada * sgn };
                     }
@@ -6257,6 +6293,18 @@ if (fibsParaDesenhar.length > 0) {
                         ctx.save(); ctx.font = fs + 'px -apple-system'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#000000';
                         const cx0 = Math.max(PAD.left + 30, Math.min(W - PAD.right - 30, (xa + xb) / 2));
                         linhas.forEach((t, k) => ctx.fillText(t, cx0, y0 + k * lh));
+                        ctx.restore();
+                    }
+                    if (teseInv) {   // etiqueta no lugar de Alv/Pos/Luc
+                        const ya0 = tA ? yA : yE + (yS < yE ? 120 : -120);
+                        const y1 = Math.max(PAD.top + 8, Math.min(yE, ya0)), y2 = Math.min(PAD.top + chartH - 8, Math.max(yE, ya0));
+                        const cy = y2 > y1 ? (y1 + y2) / 2 : y1, fs = Math.max(8, Math.min(13, Math.abs(xb - xa) / 7));
+                        const cx0 = Math.max(PAD.left + 40, Math.min(W - PAD.right - 40, (xa + xb) / 2));
+                        ctx.save(); ctx.font = '600 ' + fs + 'px -apple-system'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                        const tw = ctx.measureText('Tese Inválida').width, bw = tw + fs * 1.2, bh = fs * 1.9;
+                        ctx.fillStyle = '#FFFFFF'; ctx.strokeStyle = '#C62828'; ctx.lineWidth = 1.2;
+                        ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(cx0 - bw / 2, cy - bh / 2, bw, bh, 5); else ctx.rect(cx0 - bw / 2, cy - bh / 2, bw, bh); ctx.fill(); ctx.stroke();
+                        ctx.fillStyle = '#C62828'; ctx.fillText('Tese Inválida', cx0, cy + 0.5);
                         ctx.restore();
                     }
                     const inter = (lista, cor, pref, ref) => (lista || []).forEach((it, ix) => {
@@ -11206,7 +11254,9 @@ function odToggleDet(id) {
 async function cvIrParaCaixaDe(ativoId, id) {   // a caixa pode ser de outro ativo: troca o ativo primeiro
     try {
         if (String(ativoId) !== String(_ativoId)) { const a = _odAtivos[ativoId]; if (!a) return; await cvSelecionarAtivo(ativoId, a.ticker, { fonte: cvFonteDoTipo(a.tipo), tipo: a.tipo }); }
+        const _trocou = String(ativoId) !== String(_ativoId);
         await cvIrParaCaixa(id);
+        if (_trocou) await cvIrParaCaixa(id, true);
     } catch (e) {}
 }
 function odBoxDe(t) { try { const z = (_grPosMapa[String(t.ativo_id)] || []).find(z => z.tradeId === t.id); return z ? z.id : null; } catch (e) { return null; } }
