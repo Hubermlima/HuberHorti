@@ -2946,7 +2946,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v259';
+const APP_VERSAO = 'v260';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4036,6 +4036,20 @@ function grPosSalvar() { try { grAmbienteSalvar(); } catch (e) {} }
 // Limite de alcance: a rolagem lateral só vai até alguns slots depois do último candle (zoom × 15%). A borda direita da caixa não é desenhada além
 // disso (senão fica fora de alcance quando o zoom é alto). Só afeta o desenho: o t2 salvo continua o mesmo, e ao diminuir o zoom a caixa volta ao tamanho real.
 function grPosLimIdx() { const n = _grAllCandles.length; return (n - 1) + Math.max(1, Math.floor((_grZoom || 15) * 0.15) - 1); }   // índice do limite de rolagem à direita (mesma conta de grPosAplicarLimite)
+// Zoom por pinça: a LARGURA da caixa (borda direita) acompanha o zoom na mesma proporção, então a largura NA TELA fica a mesma (zoom+ = menos
+// candles na caixa; zoom- = mais). A borda esquerda fica parada. A largura é guardada em decimal (_w) para não acumular erro de arredondamento
+// durante a pinça; se o usuário mexer na caixa (t2 mudou), recomeça do valor real.
+function grPosEscalarZoom(r) {
+    if (!(r > 0) || Math.abs(r - 1) < 1e-9) return;
+    grPosicoes().forEach(pz => {
+        if (!(pz.t1 > 0) || !(pz.t2 > 0)) return;
+        const i1 = grTimeToIndex(pz.t1), i2 = grTimeToIndex(pz.t2), dir = i2 >= i1;
+        const key = dir ? 't2' : 't1', fixo = dir ? i1 : i2;
+        let w = (pz._wChk === pz[key] && pz._w > 0) ? pz._w : Math.abs(i2 - i1);
+        w = Math.max(1, w * r); pz._w = w;
+        pz[key] = grIndexToTime(Math.round(fixo + (dir ? w : -w))); pz._wChk = pz[key];
+    });
+}
 function grPosAplicarLimite(pz) {
     const n = _grAllCandles.length;
     pz.t2v = null;
@@ -8422,8 +8436,10 @@ function grInitTouch() {
                         idxAbsAntes = window._grStartIdx + fracX * window._grTotalSlots;
                     }
                     const pxAntes = _grYAxisPxPerDollar;
+                    const zAcAnt = _grZoomAcumulado;
                     _grZoomAcumulado = Math.max(1, Math.min(500, _grZoomAcumulado / ratioX));
                     _grZoom = Math.round(_grZoomAcumulado);
+                    grPosEscalarZoom(_grZoomAcumulado / zAcAnt);
                     grAtualizarPxPerDollar();
                     if (pxAntes && _grYAxisPxPerDollar) {
                         _grYFator = Math.max(0.02, Math.min(100, _grYFator * pxAntes / _grYAxisPxPerDollar));
@@ -8497,8 +8513,10 @@ function grInitTouch() {
                 const ratio = 1 + (dist / lastTouchDist - 1) * AMORTECIMENTO_PINCA; // >1 = dedos se afastando = quer tudo maior
                 // Acumula no valor CONTÍNUO (decimal), nunca no já-arredondado —
                 // é isso que impede a fração de se perder frame a frame.
+                const zAcAnt = _grZoomAcumulado;
                 _grZoomAcumulado = Math.max(1, Math.min(500, _grZoomAcumulado / ratio));
                 _grZoom = Math.round(_grZoomAcumulado); // só arredonda aqui, na hora de usar
+                grPosEscalarZoom(_grZoomAcumulado / zAcAnt);
                 grAtualizarPxPerDollar(); // altura recalculada do zero, nunca acumulada
                 if (idxAbsAntes != null) {
                     const novoStartIdx = Math.round(idxAbsAntes - fracX * _grZoom);
