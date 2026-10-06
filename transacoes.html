@@ -1731,7 +1731,7 @@ function cvSetTf(tf, semAncora) {
 }
 // Menu de seleção de timeframe: aberto ao tocar no rótulo "TF ..." desenhado no gráfico (ver _grTfLabelHit,
 // preenchido em grDrawCandles) — substituiu os botões que existiam na barra lateral.
-function cvAbrirMenuTf(clientX, clientY) {
+function cvAbrirMenuTf(clientX, clientY, opts) {
     cvFecharMenuTf();
     const itens = [
         { tf: '15m',    label: '15 Minutos' },
@@ -1756,11 +1756,17 @@ function cvAbrirMenuTf(clientX, clientY) {
         b.onclick = e => { e.stopPropagation(); cvFecharMenuTf(); onclick(); };
         return b;
     };
-    itens.forEach(it => menu.appendChild(linha(it.label, () => cvSetTf(it.tf), it.tf === _grTf)));
-    const sep = document.createElement('div');
-    sep.style.cssText = 'height:1px;background:#F2F2F7;margin:4px 2px;';
-    menu.appendChild(sep);
-    menu.appendChild(linha('Personalizado', () => cvAbrirModalTfCustom(), _grTf === 'custom'));
+    if (opts && opts.aoEscolher) {
+        // Modo "escolher": devolve o TF a quem chamou (ex.: régua Delta ATR) e NÃO troca o timeframe do gráfico.
+        if (opts.igual) menu.appendChild(linha('Igual ao gráfico', () => opts.aoEscolher(null), opts.atual == null));
+        itens.forEach(it => menu.appendChild(linha(it.label, () => opts.aoEscolher(it.tf), it.tf === opts.atual)));
+    } else {
+        itens.forEach(it => menu.appendChild(linha(it.label, () => cvSetTf(it.tf), it.tf === _grTf)));
+        const sep = document.createElement('div');
+        sep.style.cssText = 'height:1px;background:#F2F2F7;margin:4px 2px;';
+        menu.appendChild(sep);
+        menu.appendChild(linha('Personalizado', () => cvAbrirModalTfCustom(), _grTf === 'custom'));
+    }
     document.body.appendChild(overlay);
     document.body.appendChild(menu);
     // Posiciona perto do toque, sem estourar a tela
@@ -1975,8 +1981,12 @@ function cvRenderMenuFpCfg() {
         grFluxoStatusAtualizar();
     } else if (_grFpCfgMenuQual === 'deltaatr') {
         menu.innerHTML = '<div style="font-size:13px;font-weight:700;color:#1C1C1E;margin-bottom:4px;">Delta ATR</div>'
-            + grConfigBlocoSliderDias(ICO_FLUXO.calendario, 'Janela de dias', 'A régua recalcula enquanto você arrasta', 'cv-cfg-lookback-da', _grFootprintLookbackDias, 1, 180, 'input', 'grFootprintLookbackSlider')
-            + '<div style="font-size:11.5px;color:#8E8E93;margin-top:8px;line-height:1.4;">Mesmo valor da Janela de dias do Fluxo: mudar aqui muda lá, e vice-versa.</div>';
+            + grConfigBlocoSliderDias(ICO_FLUXO.calendario, 'Janela de dias', 'Dias somados na régua (recalcula ao arrastar)', 'cv-cfg-lookback-da', _grFootprintLookbackDias, 1, 180, 'input', 'grFootprintLookbackSlider')
+            + '<div style="padding:12px 2px;border-bottom:1px solid #F2F2F7;display:flex;align-items:center;gap:12px;">'
+            + '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>'
+            + '<div style="flex:1;min-width:0;"><div style="font-size:14px;font-weight:600;color:#1C1C1E;">Timeframe</div><div style="font-size:11.5px;color:#8E8E93;margin-top:1px;">Só os níveis da régua; os candles não mudam</div></div>'
+            + '<button type="button" onclick="grDaAbrirMenuTf(event)" style="flex-shrink:0;border:none;border-radius:8px;padding:8px 10px;font-size:12.5px;font-weight:700;background:#F2F2F7;color:#1C1C1E;">' + grDaTfRotulo() + ' ▾</button></div>'
+            + '<div style="font-size:11.5px;color:#8E8E93;margin-top:8px;line-height:1.4;">A Janela de dias é a mesma do Fluxo: mudar aqui muda lá, e vice-versa.</div>';
     } else if (_grFpCfgMenuQual === 'vp') {
         const semAncora = _grVpAncoraTs == null;
         menu.innerHTML = '<div style="font-size:13px;font-weight:700;color:#1C1C1E;">Volume Profile</div>'
@@ -2905,7 +2915,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v229';
+const APP_VERSAO = 'v230';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -2924,6 +2934,62 @@ function grTickImparPorPx(minPx, pxPorUsd) {
 // múltiplo de 10 (resolução dos dados no R2). Filtra e aglutina os níveis e não muda com o zoom.
 function grTickAtr() {
     return Math.max(10, Math.round(grCalcularTickATR() / 10) * 10);
+}
+// ── Timeframe PRÓPRIO da régua Delta ATR ─────────────────────────────────────────────────────────────────────────────
+// null = a régua segue o gráfico (comportamento de sempre). Com um TF escolhido, SÓ o degrau (altura de cada nível) da régua passa a
+// vir do ATR desse timeframe (mesma conta do tick do gráfico: 0,2 × ATR, múltiplo de 10); candles, footprint e o resto não mudam.
+// Os candles desse TF vêm da Binance (a régua só existe no BTC), cacheados por 1 min; enquanto o 1º download não chega, usa o degrau de sempre.
+let _grDaTf = null;
+const GR_DA_TFS = [
+    { tf: '15m', bin: '15m', label: '15 Minutos' }, { tf: '1h', bin: '1h', label: '1 Hora' }, { tf: '4h', bin: '4h', label: '4 Horas' },
+    { tf: '1day', bin: '1d', label: 'Diário' }, { tf: '1week', bin: '1w', label: 'Semanal' }, { tf: '1month', bin: '1M', label: 'Mensal' }
+];
+function grDaTfRotulo() { const x = GR_DA_TFS.find(t => t.tf === _grDaTf); return x ? x.label : 'Igual ao gráfico'; }
+window._grDaTickCache = window._grDaTickCache || {};
+function grDaTickProprio() {
+    if (!_grDaTf) return null;
+    if (_grDaTf === _grTf) return grTickAtr();   // mesmo TF do gráfico: é exatamente o ATR que o gráfico já tem
+    const def = GR_DA_TFS.find(t => t.tf === _grDaTf); if (!def) return null;
+    const periodo = FOOTPRINT_ATR_PERIODO, sym = grBinSymbolAtual(), chave = sym + '|' + def.bin + '|' + periodo;
+    const c = window._grDaTickCache[chave];
+    if (!c || (!c.carregando && Date.now() - c.ts >= 60000)) {
+        window._grDaTickCache[chave] = Object.assign({}, c, { carregando: true, ts: c ? c.ts : 0 });
+        grBuscarKlines(sym, def.bin, periodo + 3).then(arr => {
+            const k = (arr || []).slice(0, -1);   // só candles FECHADOS (o último é o em formação), igual ao ATR do gráfico
+            let tick = null;
+            if (k.length >= periodo + 1) {
+                let soma = 0;
+                for (let i = k.length - periodo; i < k.length; i++) {
+                    const h = parseFloat(k[i][2]), l = parseFloat(k[i][3]), cAnt = parseFloat(k[i - 1][4]);
+                    soma += Math.max(h - l, Math.abs(h - cAnt), Math.abs(l - cAnt));
+                }
+                const bruto = Math.max(1, Math.round(0.2 * (soma / periodo) / 5) * 5);
+                tick = Math.max(10, Math.round(bruto / 10) * 10);
+            }
+            const antes = window._grDaTickCache[chave];
+            window._grDaTickCache[chave] = { tick: tick != null ? tick : (antes && antes.tick) || null, ts: Date.now(), carregando: false };
+            try { grDrawChart(); } catch (e) {}
+        }).catch(() => {
+            const antes = window._grDaTickCache[chave];
+            window._grDaTickCache[chave] = { tick: (antes && antes.tick) || null, ts: Date.now(), carregando: false };
+        });
+    }
+    return (c && c.tick) || null;
+}
+// Escolha do TF da régua: reaproveita o modal de timeframe do gráfico (cvAbrirMenuTf), só que sem trocar o TF do gráfico.
+function grDaAbrirMenuTf(ev) {
+    const r = ev && ev.currentTarget ? ev.currentTarget.getBoundingClientRect() : null;
+    cvAbrirMenuTf(r ? r.left : 40, r ? r.bottom : 120, {
+        atual: _grDaTf,
+        igual: true,
+        aoEscolher: tf => {
+            _grDaTf = tf || null;
+            if (typeof grAmbienteSalvar === 'function') grAmbienteSalvar();   // só marca pendente; grava ao clicar em Sair
+            window._grDeltaAtrCache = {};
+            cvRenderMenuFpCfg();
+            grDrawChart();
+        }
+    });
 }
 // ── Open Interest (Binance Futures) -- so tem granularidade por TEMPO, nao por preco: um numero so por
 // periodo, do mercado inteiro. Mapeia o TF atual pro period valido mais proximo aceito pela API (5m e o
@@ -4796,7 +4862,7 @@ function grDrawCandles(candles, emptyRight) {
             };
             if (!_grFootprintAtivo) avisoDA('ligue o Fluxo (FX)');
             else {
-            let tickDA = grFootprintTickDaGrade(pxDolar, true);
+            let tickDA = grDaTickProprio() || grFootprintTickDaGrade(pxDolar, true);
             // Faixa fina demais (< 8 px) não cabe número: agrupa em faixas maiores (múltiplo do tick) em vez de deixar tudo em branco.
             if (pxDolar * tickDA < 8) tickDA = tickDA * Math.ceil(8 / (pxDolar * tickDA));
             const resultadoDA = grDeltaPorFaixaATR(tickDA);
@@ -10226,6 +10292,7 @@ function grAmbienteColetar() {
         favoritos: (window._grFavoritos || []).slice(),
         tradesLista: (window._grTradesLista || []).slice(),
         faixasDA: (window._grFaixasDA || []).slice(),
+        daTf: _grDaTf,
         ambExpandido: _grAmbExpandido,
         hLinhas: _grHLinhasMapa,
         posicoes: cvPosParaSalvar(),
@@ -10302,6 +10369,7 @@ async function grAmbienteCarregar() {
     window._grAmbPorAtivo = (ambiente.porAtivo && typeof ambiente.porAtivo === 'object') ? ambiente.porAtivo : {};
     window._grAmbRaizLegada = grAmbAtivoDaRaiz(ambiente);
     if (Array.isArray(ambiente.faixasDA)) window._grFaixasDA = ambiente.faixasDA.filter(f => f && f.hi > f.lo);
+    _grDaTf = GR_DA_TFS.some(t => t.tf === ambiente.daTf) ? ambiente.daTf : null;
     if (Array.isArray(ambiente.tradesLista)) window._grTradesLista = ambiente.tradesLista.filter(f => typeof f === 'string' && f);
     if (Array.isArray(ambiente.favoritos)) window._grFavoritos = ambiente.favoritos.filter(f => typeof f === 'string' && f);
     const fatiaIni = grAmbAtivoDoMapa(_ativoId, _ticker, window._grAmbRaizLegada);
