@@ -2946,7 +2946,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v266';
+const APP_VERSAO = 'v268';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3164,11 +3164,23 @@ function grMelhorCriarCaixa() {
     const n = _grAllCandles.length; if (!n) return;
     if (!(r.s * (r.stop - r.entrada) > 0) || !(r.s * (r.entrada - r.alvo1) > 0)) { alert('Os números do relatório não formam uma caixa válida (entrada, stop e alvo fora de ordem).'); return; }
     const lista = grPosicoes();
-    for (let i = lista.length - 1; i >= 0; i--) if (lista[i].origem === 'melhor' && !lista[i].tradeId) lista.splice(i, 1);   // só a caixa do Melhor por vez
-    const w = Math.max(2, Math.floor((_grZoom || 15) * 0.1));   // ~10% da largura da tela
+    // EMPILHA: nenhuma caixa do Melhor é apagada. A nova (mais refinada) nasce nas MESMAS coordenadas de tempo da camada anterior (macro -> micro),
+    // num tom de cinza mais escuro. Camada 1 = primeira (macro), 2 = refinamento, etc.
+    const ant = lista.filter(z => z.origem === 'melhor' && !z.tradeId && z.lado === r.lado);
+    const base = ant.length ? ant.reduce((m, z) => ((z.camada || 1) >= (m.camada || 1) ? z : m), ant[0]) : null;
+    if (base && Math.abs(base.entrada - r.entrada) < 1 && Math.abs(base.stop - r.stop) < 1 && Math.abs(base.alvo - r.alvo1) < 1) { alert('Já existe uma caixa do Melhor com esses mesmos números.'); return; }
+    // TEMPO ABSOLUTO: a janela da caixa (início e fim) é um intervalo de TEMPO real, independente do TF em que foi criada. Antes o início era o "próximo
+    // candle" do TF do gráfico (num TF de 3 dias, até 3 dias no futuro) e a largura contava candles daquele TF, então a caixa criada em 3 dias aparecia
+    // fora de alcance / enorme ao olhar no diário. Agora: início = agora, largura = ~10% da tela do TF atual, convertida em tempo.
+    const cs = _grAllCandles, candleMs = n > 1 ? Math.max(60000, cs[n - 1].t - cs[n - 2].t) : 86400000, agora = Date.now();
+    const dur = Math.max(2, Math.floor((_grZoom || 15) * 0.1)) * candleMs;
+    let t1, t2;
+    if (base && base.tAbs) { t1 = base.t1; t2 = base.t2; }   // camada nova = mesmas coordenadas de tempo da anterior
+    else { t1 = agora; t2 = agora + dur; ant.forEach(z => { if (!z.tAbs) { z.t1 = t1; z.t2 = t2; z.tAbs = true; } }); }   // caixas de antes (sem tempo absoluto) são realinhadas junto
     const pz = grPosNova(r.lado, n, r.entrada);
-    pz.entrada = r.entrada; pz.stop = r.stop; pz.alvo = r.alvo1; pz.origem = 'melhor';
-    pz.t1 = grIndexToTime(n); pz.t2 = grIndexToTime(n + w);
+    pz.entrada = r.entrada; pz.stop = r.stop; pz.alvo = r.alvo1; pz.origem = 'melhor'; pz.tAbs = true;
+    pz.camada = base ? (base.camada || 1) + 1 : 1;
+    pz.t1 = t1; pz.t2 = t2;
     lista.push(pz);
     grPosSalvar();
     grMelhorFechar(); cvFecharMenuFpCfg();
@@ -4289,6 +4301,10 @@ function grListraPadrao(ctx) {
 }
 function cvPosCores(pz) {
     const G = '120,123,134', V = '38,166,154', R = '239,83,80';
+    if (!pz.tradeId && pz.origem === 'melhor') {   // sem 'camada' (criada antes do empilhamento) conta como camada 1   // caixas do Melhor empilhadas: cada camada (macro -> refinamento) num tom de cinza mais escuro, pra distinguir uma da outra
+        const T = [['176,180,192', '120,124,136'], ['136,140,152', '88,92,104'], ['98,102,114', '58,62,74'], ['64,68,80', '34,37,48'], ['40,43,54', '16,18,26']][Math.min(pz.camada || 1, 5) - 1];
+        return { st: 'analise', fa: 'rgba(' + T[0] + ',0.34)', fs: 'rgba(' + T[1] + ',0.50)', la: 'rgba(' + T[0] + ',0.95)', ls: 'rgba(' + T[1] + ',0.95)', ca: 'rgb(' + T[0] + ')', cs: 'rgb(' + T[1] + ')' };
+    }
     if (!pz.tradeId) return { st: 'analise', fa: 'rgba(190,193,203,0.30)', fs: 'rgba(80,83,94,0.40)', la: 'rgba(190,193,203,0.95)', ls: 'rgba(110,113,124,0.95)', ca: '#A9ACB8', cs: '#5C5F6B' };
     const t = window._grPosTrades[pz.tradeId];
     if (t && t.data_fechamento) {
