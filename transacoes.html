@@ -2002,7 +2002,7 @@ function cvRenderMenuFpCfg() {
                   + '<button type="button" onclick="grMelhorRodar(\'long\')" style="flex:1;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:800;background:#E8F7EC;color:#16A34A;">Long</button></div>')
             + (_grMeUltimo && _grMeUltimo.html && !_grMeCalculando
                 ? '<button type="button" onclick="grMelhorMostrar()" style="width:100%;margin-top:8px;border:none;border-radius:10px;padding:10px;font-size:13.5px;font-weight:700;background:#F2F2F7;color:#1C1C1E;">Último relatório · ' + (_grMeUltimo.lado === 'short' ? 'Short' : 'Long') + ' · ' + _grMeUltimo.hora.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) + '</button>' : '')
-            + '<div style="font-size:11px;color:#8E8E93;margin-top:6px;line-height:1.4;">Testa janelas de 5 a 15 dias × timeframes diários (1, 2 e 3 dias).</div></div>';
+            + '<div style="font-size:11px;color:#8E8E93;margin-top:6px;line-height:1.4;">Analisa a régua que está na tela (dias e TF escolhidos acima).</div></div>';
     } else if (_grFpCfgMenuQual === 'vp') {
         const semAncora = _grVpAncoraTs == null;
         menu.innerHTML = '<div style="font-size:13px;font-weight:700;color:#1C1C1E;">Volume Profile</div>'
@@ -2946,7 +2946,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v260';
+const APP_VERSAO = 'v262';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3038,280 +3038,122 @@ function grDaAbrirMenuTf(ev) {
         }
     });
 }
-// ── "Melhor" (Delta ATR): a faixa de preço mais favorável pra entrar SHORT ou LONG ─────────────────────────────────────────────────────
-// Pergunta que o relatório responde: "qual a faixa mais favorável pra entrar shortado/longado?". Testa várias combinações de JANELA (dias, no
-// máximo 15 = tempo que o smart money leva pra montar posição) × TIMEFRAME (sempre menor que a janela: pelo menos 3 candles dentro dela).
-// Em cada combinação, cada nível da régua recebe uma nota usando SÓ comparações DENTRO da própria janela (percentil de volume, percentil do
-// delta %, sinal do delta), nunca valores absolutos entre janelas (janela maior sempre soma mais). A faixa final sai da VOTAÇÃO entre as
-// combinações (confluência): quanto mais combinações apontam o mesmo lugar, mais confiável. Não é backtest nem garantia.
-const GR_ME_JANELAS = [5, 7, 10, 15];
-// Só timeframes DIÁRIOS (1, 2 e 3 dias): o smart money leva dias pra montar posição, então timeframe intradiário só dá ruído. Todos saem dos candles de 1 dia
-// (agrupados igual ao gráfico/régua, então o degrau bate com o da régua ao aplicar).
-const GR_ME_TFS = [
-    { bin: '1d', mult: 1, ms: 86400000, rot: 'Diário' }, { bin: '1d', mult: 2, ms: 2 * 86400000, rot: '2 Dias' }, { bin: '1d', mult: 3, ms: 3 * 86400000, rot: '3 Dias' }
-];
+// ── "Melhor" (Delta ATR): análise da RÉGUA que já está na tela ─────────────────────────────────────────────────────────────────────────
+// O usuário escolhe o ambiente (Janela de dias e TF da régua), espera a régua ficar formada e aperta Short ou Long. A análise lê EXATAMENTE os
+// níveis desenhados (último desenho da régua em window._grDaUltima) e devolve um plano curto: entrada, stop, alvo 1, alvo 2 e uma linha por nível.
+// Critérios (comparações só dentro da própria régua): volume entre os 25% maiores; delta do lado certo (short: compra agressiva presa; long: venda
+// agressiva presa) com ≥ 5% do volume do nível; nível no topo (short) / fundo (long) da régua. Não é backtest nem garantia.
 let _grMeUltimo = null, _grMeCalculando = false;
-function grMePerc(arr) {   // devolve x -> fração dos valores abaixo de x (empate conta metade): 0..1, comparação só dentro da própria janela
+function grMePerc(arr) {   // devolve x -> fração dos valores abaixo de x (empate conta metade): 0..1
     const s = arr.slice().sort((a, b) => a - b), n = s.length;
     return x => { let lt = 0, eq = 0; for (let i = 0; i < n; i++) { if (s[i] < x) lt++; else if (s[i] === x) eq++; } return n > 1 ? (lt + eq / 2) / n : 0.5; };
 }
-function grMeAlvo(niv, s, entrada, atr, loW, hiW) {   // alvo = próximo nó de alto volume do lado oposto, a ≥ 1 ATR da entrada; senão a extremidade da janela
-    let alvo = null;
-    niv.forEach(n => {
-        if (n.pv < 0.75) return;
-        if (s > 0 && n.c <= entrada - atr && (alvo == null || n.c > alvo)) alvo = n.c;
-        if (s < 0 && n.c >= entrada + atr && (alvo == null || n.c < alvo)) alvo = n.c;
-    });
-    if (alvo == null) alvo = s > 0 ? loW : hiW;
-    return Math.abs(alvo - entrada) >= 0.5 * atr ? alvo : null;
-}
-function grMeAvaliar(lado, preco, tick, mapa, totais, candles, atr) {
-    const s = lado === 'short' ? 1 : -1;
-    const niv = [];
-    mapa.forEach((d, k) => { const v = totais.get(k) || 0; if (v > 0) niv.push({ k, c: k * tick, lo: k * tick - tick / 2, hi: k * tick + tick / 2, d, v, dp: d / v }); });
-    if (niv.length < 8) return null;
-    niv.sort((a, b) => a.k - b.k);
-    const pcV = grMePerc(niv.map(n => n.v)), pcD = grMePerc(niv.map(n => s * n.dp));
-    let hiW = -Infinity, loW = Infinity;
-    candles.forEach(c => { if (c.h > hiW) hiW = c.h; if (c.l < loW) loW = c.l; });
-    if (!isFinite(hiW)) { hiW = niv[niv.length - 1].hi; loW = niv[0].lo; }
-    hiW = Math.max(hiW, preco); loW = Math.min(loW, preco);
-    const rng = Math.max(hiW - loW, atr);
-    niv.forEach(n => {
-        n.pv = pcV(n.v); n.pd = pcD(s * n.dp); n.fav = s * n.d > 0;
-        n.dist = s * (n.c - preco);   // > 0: a faixa está do lado certo do preço (acima no short, abaixo no long)
-        n.pos = Math.max(0, Math.min(1, s > 0 ? (n.c - loW) / rng : (hiW - n.c) / rng));   // 1 = no topo (short) / fundo (long) da janela
-        n.ext = Math.max(0, 1 - (s > 0 ? Math.max(0, hiW - n.hi) : Math.max(0, n.lo - loW)) / (2 * atr));   // colada na máxima/mínima do período
-        let rej = 0, rup = 0, neu = 0;   // reação dos candles do TF que chegaram na faixa VINDO do lado do preço
-        candles.forEach(c => {
-            if (!(c.h >= n.lo && c.l <= n.hi)) return;
-            if (s > 0) { if (c.o > n.hi) return; if (c.c < n.lo) rej++; else if (c.c > n.hi) rup++; else neu++; }
-            else { if (c.o < n.lo) return; if (c.c > n.hi) rej++; else if (c.c < n.lo) rup++; else neu++; }
-        });
-        n.rej = rej; n.rup = rup; n.toq = rej + rup + neu; n.rr = (rej + 1) / (rej + rup + 2);
-        n.gate = n.dist >= -0.25 * atr;
-        n.alc = Math.exp(-Math.max(0, n.dist) / (2.5 * atr));
-        // 4 critérios DUROS (não relativos): volume entre os 25% maiores da janela; delta do lado certo com ≥ 5% do volume do nível;
-        // reação (≥ 2 toques e mais rejeições que rompimentos); topo/fundo da janela. A faixa é montada pelo nº de critérios atendidos.
-        n.c1 = n.pv >= 0.75; n.c2 = s * n.dp >= 0.05; n.c3 = n.toq >= 2 && n.rej >= 1 && n.rej >= n.rup; n.c4 = n.pos >= 0.6 || n.ext >= 0.5;
-        n.pisos = (n.c1 ? 1 : 0) + (n.c2 ? 1 : 0) + (n.c3 ? 1 : 0) + (n.c4 ? 1 : 0);
-        n.score = n.gate ? 0.20 * n.pv + 0.22 * n.pd * (n.fav ? 1 : 0.3) + 0.16 * (0.5 * n.pos + 0.5 * n.ext) + 0.20 * n.rr + 0.22 * n.alc : 0;
-    });
-    let ib = -1;
-    niv.forEach(n => { n.rank = n.gate ? n.pisos + n.score : 0; });   // critérios atendidos mandam; a nota (< 1) só desempata
-    niv.forEach((n, i) => { if (n.rank > 0 && (ib < 0 || n.rank > niv[ib].rank)) ib = i; });
-    if (ib < 0) return null;
-    let a = ib, b = ib;
-    while (b - a < 2) {   // estende só pra vizinhos de ALTO VOLUME que atendem quase tantos critérios quanto o principal (faixa de até 3 níveis)
-        const e = niv[a - 1], d = niv[b + 1];
-        const bom = x => x && x.gate && x.c1 && x.pisos >= Math.max(2, niv[ib].pisos - 1);
-        const okE = bom(e) && e.k === niv[a].k - 1, okD = bom(d) && d.k === niv[b].k + 1;
-        if (okD && (!okE || d.rank >= e.rank)) b++; else if (okE) a--; else break;
-    }
-    const banda = { lo: niv[a].lo, hi: niv[b].hi, score: niv[ib].score, rank: niv[ib].rank, chave: niv[ib] };
-    const entrada = (banda.lo + banda.hi) / 2;
-    const stop = s > 0 ? banda.hi + 0.5 * atr : banda.lo - 0.5 * atr;
-    const alvo = grMeAlvo(niv, s, entrada, atr, loW, hiW);
-    return { niv, banda, s, atr, tick, hiW, loW, preco, entrada, stop, alvo, rr: alvo != null ? Math.abs(alvo - entrada) / Math.abs(stop - entrada) : null };
-}
-async function grMelhorCalcular(lado) {
-    const raw = _grFootprintCandlesRaw, DIA = 86400000, agora = Date.now();
-    if (!_grFootprintAtivo || !raw || !raw.length) return { erro: 'Ligue o Fluxo (FX) e aguarde o footprint carregar.' };
+function grMelhorCalcular(lado) {
+    const u = window._grDaUltima;
+    if (!_indState.deltaAtr) return { erro: 'Ligue a régua Delta ATR e deixe ela formada na tela.' };
+    if (!_grFootprintAtivo || !u || !u.mapa || u.mapa.size < 6) return { erro: 'A régua ainda não está formada: ligue o Fluxo e aguarde os dados.' };
     const cs = _grAllCandles, preco = cs && cs.length ? Number(cs[cs.length - 1].c) : NaN;
     if (!(preco > 0)) return { erro: 'Sem preço atual.' };
-    const cobertura = (agora - raw[0].ts) / DIA;
-    const janelas = GR_ME_JANELAS.filter(d => d <= cobertura + 0.25);
-    if (!janelas.length) return { erro: 'O footprint carregado cobre só ' + cobertura.toFixed(1).replace('.', ',') + ' dia(s); preciso de pelo menos 3. Aumente a Janela de dias no Fluxo.' };
-    const sym = grBinSymbolAtual(), per0 = FOOTPRINT_ATR_PERIODO;
-    let diarios = null;
-    try { diarios = ((await grBuscarKlines(sym, '1d', 120)) || []).map(grMapearKline); } catch (e) {}
-    if (!diarios || diarios.length < 20) return { erro: 'Não consegui baixar os candles diários (Binance).' };
-    const tfs = GR_ME_TFS.filter(t => janelas.some(d => d * DIA >= 3 * t.ms)).map(t => {
-        const k = (t.mult > 1 ? grAgruparCandles(diarios, 'dia', t.mult) : diarios).slice(0, -1);   // só candles FECHADOS
-        const per = Math.min(per0, k.length - 1);
-        if (per < 3) return null;
-        let soma = 0;
-        for (let i = k.length - per; i < k.length; i++) soma += Math.max(k[i].h - k[i].l, Math.abs(k[i].h - k[i - 1].c), Math.abs(k[i].l - k[i - 1].c));
-        const atr = soma / per, bruto = Math.max(1, Math.round(0.2 * atr / 5) * 5);   // mesma conta do degrau da régua
-        return Object.assign({}, t, { k, atr, tick: Math.max(10, Math.round(bruto / 10) * 10) });
-    }).filter(Boolean);
-    if (!tfs.length) return { erro: 'Não consegui baixar os candles dos timeframes (Binance).' };
-    const maxD = Math.max.apply(null, janelas), mins = [];
-    grFootprintParaCadaMinuto(agora - maxD * DIA, agora, m => mins.push(m));
-    mins.sort((a, b) => b.ts - a.ts);   // do mais novo pro mais antigo: as janelas são fatias aninhadas, então uma passada só alimenta todas
-    const porTick = new Map();
-    for (const tick of new Set(tfs.map(t => t.tick))) {
-        const mapa = new Map(), totais = new Map(), snaps = {};
-        const lim = janelas.map(d => ({ d, ts: agora - d * DIA })).sort((a, b) => b.ts - a.ts);
-        let j = 0;
-        for (let i = 0; i <= mins.length; i++) {
-            const ts = i < mins.length ? mins[i].ts : -Infinity;
-            while (j < lim.length && ts < lim[j].ts) { snaps[lim[j].d] = { mapa: new Map(mapa), totais: new Map(totais) }; j++; }
-            if (i === mins.length) break;
-            const ns = mins[i].niveis || [];
-            for (let q = 0; q < ns.length; q++) { const n = ns[q], k = Math.round(n.p / tick); mapa.set(k, (mapa.get(k) || 0) + (n.c - n.v)); totais.set(k, (totais.get(k) || 0) + (n.c + n.v)); }
-        }
-        porTick.set(tick, snaps);
-        await new Promise(r => setTimeout(r, 0));
-    }
-    const combos = [];
-    tfs.forEach(tf => janelas.forEach(d => {
-        if (d * DIA < 3 * tf.ms) return;   // timeframe sempre menor que a janela
-        const sn = porTick.get(tf.tick)[d];
-        const r = sn && grMeAvaliar(lado, preco, tf.tick, sn.mapa, sn.totais, tf.k.filter(c => c.t >= agora - d * DIA), tf.atr);
-        if (r) combos.push(Object.assign(r, { d, tf }));
-    }));
-    if (!combos.length) return { erro: 'Nenhuma combinação achou faixa do lado certo do preço (' + (lado === 'short' ? 'acima' : 'abaixo') + ').' };
-    // Votação: cada combinação soma a sua nota nos degraus de $10 da sua faixa; a faixa final é o pico + vizinhos com ≥ 60% do pico.
-    const G = 10, votos = new Map();
-    combos.forEach(c => { for (let p = Math.floor(c.banda.lo / G); p < Math.ceil(c.banda.hi / G); p++) votos.set(p, (votos.get(p) || 0) + c.banda.rank); });
-    let pico = null, vPico = 0;
-    votos.forEach((v, p) => { if (v > vPico) { vPico = v; pico = p; } });
-    let pa = pico, pb = pico;
-    while ((votos.get(pa - 1) || 0) >= 0.6 * vPico) pa--;
-    while ((votos.get(pb + 1) || 0) >= 0.6 * vPico) pb++;
-    const lo = pa * G, hi = (pb + 1) * G, s = lado === 'short' ? 1 : -1;
-    const acertos = combos.filter(c => c.banda.lo < hi && c.banda.hi > lo);
-    const lider = acertos.slice().sort((a, b) => b.banda.rank - a.banda.rank)[0];
-    const chave = lider.niv.filter(n => n.lo < hi && n.hi > lo && n.gate).sort((a, b) => b.rank - a.rank)[0] || lider.banda.chave;
-    // Só vale a parte da faixa do LADO CERTO do preço atual (acima no short, abaixo no long): entrada do outro lado do preço seria ordem que já nasce executada/stopada.
-    let loF = lo, hiF = hi;
-    if (s > 0) { loF = Math.max(lo, preco); if (hiF <= loF) hiF = loF + lider.tick; } else { hiF = Math.min(hi, preco); if (loF >= hiF) loF = hiF - lider.tick; }
-    const recortada = loF !== lo || hiF !== hi;
-    const entrada = (loF + hiF) / 2, atr = lider.atr;
-    const stop = s > 0 ? hiF + 0.5 * atr : loF - 0.5 * atr, alvo = grMeAlvo(lider.niv, s, entrada, atr, lider.loW, lider.hiW);
-    // Outras faixas (do combo líder), fora da escolhida: as 3 de maior nota, não coladas entre si.
-    const outras = [];
-    lider.niv.filter(n => n.gate && n.rank > 0 && !(n.hi > lo - lider.tick && n.lo < hi + lider.tick)).sort((a, b) => b.rank - a.rank).forEach(n => {
-        if (outras.length < 3 && outras.every(o => Math.abs(o.k - n.k) >= 2)) outras.push(n);
+    const s = lado === 'short' ? 1 : -1, tick = u.tick, atr = Math.max(u.atr || 0, tick);
+    const niv = [];
+    u.mapa.forEach((d, k) => { const v = u.totais.get(k) || 0; if (v > 0) niv.push({ k, c: k * tick, lo: k * tick - tick / 2, hi: k * tick + tick / 2, d, v, dp: d / v }); });
+    niv.sort((a, b) => a.k - b.k);
+    if (niv.length < 6) return { erro: 'Poucos níveis na régua para analisar.' };
+    const pcV = grMePerc(niv.map(n => n.v)), loW = niv[0].lo, hiW = niv[niv.length - 1].hi, rng = Math.max(hiW - loW, atr);
+    // Numeração como na régua: de CIMA para BAIXO, só os níveis que estão na tela (Nível 1 = o de cima).
+    niv.filter(n => !(u.minP > 0 && u.maxP > 0) || (n.hi > u.minP && n.lo < u.maxP)).sort((x, y) => y.k - x.k).forEach((n, i) => { n.num = i + 1; });
+    niv.forEach(n => {
+        n.pv = pcV(n.v); n.fav = s * n.d > 0;
+        n.gate = s > 0 ? n.lo >= preco : n.hi <= preco;   // INTEIRO do lado certo do preço (acima no short, abaixo no long): o nível que contém o preço não vira entrada
+        n.dist = Math.max(0, s * (n.c - preco));
+        n.pos = Math.max(0, Math.min(1, s > 0 ? (n.c - loW) / rng : (hiW - n.c) / rng));
+        n.c1 = n.pv >= 0.75; n.c2 = n.fav && Math.abs(n.dp) >= 0.05; n.c3 = n.pos >= 0.6;
+        n.pisos = (n.c1 ? 1 : 0) + (n.c2 ? 1 : 0) + (n.c3 ? 1 : 0);
+        n.rank = n.gate ? n.pisos + 0.3 * n.pv + 0.2 * Math.exp(-n.dist / (2.5 * atr)) : 0;   // critérios mandam; volume e proximidade desempatam
     });
-    // Estreita = a faixa da própria combinação líder (a que o usuário confere na régua), recortada do lado certo do preço e com largura mínima de 0,1% do preço.
-    let eLo = Math.max(lider.banda.lo, loF), eHi = Math.min(lider.banda.hi, hiF);
-    if (eHi <= eLo) { eLo = loF; eHi = hiF; }
-    const minL = 0.001 * preco;
-    if (eHi - eLo < minL) { if (s > 0) eHi = eLo + minL; else eLo = eHi - minL; }
-    const estreita = { lo: eLo, hi: eHi, sc: lider.banda.score };
-    // Números das CAIXAS (e do relatório): entrada na borda de entrada da faixa, stop na borda oposta, alvo = próximo nó de alto volume (senão 2R).
-    const cx = (a, b) => {
-        const ent = s > 0 ? a : b, stp = s > 0 ? b : a;
-        let alv = grMeAlvo(lider.niv, s, (a + b) / 2, atr, lider.loW, lider.hiW);
-        if (alv == null || (s > 0 ? alv >= ent : alv <= ent)) alv = ent - s * 2 * Math.abs(stp - ent);
-        return { entrada: ent, stop: stp, alvo: alv, rr: Math.abs(ent - alv) / Math.abs(stp - ent), lo: a, hi: b };
-    };
-    const cxP = cx(loF, hiF), cxN = cx(estreita.lo, estreita.hi);
-    return { lado, s, preco, lo: loF, hi: hiF, recortada, loOrig: lo, hiOrig: hi, estreita, cxP, cxN, entrada: cxP.entrada, stop: cxP.stop, alvo: cxP.alvo, rr: cxP.rr, atr,
-        conf: acertos.length / combos.length, nAcertos: acertos.length, nCombos: combos.length, lider, chave, outras, combos, acertos,
-        janelas, tfs: tfs.map(t => t.rot), cobertura, tick: lider.tick };
-}
-function grMeRazoesContra(n, s, atr, lado) {
-    const r = [], fmtS = x => (x >= 0 ? '+' : '−') + grFmtVolCompacto(Math.abs(x), 0);
-    if (!n.fav) r.push('delta contrário (' + fmtS(n.d) + '): domina a agressão ' + (s > 0 ? 'vendedora, sem compradores presos ali' : 'compradora, sem vendedores presos ali'));
-    else if (!n.c2) r.push('delta fraco (' + fmtS(n.d) + ', ' + Math.round(Math.abs(n.dp) * 100) + '% do volume): ' + (s > 0 ? 'não há compradores presos de verdade' : 'não há vendedores presos de verdade'));
-    if (!n.c1) r.push('volume fora dos 25% maiores (percentil ' + Math.round(n.pv * 100) + '): não é zona quente, o preço tende a atravessar com pouca defesa');
-    if (n.dist / atr > 3) r.push('longe do preço (' + (n.dist / atr).toFixed(1).replace('.', ',') + ' ATR): baixa chance de ser tocada');
-    if (n.dist / atr < 0.3) r.push('colada no preço: sem folga pro stop');
-    if (n.toq >= 2 && n.rr < 0.45) r.push('rompida em ' + n.rup + ' de ' + n.toq + ' toques');
-    if (n.pos < 0.4) r.push('não está no ' + (s > 0 ? 'topo' : 'fundo') + ' da janela (' + Math.round(n.pos * 100) + '% do range)');
-    return r;
+    let ib = -1;
+    niv.forEach((n, i) => { if (n.rank > 0 && (ib < 0 || n.rank > niv[ib].rank)) ib = i; });
+    if (ib < 0) return { erro: 'Não há nível da régua ' + (s > 0 ? 'acima' : 'abaixo') + ' do preço atual.' };
+    let a = ib, b = ib;
+    while (b - a < 2) {   // faixa de até 3 níveis colados que também têm delta do lado certo e volume acima da mediana
+        const ok = x => x && x.gate && x.fav && x.pv >= 0.5, e = niv[a - 1], d = niv[b + 1];
+        const okE = ok(e) && e.k === niv[a].k - 1, okD = ok(d) && d.k === niv[b].k + 1;
+        if (okD && (!okE || d.rank >= e.rank)) b++; else if (okE) a--; else break;
+    }
+    let lo = niv[a].lo, hi = niv[b].hi;
+    if (s > 0) { lo = Math.max(lo, preco); if (hi <= lo) hi = lo + tick; } else { hi = Math.min(hi, preco); if (lo >= hi) lo = hi - tick; }
+    const minL = 0.001 * preco; if (hi - lo < minL) { if (s > 0) hi = lo + minL; else lo = hi - minL; }
+    const entrada = s > 0 ? lo : hi, stop = s > 0 ? hi : lo, risco = Math.abs(stop - entrada), K = niv[ib];
+    // Alvos: nós de alto volume do lado oposto, a ≥ 1 ATR da entrada, agrupando níveis colados. Alvo = a borda de trás do nó (a primeira onde o preço tende a segurar fica antes dela).
+    const hv = niv.filter(n => n.pv >= 0.75 && s * (entrada - n.c) >= atr).sort((x, y) => s > 0 ? y.k - x.k : x.k - y.k);
+    const grupos = [];
+    hv.forEach(n => { const g = grupos[grupos.length - 1]; if (g && Math.abs(n.k - g.ult) === 1) { g.ns.push(n); g.ult = n.k; } else grupos.push({ ns: [n], ult: n.k }); });
+    grupos.forEach(g => {
+        g.lo = Math.min.apply(null, g.ns.map(n => n.lo)); g.hi = Math.max.apply(null, g.ns.map(n => n.hi));
+        g.vol = g.ns.reduce((q, n) => q + n.v, 0); g.poc = g.ns.some(n => n.k === u.pocK);
+        g.nums = g.ns.map(n => n.num).filter(Boolean); g.alvo = s > 0 ? g.lo : g.hi; g.rr = Math.abs(entrada - g.alvo) / risco;
+    });
+    const uteis = grupos.filter(g => g.rr >= 1);
+    const g1 = uteis[0] || null, g2 = uteis.find(g => g !== g1 && Math.abs(entrada - g.alvo) > Math.abs(entrada - (g1 ? g1.alvo : entrada))) || null;
+    let alvo1 = g1 ? g1.alvo : null, semNo = false;
+    if (alvo1 == null) { alvo1 = entrada - s * 2 * risco; semNo = true; }   // sem nó de volume útil: 2R
+    const alvo2 = g2 ? g2.alvo : null;
+    const rr1 = Math.abs(entrada - alvo1) / risco, rr2 = alvo2 != null ? Math.abs(entrada - alvo2) / risco : null;
+    // Linhas de nível: candidatos de entrada (do lado certo, não colados entre si) e nós de alvo.
+    const dentro = n => n.hi > lo && n.lo < hi;
+    const cands = [];
+    niv.filter(n => n.gate && !dentro(n)).sort((x, y) => y.rank - x.rank).forEach(n => { if (cands.length < 3 && cands.every(o => Math.abs(o.k - n.k) >= 2) && !(Math.abs(n.k - niv[a].k) <= 1 || Math.abs(n.k - niv[b].k) <= 1)) cands.push(n); });
+    return { lado, s, preco, lo, hi, entrada, stop, alvo: alvo1, alvo1, alvo2, rr: rr1, rr1, rr2, semNo, atr, tick, K, band: { a: niv[a], b: niv[b] }, numEntrada: niv.slice(a, b + 1).map(n => n.num).filter(Boolean),
+        forca: K.pisos >= 3 ? 'Forte' : (K.pisos === 2 ? 'Moderado' : 'Fraco'), cands, grupos: grupos.slice(0, 3), g1, g2, dias: u.dias, tfRot: u.tfRot, niveis: niv.length };
 }
 function grMeMontarRelatorio(r) {
-    const fp = x => Math.round(x).toLocaleString('pt-BR'), n1 = x => x.toFixed(1).replace('.', ','), pc = x => Math.round(x * 100) + '%';
-    const fmtS = x => (x >= 0 ? '+' : '−') + grFmtVolCompacto(Math.abs(x), 0);
-    const short = r.lado === 'short', cor = short ? '#DC2626' : '#16A34A', L = r.lider, K = r.chave, s = r.s;
-    const confTxt = K.pisos >= 4 ? 'Forte' : (K.pisos === 3 ? 'Moderado' : 'Fraco');   // força = critérios duros atendidos pelo nível-chave
-    const pros = [], contras = [];
-    pros.push('Confluência: ' + r.nAcertos + ' de ' + r.nCombos + ' combinações de dias × timeframe apontam esta faixa (' + pc(r.conf) + ').');
-    if (K.c1) pros.push('Volume no percentil ' + Math.round(K.pv * 100) + ' dos níveis da janela' + (K.pv >= 0.75 ? ' (nó de alto volume: onde houve negócio, há interesse e defesa).' : '.'));
-    if (K.c2) pros.push('Delta ' + fmtS(K.d) + ' (' + pc(Math.abs(K.dp)) + ' do volume): ' + (short ? 'compradores agressivos que não conseguiram subir o preço = vendedores passivos absorvendo; quem comprou ali está preso e tende a vender na volta.' : 'vendedores agressivos que não conseguiram derrubar o preço = compradores passivos absorvendo; quem vendeu ali está preso e tende a recomprar na volta.'));
-    if (K.c4) pros.push((short ? 'Região de topo' : 'Região de fundo') + ' da janela de ' + L.d + ' dias (' + pc(K.pos) + ' do range; máx./mín. do período a ' + n1(Math.max(0, short ? L.hiW - K.hi : K.lo - L.loW) / L.atr) + ' ATR).');
-    if (K.c3) pros.push('Reação no ' + L.tf.rot + ': de ' + K.toq + ' toque(s), ' + K.rej + ' rejeitaram e ' + K.rup + ' romperam.');
-    pros.push('A ' + n1(Math.max(0, (short ? r.entrada - r.preco : r.preco - r.entrada)) / L.atr) + ' ATR do preço atual (' + fp(r.preco) + '): alcançável.');
-    if (r.rr != null && r.rr >= 1.5) pros.push('Relação risco/retorno de ' + n1(r.rr) + ':1 até o alvo (' + fp(r.alvo) + ').');
-    grMeRazoesContra(K, s, L.atr, r.lado).filter(x => !/^colada/.test(x) || true).forEach(x => contras.push(x.charAt(0).toUpperCase() + x.slice(1) + '.'));
-    if (K.toq < 2) contras.push('Poucos toques (' + K.toq + ') no ' + L.tf.rot + ': amostra pequena de reação.');
-    if (r.rr == null) contras.push('Sem alvo claro (nenhum nó de alto volume do outro lado a ≥ 1 ATR).'); else if (r.rr < 1.5) contras.push('Risco/retorno de só ' + n1(r.rr) + ':1.');
-    if (r.conf < 0.5) contras.push('Confluência fraca: menos da metade das combinações concorda.');
-    contras.push('Se o preço ' + (short ? 'fechar acima' : 'fechar abaixo') + ' de ' + fp(r.stop) + ', a tese falha.');
-    const outras = r.outras.map(n => {
-        const rz = grMeRazoesContra(n, s, L.atr, r.lado);
-        if (!rz.length) rz.push('nota ' + pc(n.score) + ' contra ' + pc(L.banda.score) + ' da líder: menos sinais juntos');
-        return { tit: fp(n.lo) + ' – ' + fp(n.hi), rz: rz.slice(0, 3) };
+    const fp = x => Math.round(x).toLocaleString('pt-BR'), n1 = x => x.toFixed(1).replace('.', ','), short = r.lado === 'short', cor = short ? '#DC2626' : '#16A34A';
+    const fmtS = x => (x >= 0 ? '+' : '−') + grFmtVolCompacto(Math.abs(x), 0), pct = n => n1(Math.abs(n.dp) * 100) + '%';
+    const presos = short ? 'compradores presos' : 'vendedores presos';
+    const nome = short ? 'SHORT' : 'LONG', K = r.K;
+    const rot = ns => { ns = ns.filter(Boolean).sort((x, y) => x - y); return !ns.length ? 'Fora da tela' : (ns.length === 1 ? 'Nível ' + ns[0] : 'Níveis ' + ns[0] + ' a ' + ns[ns.length - 1]); };
+    const linhaN = n => fmtS(n.d) + ' · ' + pct(n) + ' · vol ' + grFmtVolCompacto(n.v, 0);
+    const razoes = n => {
+        const ps = [];
+        if (!n.fav) ps.push('delta contrário'); else if (!n.c2) ps.push('delta fraco');
+        if (!n.c1) ps.push('volume baixo'); if (!n.c3) ps.push('longe do ' + (short ? 'topo' : 'fundo') + ' da régua');
+        return ps.join(', ');
+    };
+    const porque = [K.c2 ? presos : null, K.c1 ? 'volume alto' : null, K.c3 ? ((short ? 'topo' : 'fundo') + ' da régua') : null].filter(Boolean);
+    const fraco = [!K.c2 ? (K.fav ? 'delta fraco' : 'delta contrário') : null, !K.c1 ? 'volume baixo' : null, !K.c3 ? 'longe do ' + (short ? 'topo' : 'fundo') : null].filter(Boolean);
+    const L = [];   // [texto, tipo]
+    L.push(['Entrada ' + fp(r.entrada) + ' · Stop ' + fp(r.stop) + ' · Alvo 1 ' + fp(r.alvo1) + (r.alvo2 != null ? ' · Alvo 2 ' + fp(r.alvo2) : ''), 'plano']);
+    L.push(['R:R ' + n1(r.rr1) + (r.rr2 != null ? ' / ' + n1(r.rr2) : '') + (r.semNo ? ' (sem nó de volume útil: alvo 2R)' : ''), 'sub']);
+    const entradaTxt = rot(r.numEntrada) + ' · ' + fp(r.lo) + ' – ' + fp(r.hi) + ' · ' + linhaN(K) + ' → ' + (porque.length ? porque.join(', ') : 'nenhum critério forte') + (fraco.length ? ' (mas ' + fraco.join(', ') + ')' : '');
+    const niveis = [];
+    niveis.push({ t: entradaTxt, tag: 'ENTRADA', c: cor, o: Math.min.apply(null, r.numEntrada.length ? r.numEntrada : [999]) });
+    r.cands.forEach(n => niveis.push({ t: rot([n.num]) + ' · ' + fp(n.lo) + ' – ' + fp(n.hi) + ' · ' + linhaN(n) + ' → descartado: ' + (razoes(n) || 'nota menor'), tag: '', c: '#8E8E93', o: n.num }));
+    r.grupos.forEach(g => {
+        const e1 = g === r.g1, e2 = g === r.g2;
+        niveis.push({ t: rot(g.nums) + ' · ' + fp(g.lo) + ' – ' + fp(g.hi) + ' · vol ' + grFmtVolCompacto(g.vol, 0) + (g.poc ? ' · POC' : '') + ' → ' + (e1 ? 'alvo 1 (borda ' + fp(g.alvo) + ')' : (e2 ? 'alvo 2 (borda ' + fp(g.alvo) + ')' : (g.rr < 1 ? 'perto demais da entrada (R:R ' + n1(g.rr) + ')' : 'além do alvo 2')))
+            + (g.poc && e1 ? '; o preço pode ficar retido aqui, realize parte' : ''), tag: e1 ? 'ALVO 1' : (e2 ? 'ALVO 2' : ''), c: '#16A34A', o: Math.min.apply(null, g.nums.length ? g.nums : [999]) });
     });
-    const conferir = L.d + ' dias · timeframe ' + L.tf.rot + ' (combinação líder). Plote isso na régua (botão abaixo) e veja a faixa ' + fp(r.lo) + ' – ' + fp(r.hi) + '.';
-    const testadas = 'Janelas: ' + r.janelas.join(', ') + ' dias · Timeframes: ' + r.tfs.join(', ') + ' · ' + r.nCombos + ' combinações válidas (só timeframes diários — smart money leva dias pra montar posição; ≥ 3 candles do timeframe dentro da janela; máx. 15 dias).' + (r.janelas.length < GR_ME_JANELAS.length ? ' Janelas maiores ficaram de fora: o footprint carregado cobre ' + n1(r.cobertura) + ' dias.' : '');
-    const tabela = r.combos.slice().sort((a, b) => a.d - b.d || a.tf.ms - b.tf.ms).map(c => (r.acertos.includes(c) ? '✓ ' : '· ') + c.d + 'd × ' + c.tf.rot + ' → ' + fp(c.banda.lo) + ' – ' + fp(c.banda.hi) + ' (nota ' + pc(c.banda.score) + ')');
-    const nome = short ? 'SHORT' : 'LONG';
-    // texto puro (Copiar)
-    const T = [];
-    T.push('MELHOR FAIXA PARA ' + nome + ' — pergunta: qual a faixa de preços mais favorável para entrar ' + (short ? 'shortado' : 'longado') + '?');
-    T.push('Resposta: ' + fp(r.lo) + ' – ' + fp(r.hi) + ' | sinal ' + confTxt + ' (' + K.pisos + ' de 4 critérios) | confluência ' + r.nAcertos + '/' + r.nCombos);
-    T.push('Caixa: entrada ' + fp(r.cxP.entrada) + ' | stop ' + fp(r.cxP.stop) + ' | alvo ' + fp(r.cxP.alvo) + ' | R:R ' + n1(r.cxP.rr) + ':1');
-    T.push('Para conferir: ' + conferir); T.push(testadas);
-    T.push('\nA FAVOR:'); pros.forEach(x => T.push('• ' + x));
-    T.push('\nCONTRA (esta faixa):'); contras.forEach(x => T.push('• ' + x));
-    T.push('\nOUTRAS FAIXAS (por que não):'); outras.forEach(o => { T.push('• ' + o.tit); o.rz.forEach(x => T.push('   – ' + x)); });
-    T.push('\nCOMBINAÇÕES:'); tabela.forEach(x => T.push(x));
-    T.push('\nEstimativa por confluência de sinais de footprint; não é garantia nem recomendação financeira.');
-    const li = a => a.map(x => '<li style="margin:3px 0;">' + x + '</li>').join('');
-    const sec = (t, c) => '<div style="font-size:13px;font-weight:800;margin:16px 0 4px;color:' + c + ';">' + t + '</div>';
-    const html = '<div style="font-size:12px;color:#8E8E93;">Pergunta</div><div style="font-size:15px;font-weight:700;margin-bottom:10px;">Qual a faixa de preços mais favorável para entrar ' + (short ? 'shortado' : 'longado') + '?</div>'
-        + '<div style="border:2px solid ' + cor + ';border-radius:12px;padding:12px 14px;background:' + (short ? '#FEF2F2' : '#F0FDF4') + ';">'
-        + '<div style="font-size:12px;font-weight:700;color:' + cor + ';">' + nome + ' · sinal ' + confTxt + ' (' + K.pisos + ' de 4 critérios) · confluência ' + r.nAcertos + ' de ' + r.nCombos + '</div>'
-        + '<div style="font-size:26px;font-weight:800;margin:2px 0;">' + fp(r.lo) + ' – ' + fp(r.hi) + '</div>'
-        + '<div style="font-size:13px;line-height:1.5;"><b>Caixa</b> · Entrada ' + fp(r.cxP.entrada) + ' · Stop ' + fp(r.cxP.stop) + ' · Alvo ' + fp(r.cxP.alvo) + ' · R:R ' + n1(r.cxP.rr) + ':1</div></div>'
-        + (r.recortada ? '<div style="font-size:11.5px;color:#8E8E93;margin-top:6px;">Faixa da régua: ' + fp(r.loOrig) + ' – ' + fp(r.hiOrig) + '. Recortada ' + (short ? 'acima' : 'abaixo') + ' do preço atual (' + fp(r.preco) + '): entrar do outro lado do preço não faz sentido.</div>' : '')
-        + '<button onclick="grMelhorCriarCaixa()" style="width:100%;margin-top:10px;border:2px solid ' + cor + ';border-radius:12px;padding:12px;font-size:15px;font-weight:800;background:#fff;color:' + cor + ';">Criar Caixa</button>'
-        + '<div style="font-size:12.5px;margin-top:10px;line-height:1.45;"><b>Para conferir:</b> ' + conferir + '</div>'
-        + '<div style="font-size:11.5px;color:#8E8E93;margin-top:4px;line-height:1.4;">' + testadas + '</div>'
-        + sec('A favor', '#16A34A') + '<ul style="margin:0;padding-left:18px;font-size:13px;line-height:1.45;">' + li(pros) + '</ul>'
-        + sec('Contra (esta faixa)', '#DC2626') + '<ul style="margin:0;padding-left:18px;font-size:13px;line-height:1.45;">' + li(contras) + '</ul>'
-        + sec('Outras faixas — por que não', '#1C1C1E') + outras.map(o => '<div style="font-size:13px;font-weight:700;margin-top:8px;">' + o.tit + '</div><ul style="margin:2px 0 0;padding-left:18px;font-size:12.5px;line-height:1.4;color:#3A3A3C;">' + li(o.rz) + '</ul>').join('')
-        + '<details style="margin-top:16px;"><summary style="font-size:13px;font-weight:700;cursor:pointer;">Combinações testadas (' + r.nCombos + ')</summary><div style="font-size:12px;line-height:1.55;margin-top:6px;font-family:ui-monospace,monospace;">' + tabela.join('<br>') + '</div></details>'
-        + '<button onclick="grMelhorAplicar()" style="width:100%;margin-top:16px;border:none;border-radius:12px;padding:13px;font-size:15px;font-weight:800;background:' + cor + ';color:#fff;">Aplicar na régua (' + L.d + ' dias · ' + L.tf.rot + ') e marcar a faixa</button>'
-        + '<div style="font-size:11px;color:#8E8E93;margin-top:12px;line-height:1.4;">Estimativa por confluência de sinais de footprint (volume, delta, topo/fundo, reação, alcance); não é backtest, garantia nem recomendação financeira.</div>';
+    niveis.sort((x, y) => (x.o == null ? 999 : x.o) - (y.o == null ? 999 : y.o));   // de cima para baixo, como a régua
+    const invalida = 'Falha se fechar ' + (short ? 'acima' : 'abaixo') + ' de ' + fp(r.stop) + '.';
+    const T = ['MELHOR ' + nome + ' · ' + r.dias + ' dias · TF ' + r.tfRot + ' · preço ' + fp(r.preco) + ' · sinal ' + r.forca];
+    L.forEach(x => T.push(x[0])); T.push(''); niveis.forEach(n => T.push('• ' + (n.tag ? '[' + n.tag + '] ' : '') + n.t)); T.push(invalida);
+    const html = '<div style="font-size:12px;color:#8E8E93;">' + r.dias + ' dias · TF ' + r.tfRot + ' · preço ' + fp(r.preco) + '</div>'
+        + '<div style="border:2px solid ' + cor + ';border-radius:12px;padding:12px 14px;margin-top:6px;background:' + (short ? '#FEF2F2' : '#F0FDF4') + ';">'
+        + '<div style="font-size:12px;font-weight:700;color:' + cor + ';">' + nome + ' · sinal ' + r.forca + ' (' + K.pisos + ' de 3 critérios)</div>'
+        + '<div style="font-size:15px;font-weight:800;line-height:1.5;margin-top:4px;">' + L[0][0].replace(/ · /g, '<br>') + '</div>'
+        + '<div style="font-size:12.5px;color:#3A3A3C;margin-top:4px;">' + L[1][0] + '</div></div>'
+        + '<div style="margin-top:12px;">' + niveis.map(n => '<div style="font-size:12.5px;line-height:1.4;padding:6px 0;border-top:1px solid #F2F2F7;color:' + (n.tag ? '#1C1C1E' : '#6B6B70') + ';">'
+            + (n.tag ? '<span style="font-weight:800;color:' + n.c + ';">' + n.tag + '</span> ' : '') + n.t + '</div>').join('') + '</div>'
+        + '<div style="font-size:12.5px;margin-top:10px;font-weight:700;">' + invalida + '</div>'
+        + '<div style="font-size:11px;color:#8E8E93;margin-top:10px;line-height:1.4;">Leitura dos níveis da régua; não é backtest nem garantia.</div>';
     return { html, texto: T.join('\n') };
-}
-// Cria a caixa Em Análise (a mesma da ferramenta de posição: mostra Alv = alavancagem, Pos = total da posição e Luc = lucro no alvo)
-// a partir da faixa MAIS ESTREITA: entrada na borda de entrada da faixa (short: embaixo; long: em cima), stop logo além da faixa (meia largura dela).
-function grMelhorCriarCaixa() {
-    const r = _grMeUltimo; if (!r || r.erro) return;
-    const e = r.estreita, s = r.s, atr = r.lider.atr, L = r.lider;
-    const n = _grAllCandles.length; if (!n) return;
-    const prin = r.cxP;   // exatamente os números mostrados no relatório
-    const lista = grPosicoes();
-    for (let i = lista.length - 1; i >= 0; i--) if (lista[i].origem === 'melhor' && !lista[i].tradeId) lista.splice(i, 1);   // só a caixa do Melhor por vez
-    const w = Math.max(2, Math.floor((_grZoom || 15) * 0.1));   // largura em candles acompanha o zoom (mín. 2); começa logo depois do último candle
-    const pz = grPosNova(r.lado, n, prin.entrada);
-    pz.entrada = prin.entrada; pz.stop = prin.stop; pz.alvo = prin.alvo; pz.origem = 'melhor';
-    pz.t1 = grIndexToTime(n); pz.t2 = grIndexToTime(n + w);
-    lista.push(pz);
-    grPosSalvar();
-    grMelhorFechar(); cvFecharMenuFpCfg();
-    try { cvEdicaoIniciar('ps', lista.length - 1); } catch (err) {}
-    grDrawChart();
 }
 function grMelhorFechar() { const ov = document.getElementById('melhor-relatorio-overlay'); if (ov) ov.style.display = 'none'; }
 function grMelhorCopiar() { try { navigator.clipboard.writeText((_grMeUltimo && _grMeUltimo.texto) || ''); } catch (e) {} }
-function grMelhorAplicar() {
-    const r = _grMeUltimo; if (!r || r.erro) return;
-    const bin = r.lider.tf.bin;
-    grFootprintLookbackSlider(r.lider.d);
-    if (r.lider.tf.mult === 1) { _grDaTf = '1day'; _grDaTfCustom = null; }
-    else { _grDaTf = 'custom'; _grDaTfCustom = { u: 'dia', a: r.lider.tf.mult }; }
-    window._grFaixasDA = window._grFaixasDA.filter(f => !(f.lo < r.hi && f.hi > r.lo));
-    window._grFaixasDA.push({ lo: r.lo, hi: r.hi, s: r.s, cor: r.lado === 'short' ? '#DC2626' : '#16A34A' });
-    try { grAmbienteSalvar(); } catch (e) {}
-    window._grDeltaAtrCache = {};
-    grMelhorFechar(); cvFecharMenuFpCfg();
-    grDrawChart();
-}
-async function grMelhorRodar(lado) {
-    if (_grMeCalculando) return;
-    _grMeCalculando = true; cvRenderMenuFpCfg();
+function grMelhorRodar(lado) {
     let r;
-    try { r = await grMelhorCalcular(lado); } catch (e) { r = { erro: 'Erro no cálculo: ' + e.message }; }
-    _grMeCalculando = false;
-    if (r.erro) { cvRenderMenuFpCfg(); alert(r.erro); return; }
+    try { r = grMelhorCalcular(lado); } catch (e) { r = { erro: 'Erro no cálculo: ' + e.message }; }
+    if (r.erro) { alert(r.erro); return; }
     const rel = grMeMontarRelatorio(r);
     r.texto = rel.texto; r.html = rel.html; r.hora = new Date(); _grMeUltimo = r;
     grMelhorMostrar();
@@ -5239,6 +5081,7 @@ function grDrawCandles(candles, emptyRight) {
             // Faixa fina demais (< 8 px) não cabe número: agrupa em faixas maiores (múltiplo do tick) em vez de deixar tudo em branco.
             if (pxDolar * tickDA < 8) tickDA = tickDA * Math.ceil(8 / (pxDolar * tickDA));
             const resultadoDA = grDeltaPorFaixaATR(tickDA);
+            if (resultadoDA && resultadoDA.mapa && resultadoDA.mapa.size) window._grDaUltima = { tick: tickDA, atr: 5 * (grDaTickProprio() || grTickAtr()), mapa: resultadoDA.mapa, totais: resultadoDA.totais, pocK: resultadoDA.pocK, minP, maxP, dias: _grFootprintLookbackDias || 7, tfRot: grDaTfRotulo() };   // o 'Melhor' lê os níveis exatamente como estão desenhados
             const mapaDA = resultadoDA ? resultadoDA.mapa : null;
             const maxAbsDA = resultadoDA ? (resultadoDA.maxAbs || 1) : 1;
             const rowHDA = pxDolar * tickDA;
