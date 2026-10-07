@@ -2946,7 +2946,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v272';
+const APP_VERSAO = 'v274';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3049,8 +3049,8 @@ function grDaAbrirMenuTf(ev) {
 // ── "Melhor" (Delta ATR): análise da RÉGUA que já está na tela ─────────────────────────────────────────────────────────────────────────
 // O usuário escolhe o ambiente (Janela de dias e TF da régua), espera a régua ficar formada e aperta Short ou Long. A análise lê EXATAMENTE os
 // níveis desenhados (último desenho da régua em window._grDaUltima) e devolve um plano curto: entrada, stop, alvo 1, alvo 2 e uma linha por nível.
-// Critérios (comparações só dentro da própria régua): volume entre os 25% maiores; delta do lado certo (short: compra agressiva presa; long: venda
-// agressiva presa) com ≥ 5% do volume do nível; nível no topo (short) / fundo (long) da régua. Não é backtest nem garantia.
+// Critérios (tudo medido dentro da própria régua): volume acima da mediana dos níveis (obrigatório); delta de disputa (short: negativo = resistência;
+// long: positivo = suporte) com |delta/volume| acima da mediana dos níveis. Não é backtest nem garantia.
 let _grMeUltimo = null, _grMeCalculando = false;
 function grMePerc(arr) {   // devolve x -> fração dos valores abaixo de x (empate conta metade): 0..1
     const s = arr.slice().sort((a, b) => a - b), n = s.length;
@@ -3071,7 +3071,7 @@ function grMelhorCalcular(lado) {
     // Numeração como na régua: de CIMA para BAIXO, só os níveis que estão na tela (Nível 1 = o de cima).
     niv.filter(n => !(u.minP > 0 && u.maxP > 0) || (n.hi > u.minP && n.lo < u.maxP)).sort((x, y) => y.k - x.k).forEach((n, i) => { n.num = i + 1; });
     niv.forEach(n => {
-        n.pv = pcV(n.v); n.fav = s * n.d > 0;
+        n.pv = pcV(n.v); n.fav = s * n.d < 0;   // zona DISPUTADA: delta contrário ao lado da operação (short: negativo = resistência; long: positivo = suporte)
         n.lado = s > 0 ? n.lo >= preco : n.hi <= preco;   // INTEIRO do lado certo do preço (acima no short, abaixo no long): o nível que contém o preço não vira entrada
         n.gate = n.lado && n.pv >= 0.5;   // piso de volume tirado da própria régua: nível abaixo da MEDIANA dos níveis nunca vira entrada
         n.dist = Math.max(0, s * (n.c - preco));
@@ -3118,18 +3118,18 @@ function grMelhorCalcular(lado) {
 function grMeMontarRelatorio(r) {
     const fp = x => Math.round(x).toLocaleString('pt-BR'), n1 = x => x.toFixed(1).replace('.', ','), short = r.lado === 'short', cor = short ? '#DC2626' : '#16A34A';
     const fmtS = x => (x >= 0 ? '+' : '−') + grFmtVolCompacto(Math.abs(x), 0), pct = n => n1(Math.abs(n.dp) * 100) + '%';
-    const presos = short ? 'compradores presos' : 'vendedores presos';
+    const presos = short ? 'delta negativo: zona disputada (resistência)' : 'delta positivo: zona disputada (suporte)';
     const nome = short ? 'SHORT' : 'LONG', K = r.K;
     const rot = ns => { ns = ns.filter(Boolean).sort((x, y) => x - y); return !ns.length ? 'Fora da tela' : (ns.length === 1 ? 'Nível ' + ns[0] : 'Níveis ' + ns[0] + ' a ' + ns[ns.length - 1]); };
     const linhaN = n => fmtS(n.d) + ' · ' + pct(n) + ' · vol ' + grFmtVolCompacto(n.v, 0);
     const razoes = n => {
         const ps = [];
-        if (!n.fav) ps.push('delta contrário'); else if (!n.c2) ps.push('delta fraco');
+        if (!n.fav) ps.push('sem delta de disputa'); else if (!n.c2) ps.push('delta fraco');
         if (!n.c1) ps.push('volume baixo');
         return ps.join(', ');
     };
     const porque = [K.c2 ? presos : null, K.c1 ? 'volume acima da mediana' : null].filter(Boolean);
-    const fraco = [!K.c2 ? (K.fav ? 'delta fraco' : 'delta contrário') : null, !K.c1 ? 'volume baixo' : null].filter(Boolean);
+    const fraco = [!K.c2 ? (K.fav ? 'delta fraco' : 'sem delta de disputa') : null, !K.c1 ? 'volume baixo' : null].filter(Boolean);
     const L = [];   // [texto, tipo]
     L.push(['Entrada ' + fp(r.entrada) + ' · Stop ' + fp(r.stop) + ' · Alvo 1 ' + fp(r.alvo1) + (r.alvo2 != null ? ' · Alvo 2 ' + fp(r.alvo2) : ''), 'plano']);
     L.push(['R:R ' + n1(r.rr1) + (r.rr2 != null ? ' / ' + n1(r.rr2) : '') + (r.semNo ? ' (sem nó de volume útil: alvo 2R)' : ''), 'sub']);
@@ -7334,6 +7334,17 @@ function grEdToqueInicio(x, y) {   // x,y em coordenadas do canvas; devolve true
     if (_edSel.tipo === 'ps' && grEdObjeto().trancada) { window._edTapPend = { x, y, sel: _edSel }; return false; }   // trancada: nada a mexer aqui, o dedo rola o gráfico
     _edDrag = { k: best.k, hx: best.x, hy: best.y, fx: x, fy: y, moved: false, snap: JSON.parse(JSON.stringify(grEdObjeto())) };
     return true;
+}
+// Ímã: stop/entrada/alvo grudam na borda de célula da régua Delta ATR mais próxima (até 12 px do dedo). Fora disso o preço é livre.
+function grMagnetRegua(yCanvas, preco) {
+    try {
+        const u = window._grDaUltima;
+        if (!_indState.deltaAtr || !u || !(u.tick > 0) || !(preco > 0)) return preco;
+        const tick = u.tick, j0 = Math.round(preco / tick - 0.5);
+        let best = preco, bd = 12;
+        for (let j = j0 - 1; j <= j0 + 1; j++) { const e = (j + 0.5) * tick, d = Math.abs(grLineY(e) - yCanvas); if (d < bd) { bd = d; best = e; } }
+        return best;
+    } catch (e) { return preco; }
 }
 function grEdToqueMove(x, y) {
     if (!_edDrag || !_edSel) return false;
