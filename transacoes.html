@@ -2946,7 +2946,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v274';
+const APP_VERSAO = 'v276';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3092,15 +3092,21 @@ function grMelhorCalcular(lado) {
     let lo = niv[a].lo, hi = niv[b].hi;
     if (s > 0) { lo = Math.max(lo, preco); if (hi <= lo) hi = lo + tick; } else { hi = Math.min(hi, preco); if (lo >= hi) lo = hi - tick; }
     const minL = tick; if (hi - lo < minL) { if (s > 0) hi = lo + minL; else lo = hi - minL; }
-    const entrada = s > 0 ? lo : hi, stop = s > 0 ? hi : lo, risco = Math.abs(stop - entrada), K = niv[ib];
+    // STOP pelo VOLUME das faixas: a borda de trás de todo o bloco de células coladas com volume acima da mediana que começa na faixa de entrada e segue para longe do preço
+    // (a resistência/suporte inteira). Só fora dele a tese está errada.
+    let ex = s > 0 ? b : a;
+    if (s > 0) { while (niv[ex + 1] && niv[ex + 1].k === niv[ex].k + 1 && niv[ex + 1].pv >= 0.5) ex++; } else { while (niv[ex - 1] && niv[ex - 1].k === niv[ex].k - 1 && niv[ex - 1].pv >= 0.5) ex--; }
+    const stopNo = s > 0 ? niv[ex].hi : niv[ex].lo;
+    const entrada = s > 0 ? lo : hi, stop = s > 0 ? Math.max(hi, stopNo) : Math.min(lo, stopNo), risco = Math.abs(stop - entrada), K = niv[ib];
+    // ALVOS = SUPORTE/RESISTÊNCIA do lado oposto: nós com volume acima da mediana E delta favorável (short: delta positivo = compradores defendendo; long: negativo), a ≥ 1 ATR da entrada. O alvo fica na borda de FRENTE do nó (onde o preço encontra o suporte e tende a segurar).
     // Alvos: nós de alto volume do lado oposto, a ≥ 1 ATR da entrada, agrupando níveis colados. Alvo = a borda de trás do nó (a primeira onde o preço tende a segurar fica antes dela).
-    const hv = niv.filter(n => n.pv >= 0.5 && s * (entrada - n.c) >= atr).sort((x, y) => s > 0 ? y.k - x.k : x.k - y.k);
+    const hv = niv.filter(n => n.pv >= 0.5 && s * n.d > 0 && s * (entrada - n.c) >= atr).sort((x, y) => s > 0 ? y.k - x.k : x.k - y.k);
     const grupos = [];
     hv.forEach(n => { const g = grupos[grupos.length - 1]; if (g && Math.abs(n.k - g.ult) === 1) { g.ns.push(n); g.ult = n.k; } else grupos.push({ ns: [n], ult: n.k }); });
     grupos.forEach(g => {
         g.lo = Math.min.apply(null, g.ns.map(n => n.lo)); g.hi = Math.max.apply(null, g.ns.map(n => n.hi));
         g.vol = g.ns.reduce((q, n) => q + n.v, 0); g.poc = g.ns.some(n => n.k === u.pocK);
-        g.nums = g.ns.map(n => n.num).filter(Boolean); g.alvo = s > 0 ? g.lo : g.hi; g.rr = Math.abs(entrada - g.alvo) / risco;
+        g.nums = g.ns.map(n => n.num).filter(Boolean); g.alvo = s > 0 ? g.hi : g.lo; g.rr = Math.abs(entrada - g.alvo) / risco;
     });
     const uteis = grupos.filter(g => g.rr >= 1);
     const g1 = uteis[0] || null, g2 = uteis.find(g => g !== g1 && Math.abs(entrada - g.alvo) > Math.abs(entrada - (g1 ? g1.alvo : entrada))) || null;
@@ -3132,7 +3138,7 @@ function grMeMontarRelatorio(r) {
     const fraco = [!K.c2 ? (K.fav ? 'delta fraco' : 'sem delta de disputa') : null, !K.c1 ? 'volume baixo' : null].filter(Boolean);
     const L = [];   // [texto, tipo]
     L.push(['Entrada ' + fp(r.entrada) + ' · Stop ' + fp(r.stop) + ' · Alvo 1 ' + fp(r.alvo1) + (r.alvo2 != null ? ' · Alvo 2 ' + fp(r.alvo2) : ''), 'plano']);
-    L.push(['R:R ' + n1(r.rr1) + (r.rr2 != null ? ' / ' + n1(r.rr2) : '') + (r.semNo ? ' (sem nó de volume útil: alvo 2R)' : ''), 'sub']);
+    L.push(['R:R ' + n1(r.rr1) + (r.rr2 != null ? ' / ' + n1(r.rr2) : '') + (r.semNo ? ' (sem suporte com volume e delta: alvo 2R)' : ''), 'sub']);
     const entradaTxt = rot(r.numEntrada) + ' · ' + fp(r.lo) + ' – ' + fp(r.hi) + ' · ' + linhaN(K) + ' → ' + (porque.length ? porque.join(', ') : 'nenhum critério forte') + (fraco.length ? ' (mas ' + fraco.join(', ') + ')' : '');
     const niveis = [];
     niveis.push({ t: entradaTxt, tag: 'ENTRADA', c: cor, o: Math.min.apply(null, r.numEntrada.length ? r.numEntrada : [999]) });
