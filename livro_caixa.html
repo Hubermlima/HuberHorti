@@ -24,6 +24,25 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
 .topbar-sub{font-size:10px;color:#007AFF;font-weight:500;cursor:pointer;text-decoration:underline;}
 
 .ios-btn-float{width:38px;height:38px;border-radius:50%;border:0.5px solid rgba(0,0,0,0.06);background:#FFF;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 16px rgba(0,0,0,0.14);cursor:pointer;}
+.cb-wrap{position:relative;padding:0 16px 10px;flex-shrink:0;z-index:60;}
+.cb-bar{display:flex;align-items:center;gap:8px;background:#F2F2F7;border-radius:12px;padding:0 6px 0 14px;height:40px;border:0.5px solid rgba(0,0,0,0.06);}
+.cb-bar:focus-within{background:#FFF;box-shadow:0 0 0 1.5px #007AFF;}
+.cb-input{flex:1;min-width:0;border:none;outline:none;background:transparent;font-size:16px;font-family:'Inter',sans-serif;color:#1C1C1E;}
+.cb-input::placeholder{color:#8E8E93;}
+.cb-x{display:none;width:24px;height:24px;border-radius:50%;border:none;background:#C7C7CC;color:#FFF;align-items:center;justify-content:center;cursor:pointer;padding:0;flex-shrink:0;}
+.cb-x.show{display:flex;}
+.cb-lupa{width:30px;height:30px;border:none;background:transparent;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;flex-shrink:0;}
+.cb-drop{display:none;position:absolute;left:16px;right:16px;top:44px;background:#FFF;border-radius:14px;box-shadow:0 8px 32px rgba(0,0,0,0.18);border:0.5px solid rgba(0,0,0,0.06);max-height:50vh;overflow-y:auto;-webkit-overflow-scrolling:touch;}
+.cb-drop.open{display:block;}
+.cb-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 14px;font-size:14px;color:#1C1C1E;border-bottom:0.5px solid #F2F2F7;cursor:pointer;}
+.cb-item:last-child{border-bottom:none;}
+.cb-item:active{background:#F2F2F7;}
+.cb-item.ativa{color:#007AFF;font-weight:600;}
+.cb-item.zero .cb-nome{color:#AEAEB2;}
+.cb-sub{font-size:11px;color:#8E8E93;font-weight:400;}
+.cb-meta{font-size:11px;color:#8E8E93;white-space:nowrap;display:flex;align-items:center;gap:6px;}
+.cb-voltar{color:#007AFF;font-weight:600;font-size:13px;background:#FAFAFC;}
+.cb-todo{font-weight:600;}
 .saldos-wrap{display:flex;gap:10px;padding:0 16px 10px;flex-shrink:0;}
 .saldo-card{flex:1;background:#FFF;border-radius:14px;padding:10px 14px;box-shadow:0 4px 16px rgba(0,0,0,0.10);border:0.5px solid rgba(0,0,0,0.06);}
 .saldo-label{font-size:9px;color:#8E8E93;text-transform:uppercase;letter-spacing:0.4px;}
@@ -216,6 +235,19 @@ body{font-family:'Inter',sans-serif;background:#F2F4F8;color:#1C1C1E;height:100v
     <div class="saldo-label">Dinheiro</div>
     <div class="saldo-val" id="saldo-inicial-dinheiro">R$ 0,00</div>
   </div>
+</div>
+
+<div class="cb-wrap" id="cb-wrap">
+  <div class="cb-bar">
+    <input class="cb-input" id="cb-input" type="text" placeholder="Filtrar por conta contábil" autocomplete="off" onfocus="cbAbrir()" onclick="cbAbrir()" oninput="cbDigitou()">
+    <button class="cb-x" id="cb-x" onclick="cbLimpar()" aria-label="Limpar">
+      <svg viewBox="0 0 24 24" style="width:12px;height:12px;stroke:#FFF;stroke-width:3;fill:none"><path d="M6 18L18 6M6 6l12 12"/></svg>
+    </button>
+    <button class="cb-lupa" onclick="document.getElementById('cb-input').focus();cbAbrir()" aria-label="Pesquisar">
+      <svg viewBox="0 0 24 24" style="width:18px;height:18px;stroke:#8E8E93;stroke-width:2.2;fill:none"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+    </button>
+  </div>
+  <div class="cb-drop" id="cb-drop"></div>
 </div>
 
 <div class="lista-card">
@@ -415,6 +447,7 @@ let _shTipo = 'saida';
 let _shForma = 'deposito';
 let _ciclo = null;
 let _contaIdSelecionada = null;
+let _filtroConta = null; // Set com as chaves de conta filtradas (null = tudo)
 
 function getContaDescricao(id) {
   const especial = CONTAS_ESPECIAIS.find(c => c.id === id);
@@ -490,8 +523,9 @@ async function init() {
   document.getElementById('per-fim').value = _d7Str;
   atualizarStatusPeriodo();
 
-  const { data: contas } = await window.db.from('contas_contabeis').select('id, codigo, descricao, is_despesa').order('descricao');
-  _contas = contas || [];
+  let rContas = await window.db.from('contas_contabeis').select('id, codigo, descricao, is_despesa, grupo').order('descricao');
+  if (rContas.error) rContas = await window.db.from('contas_contabeis').select('id, codigo, descricao, is_despesa').order('descricao');
+  _contas = rContas.data || [];
   await carregarSaldosIniciais();
   await carregarDados();
 
@@ -566,6 +600,7 @@ lista.push({ id: m.id, origem: 'manual', data: m.data, descricao: m.descricao ||
 
 
   _todosLancamentos = lista;
+  cbAtualizarContagens();
   aplicarFiltroAtivo(true);
 
   setAtualizado();
@@ -580,6 +615,7 @@ function aplicarFiltroAtivo(manterPagina = false) {
   const banco = document.getElementById('chk-banco')?.checked ?? true;
   const dinheiro = document.getElementById('chk-dinheiro')?.checked ?? true;
   _filtrados = _todosLancamentos.filter(l => {
+    if (_filtroConta !== null && !_filtroConta.has(chaveConta(l))) return false;
     if (l.forma === 'deposito') return banco;
     if (l.forma === 'dinheiro') return dinheiro;
     return true;
@@ -718,6 +754,141 @@ function fecharSumario() {
   document.getElementById('sumario-menu').style.display = 'none';
   document.getElementById('filtro-overlay').classList.remove('active');
 }
+
+
+// ===== Barra de pesquisa por conta contábil (grupo → conta) =====
+let _cbGrupo = null;     // grupo aberto no 2º nível (null = lista de grupos)
+let _cbOpts = [];
+let _cbContagem = {};
+
+function chaveConta(l) {
+  return l.conta_id || ('lbl:' + (l.conta || '—'));
+}
+
+const cbNorm = t => String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+const cbEsc = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+
+function cbAtualizarContagens() {
+  _cbContagem = {};
+  _todosLancamentos.forEach(l => { const k = chaveConta(l); _cbContagem[k] = (_cbContagem[k] || 0) + 1; });
+}
+
+// { 'Grupo': [{key, nome}] } — contas do cadastro + contas que só existem nos lançamentos
+function cbCatalogo() {
+  const grupos = {};
+  const conhecidas = new Set();
+  _contas.forEach(c => {
+    const g = (c.grupo && String(c.grupo).trim()) || 'Sem grupo';
+    (grupos[g] = grupos[g] || []).push({ key: c.id, nome: c.descricao });
+    conhecidas.add(c.id);
+  });
+  const extras = {};
+  _todosLancamentos.forEach(l => {
+    const k = chaveConta(l);
+    if (!conhecidas.has(k)) extras[k] = l.conta || '— Sem conta —';
+  });
+  Object.entries(extras).forEach(([k, nome]) => { (grupos['Outros'] = grupos['Outros'] || []).push({ key: k, nome }); });
+  Object.values(grupos).forEach(arr => arr.sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR')));
+  return grupos;
+}
+
+function cbAbrir() {
+  cbRender();
+  document.getElementById('cb-drop').classList.add('open');
+}
+
+function cbFechar() {
+  document.getElementById('cb-drop').classList.remove('open');
+  _cbGrupo = null;
+}
+
+function cbRender() {
+  const drop = document.getElementById('cb-drop');
+  const txt = cbNorm(document.getElementById('cb-input').value.trim());
+  const cat = cbCatalogo();
+  const total = keys => keys.reduce((a, k) => a + (_cbContagem[k] || 0), 0);
+  _cbOpts = [];
+  let html = '';
+  const add = (o, inner, cls = '') => {
+    _cbOpts.push(o);
+    html += `<div class="cb-item ${cls}" onclick="cbEscolher(${_cbOpts.length - 1})">${inner}</div>`;
+  };
+
+  if (txt && !_filtroConta) {
+    // busca livre: contas (e grupos) que combinam com o texto
+    Object.keys(cat).sort((a, b) => a.localeCompare(b, 'pt-BR')).forEach(g => {
+      const grupoCombina = cbNorm(g).includes(txt);
+      cat[g].forEach(c => {
+        if (!grupoCombina && !cbNorm(c.nome).includes(txt)) return;
+        const n = _cbContagem[c.key] || 0;
+        add({ tipo: 'conta', keys: [c.key], label: c.nome },
+          `<span class="cb-nome">${cbEsc(c.nome)}<div class="cb-sub">${cbEsc(g)}</div></span><span class="cb-meta">${n}</span>`, n ? '' : 'zero');
+      });
+    });
+    if (!html) html = '<div class="cb-item" style="color:#8E8E93;cursor:default;">Nenhuma conta encontrada</div>';
+  } else if (_cbGrupo === null) {
+    Object.keys(cat).sort((a, b) => a.localeCompare(b, 'pt-BR')).forEach(g => {
+      const n = total(cat[g].map(c => c.key));
+      add({ tipo: 'abrir', grupo: g },
+        `<span class="cb-nome">${cbEsc(g)}</span><span class="cb-meta">${cat[g].length} ${cat[g].length === 1 ? 'conta' : 'contas'} · ${n}
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="#C7C7CC" stroke-width="2.5"><path d="M8.25 4.5l7.5 7.5-7.5 7.5"/></svg></span>`, n ? '' : 'zero');
+    });
+  } else {
+    const contas = cat[_cbGrupo] || [];
+    add({ tipo: 'voltar' }, `<span>‹ ${cbEsc(_cbGrupo)}</span>`, 'cb-voltar');
+    add({ tipo: 'conta', keys: contas.map(c => c.key), label: _cbGrupo + ' (todas)' },
+      `<span class="cb-nome">Todo o grupo</span><span class="cb-meta">${total(contas.map(c => c.key))}</span>`, 'cb-todo');
+    contas.forEach(c => {
+      const n = _cbContagem[c.key] || 0;
+      add({ tipo: 'conta', keys: [c.key], label: c.nome },
+        `<span class="cb-nome">${cbEsc(c.nome)}</span><span class="cb-meta">${n}</span>`, n ? '' : 'zero');
+    });
+  }
+  drop.innerHTML = html;
+}
+
+function cbEscolher(i) {
+  const o = _cbOpts[i];
+  if (!o) return;
+  if (o.tipo === 'abrir') { _cbGrupo = o.grupo; cbRender(); document.getElementById('cb-drop').scrollTop = 0; return; }
+  if (o.tipo === 'voltar') { _cbGrupo = null; cbRender(); return; }
+  _filtroConta = new Set(o.keys);
+  const inp = document.getElementById('cb-input');
+  inp.value = o.label;
+  document.getElementById('cb-x').classList.add('show');
+  cbFechar();
+  inp.blur();
+  aplicarFiltroAtivo();
+}
+
+function cbDigitou() {
+  const inp = document.getElementById('cb-input');
+  const vazio = inp.value.trim() === '';
+  document.getElementById('cb-x').classList.toggle('show', !vazio);
+  if (vazio) {
+    _cbGrupo = null;
+    if (_filtroConta !== null) { _filtroConta = null; aplicarFiltroAtivo(); }
+  } else if (_filtroConta !== null) {
+    // começou a editar o texto: sai do filtro atual e volta a pesquisar
+    _filtroConta = null;
+    aplicarFiltroAtivo();
+  }
+  cbAbrir();
+}
+
+function cbLimpar() {
+  const inp = document.getElementById('cb-input');
+  inp.value = '';
+  document.getElementById('cb-x').classList.remove('show');
+  _cbGrupo = null;
+  if (_filtroConta !== null) { _filtroConta = null; aplicarFiltroAtivo(); }
+  cbFechar();
+}
+
+document.addEventListener('pointerdown', e => {
+  const w = document.getElementById('cb-wrap');
+  if (w && !w.contains(e.target)) cbFechar();
+});
 
 function aplicarCheckboxFiltro() {
   aplicarFiltroAtivo();
