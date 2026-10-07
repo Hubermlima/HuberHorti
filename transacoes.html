@@ -2946,7 +2946,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v280';
+const APP_VERSAO = 'v281';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3667,6 +3667,17 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
         ctx.fillStyle = corCel.cor;
         ctx.fillRect(xCel, y0, wCel, Math.max(1, y1 - y0));
     });
+    // Células TOCÁVEIS: tocar numa célula (que mostra número) abre o modal só daquele nível (grFpCelAbrirModal). A zona de toque tem no mínimo 14 px.
+    if (nivelTxt >= 0 && window._grFpCelHits) {
+        cl.linhas.forEach((ln, i) => {
+            const g = geo[i];
+            if (!g) return;
+            if (g.y1 - g.y0 < 8 && !g.pontaCortada) return;   // sem número desenhado: não é tocável
+            let hy = g.y0, hh = g.y1 - g.y0;
+            if (hh < 14) { hy = (g.y0 + g.y1) / 2 - 7; hh = 14; }
+            window._grFpCelHits.push({ x: xCel, y: hy, w: wCel, h: hh, cel: true, abrir: () => grFpCelAbrirModal(candle.t, i, cl) });
+        });
+    }
     // Contorno ao redor do BLOCO INTEIRO de células (não mais por célula — aquilo criava uma linha divisória entre cada
     // nível, e o pedido era só a borda externa). Cor conforme o candle fechou em alta ou baixa, igual à lógica do corpo.
     // Só na skin "cores" (a "cinza" não tem matiz pra contornar).
@@ -5554,6 +5565,7 @@ if (_grTipoGrafico === 'linha') {
     });
     ctx.stroke();
 } else {
+    window._grFpCelHits = [];   // células do footprint tocáveis neste quadro (preenchida em grDesenharFootprintCluster)
     const deltaPorCandle = grObterDeltaPorCandle(candles); // null se footprint desligado — sem dado pra saber se diverge
     const pocsPorCandle = grObterPocsPorCandle(candles); // null se footprint desligado — sem dado pra marcar os PoCs
     const ALTURA_MIN_POC_PX = 12; // candle (H até L, na tela) menor que isso não recebe traço de PoC — vira poluição
@@ -7703,8 +7715,8 @@ function grInitTouch() {
     // de deslocamento (igual ao padrão já usado no footprint), e 'click' só como fallback pra mouse/desktop.
     function _grChipSobToque(x, y) {
         const chips = window._grBarraSuperiorChips || [];
-        for (const hit of chips.concat(window._grBadgeHits || [], window._grPosRects || [], window._grDAHits || [])) {
-            if (x >= hit.x && x <= hit.x + hit.w && y >= hit.y && y <= hit.y + hit.h) return { abrir: hit.abrir };
+        for (const hit of chips.concat(window._grBadgeHits || [], window._grPosRects || [], window._grDAHits || [], window._grFpCelHits || [])) {
+            if (x >= hit.x && x <= hit.x + hit.w && y >= hit.y && y <= hit.y + hit.h) return { abrir: hit.abrir, cel: !!hit.cel };
         }
         return null;
     }
@@ -7716,7 +7728,7 @@ function grInitTouch() {
         const y = (evt.touches[0].clientY - rect.top) * (grLH(canvas) / rect.height);
         const chip = _grChipSobToque(x, y);
         // snap: o candle que a linha OHLC mostra NO MOMENTO do toque (o redesenho seguinte pode trocar, ex.: ao fechar o crosshair)
-        _grChipTapInicio = chip ? { x: evt.touches[0].clientX, y: evt.touches[0].clientY, chip, snap: window._grOhlcAtual ? Object.assign({}, window._grOhlcAtual) : null } : null;
+        _grChipTapInicio = chip ? { t0: Date.now(), x: evt.touches[0].clientX, y: evt.touches[0].clientY, chip, snap: window._grOhlcAtual ? Object.assign({}, window._grOhlcAtual) : null } : null;
     }, { passive: true });
     canvas.addEventListener('touchend', evt => {
         if (!_grChipTapInicio) return;
@@ -7725,6 +7737,7 @@ function grInitTouch() {
         const touch = evt.changedTouches && evt.changedTouches[0];
         if (!touch) return;
         if (Math.hypot(touch.clientX - inicio.x, touch.clientY - inicio.y) > 12) return; // moveu — foi arrasto, não toque
+        if (inicio.chip.cel && (Date.now() - inicio.t0 > 350 || window._longPressActive)) return;   // toque longo = crosshair, não abre o nível
         inicio.chip.abrir(touch.clientX, touch.clientY, inicio.snap);
     }, { passive: true });
     canvas.addEventListener('click', evt => { // fallback desktop/mouse
@@ -13315,6 +13328,40 @@ function grFootprintDesenharOverlay() {
     }
 }
 let _grFootprintNivelAtual = null; // {p, tick, v, total} do último nível aberto — usado pelos botões de série temporal e marcar zona ZII
+// ── Modal de UM nível do footprint dos candles (toque numa célula) ─────────────────────────────────────────────────────────────
+// Mostra só o nível tocado, com números grandes: venda (bid), compra (ask), delta, % do nível, total, peso no candle e desequilíbrio.
+function grFpCelFechar() { const o = document.getElementById('fp-cel-modal'); if (o) o.remove(); }
+function grFpCelAbrirModal(candleT, idx, cl) {
+    const ln = cl && cl.linhas && cl.linhas[idx]; if (!ln) return;
+    grFpCelFechar();
+    const fn = (v, d) => Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: d == null ? (Math.abs(v) >= 100 ? 0 : 2) : d });
+    const fp = v => Math.round(v).toLocaleString('pt-BR');
+    const bid = ln.bid || 0, ask = ln.ask || 0, total = bid + ask, delta = ask - bid;
+    const totCandle = cl.linhas.reduce((q, l) => q + (l.bid || 0) + (l.ask || 0), 0);
+    const ord = cl.linhas.map(l => (l.bid || 0) + (l.ask || 0)).sort((a, b) => b - a), rank = ord.indexOf(total) + 1;
+    const lo = ln.p - ln.meio, hi = ln.p + ln.meio, verde = '#4CAF50', verm = '#EF5350';
+    const cDelta = delta >= 0 ? verde : verm, sinal = delta >= 0 ? '+' : '−';
+    const pctDelta = total > 0 ? Math.abs(delta) / total * 100 : 0, pctCandle = totCandle > 0 ? total / totCandle * 100 : 0;
+    const tags = [];
+    if (cl.linhas[cl.pocIdx] === ln) tags.push(['POC do candle', '#FFB300']);
+    if (ln.imbAsk) tags.push(['Desequilíbrio de COMPRA', verde]);
+    if (ln.imbBid) tags.push(['Desequilíbrio de VENDA', verm]);
+    const caixa = (rot, val, cor) => '<div style="flex:1;background:#2C2C2E;border-radius:12px;padding:12px 10px;text-align:center;"><div style="font-size:11px;color:#8E8E93;font-weight:600;">' + rot + '</div><div style="font-size:26px;font-weight:800;color:' + cor + ';margin-top:4px;line-height:1.1;">' + val + '</div></div>';
+    const linha = (rot, val, cor) => '<div style="display:flex;justify-content:space-between;padding:9px 0;border-top:1px solid rgba(255,255,255,0.08);font-size:14px;"><span style="color:#8E8E93;">' + rot + '</span><span style="color:' + (cor || '#FFFFFF') + ';font-weight:700;">' + val + '</span></div>';
+    const o = document.createElement('div'); o.id = 'fp-cel-modal';
+    o.style.cssText = 'position:fixed;inset:0;z-index:9700;background:rgba(0,0,0,0.5);';
+    o.onclick = grFpCelFechar;
+    o.innerHTML = '<div onclick="event.stopPropagation()" style="position:absolute;bottom:0;left:0;right:0;background:#1E222D;border-radius:20px 20px 0 0;padding:12px 16px calc(18px + env(safe-area-inset-bottom));font-family:-apple-system,sans-serif;">'
+        + '<div style="width:36px;height:4px;border-radius:2px;background:rgba(255,255,255,0.2);margin:0 auto 10px;"></div>'
+        + '<div style="display:flex;align-items:center;justify-content:space-between;"><div><div style="font-size:17px;font-weight:800;color:#FFFFFF;">$ ' + fp(lo) + ' – ' + fp(hi) + '</div>'
+        + '<div style="font-size:12px;color:#8E8E93;margin-top:2px;">Candle ' + grFootprintFmtDataHora(candleT) + ' · TF ' + String(_grTf || '').toUpperCase() + '</div></div>'
+        + '<button onclick="grFpCelFechar()" style="background:rgba(255,255,255,0.1);border:none;color:#FFFFFF;font-size:16px;width:30px;height:30px;border-radius:50%;">✕</button></div>'
+        + (tags.length ? '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;">' + tags.map(g => '<span style="font-size:11px;font-weight:700;color:' + g[1] + ';border:1px solid ' + g[1] + ';border-radius:999px;padding:2px 8px;">' + g[0] + '</span>').join('') + '</div>' : '')
+        + '<div style="display:flex;gap:10px;margin-top:14px;">' + caixa('VENDA (bid)', fn(bid), verm) + caixa('COMPRA (ask)', fn(ask), verde) + '</div>'
+        + '<div style="margin-top:12px;">' + linha('Delta', sinal + fn(Math.abs(delta)), cDelta) + linha('Delta do nível', sinal + pctDelta.toFixed(1).replace('.', ',') + '%', cDelta) + linha('Total do nível', fn(total))
+        + linha('Parte do volume do candle', pctCandle.toFixed(1).replace('.', ',') + '%') + linha('Posição no candle', rank + 'º maior de ' + cl.linhas.length + ' níveis') + '</div></div>';
+    document.body.appendChild(o);
+}
 function grFootprintAbrirNivelModal(p, v, total, tick) {
     const faixaIni = p - tick / 2, faixaFim = p + tick / 2; // a barra é centrada em p (mesma conta do desenho e do agrupamento)
     const delta = v.c - v.v;
