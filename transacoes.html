@@ -2946,7 +2946,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v270';
+const APP_VERSAO = 'v272';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3067,21 +3067,22 @@ function grMelhorCalcular(lado) {
     u.mapa.forEach((d, k) => { const v = u.totais.get(k) || 0; if (v > 0) niv.push({ k, c: k * tick, lo: k * tick - tick / 2, hi: k * tick + tick / 2, d, v, dp: d / v }); });
     niv.sort((a, b) => a.k - b.k);
     if (niv.length < 6) return { erro: 'Poucos níveis na régua para analisar.' };
-    const pcV = grMePerc(niv.map(n => n.v)), loW = niv[0].lo, hiW = niv[niv.length - 1].hi, rng = Math.max(hiW - loW, atr);
+    const pcV = grMePerc(niv.map(n => n.v)), loW = niv[0].lo, hiW = niv[niv.length - 1].hi, rng = Math.max(hiW - loW, atr), dpAbs = niv.map(n => Math.abs(n.dp)).sort((x, y) => x - y), dpMed = dpAbs[Math.floor(dpAbs.length / 2)];   // delta relevante = acima do |delta/volume| mediano da régua
     // Numeração como na régua: de CIMA para BAIXO, só os níveis que estão na tela (Nível 1 = o de cima).
     niv.filter(n => !(u.minP > 0 && u.maxP > 0) || (n.hi > u.minP && n.lo < u.maxP)).sort((x, y) => y.k - x.k).forEach((n, i) => { n.num = i + 1; });
     niv.forEach(n => {
         n.pv = pcV(n.v); n.fav = s * n.d > 0;
-        n.gate = s > 0 ? n.lo >= preco : n.hi <= preco;   // INTEIRO do lado certo do preço (acima no short, abaixo no long): o nível que contém o preço não vira entrada
+        n.lado = s > 0 ? n.lo >= preco : n.hi <= preco;   // INTEIRO do lado certo do preço (acima no short, abaixo no long): o nível que contém o preço não vira entrada
+        n.gate = n.lado && n.pv >= 0.5;   // piso de volume tirado da própria régua: nível abaixo da MEDIANA dos níveis nunca vira entrada
         n.dist = Math.max(0, s * (n.c - preco));
         n.pos = Math.max(0, Math.min(1, s > 0 ? (n.c - loW) / rng : (hiW - n.c) / rng));
-        n.c1 = n.pv >= 0.75; n.c2 = n.fav && Math.abs(n.dp) >= 0.05; n.c3 = n.pos >= 0.6;
-        n.pisos = (n.c1 ? 1 : 0) + (n.c2 ? 1 : 0) + (n.c3 ? 1 : 0);
+        n.c1 = n.pv >= 0.5; n.c2 = n.fav && Math.abs(n.dp) >= dpMed; n.c3 = false;
+        n.pisos = (n.c1 ? 1 : 0) + (n.c2 ? 1 : 0);
         n.rank = n.gate ? n.pisos + 0.3 * n.pv + 0.2 * Math.exp(-n.dist / (2.5 * atr)) : 0;   // critérios mandam; volume e proximidade desempatam
     });
     let ib = -1;
     niv.forEach((n, i) => { if (n.rank > 0 && (ib < 0 || n.rank > niv[ib].rank)) ib = i; });
-    if (ib < 0) return { erro: 'Não há nível da régua ' + (s > 0 ? 'acima' : 'abaixo') + ' do preço atual.' };
+    if (ib < 0) return { erro: niv.some(n => n.lado) ? 'Sem setup ' + lado + ' válido: nenhum nível ' + (s > 0 ? 'acima' : 'abaixo') + ' do preço tem volume acima da mediana da régua.' : 'Não há nível da régua ' + (s > 0 ? 'acima' : 'abaixo') + ' do preço atual.' };
     let a = ib, b = ib;
     while (b - a < 2) {   // faixa de até 3 níveis colados que também têm delta do lado certo e volume acima da mediana
         const ok = x => x && x.gate && x.fav && x.pv >= 0.5, e = niv[a - 1], d = niv[b + 1];
@@ -3090,10 +3091,10 @@ function grMelhorCalcular(lado) {
     }
     let lo = niv[a].lo, hi = niv[b].hi;
     if (s > 0) { lo = Math.max(lo, preco); if (hi <= lo) hi = lo + tick; } else { hi = Math.min(hi, preco); if (lo >= hi) lo = hi - tick; }
-    const minL = 0.001 * preco; if (hi - lo < minL) { if (s > 0) hi = lo + minL; else lo = hi - minL; }
+    const minL = tick; if (hi - lo < minL) { if (s > 0) hi = lo + minL; else lo = hi - minL; }
     const entrada = s > 0 ? lo : hi, stop = s > 0 ? hi : lo, risco = Math.abs(stop - entrada), K = niv[ib];
     // Alvos: nós de alto volume do lado oposto, a ≥ 1 ATR da entrada, agrupando níveis colados. Alvo = a borda de trás do nó (a primeira onde o preço tende a segurar fica antes dela).
-    const hv = niv.filter(n => n.pv >= 0.75 && s * (entrada - n.c) >= atr).sort((x, y) => s > 0 ? y.k - x.k : x.k - y.k);
+    const hv = niv.filter(n => n.pv >= 0.5 && s * (entrada - n.c) >= atr).sort((x, y) => s > 0 ? y.k - x.k : x.k - y.k);
     const grupos = [];
     hv.forEach(n => { const g = grupos[grupos.length - 1]; if (g && Math.abs(n.k - g.ult) === 1) { g.ns.push(n); g.ult = n.k; } else grupos.push({ ns: [n], ult: n.k }); });
     grupos.forEach(g => {
@@ -3112,7 +3113,7 @@ function grMelhorCalcular(lado) {
     const cands = [];
     niv.filter(n => n.gate && !dentro(n)).sort((x, y) => y.rank - x.rank).forEach(n => { if (cands.length < 3 && cands.every(o => Math.abs(o.k - n.k) >= 2) && !(Math.abs(n.k - niv[a].k) <= 1 || Math.abs(n.k - niv[b].k) <= 1)) cands.push(n); });
     return { lado, s, preco, lo, hi, entrada, stop, alvo: alvo1, alvo1, alvo2, rr: rr1, rr1, rr2, semNo, atr, tick, K, band: { a: niv[a], b: niv[b] }, numEntrada: niv.slice(a, b + 1).map(n => n.num).filter(Boolean),
-        forca: K.pisos >= 3 ? 'Forte' : (K.pisos === 2 ? 'Moderado' : 'Fraco'), cands, grupos: grupos.slice(0, 3), g1, g2, dias: u.dias, tfRot: u.tfRot, niveis: niv.length };
+        forca: K.pisos >= 2 ? 'Forte' : 'Fraco', cands, grupos: grupos.slice(0, 3), g1, g2, dias: u.dias, tfRot: u.tfRot, niveis: niv.length };
 }
 function grMeMontarRelatorio(r) {
     const fp = x => Math.round(x).toLocaleString('pt-BR'), n1 = x => x.toFixed(1).replace('.', ','), short = r.lado === 'short', cor = short ? '#DC2626' : '#16A34A';
@@ -3124,11 +3125,11 @@ function grMeMontarRelatorio(r) {
     const razoes = n => {
         const ps = [];
         if (!n.fav) ps.push('delta contrário'); else if (!n.c2) ps.push('delta fraco');
-        if (!n.c1) ps.push('volume baixo'); if (!n.c3) ps.push('longe do ' + (short ? 'topo' : 'fundo') + ' da régua');
+        if (!n.c1) ps.push('volume baixo');
         return ps.join(', ');
     };
-    const porque = [K.c2 ? presos : null, K.c1 ? 'volume alto' : null, K.c3 ? ((short ? 'topo' : 'fundo') + ' da régua') : null].filter(Boolean);
-    const fraco = [!K.c2 ? (K.fav ? 'delta fraco' : 'delta contrário') : null, !K.c1 ? 'volume baixo' : null, !K.c3 ? 'longe do ' + (short ? 'topo' : 'fundo') : null].filter(Boolean);
+    const porque = [K.c2 ? presos : null, K.c1 ? 'volume acima da mediana' : null].filter(Boolean);
+    const fraco = [!K.c2 ? (K.fav ? 'delta fraco' : 'delta contrário') : null, !K.c1 ? 'volume baixo' : null].filter(Boolean);
     const L = [];   // [texto, tipo]
     L.push(['Entrada ' + fp(r.entrada) + ' · Stop ' + fp(r.stop) + ' · Alvo 1 ' + fp(r.alvo1) + (r.alvo2 != null ? ' · Alvo 2 ' + fp(r.alvo2) : ''), 'plano']);
     L.push(['R:R ' + n1(r.rr1) + (r.rr2 != null ? ' / ' + n1(r.rr2) : '') + (r.semNo ? ' (sem nó de volume útil: alvo 2R)' : ''), 'sub']);
@@ -3147,7 +3148,7 @@ function grMeMontarRelatorio(r) {
     L.forEach(x => T.push(x[0])); T.push(''); niveis.forEach(n => T.push('• ' + (n.tag ? '[' + n.tag + '] ' : '') + n.t)); T.push(invalida);
     const html = '<div style="font-size:12px;color:#8E8E93;">' + r.dias + ' dias · TF ' + r.tfRot + ' · preço ' + fp(r.preco) + '</div>'
         + '<div style="border:2px solid ' + cor + ';border-radius:12px;padding:12px 14px;margin-top:6px;background:' + (short ? '#FEF2F2' : '#F0FDF4') + ';">'
-        + '<div style="font-size:12px;font-weight:700;color:' + cor + ';">' + nome + ' · sinal ' + r.forca + ' (' + K.pisos + ' de 3 critérios)</div>'
+        + '<div style="font-size:12px;font-weight:700;color:' + cor + ';">' + nome + ' · sinal ' + r.forca + ' (' + K.pisos + ' de 2 critérios)</div>'
         + '<div style="font-size:15px;font-weight:800;line-height:1.5;margin-top:4px;">' + L[0][0].replace(/ · /g, '<br>') + '</div>'
         + '<div style="font-size:12.5px;color:#3A3A3C;margin-top:4px;">' + L[1][0] + '</div></div>'
         + '<button onclick="grMelhorCriarCaixa()" style="width:100%;margin-top:10px;border:2px solid ' + cor + ';border-radius:12px;padding:12px;font-size:15px;font-weight:800;background:#fff;color:' + cor + ';">Criar Caixa</button>'
