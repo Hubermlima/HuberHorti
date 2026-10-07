@@ -2946,7 +2946,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v279';
+const APP_VERSAO = 'v280';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3924,23 +3924,26 @@ function grPosSalvar() { try { grAmbienteSalvar(); } catch (e) {} }
 // Limite de alcance: a rolagem lateral só vai até alguns slots depois do último candle (zoom × 15%). A borda direita da caixa não é desenhada além
 // disso (senão fica fora de alcance quando o zoom é alto). Só afeta o desenho: o t2 salvo continua o mesmo, e ao diminuir o zoom a caixa volta ao tamanho real.
 function grPosLimIdx() { const n = _grAllCandles.length; return (n - 1) + Math.max(1, Math.floor((_grZoom || 15) * 0.15) - 1); }   // índice do limite de rolagem à direita (mesma conta de grPosAplicarLimite)
-// Zoom por pinça: a LARGURA da caixa (borda direita) acompanha o zoom na mesma proporção, então a largura NA TELA fica a mesma (zoom+ = menos
-// candles na caixa; zoom- = mais). A borda esquerda fica parada. REVERSÍVEL: a largura nunca é multiplicada de novo a cada passo da pinça (isso
-// acumulava erro e o mínimo de 1 candle apagava a largura original); guarda-se uma REFERÊNCIA {w candles, zoom, TF} no momento em que a caixa foi
-// mexida pela última vez, e a largura de agora é sempre ref.w × zoomAgora / ref.z. Voltando ao zoom da referência, volta exatamente ao tamanho original.
-// Se o usuário mexer na caixa (t2 mudou) ou trocar o TF, a referência é refeita a partir do estado atual.
-function grPosEscalarZoom(zAnt, zNovo) {
-    if (!(zAnt > 0) || !(zNovo > 0) || Math.abs(zNovo - zAnt) < 1e-9) return;
+// LARGURA DA CAIXA = fração da tela × zoom (candles na tela). A caixa guarda a FRAÇÃO da largura da tela que ela ocupa (pz._ref.fw) e a borda direita é
+// sempre refeita como fw × zoom candles do TF atual: zoom+ = menos candles, zoom- = mais, na mesma proporção; e trocar de TF (diário -> 4h, etc.) mantém a
+// mesma fração da tela, em vez de manter o mesmo intervalo de tempo (que em TF menor vira dezenas de candles e estoura a tela). A borda esquerda (tempo)
+// fica parada; camadas empilhadas têm a mesma fração, então continuam com as mesmas coordenadas. Se o usuário mexer na caixa (arrastar), a fração é refeita.
+// Roda a cada desenho (barato); a pinça só muda _grZoom.
+function grPosAjustarLargura() {
+    const z = _grZoom, n = _grAllCandles ? _grAllCandles.length : 0;
+    if (!(z > 0) || n < 2) return;
     const tfKey = _grTf + '|' + _grTfCustomUnit + '|' + _grTfCustomAmount;
     grPosicoes().forEach(pz => {
         if (!(pz.t1 > 0) || !(pz.t2 > 0)) return;
-        const i1 = grTimeToIndex(pz.t1), i2 = grTimeToIndex(pz.t2), dir = i2 >= i1, key = dir ? 't2' : 't1', fixo = dir ? i1 : i2;
-        let ref = pz._ref;
-        if (!ref || ref.t !== pz[key] || ref.tf !== tfKey || ref.fixo !== pz[dir ? 't1' : 't2'] || Math.abs(ref.zl - zAnt) > 1e-6) ref = pz._ref = { w: Math.abs(i2 - i1), z: zAnt, zl: zAnt, tf: tfKey, fixo: pz[dir ? 't1' : 't2'], t: pz[key] };
-        const w = Math.max(0.5, ref.w * zNovo / ref.z);
-        pz[key] = grIndexToTime(fixo + (dir ? w : -w)); ref.t = pz[key]; ref.zl = zNovo;   // zl = zoom da última aplicação (se o zoom mudar por outro caminho, a referência é refeita)
+        const i1 = grTimeToIndex(pz.t1), i2 = grTimeToIndex(pz.t2), dir = i2 >= i1, key = dir ? 't2' : 't1', fixo = pz[dir ? 't1' : 't2'];
+        const ref = pz._ref;
+        if (!ref || !(ref.fw > 0) || ref.t !== pz[key] || ref.fixo !== fixo) { pz._ref = { fw: Math.max(1e-6, Math.abs(i2 - i1) / z), zl: z, tf: tfKey, fixo: fixo, t: pz[key] }; return; }   // criada ou mexida pelo usuário: a fração atual vira a referência
+        if (ref.tf === tfKey && Math.abs(ref.zl - z) < 1e-9) return;
+        const w = Math.max(0.5, ref.fw * z);
+        pz[key] = grIndexToTime(grTimeToIndex(fixo) + (dir ? w : -w)); ref.t = pz[key]; ref.zl = z; ref.tf = tfKey;
     });
 }
+function grPosEscalarZoom() { grPosAjustarLargura(); }   // compatibilidade: a pinça chama isto depois de mudar _grZoom
 function grPosAplicarLimite(pz) {
     const n = _grAllCandles.length;
     pz.t2v = null;
@@ -4948,6 +4951,7 @@ const startIdx = Math.max(0, Math.min(maxOff, _grOffset));
 }
 function grDrawCandles(candles, emptyRight) {
         emptyRight = emptyRight || 0;
+        try { grPosAjustarLargura(); } catch (e) {}   // largura das caixas = fração da tela × zoom, em qualquer TF
         window._compValores = {};
         if (candles && candles.length) {
             window._grVisibleTRange = { from: candles[0].t, to: candles[candles.length - 1].t };
@@ -6662,7 +6666,7 @@ if (fibsParaDesenhar.length > 0) {
                 { const ipz = grPosicoes().indexOf(pz); if (ipz >= 0) {
                     const rx0 = Math.min(xa, xb), ry0 = Math.min(yE, yA, yS), rh0 = Math.max(yE, yA, yS) - ry0;
                     window._grPosRects.push({ x: rx0, y: ry0, w: Math.abs(xb - xa), h: rh0, abrir: () => { if (!(_edSel && _edSel.tipo === 'ps' && _edSel.idx === ipz) && !_indState.posLong && !_indState.posShort) cvEdicaoIniciar('ps', ipz); } });
-                    if (_edSel && _edSel.tipo === 'ps' && _edSel.idx === ipz) { _ctxMostrado = true; cvPosCtxMenu(ipz, rx0, ry0, Math.abs(xb - xa), rh0); window._grPosSel = { yE, yA, yS, tA, tS, pvt, alvo: pz.alvo, stop: pz.stop, cz }; }
+                    if (_edSel && _edSel.tipo === 'ps' && _edSel.idx === ipz) { if (!window._grCtxFechado) { _ctxMostrado = true; cvPosCtxMenu(ipz, rx0, ry0, Math.abs(xb - xa), rh0); } window._grPosSel = { yE, yA, yS, tA, tS, pvt, alvo: pz.alvo, stop: pz.stop, cz }; }
                 } }
                 if (tA) { ctx.fillStyle = cz.fa; ctx.fillRect(xa, Math.min(yE, yA), xb - xa, Math.abs(yA - yE));
                     // gradação sutil: cada faixa entre alvos fica um pouco mais carregada que a anterior
@@ -7420,6 +7424,7 @@ async function grEdToqueFim() {
 const GR_ED_NOMES = { tl: 'Tendência', bd: 'Bandeira', fh: 'Desenho livre', hl: 'Linha horizontal', ps: 'Posição' };
 function cvEdicaoIniciar(tipo, idx) {
     cvEdicaoSair(true);
+    window._grCtxFechado = false;   // selecionar a caixa de novo traz a barra de volta
     _edSel = { tipo, idx };
     grDrawChart();
 }
@@ -7455,6 +7460,8 @@ function cvPosCtxMenu(i, rx, ry, rw, rh) {   // menu de contexto da caixa seleci
         campo('cv-pos-ctx-risco', 'Risco', 34, '%', 'simRisco');
         campo('cv-pos-ctx-aporte', 'Aporte', 52, '', 'simAporte');
         m.appendChild(sim);
+        bt('cv-pos-ctx-x', grHeroicon('x-mark', 16), '#6B6B70', () => { window._grCtxFechado = true; cvPosCtxRemover(); });   // fecha só a barra (a caixa continua selecionada); ao selecionar a caixa de novo ela volta
+        m.lastChild.style.marginLeft = '4px';
         document.body.appendChild(m);
     }
     m._i = i;
