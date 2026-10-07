@@ -2946,7 +2946,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v286';
+const APP_VERSAO = 'v288';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3687,7 +3687,7 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
             const yTopoBloco = Math.min(...validos.map(g => g.y0));
             const yBaseBloco = Math.max(...validos.map(g => g.y1));
             const forte = candle.c >= candle.o ? FOOTPRINT_COR_VERDE.forte : FOOTPRINT_COR_VERMELHO.forte;
-            ctx.strokeStyle = 'rgb(' + forte[0] + ',' + forte[1] + ',' + forte[2] + ')';
+            ctx.strokeStyle = grCorCandleOu(candle.c >= candle.o, 'rgb(' + forte[0] + ',' + forte[1] + ',' + forte[2] + ')');
             ctx.lineWidth = 1;
             ctx.setLineDash([]);
             ctx.strokeRect(xCel + 0.5, yTopoBloco + 0.5, wCel - 1, Math.max(1, yBaseBloco - yTopoBloco - 1));
@@ -3786,7 +3786,7 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
     yCorpoTopo = Math.max(yCorpoTopo, Math.round(toY(candle.h)), yMin);
     yCorpoBase = Math.min(yCorpoBase, Math.round(toY(candle.l)), yMax);
     const sobe = candle.c >= candle.o;
-    ctx.fillStyle = sobe ? '#2E7D32' : '#D32F2F';
+    ctx.fillStyle = grCorCandleOu(sobe, sobe ? '#2E7D32' : '#D32F2F');
     ctx.fillRect(Math.round(xSlot), yCorpoTopo, barW, Math.max(2, yCorpoBase - yCorpoTopo));
     // Absorção: sobe com delta negativo → símbolo ABAIXO do cluster; cai com delta positivo → ACIMA
     const divergiu = (sobe && cl.delta < 0) || (!sobe && cl.delta > 0);
@@ -5616,13 +5616,8 @@ if (_grTipoGrafico === 'linha') {
             if (absExcessoPct == null) absorcao = null;
         }
         let color, strokeColor;
-        if (_grTemaClaro) {
-            color = isUp ? '#F5F5F5' : '#4A4A4A'; // cinza claro (alta) / cinza escuro (baixa), não branco/preto puro
-            strokeColor = '#5C5C5C'; // contorno cinza médio, suave — desenha o pavio e delimita o corpo sem pesar
-        } else {
-            color = isUp ? '#26A69A' : '#EF5350';
-            strokeColor = color;
-        }
+        const cc = grCorCandle(isUp); // padrão do tema (claro: cinzas com contorno suave) ou a cor escolhida em Design
+        color = cc.fill; strokeColor = cc.stroke;
         ctx.strokeStyle = strokeColor;
         ctx.fillStyle = color;
         ctx.lineWidth = 1;
@@ -5637,7 +5632,7 @@ if (_grTipoGrafico === 'linha') {
         const bodyBot = toY(Math.min(c.o, c.c));
         const bodyH = Math.max(1, bodyBot - bodyTop);
         ctx.fillRect(x - cW / 2, bodyTop, cW, bodyH);
-        if (_grTemaClaro) ctx.strokeRect(x - cW / 2, bodyTop, cW, bodyH);
+        if (_grTemaClaro || cc.custom) ctx.strokeRect(x - cW / 2, bodyTop, cW, bodyH);
         const slotWAbs = chartW / Math.max(totalSlots, 1);
         if (absorcao === 'alta') grDesenharSimboloAbsorcao(ctx, x, toY(c.l), 'compradora', absExcessoPct, slotWAbs, PAD.top, PAD.top + chartH);
         else if (absorcao === 'baixa') grDesenharSimboloAbsorcao(ctx, x, toY(c.h), 'vendedora', absExcessoPct, slotWAbs, PAD.top, PAD.top + chartH);
@@ -5665,12 +5660,12 @@ if (_grTipoGrafico === 'linha') {
                     porPreco.forEach((lados, p) => {
                         const yLinha = Math.round(toY(p)) + 0.5; // +0.5 pra linha nítida, sem borrão de anti-aliasing
                         if (lados.compra && lados.venda) {
-                            ctx.strokeStyle = '#26A69A';
+                            ctx.strokeStyle = grCorCandleOu(true, '#26A69A');
                             ctx.beginPath(); ctx.moveTo(x - cW / 2, yLinha); ctx.lineTo(x, yLinha); ctx.stroke();
-                            ctx.strokeStyle = '#EF5350';
+                            ctx.strokeStyle = grCorCandleOu(false, '#EF5350');
                             ctx.beginPath(); ctx.moveTo(x, yLinha); ctx.lineTo(x + cW / 2, yLinha); ctx.stroke();
                         } else {
-                            ctx.strokeStyle = lados.compra ? '#26A69A' : '#EF5350';
+                            ctx.strokeStyle = lados.compra ? grCorCandleOu(true, '#26A69A') : grCorCandleOu(false, '#EF5350');
                             ctx.beginPath(); ctx.moveTo(x - cW / 2, yLinha); ctx.lineTo(x + cW / 2, yLinha); ctx.stroke();
                         }
                     });
@@ -5760,8 +5755,8 @@ if (_grTipoGrafico === 'linha') {
             // Com configuração/modal próprio — tocar abre.
             if (_fibs && _fibs.length)         grBarraChip('Fibonacci', '#000000', (cx, cy) => cvToggleFib(cx, cy));
             // Lista de desenhos (tendência, bandeira, desenho livre, fibonacci) com ✕ pra apagar — não depende de acertar o toque na linha.
-            if ((_trendlines && _trendlines.length) || (_bandeiras && _bandeiras.length) || (_freehands && _freehands.length) || (_fibs && _fibs.length) || grHLinhas().length || grPosicoes().length)
-                grBarraChip('Desenhos', '#000000', (cx, cy) => cvAbrirMenuDesenhos(cx, cy));
+            // Design: cores dos candles (sempre disponível) + lista de desenhos (quando houver).
+            grBarraChip('Design', '#000000', (cx, cy) => cvAbrirMenuDesenhos(cx, cy));
             if (_grAlertas && _grAlertas.length) grBarraChip('Alertas', '#000000', (cx, cy) => cvToggleAlerta(cx, cy));
             if (_grFootprintAtivo) grBarraChip('Fluxo', '#000000', (cx, cy) => cvAbrirMenuFpCfg('fluxo', cx, cy));
             if (_indState.deltaAtr) grBarraChip('Delta ATR', '#000000', (cx, cy) => cvAbrirMenuFpCfg('deltaatr', cx, cy));
@@ -6314,7 +6309,7 @@ const aBX = W - PAD.right + 1, aBY = yR2 - aBH / 2;
         // Linha de preço atual — cor dinâmica pelo último candle
         if (_precoAtual > 0) {
             const lastCandle = _grAllCandles[_grAllCandles.length - 1];
-            const precoColor = lastCandle ? (lastCandle.c >= lastCandle.o ? '#26A69A' : '#EF5350') : '#FFFFFF';
+            const precoColor = lastCandle ? grCorCandleOu(lastCandle.c >= lastCandle.o, lastCandle.c >= lastCandle.o ? '#26A69A' : '#EF5350') : '#FFFFFF';
             const yPreco = toY(_precoAtual);
             ctx.save();
             ctx.globalAlpha = 1;  // linha contínua e com contraste total, na mesma cor do badge
@@ -7169,7 +7164,7 @@ function grDesenharLinhaOhlc(ctx, W, info) {
     window._grOhlcAtual = info || null;
     if (!info || !info.candle) return;
     const c = info.candle;
-    const cor = c.c >= c.o ? '#26A69A' : '#EF5350';                       // alta = verde, baixa = vermelho (valores TODOS na cor do candle)
+    const cor = grCorCandleOu(c.c >= c.o, c.c >= c.o ? '#26A69A' : '#EF5350');                       // alta = verde, baixa = vermelho (valores TODOS na cor do candle)
     const corRotulo = _grTemaClaro ? '#6C6C70' : '#9AA0AE';
     const corData = _grTemaClaro ? '#131722' : '#D1D4DC';
     const x0 = grPadL() + 4;
@@ -7533,6 +7528,16 @@ function cvAbrirPaletaCor(x, y, corAtual, onEscolher) {
     box.style.left = Math.max(8, Math.min(x, W - r.width - 8)) + 'px';
     box.style.top = Math.max(8, Math.min(y, H - r.height - 8)) + 'px';
 }
+// Cor dos candles (aba Design): null = padrão do tema; escolhida vale nos dois temas.
+window._grCorCandle = window._grCorCandle || { alta: null, baixa: null };
+function grCorCandleOu(isUp, padrao) { return (window._grCorCandle && window._grCorCandle[isUp ? 'alta' : 'baixa']) || padrao; } // cor escolhida em Design, senão o padrão de quem chama
+function grCorCandle(isUp) {
+    const c = window._grCorCandle[isUp ? 'alta' : 'baixa'];
+    if (c) return { fill: c, stroke: c, custom: true };
+    if (_grTemaClaro) return { fill: isUp ? '#F5F5F5' : '#4A4A4A', stroke: '#5C5C5C', custom: false };
+    const d = isUp ? '#26A69A' : '#EF5350';
+    return { fill: d, stroke: d, custom: false };
+}
 function cvAbrirMenuDesenhos(clientX, clientY) {
     if (_edSel) cvEdicaoSair(true);  // índices podem mudar ao apagar pela lista
     const mantida = document.getElementById('cv-desenhos-menu');
@@ -7546,7 +7551,6 @@ function cvAbrirMenuDesenhos(clientX, clientY) {
     _bandeiras.forEach((b, i) => linhas.push({ cor: b.cor, nome: 'Bandeira ' + (i + 1), det: fmtN(b.mastro.p1) + ' → ' + fmtN(b.mastro.p2) + ' · ' + fmtD(b.mastro.t1), edit: () => cvEdicaoIniciar('bd', i), apagar: () => cvApagarBandeira(i), setCor: async c => { b.cor = c; try { await cvSalvarBandeira(b); } catch (e) {} } }));
     _freehands.forEach((fh, i) => { const p0 = fh.pontos && fh.pontos[0]; linhas.push({ cor: fh.cor, nome: 'Desenho livre ' + (i + 1), det: p0 ? fmtN(p0.p) + ' · ' + fmtD(p0.t) : '', edit: () => cvEdicaoIniciar('fh', i), apagar: () => cvApagarFreehand(i), setCor: c => { fh.cor = c; cvSalvarFreehandLocal(); } }); });
     _fibs.forEach((f, i) => linhas.push({ cor: FIB_CORES[i % FIB_CORES.length], nome: 'Fibonacci ' + (i + 1), det: '0%: ' + fmtN(f.p1) + ' · 100%: ' + fmtN(f.p2), edit: () => cvFibAbrirEditar(i), apagar: () => cvFibExcluirIdx(i) }));
-    if (!linhas.length) return;
     const overlay = document.createElement('div');
     overlay.id = 'cv-desenhos-menu-overlay';
     overlay.style.cssText = 'position:fixed;inset:0;z-index:9700;background:transparent;';
@@ -7555,9 +7559,23 @@ function cvAbrirMenuDesenhos(clientX, clientY) {
     menu.id = 'cv-desenhos-menu';
     menu.style.cssText = 'position:fixed;z-index:9701;background:#FFFFFF;border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,0.22);min-width:250px;max-width:calc(100vw - 16px);max-height:60vh;overflow-y:auto;font-family:-apple-system,sans-serif;padding:4px 0;';
     const cab = document.createElement('div');
-    cab.textContent = 'Desenhos';
+    cab.textContent = 'Design';
     cab.style.cssText = 'padding:8px 14px 6px;font-size:11px;font-weight:700;color:#8E8E93;text-transform:uppercase;letter-spacing:0.4px;';
     menu.appendChild(cab);
+    // Cores dos candles: dois controles (alta e baixa); tocar abre a paleta.
+    const corRow = document.createElement('div');
+    corRow.style.cssText = 'display:flex;align-items:center;gap:18px;padding:6px 14px 10px;';
+    [['alta', 'Candle de alta'], ['baixa', 'Candle de baixa']].forEach(([k, rot]) => {
+        const it = document.createElement('button'); it.type = 'button';
+        it.style.cssText = 'display:flex;align-items:center;gap:8px;background:transparent;border:0;padding:0;cursor:pointer;font-size:13px;color:#000000;font-family:inherit;';
+        const sw = document.createElement('span');
+        sw.style.cssText = 'width:26px;height:26px;border-radius:6px;background:' + grCorCandle(k === 'alta').fill + ';border:1.5px solid #000000;flex-shrink:0;';
+        const tx = document.createElement('span'); tx.textContent = rot;
+        it.appendChild(sw); it.appendChild(tx);
+        it.onclick = ev => { ev.stopPropagation(); const r = it.getBoundingClientRect(); cvAbrirPaletaCor(r.left, r.bottom + 6, grCorCandle(k === 'alta').fill, c => { window._grCorCandle[k] = c; grDrawChart(); grAmbienteSalvar(); cvAbrirMenuDesenhos(); }); };
+        corRow.appendChild(it);
+    });
+    menu.appendChild(corRow);
     linhas.forEach(l => {
         const row = document.createElement('div');
         row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:2px 4px 2px 14px;border-top:1px solid #F2F2F7;';
@@ -10689,6 +10707,7 @@ function grAmbienteColetar() {
         footprintContraste: FOOTPRINT_CONTRASTE,
         ls: grLsColetar(),
         desenhos: grDesenhosColetar(),
+        corCandle: window._grCorCandle,
     };
 }
 let _grAmbienteRestaurando = false; // true enquanto grAmbienteCarregar() está aplicando os campos -- evita gravar o ambiente pela metade
@@ -10737,6 +10756,7 @@ async function grAmbienteCarregar() {
     window._grAmbStatus.carga = ambiente ? ('servidor ok (tf=' + ambiente.tf + ', áreas=' + Object.keys(ambiente.areas || {}).length + ', retas=' + Object.values(ambiente.hLinhas || {}).reduce((t, l) => t + (Array.isArray(l) ? l.length : 0), 0) + ', configs=' + Object.keys(window._grMem).length + (window._grMigrou ? ', migrou do aparelho' : '') + ')') : (window._grBootStatus || 'sem dados');
     if (!ambiente) { console.log('[ambiente] NADA encontrado -- fica no padrão'); _grAmbienteCarregado = true; if (_grAmbientePendente) { _grAmbientePendente = false; grAmbienteSalvar(); } return; }
     if (ambiente.desenhos && typeof ambiente.desenhos === 'object') window._grDesenhosMapa = ambiente.desenhos;
+    if (ambiente.corCandle && typeof ambiente.corCandle === 'object') window._grCorCandle = { alta: ambiente.corCandle.alta || null, baixa: ambiente.corCandle.baixa || null };
     if (ambiente.areas && typeof ambiente.areas === 'object') {
         _grAreasMapa = ambiente.areas; // servidor é a fonte única 
         if (!_grAreaMarcada) { try { grAreaCarregar(); } catch (e) {} }
