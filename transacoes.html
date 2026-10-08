@@ -3775,8 +3775,9 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
         const y0 = Math.max(yMin, yTop), y1 = Math.min(yMax, yBot);
         // por linha-base: uma linha agrupada (teto de níveis do modo ATR) soma várias, então divide pelo agrupamento
         const corCel = grFootprintCorCelula(ln.bid / (cl.agrup || 1), ln.ask / (cl.agrup || 1), cfg.tick, cfg.refTop);
-        geo.push({ y0, y1, pontaCortada, escura: corCel.escura });
-        ctx.fillStyle = corCel.cor;
+        // Histograma: o fundo do retângulo fica BRANCO (só as barras carregam a cor/gradação); o texto, então, é sempre escuro.
+        geo.push({ y0, y1, pontaCortada, escura: cfg.hist ? false : corCel.escura });
+        ctx.fillStyle = cfg.hist ? '#FFFFFF' : corCel.cor;
         ctx.fillRect(xCel, y0, wCel, Math.max(1, y1 - y0));
     });
     // Tipo HISTOGRAMA: o retângulo e o fundo em gradação continuam IGUAIS (acima); por cima dele entra um eixo central e, a partir
@@ -3790,10 +3791,12 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
         const meioL = Math.max(1, Math.min(xEixo - xCel, xCel + wCel - xEixo - 1) - 1);   // espaço de cada lado do eixo
         const palBid = FOOTPRINT_SKIN === 'cinza' ? FOOTPRINT_COR_CINZA : FOOTPRINT_COR_VERMELHO;
         const palAsk = FOOTPRINT_SKIN === 'cinza' ? FOOTPRINT_COR_CINZA : FOOTPRINT_COR_VERDE;
-        const corBarra = (pal, v) => {
+        const rgbBarra = (pal, v) => {
             const k = 0.6 + 0.4 * Math.sqrt(Math.min(1, v / maxLado));
-            return 'rgb(' + [0, 1, 2].map(j => Math.round(pal.base[j] + (pal.forte[j] * 0.82 - pal.base[j]) * k)).join(',') + ')';
+            return [0, 1, 2].map(j => Math.round(pal.base[j] + (pal.forte[j] * 0.82 - pal.base[j]) * k));
         };
+        const corBarra = (pal, v) => 'rgb(' + rgbBarra(pal, v).join(',') + ')';
+        const escuraBarra = (pal, v) => { const c = rgbBarra(pal, v); return (0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]) < 130; };
         let yEixo0 = Infinity, yEixo1 = -Infinity;
         cl.linhas.forEach((ln, i) => {
             const g = geo[i];
@@ -3802,8 +3805,8 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
             const yb = g.y0 + pad, hb = Math.max(1, (g.y1 - g.y0) - 2 * pad);
             if (g.y0 < yEixo0) yEixo0 = g.y0;
             if (g.y1 > yEixo1) yEixo1 = g.y1;
-            if (ln.bid > 0) { const L = Math.max(1, Math.round(ln.bid / maxLado * meioL)); ctx.fillStyle = corBarra(palBid, ln.bid); ctx.fillRect(xEixo - L, yb, L, hb); }
-            if (ln.ask > 0) { const L = Math.max(1, Math.round(ln.ask / maxLado * meioL)); ctx.fillStyle = corBarra(palAsk, ln.ask); ctx.fillRect(xEixo + 1, yb, L, hb); }
+            if (ln.bid > 0) { const L = Math.max(1, Math.round(ln.bid / maxLado * meioL)); ctx.fillStyle = corBarra(palBid, ln.bid); ctx.fillRect(xEixo - L, yb, L, hb); g.bidL = L; g.bidEscura = escuraBarra(palBid, ln.bid); }
+            if (ln.ask > 0) { const L = Math.max(1, Math.round(ln.ask / maxLado * meioL)); ctx.fillStyle = corBarra(palAsk, ln.ask); ctx.fillRect(xEixo + 1, yb, L, hb); g.askL = L; g.askEscura = escuraBarra(palAsk, ln.ask); }
         });
         if (yEixo1 > yEixo0) {   // eixo central: uma linha fina contínua por todo o bloco de níveis
             ctx.fillStyle = 'rgba(17,17,17,0.65)';
@@ -3873,14 +3876,18 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
             const a = grFmtVolCompacto(ln.bid, nivelTxt), b = grFmtVolCompacto(ln.ask, nivelTxt);
             if (cfg.hist) {
                 // Histograma: bid na borda esquerda e ask na borda direita do retângulo (sem o " x "), deixando o miolo livre pras barras que saem do
-                // eixo. Quando uma barra é grande o bastante pra passar por baixo do número, o contorno (halo) de cor oposta mantém a leitura.
+                // eixo. Sem contorno nos números: a cor (branco ou preto) segue o fundo atrás deles — branco só quando uma barra ESCURA cobre o
+                // número inteiro; em qualquer outro caso (fundo branco ou barra que cobre só metade) fica preto.
                 const y = (g.y0 + g.y1) / 2 + fs * 0.35;
-                ctx.lineJoin = 'round'; ctx.lineWidth = Math.max(2, fs * 0.28);
-                ctx.strokeStyle = g.escura ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.85)';
+                ctx.font = ln.imbBid ? fonteNegrito : fonteNormal; const wBid = ctx.measureText(a).width;
+                ctx.font = ln.imbAsk ? fonteNegrito : fonteNormal; const wAsk = ctx.measureText(b).width;
+                const bidSobreBarra = g.bidEscura && (xEixo - g.bidL) <= xCel + 3 && xEixo >= xCel + 3 + wBid;
+                const askSobreBarra = g.askEscura && (xEixo + 1 + g.askL) >= xCel + wCel - 3 && xEixo + 1 <= xCel + wCel - 3 - wAsk;
                 ctx.textAlign = 'left'; ctx.font = ln.imbBid ? fonteNegrito : fonteNormal;
-                ctx.strokeText(a, xCel + 3, y); ctx.fillStyle = ln.imbBid ? corImb : corTxt; ctx.fillText(a, xCel + 3, y);
+                ctx.fillStyle = ln.imbBid ? (bidSobreBarra ? '#8FA5FF' : '#1A2BD8') : (bidSobreBarra ? '#FFFFFF' : '#000000'); ctx.fillText(a, xCel + 3, y);
                 ctx.textAlign = 'right'; ctx.font = ln.imbAsk ? fonteNegrito : fonteNormal;
-                ctx.strokeText(b, xCel + wCel - 3, y); ctx.fillStyle = ln.imbAsk ? corImb : corTxt; ctx.fillText(b, xCel + wCel - 3, y);
+                ctx.fillStyle = ln.imbAsk ? (askSobreBarra ? '#8FA5FF' : '#1A2BD8') : (askSobreBarra ? '#FFFFFF' : '#000000'); ctx.fillText(b, xCel + wCel - 3, y);
+                ctx.textAlign = 'left';
                 return;
             }
             ctx.font = ln.imbBid ? fonteNegrito : fonteNormal; const wa = ctx.measureText(a).width;
