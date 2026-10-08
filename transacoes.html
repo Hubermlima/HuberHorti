@@ -2947,7 +2947,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v305';
+const APP_VERSAO = 'v306';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3061,7 +3061,8 @@ function grMelhorCalcular(lado) {
     const u = window._grDaUltima;
     if (!_indState.deltaAtr) return { erro: 'Ligue a régua Delta ATR e deixe ela formada na tela.' };
     if (!_grFootprintAtivo || !u || !u.mapa || u.mapa.size < 6) return { erro: 'A régua ainda não está formada: ligue o Fluxo e aguarde os dados.' };
-    const cs = _grAllCandles, preco = cs && cs.length ? Number(cs[cs.length - 1].c) : NaN;
+    const csGr = _grAllCandles, preco = csGr && csGr.length ? Number(csGr[csGr.length - 1].c) : NaN;
+    const cs = (window._grMeCsReg && window._grMeCsReg.length) ? window._grMeCsReg : csGr;   // 'testado e defendido' e stop pelo pavio usam os candles do TF DA RÉGUA (independe do TF do gráfico)
     if (!(preco > 0)) return { erro: 'Sem preço atual.' };
     const s = lado === 'short' ? 1 : -1, tick = u.tick, atr = Math.max(u.atr || 0, tick);
     const niv = [];
@@ -3221,9 +3222,36 @@ function grMelhorCriarCaixa() {
 }
 function grMelhorFechar() { const ov = document.getElementById('melhor-relatorio-overlay'); if (ov) ov.style.display = 'none'; }
 function grMelhorCopiar() { try { navigator.clipboard.writeText((_grMeUltimo && _grMeUltimo.texto) || ''); } catch (e) {} }
-function grMelhorRodar(lado) {
+// Candles do TF da régua (janela da régua + folga), pra o teste de defesa e o stop pelo pavio não dependerem do TF do gráfico.
+// Devolve null quando a régua é "igual ao gráfico" (usa os candles do gráfico) ou quando a busca falha (cai nos candles do gráfico).
+async function grMelhorCandlesRegua() {
+    const u = window._grDaUltima; if (!_grDaTf || !u) return null;
+    const custom = _grDaTf === 'custom' ? _grDaTfCustom : null;
+    if (_grDaTf === 'custom' && !custom) return null;
+    if (_grDaTf === _grTf && (!custom || (_grTfCustomUnit === custom.u && _grTfCustomAmount === custom.a))) return null;   // mesmo TF do gráfico
+    const def = custom ? { bin: grBaseIntervalCustom(custom.u, custom.a) } : GR_DA_TFS.find(t => t.tf === _grDaTf);
+    if (!def) return null;
+    const sym = grBinSymbolAtual(), dias = u.dias || 21, baseMs = grMsDoIntervaloBinance(def.bin) || (def.bin === '1w' ? 604800000 : 2592000000);
+    const blocoMs = custom ? grDaCustomMs(custom) : baseMs;
+    const n = Math.max(5, Math.min(1000, Math.ceil((dias * 86400000 + blocoMs) / baseMs) + 2));
+    const chave = sym + '|' + def.bin + '|' + n + (custom ? '|' + custom.u + custom.a : '');
+    window._grMeCsCache = window._grMeCsCache || {};
+    const c = window._grMeCsCache[chave];
+    if (c && Date.now() - c.ts < 60000) return c.cs;
+    try {
+        const arr = await grBuscarKlines(sym, def.bin, n);
+        let cs = (arr || []).map(grMapearKline);
+        if (custom) cs = grAgruparCandles(cs, custom.u, custom.a);
+        if (!cs.length) return null;
+        window._grMeCsCache[chave] = { ts: Date.now(), cs };
+        return cs;
+    } catch (e) { return null; }
+}
+async function grMelhorRodar(lado) {
     let r;
+    try { window._grMeCsReg = await grMelhorCandlesRegua(); } catch (e) { window._grMeCsReg = null; }
     try { r = grMelhorCalcular(lado); } catch (e) { r = { erro: 'Erro no cálculo: ' + e.message }; }
+    window._grMeCsReg = null;
     if (r.erro) { alert(r.erro); return; }
     const rel = grMeMontarRelatorio(r);
     r.texto = rel.texto; r.html = rel.html; r.hora = new Date(); _grMeUltimo = r;
