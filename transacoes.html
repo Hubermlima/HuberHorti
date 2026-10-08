@@ -2921,7 +2921,7 @@ const FOOTPRINT_COR_VERMELHO = { base: [252, 228, 228], forte: [232, 72, 63] };
 // Skins do footprint: 'cores' (bid x ask, verde/vermelho pelo lado dominante) e 'cinza' (só o TOTAL
 // bid+ask por linha, tons de cinza pelo volume: o mais escuro = nível mais disputado). Persistida.
 // 'poc': só o POC do candle + o vizinho colado de maior volume (a zona do POC), no estilo de cores (bid × ask).
-const FOOTPRINT_SKINS = { cores: 'Cores (bid × ask)', cinza: 'Cinza (total)', poc: 'POC + 2º nível', tv: 'TradingView (4 tons)' };
+const FOOTPRINT_SKINS = { cores: 'Cores (bid × ask)', cinza: 'Cinza (total)', poc: 'POC + 2º nível', tv: 'TradingView (histograma)' };
 let FOOTPRINT_SKIN = (() => { const v = localStorage.getItem('grFootprintSkin'); return v === 'cinza' || v === 'poc' || v === 'tv' ? v : 'cores'; })();
 const FOOTPRINT_COR_CINZA = { base: [234, 236, 238], forte: [128, 141, 153] };
 // Contorno na célula de maior negociação do candle (o POC dele): liga/desliga. Persistido.
@@ -2950,7 +2950,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v317';
+const APP_VERSAO = 'v319';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3628,11 +3628,6 @@ function grFootprintCorCelula(bid, ask, tick, refTop) {
     if (!(d > FOOTPRINT_DENS_PISO)) return { cor: '#FFFFFF', escura: false };
     const pal = FOOTPRINT_SKIN === 'cinza' ? FOOTPRINT_COR_CINZA : (ask >= bid ? FOOTPRINT_COR_VERDE : FOOTPRINT_COR_VERMELHO);
     let k = Math.log(d / FOOTPRINT_DENS_PISO) / Math.log(FOOTPRINT_DENS_TETO / FOOTPRINT_DENS_PISO);
-    if (FOOTPRINT_SKIN === 'tv') {   // skin TradingView (exclusiva): 4 tons discretos: razão do volume entre o piso e o maior nível visível, cortes 0,25 / 0,5 / 0,75
-        const dMax = refTop > 0 ? refTop : FOOTPRINT_DENS_TETO;
-        const rr = Math.max(0, Math.min(1, (d - FOOTPRINT_DENS_PISO) / Math.max(1e-9, dMax - FOOTPRINT_DENS_PISO)));
-        return grFootprintPintar(pal, (rr < 0.25 ? 1 : rr < 0.5 ? 2 : rr < 0.75 ? 3 : 4) / 4, 0);
-    }
     k = Math.max(0, Math.min(1, k));
     k = Math.pow(k, grFootprintGamaContraste());   // contraste: pequenos ficam pálidos, grandes mantêm
     let dest = 0;
@@ -3742,6 +3737,7 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
             ctx.fillRect(xCel, ry0, wCel, Math.max(1, ry1 - ry0));
         }
     }
+    let tvMax = null;
     cl.linhas.forEach((ln, i) => {
         if (zonaPoc && !zonaPoc.has(i)) { geo.push(null); return; }
         let yTop = Math.round(toY(ln.p + ln.meio)), yBot = Math.round(toY(ln.p - ln.meio));
@@ -3754,6 +3750,22 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
         const y0 = Math.max(yMin, yTop), y1 = Math.min(yMax, yBot);
         // por linha-base: uma linha agrupada (teto de níveis do modo ATR) soma várias, então divide pelo agrupamento
         const corCel = grFootprintCorCelula(ln.bid / (cl.agrup || 1), ln.ask / (cl.agrup || 1), cfg.tick, cfg.refTop);
+        if (FOOTPRINT_SKIN === 'tv') {
+            // Skin TradingView (exclusiva): sem fundo de célula. Histograma por nível: venda (bid) à esquerda ancorada no centro, compra (ask) à direita.
+            // Tamanho = volume do lado / maior volume daquele lado no candle. Tom por razão: <50% claro, 50–75% médio, >=75% escuro; a linha da POC (maior total) é branca nos dois lados.
+            if (!tvMax) { tvMax = { b: 0, a: 0 }; cl.linhas.forEach(l2 => { tvMax.b = Math.max(tvMax.b, l2.bid || 0); tvMax.a = Math.max(tvMax.a, l2.ask || 0); }); }
+            const half = wCel / 2, hh = Math.max(1, y1 - y0 - 1), cx = xCel + half, ePoc = (i === cl.pocIdx);
+            const rb = tvMax.b > 0 ? (ln.bid || 0) / tvMax.b : 0, ra = tvMax.a > 0 ? (ln.ask || 0) / tvMax.a : 0;
+            const wB = half * rb, wA = half * ra;
+            const corB = ePoc ? '#FFFFFF' : (rb >= 0.75 ? '#7E1F27' : rb >= 0.5 ? '#D32F3C' : '#9E4A52');
+            const corA = ePoc ? '#FFFFFF' : (ra >= 0.75 ? '#05503F' : ra >= 0.5 ? '#089981' : '#FFFFFF');
+            const ctB = (ePoc || false) ? '#000000' : '#FFFFFF', ctA = (corA === '#FFFFFF') ? '#000000' : '#FFFFFF';
+            if (wB >= 0.5) { ctx.fillStyle = corB; ctx.fillRect(cx - wB, y0 + 0.5, wB, hh); }
+            if (wA >= 0.5) { ctx.fillStyle = corA; ctx.fillRect(cx, y0 + 0.5, wA, hh); if (corA === '#FFFFFF' && _grTemaClaro) { ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.lineWidth = 1; ctx.strokeRect(cx + 0.5, y0 + 1, Math.max(0, wA - 1), Math.max(0, hh - 1)); } }
+            if (ePoc && _grTemaClaro) { ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.lineWidth = 1; ctx.strokeRect(cx - wB + 0.5, y0 + 1, Math.max(0, wB - 1), Math.max(0, hh - 1)); }
+            geo.push({ y0, y1, pontaCortada, escura: false, tv: { wB, wA, corB: ePoc ? '#FFFFFF' : corB, corA, ctB, ctA } });
+            return;
+        }
         geo.push({ y0, y1, pontaCortada, escura: corCel.escura });
         ctx.fillStyle = corCel.cor;
         ctx.fillRect(xCel, y0, wCel, Math.max(1, y1 - y0));
@@ -3772,7 +3784,7 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
     // Contorno ao redor do BLOCO INTEIRO de células (não mais por célula — aquilo criava uma linha divisória entre cada
     // nível, e o pedido era só a borda externa). Cor conforme o candle fechou em alta ou baixa, igual à lógica do corpo.
     // Só na skin "cores" (a "cinza" não tem matiz pra contornar).
-    if (FOOTPRINT_SKIN === 'cores' || FOOTPRINT_SKIN === 'poc' || FOOTPRINT_SKIN === 'tv') {
+    if (FOOTPRINT_SKIN === 'cores' || FOOTPRINT_SKIN === 'poc') {
         const validos = geo.filter(g => g);
         if (validos.length) {
             const yTopoBloco = retPoc ? retPoc.y0 : Math.min(...validos.map(g => g.y0));
@@ -3809,8 +3821,25 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
         });
         ctx.textAlign = 'left';
     }
+    // Skin TradingView: número da venda colado no centro (à esquerda) e da compra logo à direita do centro; texto escuro sobre barra branca, claro sobre barra colorida
+    if (FOOTPRINT_SKIN === 'tv' && nivelTxt >= 0) {
+        const cx = xCel + wCel / 2, half = wCel / 2;
+        const corFora = _grTemaClaro ? '#000000' : '#FFFFFF';
+        cl.linhas.forEach((ln, i) => {
+            const g = geo[i];
+            if (!g || !g.tv) return;
+            if (g.y1 - g.y0 < 8 && !g.pontaCortada) return;
+            const ym = (g.y0 + g.y1) / 2 + fs * 0.35;
+            const tb = grFmtVolCompacto(ln.bid, nivelTxt), ta = grFmtVolCompacto(ln.ask, nivelTxt);
+            ctx.font = ln.imbBid ? fonteNegrito : fonteNormal; ctx.textAlign = 'right';
+            ctx.fillStyle = ctx.measureText(tb).width + 4 <= g.tv.wB ? g.tv.ctB : corFora; ctx.fillText(tb, cx - 2, ym);
+            ctx.font = ln.imbAsk ? fonteNegrito : fonteNormal; ctx.textAlign = 'left';
+            ctx.fillStyle = ctx.measureText(ta).width + 4 <= g.tv.wA ? g.tv.ctA : corFora; ctx.fillText(ta, cx + 2, ym);
+        });
+        ctx.textAlign = 'left';
+    }
     // Skin cores: texto "bid x ask" (número do desequilíbrio diagonal em azul negrito)
-    if (nivelTxt >= 0 && !cfg.soTotal) {
+    if (nivelTxt >= 0 && !cfg.soTotal && FOOTPRINT_SKIN !== 'tv') {
         ctx.textAlign = 'left';
         cl.linhas.forEach((ln, i) => {
             const g = geo[i];
