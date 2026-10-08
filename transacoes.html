@@ -3783,20 +3783,23 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
     // Tipo HISTOGRAMA: o retângulo e o fundo em gradação continuam IGUAIS (acima); por cima dele entra um eixo central e, a partir
     // dele, uma barra por nível pro lado do bid (esquerda, vermelha) e outra pro lado do ask (direita, verde), como no TradingView.
     // Escala: o maior lado (bid ou ask) de qualquer nível DESTE candle ocupa a meia largura inteira — cada candle usa a largura toda.
-    // A cor da barra também tem gradação: lado pequeno = tom claro, lado grande = tom forte. Na skin cinza as duas barras são cinza.
+    // A cor das barras segue a mesma gradação das células (por densidade de volume do nível). Na skin cinza as duas barras são cinza.
     const xEixo = Math.round(xCel + wCel / 2);
     if (cfg.hist) {
         let maxLado = 0;
         cl.linhas.forEach(ln => { const m = Math.max(ln.bid, ln.ask); if (m > maxLado) maxLado = m; });
         const meioL = Math.max(1, Math.min(xEixo - xCel, xCel + wCel - xEixo - 1) - 1);   // espaço de cada lado do eixo
-        const palBid = FOOTPRINT_SKIN === 'cinza' ? FOOTPRINT_COR_CINZA : FOOTPRINT_COR_VERMELHO;
-        const palAsk = FOOTPRINT_SKIN === 'cinza' ? FOOTPRINT_COR_CINZA : FOOTPRINT_COR_VERDE;
-        const rgbBarra = (pal, v) => {
-            const k = 0.6 + 0.4 * Math.sqrt(Math.min(1, v / maxLado));
-            return [0, 1, 2].map(j => Math.round(pal.base[j] + (pal.forte[j] * 0.82 - pal.base[j]) * k));
+        // Gradação das barras = a MESMA das células: intensidade pela densidade de volume do nível (total bid+ask na grade, contraste,
+        // destaque dos maiores até quase preto); só o matiz muda por lado (bid = vermelho, ask = verde; cinza na skin cinza).
+        // Volume muito pequeno (que na célula ficava branco) vira o tom mais claro da paleta, pra barra não sumir no fundo branco.
+        const agr = cl.agrup || 1;
+        const barra = (ln, lado) => {
+            const tot = ln.total / agr;
+            const r = lado === 'bid' ? grFootprintCorCelula(tot, 0, cfg.tick, cfg.refTop) : grFootprintCorCelula(0, tot, cfg.tick, cfg.refTop);
+            if (r.cor !== '#FFFFFF') return r;
+            const pal = FOOTPRINT_SKIN === 'cinza' ? FOOTPRINT_COR_CINZA : (lado === 'bid' ? FOOTPRINT_COR_VERMELHO : FOOTPRINT_COR_VERDE);
+            return { cor: 'rgb(' + pal.base.join(',') + ')', escura: false };
         };
-        const corBarra = (pal, v) => 'rgb(' + rgbBarra(pal, v).join(',') + ')';
-        const escuraBarra = (pal, v) => { const c = rgbBarra(pal, v); return (0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]) < 130; };
         let yEixo0 = Infinity, yEixo1 = -Infinity;
         cl.linhas.forEach((ln, i) => {
             const g = geo[i];
@@ -3805,8 +3808,8 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
             const yb = g.y0 + pad, hb = Math.max(1, (g.y1 - g.y0) - 2 * pad);
             if (g.y0 < yEixo0) yEixo0 = g.y0;
             if (g.y1 > yEixo1) yEixo1 = g.y1;
-            if (ln.bid > 0) { const L = Math.max(1, Math.round(ln.bid / maxLado * meioL)); ctx.fillStyle = corBarra(palBid, ln.bid); ctx.fillRect(xEixo - L, yb, L, hb); g.bidL = L; g.bidEscura = escuraBarra(palBid, ln.bid); }
-            if (ln.ask > 0) { const L = Math.max(1, Math.round(ln.ask / maxLado * meioL)); ctx.fillStyle = corBarra(palAsk, ln.ask); ctx.fillRect(xEixo + 1, yb, L, hb); g.askL = L; g.askEscura = escuraBarra(palAsk, ln.ask); }
+            if (ln.bid > 0) { const L = Math.max(1, Math.round(ln.bid / maxLado * meioL)); const cb = barra(ln, 'bid'); ctx.fillStyle = cb.cor; ctx.fillRect(xEixo - L, yb, L, hb); g.bidL = L; g.bidEscura = cb.escura; }
+            if (ln.ask > 0) { const L = Math.max(1, Math.round(ln.ask / maxLado * meioL)); const ca = barra(ln, 'ask'); ctx.fillStyle = ca.cor; ctx.fillRect(xEixo + 1, yb, L, hb); g.askL = L; g.askEscura = ca.escura; }
         });
         if (yEixo1 > yEixo0) {   // eixo central: uma linha fina contínua por todo o bloco de níveis
             ctx.fillStyle = 'rgba(17,17,17,0.65)';
@@ -3827,7 +3830,7 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
     // Contorno ao redor do BLOCO INTEIRO de células (não mais por célula — aquilo criava uma linha divisória entre cada
     // nível, e o pedido era só a borda externa). Cor conforme o candle fechou em alta ou baixa, igual à lógica do corpo.
     // Só na skin "cores" (a "cinza" não tem matiz pra contornar).
-    if (FOOTPRINT_SKIN === 'cores' || FOOTPRINT_SKIN === 'poc') {
+    if (!cfg.hist && (FOOTPRINT_SKIN === 'cores' || FOOTPRINT_SKIN === 'poc')) {   // histograma: sem contorno ao redor do bloco
         const validos = geo.filter(g => g);
         if (validos.length) {
             const yTopoBloco = retPoc ? retPoc.y0 : Math.min(...validos.map(g => g.y0));
@@ -3875,18 +3878,18 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
             const corImb = g.escura ? '#8FA5FF' : '#1A2BD8';
             const a = grFmtVolCompacto(ln.bid, nivelTxt), b = grFmtVolCompacto(ln.ask, nivelTxt);
             if (cfg.hist) {
-                // Histograma: bid na borda esquerda e ask na borda direita do retângulo (sem o " x "), deixando o miolo livre pras barras que saem do
-                // eixo. Sem contorno nos números: a cor (branco ou preto) segue o fundo atrás deles — branco só quando uma barra ESCURA cobre o
-                // número inteiro; em qualquer outro caso (fundo branco ou barra que cobre só metade) fica preto.
+                // Histograma: bid encostado no eixo central pelo lado esquerdo e ask pelo lado direito (sem o " x "). Sem contorno nos números:
+                // a cor (branco ou preto) segue o fundo atrás deles — branco só quando uma barra ESCURA cobre o número inteiro; em qualquer
+                // outro caso (fundo branco ou barra que cobre só metade) fica preto.
                 const y = (g.y0 + g.y1) / 2 + fs * 0.35;
                 ctx.font = ln.imbBid ? fonteNegrito : fonteNormal; const wBid = ctx.measureText(a).width;
                 ctx.font = ln.imbAsk ? fonteNegrito : fonteNormal; const wAsk = ctx.measureText(b).width;
-                const bidSobreBarra = g.bidEscura && (xEixo - g.bidL) <= xCel + 3 && xEixo >= xCel + 3 + wBid;
-                const askSobreBarra = g.askEscura && (xEixo + 1 + g.askL) >= xCel + wCel - 3 && xEixo + 1 <= xCel + wCel - 3 - wAsk;
-                ctx.textAlign = 'left'; ctx.font = ln.imbBid ? fonteNegrito : fonteNormal;
-                ctx.fillStyle = ln.imbBid ? (bidSobreBarra ? '#8FA5FF' : '#1A2BD8') : (bidSobreBarra ? '#FFFFFF' : '#000000'); ctx.fillText(a, xCel + 3, y);
-                ctx.textAlign = 'right'; ctx.font = ln.imbAsk ? fonteNegrito : fonteNormal;
-                ctx.fillStyle = ln.imbAsk ? (askSobreBarra ? '#8FA5FF' : '#1A2BD8') : (askSobreBarra ? '#FFFFFF' : '#000000'); ctx.fillText(b, xCel + wCel - 3, y);
+                const bidSobreBarra = g.bidEscura && (xEixo - g.bidL) <= xEixo - 3 - wBid;   // a barra do bid cobre o número inteiro
+                const askSobreBarra = g.askEscura && (xEixo + 1 + g.askL) >= xEixo + 4 + wAsk; // a barra do ask cobre o número inteiro
+                ctx.textAlign = 'right'; ctx.font = ln.imbBid ? fonteNegrito : fonteNormal;
+                ctx.fillStyle = ln.imbBid ? (bidSobreBarra ? '#8FA5FF' : '#1A2BD8') : (bidSobreBarra ? '#FFFFFF' : '#000000'); ctx.fillText(a, xEixo - 3, y);
+                ctx.textAlign = 'left'; ctx.font = ln.imbAsk ? fonteNegrito : fonteNormal;
+                ctx.fillStyle = ln.imbAsk ? (askSobreBarra ? '#8FA5FF' : '#1A2BD8') : (askSobreBarra ? '#FFFFFF' : '#000000'); ctx.fillText(b, xEixo + 4, y);
                 ctx.textAlign = 'left';
                 return;
             }
@@ -3917,10 +3920,9 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
                 if (cfg.soTotal) {
                     const t = grFmtVolCompacto(totBid + totAsk, nivelTxt);
                     ctx.fillText(t, xCel + wCel / 2 - ctx.measureText(t).width / 2, yTotal);
-                } else if (cfg.hist) {   // histograma: o total também fica nas bordas (bid à esquerda, ask à direita), alinhado com as linhas
-                    ctx.textAlign = 'left';  ctx.fillText(grFmtVolCompacto(totBid, nivelTxt), xCel + 3, yTotal);
-                    ctx.textAlign = 'right'; ctx.fillText(grFmtVolCompacto(totAsk, nivelTxt), xCel + wCel - 3, yTotal);
-                    ctx.textAlign = 'left';
+                } else if (cfg.hist) {   // histograma: o total também encosta no eixo (bid à esquerda, ask à direita), alinhado com as linhas
+                    ctx.textAlign = 'right'; ctx.fillText(grFmtVolCompacto(totBid, nivelTxt), xEixo - 3, yTotal);
+                    ctx.textAlign = 'left';  ctx.fillText(grFmtVolCompacto(totAsk, nivelTxt), xEixo + 4, yTotal);
                 } else {
                     const a = grFmtVolCompacto(totBid, nivelTxt), b = grFmtVolCompacto(totAsk, nivelTxt);
                     const wa = ctx.measureText(a).width, wx = ctx.measureText(' x ').width, wb = ctx.measureText(b).width;
