@@ -2917,8 +2917,9 @@ const FOOTPRINT_COR_VERDE    = { base: [227, 241, 227], forte: [78, 159, 85] };
 const FOOTPRINT_COR_VERMELHO = { base: [252, 228, 228], forte: [232, 72, 63] };
 // Skins do footprint: 'cores' (bid x ask, verde/vermelho pelo lado dominante) e 'cinza' (só o TOTAL
 // bid+ask por linha, tons de cinza pelo volume: o mais escuro = nível mais disputado). Persistida.
-const FOOTPRINT_SKINS = { cores: 'Cores (bid × ask)', cinza: 'Cinza (total)' };
-let FOOTPRINT_SKIN = localStorage.getItem('grFootprintSkin') === 'cinza' ? 'cinza' : 'cores';
+// 'poc': só o POC do candle + o vizinho colado de maior volume (a zona do POC), no estilo de cores (bid × ask).
+const FOOTPRINT_SKINS = { cores: 'Cores (bid × ask)', cinza: 'Cinza (total)', poc: 'POC + vizinho' };
+let FOOTPRINT_SKIN = (() => { const v = localStorage.getItem('grFootprintSkin'); return v === 'cinza' || v === 'poc' ? v : 'cores'; })();
 const FOOTPRINT_COR_CINZA = { base: [234, 236, 238], forte: [128, 141, 153] };
 // Contorno na célula de maior negociação do candle (o POC dele): liga/desliga. Persistido.
 let FOOTPRINT_POC_CONTORNO = localStorage.getItem('grFootprintPocContorno') !== '0';
@@ -2934,7 +2935,7 @@ function grFootprintSkinAtualizarRotulo() {
     if (el) el.textContent = FOOTPRINT_SKINS[FOOTPRINT_SKIN];
 }
 function grFootprintAlternarSkin() {
-    FOOTPRINT_SKIN = FOOTPRINT_SKIN === 'cores' ? 'cinza' : 'cores';
+    FOOTPRINT_SKIN = FOOTPRINT_SKIN === 'cores' ? 'cinza' : (FOOTPRINT_SKIN === 'cinza' ? 'poc' : 'cores');
     try { localStorage.setItem('grFootprintSkin', FOOTPRINT_SKIN); } catch (e) {}
     grFootprintSkinAtualizarRotulo();
     grDrawChart();
@@ -2946,7 +2947,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v292';
+const APP_VERSAO = 'v293';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3676,7 +3677,15 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
     // altura mínima continua valendo do jeito de sempre, pro texto não virar sopa de letra quando o gráfico tá bem zoom out).
     const n = cl.linhas.length;
     const geo = [];
+    // Skin "POC + vizinho": só o nível de maior volume e o vizinho COLADO de maior volume (confirma a zona); o resto do candle não é desenhado.
+    let zonaPoc = null;
+    if (FOOTPRINT_SKIN === 'poc' && n) {
+        const pi = cl.pocIdx >= 0 && cl.pocIdx < n ? cl.pocIdx : 0, tt = j => (cl.linhas[j] ? (cl.linhas[j].total || 0) : -1);
+        const viz = tt(pi - 1) >= tt(pi + 1) ? pi - 1 : pi + 1;
+        zonaPoc = new Set([pi]); if (tt(viz) > 0) zonaPoc.add(viz);
+    }
     cl.linhas.forEach((ln, i) => {
+        if (zonaPoc && !zonaPoc.has(i)) { geo.push(null); return; }
         let yTop = Math.round(toY(ln.p + ln.meio)), yBot = Math.round(toY(ln.p - ln.meio));
         const yTopReal = Math.round(toY(candle.h)), yBotReal = Math.round(toY(candle.l));
         const pontaCortada = (i === 0 || i === n - 1) && (yTop < yTopReal || yBot > yBotReal);
@@ -3705,7 +3714,7 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
     // Contorno ao redor do BLOCO INTEIRO de células (não mais por célula — aquilo criava uma linha divisória entre cada
     // nível, e o pedido era só a borda externa). Cor conforme o candle fechou em alta ou baixa, igual à lógica do corpo.
     // Só na skin "cores" (a "cinza" não tem matiz pra contornar).
-    if (FOOTPRINT_SKIN === 'cores') {
+    if (FOOTPRINT_SKIN === 'cores' || FOOTPRINT_SKIN === 'poc') {
         const validos = geo.filter(g => g);
         if (validos.length) {
             const yTopoBloco = Math.min(...validos.map(g => g.y0));
