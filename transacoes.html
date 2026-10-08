@@ -2946,7 +2946,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v290';
+const APP_VERSAO = 'v292';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3070,14 +3070,26 @@ function grMelhorCalcular(lado) {
     const pcV = grMePerc(niv.map(n => n.v)), loW = niv[0].lo, hiW = niv[niv.length - 1].hi, rng = Math.max(hiW - loW, atr), dpAbs = niv.map(n => Math.abs(n.dp)).sort((x, y) => x - y), dpMed = dpAbs[Math.floor(dpAbs.length / 2)];   // delta relevante = acima do |delta/volume| mediano da régua
     // Numeração como na régua: de CIMA para BAIXO, só os níveis que estão na tela (Nível 1 = o de cima).
     niv.filter(n => !(u.minP > 0 && u.maxP > 0) || (n.hi > u.minP && n.lo < u.maxP)).sort((x, y) => y.k - x.k).forEach((n, i) => { n.num = i + 1; });
+    // TOQUE DEFENDIDO: candle cujo fundo (long) / topo (short) caiu DENTRO da faixa do nível e fechou do lado certo dele (long: acima; short: abaixo).
+    // É a prova de que o preço já testou o nível e ele segurou — vale mesmo com delta contrário (absorção). Janela = a mesma da régua.
+    const porK = new Map(); niv.forEach(n => { n.def = 0; n.wick = null; porK.set(n.k, n); });
+    const tIni = cs.length ? cs[cs.length - 1].t - (u.dias || 21) * 86400000 : 0;
+    cs.forEach(cd => {
+        if (!(cd.t >= tIni)) return;
+        const ext = s > 0 ? Number(cd.h) : Number(cd.l), fe = Number(cd.c), n = porK.get(Math.round(ext / tick));
+        if (!n || !(ext >= n.lo && ext <= n.hi)) return;
+        if (s > 0 ? fe < n.lo : fe > n.hi) { n.def++; n.wick = n.wick == null ? ext : (s > 0 ? Math.max(n.wick, ext) : Math.min(n.wick, ext)); }
+    });
     niv.forEach(n => {
         n.pv = pcV(n.v); n.fav = s * n.d < 0;   // zona DISPUTADA: delta contrário ao lado da operação (short: negativo = resistência; long: positivo = suporte)
         n.lado = s > 0 ? n.lo >= preco : n.hi <= preco;   // INTEIRO do lado certo do preço (acima no short, abaixo no long): o nível que contém o preço não vira entrada
         n.gate = n.lado && n.pv >= 0.5;   // piso de volume tirado da própria régua: nível abaixo da MEDIANA dos níveis nunca vira entrada
         n.dist = Math.max(0, s * (n.c - preco));
         n.pos = Math.max(0, Math.min(1, s > 0 ? (n.c - loW) / rng : (hiW - n.c) / rng));
-        n.c1 = n.pv >= 0.5; n.c2 = n.fav && Math.abs(n.dp) >= dpMed; n.c3 = false;
-        n.pisos = (n.c1 ? 1 : 0) + (n.c2 ? 1 : 0);
+        n.abs = n.def > 0 && s * n.d > 0 && Math.abs(n.dp) >= dpMed;   // absorção: delta CONTRÁRIO com volume, o preço tocou e o nível segurou (os agressores perderam)
+        n.disp = n.fav || n.abs;
+        n.c1 = n.pv >= 0.5; n.c2 = (n.fav && Math.abs(n.dp) >= dpMed) || n.abs; n.c3 = n.def > 0;
+        n.pisos = (n.c1 ? 1 : 0) + (n.c2 ? 1 : 0) + (n.c3 ? 1 : 0);
         n.rank = n.gate ? n.pisos + 0.3 * n.pv + 0.2 * Math.exp(-n.dist / (2.5 * atr)) : 0;   // critérios mandam; volume e proximidade desempatam
     });
     let ib = -1;
@@ -3085,7 +3097,7 @@ function grMelhorCalcular(lado) {
     if (ib < 0) return { erro: niv.some(n => n.lado) ? 'Sem setup ' + lado + ' válido: nenhum nível ' + (s > 0 ? 'acima' : 'abaixo') + ' do preço tem volume acima da mediana da régua.' : 'Não há nível da régua ' + (s > 0 ? 'acima' : 'abaixo') + ' do preço atual.' };
     let a = ib, b = ib;
     while (b - a < 2) {   // faixa de até 3 níveis colados que também têm delta do lado certo e volume acima da mediana
-        const ok = x => x && x.gate && x.fav && x.pv >= 0.5, e = niv[a - 1], d = niv[b + 1];
+        const ok = x => x && x.gate && x.disp && x.pv >= 0.5, e = niv[a - 1], d = niv[b + 1];
         const okE = ok(e) && e.k === niv[a].k - 1, okD = ok(d) && d.k === niv[b].k + 1;
         if (okD && (!okE || d.rank >= e.rank)) b++; else if (okE) a--; else break;
     }
@@ -3097,7 +3109,17 @@ function grMelhorCalcular(lado) {
     let ex = s > 0 ? b : a;
     if (s > 0) { while (niv[ex + 1] && niv[ex + 1].k === niv[ex].k + 1 && niv[ex + 1].pv >= 0.5) ex++; } else { while (niv[ex - 1] && niv[ex - 1].k === niv[ex].k - 1 && niv[ex - 1].pv >= 0.5) ex--; }
     const stopNo = s > 0 ? niv[ex].hi : niv[ex].lo;
-    const entrada = s > 0 ? lo : hi, stop = s > 0 ? Math.max(hi, stopNo) : Math.min(lo, stopNo), risco = Math.abs(stop - entrada), K = niv[ib];
+    let stopV = s > 0 ? Math.max(hi, stopNo) : Math.min(lo, stopNo), wick = null;
+    // STOP pelo PAVIO: nunca acima do fundo (long) / abaixo do topo (short) dos candles que testaram e foram defendidos dentro do bloco; folga de 1 nível da régua.
+    cs.forEach(cd => {
+        if (!(cd.t >= tIni)) return;
+        const ext = s > 0 ? Number(cd.h) : Number(cd.l), fe = Number(cd.c);
+        const dentroBloco = s > 0 ? (ext <= stopNo && ext >= lo) : (ext >= stopNo && ext <= hi);
+        const defendeu = s > 0 ? fe < lo : fe > hi;
+        if (dentroBloco && defendeu) wick = wick == null ? ext : (s > 0 ? Math.max(wick, ext) : Math.min(wick, ext));
+    });
+    if (wick != null) stopV = s > 0 ? Math.max(stopV, wick + tick) : Math.min(stopV, wick - tick);
+    const entrada = s > 0 ? lo : hi, stop = stopV, risco = Math.abs(stop - entrada), K = niv[ib];
     // ALVOS = SUPORTE/RESISTÊNCIA do lado oposto: nós com volume acima da mediana E delta favorável (short: delta positivo = compradores defendendo; long: negativo), a ≥ 1 ATR da entrada. O alvo fica na borda de FRENTE do nó (onde o preço encontra o suporte e tende a segurar).
     // Alvos: nós de alto volume do lado oposto, a ≥ 1 ATR da entrada, agrupando níveis colados. Alvo = a borda de trás do nó (a primeira onde o preço tende a segurar fica antes dela).
     const hv = niv.filter(n => n.pv >= 0.5 && s * n.d > 0 && s * (entrada - n.c) >= atr).sort((x, y) => s > 0 ? y.k - x.k : x.k - y.k);
@@ -3118,8 +3140,8 @@ function grMelhorCalcular(lado) {
     const dentro = n => n.hi > lo && n.lo < hi;
     const cands = [];
     niv.filter(n => n.gate && !dentro(n)).sort((x, y) => y.rank - x.rank).forEach(n => { if (cands.length < 3 && cands.every(o => Math.abs(o.k - n.k) >= 2) && !(Math.abs(n.k - niv[a].k) <= 1 || Math.abs(n.k - niv[b].k) <= 1)) cands.push(n); });
-    return { lado, s, preco, lo, hi, entrada, stop, alvo: alvo1, alvo1, alvo2, rr: rr1, rr1, rr2, semNo, atr, tick, K, band: { a: niv[a], b: niv[b] }, numEntrada: niv.slice(a, b + 1).map(n => n.num).filter(Boolean),
-        forca: K.pisos >= 2 ? 'Forte' : 'Fraco', cands, grupos: grupos.slice(0, 3), g1, g2, dias: u.dias, tfRot: u.tfRot, niveis: niv.length };
+    return { lado, s, preco, lo, hi, entrada, stop, alvo: alvo1, alvo1, alvo2, rr: rr1, rr1, rr2, semNo, atr, tick, K, wick, band: { a: niv[a], b: niv[b] }, numEntrada: niv.slice(a, b + 1).map(n => n.num).filter(Boolean),
+        forca: K.pisos >= 3 ? 'Forte' : (K.pisos === 2 ? 'Média' : 'Fraco'), cands, grupos: grupos.slice(0, 3), g1, g2, dias: u.dias, tfRot: u.tfRot, niveis: niv.length };
 }
 function grMeMontarRelatorio(r) {
     const fp = x => Math.round(x).toLocaleString('pt-BR'), n1 = x => x.toFixed(1).replace('.', ','), short = r.lado === 'short', cor = short ? '#DC2626' : '#16A34A';
@@ -3130,15 +3152,17 @@ function grMeMontarRelatorio(r) {
     const linhaN = n => fmtS(n.d) + ' · ' + pct(n) + ' · vol ' + grFmtVolCompacto(n.v, 0);
     const razoes = n => {
         const ps = [];
-        if (!n.fav) ps.push('sem delta de disputa'); else if (!n.c2) ps.push('delta fraco');
+        if (!n.disp) ps.push('sem delta de disputa'); else if (!n.c2) ps.push('delta fraco');
         if (!n.c1) ps.push('volume baixo');
+        if (!n.c3) ps.push('nunca testado e defendido');
         return ps.join(', ');
     };
-    const porque = [K.c2 ? presos : null, K.c1 ? 'volume acima da mediana' : null].filter(Boolean);
-    const fraco = [!K.c2 ? (K.fav ? 'delta fraco' : 'sem delta de disputa') : null, !K.c1 ? 'volume baixo' : null].filter(Boolean);
+    const absTxt = short ? 'absorção: delta positivo e o preço não passou (vendedores seguraram)' : 'absorção: delta negativo e o preço não caiu (compradores seguraram)';
+    const porque = [K.c2 ? (K.abs && !K.fav ? absTxt : presos) : null, K.c1 ? 'volume acima da mediana' : null, K.c3 ? 'testado e defendido ' + K.def + '×' : null].filter(Boolean);
+    const fraco = [!K.c2 ? (K.disp ? 'delta fraco' : 'sem delta de disputa') : null, !K.c1 ? 'volume baixo' : null, !K.c3 ? 'preço nunca testou' : null].filter(Boolean);
     const L = [];   // [texto, tipo]
     L.push(['Entrada ' + fp(r.entrada) + ' · Stop ' + fp(r.stop) + ' · Alvo 1 ' + fp(r.alvo1) + (r.alvo2 != null ? ' · Alvo 2 ' + fp(r.alvo2) : ''), 'plano']);
-    L.push(['R:R ' + n1(r.rr1) + (r.rr2 != null ? ' / ' + n1(r.rr2) : '') + (r.semNo ? ' (sem suporte com volume e delta: alvo 2R)' : ''), 'sub']);
+    L.push(['R:R ' + n1(r.rr1) + (r.rr2 != null ? ' / ' + n1(r.rr2) : '') + (r.semNo ? ' (sem suporte com volume e delta: alvo 2R)' : '') + (r.wick != null ? ' · stop 1 nível além do ' + (short ? 'topo' : 'fundo') + ' defendido (' + fp(r.wick) + ')' : ''), 'sub']);
     const entradaTxt = rot(r.numEntrada) + ' · ' + fp(r.lo) + ' – ' + fp(r.hi) + ' · ' + linhaN(K) + ' → ' + (porque.length ? porque.join(', ') : 'nenhum critério forte') + (fraco.length ? ' (mas ' + fraco.join(', ') + ')' : '');
     const niveis = [];
     niveis.push({ t: entradaTxt, tag: 'ENTRADA', c: cor, o: Math.min.apply(null, r.numEntrada.length ? r.numEntrada : [999]) });
@@ -3154,7 +3178,7 @@ function grMeMontarRelatorio(r) {
     L.forEach(x => T.push(x[0])); T.push(''); niveis.forEach(n => T.push('• ' + (n.tag ? '[' + n.tag + '] ' : '') + n.t)); T.push(invalida);
     const html = '<div style="font-size:12px;color:#8E8E93;">' + r.dias + ' dias · TF ' + r.tfRot + ' · preço ' + fp(r.preco) + '</div>'
         + '<div style="border:2px solid ' + cor + ';border-radius:12px;padding:12px 14px;margin-top:6px;background:' + (short ? '#FEF2F2' : '#F0FDF4') + ';">'
-        + '<div style="font-size:12px;font-weight:700;color:' + cor + ';">' + nome + ' · sinal ' + r.forca + ' (' + K.pisos + ' de 2 critérios)</div>'
+        + '<div style="font-size:12px;font-weight:700;color:' + cor + ';">' + nome + ' · sinal ' + r.forca + ' (' + K.pisos + ' de 3 critérios)</div>'
         + '<div style="font-size:15px;font-weight:800;line-height:1.5;margin-top:4px;">' + L[0][0].replace(/ · /g, '<br>') + '</div>'
         + '<div style="font-size:12.5px;color:#3A3A3C;margin-top:4px;">' + L[1][0] + '</div></div>'
         + '<button onclick="grMelhorCriarCaixa()" style="width:100%;margin-top:10px;border:2px solid ' + cor + ';border-radius:12px;padding:12px;font-size:15px;font-weight:800;background:#fff;color:' + cor + ';">Criar Caixa</button>'
@@ -7359,7 +7383,7 @@ function grEdToqueInicio(x, y) {   // x,y em coordenadas do canvas; devolve true
 function grMagnetRegua(yCanvas, preco) {
     try {
         const u = window._grDaUltima;
-        if (!_indState.deltaAtr || !u || !(u.tick > 0) || !(preco > 0)) return preco;
+        if (window._grImaOff || !_indState.deltaAtr || !u || !(u.tick > 0) || !(preco > 0)) return preco;   // _grImaOff: ímã desligado no menu Design
         const tick = u.tick, j0 = Math.round(preco / tick - 0.5);
         let best = preco, bd = 12;
         for (let j = j0 - 1; j <= j0 + 1; j++) { const e = (j + 0.5) * tick, d = Math.abs(grLineY(e) - yCanvas); if (d < bd) { bd = d; best = e; } }
@@ -7577,6 +7601,13 @@ function cvAbrirMenuDesenhos(clientX, clientY) {
         corRow.appendChild(it);
     });
     menu.appendChild(corRow);
+    // Ímã da régua nas alças de entrada/stop/alvo: ligado/desligado.
+    const imaRow = document.createElement('button'); imaRow.type = 'button';
+    imaRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;width:100%;box-sizing:border-box;background:transparent;border:0;border-top:1px solid #F2F2F7;padding:10px 14px;cursor:pointer;font-size:13px;color:#000000;font-family:inherit;';
+    const imaOn = !window._grImaOff;
+    imaRow.innerHTML = '<span>Ímã nas alças da caixa</span><span style="font-weight:700;">' + (imaOn ? 'Ligado' : 'Desligado') + '</span>';
+    imaRow.onclick = ev => { ev.stopPropagation(); window._grImaOff = !window._grImaOff; grAmbienteSalvar(); cvAbrirMenuDesenhos(); };
+    menu.appendChild(imaRow);
     linhas.forEach(l => {
         const row = document.createElement('div');
         row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:2px 4px 2px 14px;border-top:1px solid #F2F2F7;';
@@ -10710,6 +10741,7 @@ function grAmbienteColetar() {
         ls: grLsColetar(),
         desenhos: grDesenhosColetar(),
         corCandle: window._grCorCandle,
+        imaOff: !!window._grImaOff,
     };
 }
 let _grAmbienteRestaurando = false; // true enquanto grAmbienteCarregar() está aplicando os campos -- evita gravar o ambiente pela metade
@@ -10758,6 +10790,7 @@ async function grAmbienteCarregar() {
     window._grAmbStatus.carga = ambiente ? ('servidor ok (tf=' + ambiente.tf + ', áreas=' + Object.keys(ambiente.areas || {}).length + ', retas=' + Object.values(ambiente.hLinhas || {}).reduce((t, l) => t + (Array.isArray(l) ? l.length : 0), 0) + ', configs=' + Object.keys(window._grMem).length + (window._grMigrou ? ', migrou do aparelho' : '') + ')') : (window._grBootStatus || 'sem dados');
     if (!ambiente) { console.log('[ambiente] NADA encontrado -- fica no padrão'); _grAmbienteCarregado = true; if (_grAmbientePendente) { _grAmbientePendente = false; grAmbienteSalvar(); } return; }
     if (ambiente.desenhos && typeof ambiente.desenhos === 'object') window._grDesenhosMapa = ambiente.desenhos;
+    window._grImaOff = !!ambiente.imaOff;
     if (ambiente.corCandle && typeof ambiente.corCandle === 'object') window._grCorCandle = { alta: ambiente.corCandle.alta || null, baixa: ambiente.corCandle.baixa || null };
     if (ambiente.areas && typeof ambiente.areas === 'object') {
         _grAreasMapa = ambiente.areas; // servidor é a fonte única 
