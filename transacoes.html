@@ -1596,6 +1596,17 @@ function grConfigBlocoLinhasFootprint(svg) {
         + '<div style="display:flex;gap:6px;margin-top:10px;">' + seg('atr', 'ATR') + seg('auto', 'Auto') + seg('manual', 'Manual') + '</div>'
         + extra + '</div>';
 }
+// Bloco "Tipo" do footprint: 2 botões (Célula / Histograma). Célula = "bid x ask" em texto; Histograma = barras saindo de um eixo central.
+function grConfigBlocoTipoFootprint(svg) {
+    const tipo = FOOTPRINT_TIPO;
+    const seg = (val, label) => '<button onclick="grFootprintSetTipo(\'' + val + '\')" style="flex:1;border:none;border-radius:8px;padding:9px 0;font-size:13px;font-weight:700;background:' + (tipo === val ? '#1C1C1E' : '#E5E5EA') + ';color:' + (tipo === val ? '#FFFFFF' : '#1C1C1E') + ';">' + label + '</button>';
+    return '<div style="padding:12px 2px;border-bottom:1px solid #F2F2F7;">'
+        + '<div style="display:flex;align-items:center;gap:12px;">'
+        + '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;">' + svg + '</svg>'
+        + '<div style="flex:1;min-width:0;"><div style="font-size:14px;font-weight:600;color:#1C1C1E;">Tipo</div><div style="font-size:11.5px;color:#8E8E93;margin-top:1px;">Como cada nível aparece no candle</div></div></div>'
+        + '<div style="display:flex;gap:6px;margin-top:10px;">' + seg('celula', 'Célula') + seg('histograma', 'Histograma') + '</div>'
+        + '</div>';
+}
 // Bloco "Marcar os maiores níveis": toggle (liga/desliga) + slider de tolerância (%), que só aparece quando ligado.
 function grConfigBlocoMarcarMaiores(svg) {
     let extra;
@@ -1977,6 +1988,7 @@ function cvRenderMenuFpCfg() {
             + SEC('lookback', grConfigBlocoSliderDias(ICO.calendario, 'Janela de dias', 'CVD, delta e zonas de disputa', 'cv-cfg-lookback', _grFootprintLookbackDias, 1, 180, 'input', 'grFootprintLookbackSlider'))
             + SEC('diasfluxo', grConfigBlocoSliderDias(ICO.baixar, 'Dias ao ligar o Fluxo', 'Quanto histórico carregar de uma vez', 'cv-cfg-diasfluxo', FOOTPRINT_DIAS_AO_ATIVAR, 1, 36500, 'input', 'grFootprintDiasFluxoPreview'))
             + R('cv-cfg-skin-value', ICO.skin, 'Skin', null, 'grFootprintAlternarSkin()')
+            + grConfigBlocoTipoFootprint(ICO.refcor)
             + SEC('contraste', grConfigBlocoContrasteV2(ICO.contraste))
             + SEC('linhas', grConfigBlocoLinhasFootprint(ICO.linhas))
             + R('cv-cfg-poccontorno-value', ICO.contorno, 'Contorno da célula', 'Realce ao redor da linha de maior volume do candle', 'grFootprintAlternarPocContorno()')
@@ -2942,6 +2954,17 @@ function grFootprintAlternarSkin() {
     grDrawChart();
 }
 grFootprintSkinAtualizarRotulo();
+// Tipo de representação do footprint nos candles: 'celula' (texto "bid x ask" sobre o fundo colorido do nível) ou 'histograma'
+// (o mesmo retângulo/fundo, mas com um eixo central e, a partir dele, uma barra pro lado do bid (esquerda) e outra pro do ask (direita),
+// como no TradingView). Só muda o desenho: dados, grade, cores de fundo, contorno e POC são os mesmos nos dois.
+const FOOTPRINT_HIST_FOLGA = 1.7;   // histograma: fator sobre a largura do número (1,7 => o número ocupa ~59% da metade do eixo, o resto é da barra)
+let FOOTPRINT_TIPO = localStorage.getItem('grFootprintTipo') === 'histograma' ? 'histograma' : 'celula';
+function grFootprintSetTipo(tipo) {
+    FOOTPRINT_TIPO = tipo === 'histograma' ? 'histograma' : 'celula';
+    try { localStorage.setItem('grFootprintTipo', FOOTPRINT_TIPO); } catch (e) {}
+    grDrawChart();
+    cvRenderMenuFpCfg(); // reabre o popup do Fluxo com o botão certo marcado
+}
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
@@ -3498,6 +3521,7 @@ function grFootprintClusterDoCandle(candle, tick, getTodos) {
 // desiste do texto e fica só a cor). Chamado uma vez por desenho.
 function grFootprintPrepararClusters(ctx, candles, pxPorUsd, cW) {
     const soTotal = FOOTPRINT_SKIN === 'cinza'; // skin cinza: 1 número por linha (o total)
+    const hist = FOOTPRINT_TIPO === 'histograma'; // histograma: bid à esquerda e ask à direita de um eixo central (sem o " x ")
     const temTexto = cW >= (soTotal ? FOOTPRINT_TEXTO_CW_MIN_CINZA : FOOTPRINT_TEXTO_CW_MIN);
     const tick = grFootprintTickDaGrade(pxPorUsd, temTexto);
     let todos = null;
@@ -3523,8 +3547,10 @@ function grFootprintPrepararClusters(ctx, candles, pxPorUsd, cW) {
             clusters.forEach(cl => cl.linhas.forEach(ln => {
                 const w = soTotal
                     ? ctx.measureText(grFmtVolCompacto(ln.total, nivel)).width
-                    : ctx.measureText(grFmtVolCompacto(ln.bid, nivel)).width + larguraX
-                      + ctx.measureText(grFmtVolCompacto(ln.ask, nivel)).width;
+                    : (hist
+                        ? 2 * FOOTPRINT_HIST_FOLGA * Math.max(ctx.measureText(grFmtVolCompacto(ln.bid, nivel)).width, ctx.measureText(grFmtVolCompacto(ln.ask, nivel)).width) + 2 // cada número ocupa só ~60% da sua metade do eixo: o resto fica livre pra barra aparecer
+                        : ctx.measureText(grFmtVolCompacto(ln.bid, nivel)).width + larguraX
+                          + ctx.measureText(grFmtVolCompacto(ln.ask, nivel)).width);
                 if (w > maiorLargura) maiorLargura = w;
             }));
             const fsUsar = Math.min(fsMax, 10 * (wCel - 4) / maiorLargura);
@@ -3532,7 +3558,7 @@ function grFootprintPrepararClusters(ctx, candles, pxPorUsd, cW) {
         }
     }
     const refTop = grFootprintDestaqueRef(clusters, tick);
-    return { tick, clusters, maxTotal, refTop, nivelTxt, fs, soTotal };
+    return { tick, clusters, maxTotal, refTop, nivelTxt, fs, soTotal, hist };
 }
 // ── Marcar os maiores níveis: acha, dentro da "Janela de dias" (a mesma usada por CVD/delta/zonas de disputa — não
 // mais o "Dias ao ligar o Fluxo"), o maior total (bid+ask) de uma única linha do footprint dentre TODOS os candles
@@ -3678,7 +3704,9 @@ function grFootprintFonteSelecionado(ctx, cl, cfg, wCel, toY) {
     cl.linhas.forEach(ln => {
         const w = cfg.soTotal
             ? ctx.measureText(grFmtVolCompacto(ln.total, cfg.nivelTxt)).width
-            : ctx.measureText(grFmtVolCompacto(ln.bid, cfg.nivelTxt)).width + larguraX + ctx.measureText(grFmtVolCompacto(ln.ask, cfg.nivelTxt)).width;
+            : (cfg.hist
+                ? 2 * FOOTPRINT_HIST_FOLGA * Math.max(ctx.measureText(grFmtVolCompacto(ln.bid, cfg.nivelTxt)).width, ctx.measureText(grFmtVolCompacto(ln.ask, cfg.nivelTxt)).width) + 2
+                : ctx.measureText(grFmtVolCompacto(ln.bid, cfg.nivelTxt)).width + larguraX + ctx.measureText(grFmtVolCompacto(ln.ask, cfg.nivelTxt)).width);
         if (w > maior) maior = w;
     });
     const teto = Math.min(cfg.fs * FOOTPRINT_SELECAO_AUMENTO, FOOTPRINT_SELECAO_FONTE_MAX);
@@ -3751,6 +3779,37 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
         ctx.fillStyle = corCel.cor;
         ctx.fillRect(xCel, y0, wCel, Math.max(1, y1 - y0));
     });
+    // Tipo HISTOGRAMA: o retângulo e o fundo em gradação continuam IGUAIS (acima); por cima dele entra um eixo central e, a partir
+    // dele, uma barra por nível pro lado do bid (esquerda, vermelha) e outra pro lado do ask (direita, verde), como no TradingView.
+    // Escala: o maior lado (bid ou ask) de qualquer nível DESTE candle ocupa a meia largura inteira — cada candle usa a largura toda.
+    // A cor da barra também tem gradação: lado pequeno = tom claro, lado grande = tom forte. Na skin cinza as duas barras são cinza.
+    const xEixo = Math.round(xCel + wCel / 2);
+    if (cfg.hist) {
+        let maxLado = 0;
+        cl.linhas.forEach(ln => { const m = Math.max(ln.bid, ln.ask); if (m > maxLado) maxLado = m; });
+        const meioL = Math.max(1, Math.min(xEixo - xCel, xCel + wCel - xEixo - 1) - 1);   // espaço de cada lado do eixo
+        const palBid = FOOTPRINT_SKIN === 'cinza' ? FOOTPRINT_COR_CINZA : FOOTPRINT_COR_VERMELHO;
+        const palAsk = FOOTPRINT_SKIN === 'cinza' ? FOOTPRINT_COR_CINZA : FOOTPRINT_COR_VERDE;
+        const corBarra = (pal, v) => {
+            const k = 0.6 + 0.4 * Math.sqrt(Math.min(1, v / maxLado));
+            return 'rgb(' + [0, 1, 2].map(j => Math.round(pal.base[j] + (pal.forte[j] * 0.82 - pal.base[j]) * k)).join(',') + ')';
+        };
+        let yEixo0 = Infinity, yEixo1 = -Infinity;
+        cl.linhas.forEach((ln, i) => {
+            const g = geo[i];
+            if (!g || maxLado <= 0) return;
+            const pad = (g.y1 - g.y0) >= 6 ? 1 : 0;           // fresta entre barras de níveis vizinhos (só quando a linha tem altura)
+            const yb = g.y0 + pad, hb = Math.max(1, (g.y1 - g.y0) - 2 * pad);
+            if (g.y0 < yEixo0) yEixo0 = g.y0;
+            if (g.y1 > yEixo1) yEixo1 = g.y1;
+            if (ln.bid > 0) { const L = Math.max(1, Math.round(ln.bid / maxLado * meioL)); ctx.fillStyle = corBarra(palBid, ln.bid); ctx.fillRect(xEixo - L, yb, L, hb); }
+            if (ln.ask > 0) { const L = Math.max(1, Math.round(ln.ask / maxLado * meioL)); ctx.fillStyle = corBarra(palAsk, ln.ask); ctx.fillRect(xEixo + 1, yb, L, hb); }
+        });
+        if (yEixo1 > yEixo0) {   // eixo central: uma linha fina contínua por todo o bloco de níveis
+            ctx.fillStyle = 'rgba(17,17,17,0.65)';
+            ctx.fillRect(xEixo, retPoc ? retPoc.y0 : yEixo0, 1, (retPoc ? retPoc.y1 : yEixo1) - (retPoc ? retPoc.y0 : yEixo0));
+        }
+    }
     // Células TOCÁVEIS: tocar numa célula (que mostra número) abre o modal só daquele nível (grFpCelAbrirModal). A zona de toque tem no mínimo 14 px.
     if (nivelTxt >= 0 && window._grFpCelHits) {
         cl.linhas.forEach((ln, i) => {
@@ -3812,6 +3871,18 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
             const corTxt = g.escura ? '#FFFFFF' : '#000000';
             const corImb = g.escura ? '#8FA5FF' : '#1A2BD8';
             const a = grFmtVolCompacto(ln.bid, nivelTxt), b = grFmtVolCompacto(ln.ask, nivelTxt);
+            if (cfg.hist) {
+                // Histograma: bid na borda esquerda e ask na borda direita do retângulo (sem o " x "), deixando o miolo livre pras barras que saem do
+                // eixo. Quando uma barra é grande o bastante pra passar por baixo do número, o contorno (halo) de cor oposta mantém a leitura.
+                const y = (g.y0 + g.y1) / 2 + fs * 0.35;
+                ctx.lineJoin = 'round'; ctx.lineWidth = Math.max(2, fs * 0.28);
+                ctx.strokeStyle = g.escura ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.85)';
+                ctx.textAlign = 'left'; ctx.font = ln.imbBid ? fonteNegrito : fonteNormal;
+                ctx.strokeText(a, xCel + 3, y); ctx.fillStyle = ln.imbBid ? corImb : corTxt; ctx.fillText(a, xCel + 3, y);
+                ctx.textAlign = 'right'; ctx.font = ln.imbAsk ? fonteNegrito : fonteNormal;
+                ctx.strokeText(b, xCel + wCel - 3, y); ctx.fillStyle = ln.imbAsk ? corImb : corTxt; ctx.fillText(b, xCel + wCel - 3, y);
+                return;
+            }
             ctx.font = ln.imbBid ? fonteNegrito : fonteNormal; const wa = ctx.measureText(a).width;
             ctx.font = fonteNormal;                             const wx = ctx.measureText(' x ').width;
             ctx.font = ln.imbAsk ? fonteNegrito : fonteNormal; const wb = ctx.measureText(b).width;
@@ -3839,6 +3910,10 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
                 if (cfg.soTotal) {
                     const t = grFmtVolCompacto(totBid + totAsk, nivelTxt);
                     ctx.fillText(t, xCel + wCel / 2 - ctx.measureText(t).width / 2, yTotal);
+                } else if (cfg.hist) {   // histograma: o total também fica nas bordas (bid à esquerda, ask à direita), alinhado com as linhas
+                    ctx.textAlign = 'left';  ctx.fillText(grFmtVolCompacto(totBid, nivelTxt), xCel + 3, yTotal);
+                    ctx.textAlign = 'right'; ctx.fillText(grFmtVolCompacto(totAsk, nivelTxt), xCel + wCel - 3, yTotal);
+                    ctx.textAlign = 'left';
                 } else {
                     const a = grFmtVolCompacto(totBid, nivelTxt), b = grFmtVolCompacto(totAsk, nivelTxt);
                     const wa = ctx.measureText(a).width, wx = ctx.measureText(' x ').width, wb = ctx.measureText(b).width;
