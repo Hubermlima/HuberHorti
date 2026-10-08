@@ -2947,7 +2947,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v297';
+const APP_VERSAO = 'v300';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -13446,6 +13446,63 @@ function grFpCelAbrirModal(candleT, idx, cl) {
         leitura = '<div style="margin-top:10px;padding-top:8px;border-top:1.5px solid ' + fg + ';font-size:12px;line-height:1.35;color:' + fg + ';">'
             + '<div style="font-weight:800;margin-bottom:3px;color:' + (forte ? ouro : fg) + ';">Leitura</div>' + l.join(' ') + '</div>';
     }
+    // Análise do PAR (POC + 2º nível mais negociado): posição de cada um, relação entre eles, com o candle e com os vizinhos.
+    let leituraPar = '';
+    if (cv && cv.h > cv.l) {
+        const L = cl.linhas, nL = L.length, tt = j => ((L[j].bid || 0) + (L[j].ask || 0));
+        const asc = L.map((_, i) => i).sort((x, y) => L[x].p - L[y].p), ordem = {}; asc.forEach((j, k) => { ordem[j] = k; });
+        const iP = (cl.pocIdx >= 0 && cl.pocIdx < nL) ? cl.pocIdx : 0;
+        let i2 = -1, v2 = 0; for (let j = 0; j < nL; j++) if (j !== iP && tt(j) > v2) { v2 = tt(j); i2 = j; }
+        const idxTocado = L.indexOf(ln), sobe = cv.c >= cv.o, dirTxt = sobe ? 'alta' : 'baixa';
+        const info = j => {
+            const l = L[j], t = tt(j), d = (l.ask || 0) - (l.bid || 0), pc = t > 0 ? Math.abs(d) / t * 100 : 0;
+            const fr = (l.p - cv.l) / (cv.h - cv.l), pos = fr >= 0.75 ? 'topo' : (fr <= 0.25 ? 'base' : 'meio');
+            const k = ordem[j], tb = k > 0 ? tt(asc[k - 1]) : 0, ta = k < nL - 1 ? tt(asc[k + 1]) : 0;
+            return { j, l, t, d, pc, fr, pos, destaca: pc > dpMedia, contra: (sobe && d < 0) || (!sobe && d > 0), rb: t > 0 ? tb / t : 0, ra: t > 0 ? ta / t : 0, temB: k > 0, temA: k < nL - 1 };
+        };
+        const pct = v => Math.round(v * 100) + '%';
+        const dTxt = x => 'Δ' + (x.d >= 0 ? '+' : '−') + fn(Math.abs(x.d)) + ' (' + x.pc.toFixed(0) + '%)' + (x.destaca ? (x.contra ? ' contra: absorção' : ' a favor') : '');
+        const viz = x => {
+            const a = x.temA ? x.ra : 1, b = x.temB ? x.rb : 1;
+            const q = (a < 0.4 && b < 0.4) ? ' · pico isolado' : (a < 0.4 ? ' · borda: vácuo acima' : (b < 0.4 ? ' · borda: vácuo abaixo' : ''));
+            return '▲' + (x.temA ? pct(x.ra) : '–') + ' ▼' + (x.temB ? pct(x.rb) : '–') + q;
+        };
+        const lin = (rot, txt) => '<div style="margin-top:3px;"><b>' + rot + '</b> ' + txt + '</div>';
+        let h = '';
+        const xP = info(iP), x2 = i2 >= 0 ? info(i2) : null;
+        const forte = [xP, x2].some(x => x && x.pos !== 'meio' && x.destaca && x.contra);
+        if (forte) h += '<div style="margin-top:3px;font-weight:800;color:' + ouro + ';">Absorção na extremidade</div>';
+        h += lin('POC ' + fp(xP.l.p), xP.pos + ' ' + pct(xP.fr) + ' · ' + dTxt(xP) + ' · ' + viz(xP));
+        if (x2) {
+            const sup = xP.l.p >= x2.l.p ? xP : x2, inf = sup === xP ? x2 : xP;
+            const gap = Math.abs(ordem[iP] - ordem[i2]) - 1, r = x2.t / xP.t;
+            h += lin('2º ' + fp(x2.l.p), x2.pos + ' ' + pct(x2.fr) + ' · ' + pct(r) + ' da POC · ' + dTxt(x2) + ' · ' + viz(x2));
+            const rel = [gap === 0 ? 'colados' : 'separados por ' + gap, r <= 0.4 ? 'POC isolada' : (r >= 0.8 ? 'POC dividida' : 'POC dominante')];
+            if (xP.pos === x2.pos && xP.pos !== 'meio') rel.push('mesma ponta (' + xP.pos + ')');
+            else if (xP.pos !== x2.pos && xP.pos !== 'meio' && x2.pos !== 'meio') rel.push('pontas opostas: candle esticado');
+            if (xP.destaca && x2.destaca) rel.push((xP.d >= 0) === (x2.d >= 0) ? 'deltas iguais: convicção' : 'deltas opostos: disputa');
+            h += lin('Par:', rel.join(' · '));
+            const zTop = sup.l.p + sup.l.meio, zBot = inf.l.p - inf.l.meio, c = cv.c, conc = (xP.t + x2.t) / (totCandle || 1) * 100;
+            h += lin('Fechou', (c > zTop ? 'acima do par → suporte' : (c < zBot ? 'abaixo do par → resistência' : 'dentro do par → indecisão')) + ' · par = ' + conc.toFixed(0) + '% do volume' + (conc >= 40 ? ' (concentrado)' : ''));
+        }
+        // VEREDITO em uma linha: delta (absorção/convicção) · posição · estrutura do par · fechamento → papel · vácuo
+        const zs = x2 ? [xP, x2] : [xP], dec = zs.filter(x => x.destaca);
+        let v1, corV = fg;
+        const ab = dec.find(x => x.contra);
+        if (ab) { v1 = ab.d < 0 ? 'ABSORÇÃO: vendedores absorvidos (defesa compradora)' : 'ABSORÇÃO: compradores absorvidos (defesa vendedora)'; corV = ouro; }
+        else if (dec.length) v1 = 'Convicção ' + (dec[0].d >= 0 ? 'compradora' : 'vendedora') + ' a favor do candle';
+        else v1 = 'Sem delta decisivo';
+        const pv = x2 && x2.pos !== xP.pos ? xP.pos + '/' + x2.pos : xP.pos;
+        let est;
+        if (!x2) est = 'nível único';
+        else { const gp = Math.abs(ordem[iP] - ordem[i2]) - 1, rr = x2.t / xP.t, cc = (xP.t + x2.t) / (totCandle || 1) * 100;
+            est = gp > 0 ? 'dois centros' : (rr <= 0.4 ? 'POC isolada' : (cc >= 40 ? 'zona sólida' : 'zona dispersa')); }
+        const zT = Math.max(...zs.map(x => x.l.p + x.l.meio)), zB = Math.min(...zs.map(x => x.l.p - x.l.meio)), cF = cv.c;
+        const papel = cF > zT ? 'fechou acima → suporte' : (cF < zB ? 'fechou abaixo → resistência' : 'fechou dentro → indecisão');
+        const vac = zs.some(x => x.temA && x.ra < 0.4) && zs.some(x => x.temB && x.rb < 0.4) ? 'ilha: vácuo dos dois lados' : (zs.some(x => x.temA && x.ra < 0.4) ? 'vácuo acima' : (zs.some(x => x.temB && x.rb < 0.4) ? 'vácuo abaixo' : ''));
+        const veredito = '<div style="font-size:14px;font-weight:800;line-height:1.3;color:' + corV + ';">' + [v1, pv, est, papel, vac].filter(Boolean).join(' · ') + '</div>';
+        leituraPar = '<div style="margin-top:8px;padding-top:8px;border-top:1.5px solid ' + fg + ';color:' + fg + ';">' + veredito + '<div style="font-size:11px;line-height:1.3;margin-top:6px;">' + h + '</div></div>';
+    }
     const tags = [];
     if (cl.linhas[cl.pocIdx] === ln) tags.push(['POC do candle', ouro]);
     if (ln.imbAsk) tags.push(['Desequilíbrio de COMPRA', verde]);
@@ -13456,14 +13513,14 @@ function grFpCelAbrirModal(candleT, idx, cl) {
     const o = document.createElement('div'); o.id = 'fp-cel-modal';
     o.style.cssText = 'position:fixed;inset:0;z-index:9700;background:transparent;';
     o.onclick = grFpCelFechar;
-    o.innerHTML = '<div onclick="event.stopPropagation()" style="position:absolute;left:50%;transform:translateX(-50%);bottom:calc(96px + env(safe-area-inset-bottom));width:calc(100% - 40px);max-width:360px;box-sizing:border-box;background:' + bg + ';color:' + fg + ';border:1.5px solid ' + fg + ';border-radius:18px;padding:14px 16px;box-shadow:0 10px 32px rgba(0,0,0,0.35);font-family:-apple-system,sans-serif;">'
+    o.innerHTML = '<div onclick="event.stopPropagation()" style="position:absolute;left:50%;transform:translateX(-50%);bottom:calc(96px + env(safe-area-inset-bottom));width:calc(100% - 40px);max-width:360px;max-height:calc(100vh - 150px - env(safe-area-inset-bottom));overflow-y:auto;box-sizing:border-box;background:' + bg + ';color:' + fg + ';border:1.5px solid ' + fg + ';border-radius:18px;padding:14px 16px;box-shadow:0 10px 32px rgba(0,0,0,0.35);font-family:-apple-system,sans-serif;">'
         + '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;"><div><div style="font-size:17px;font-weight:400;color:' + fg + ';">$ ' + fp(lo) + ' – ' + fp(hi) + '</div>'
         + '<div style="font-size:12px;font-weight:400;color:' + fg + ';margin-top:2px;">Candle ' + grFootprintFmtDataHora(candleT) + ' · TF ' + String(_grTf || '').toUpperCase() + '</div></div>'
         + '<button onclick="grFpCelFechar()" style="background:transparent;border:1.5px solid ' + fg + ';color:' + fg + ';font-size:14px;font-weight:400;width:28px;height:28px;border-radius:50%;padding:0;flex-shrink:0;">✕</button></div>'
         + (tags.length ? '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;">' + tags.map(g => '<span style="font-size:11px;font-weight:400;color:' + g[1] + ';border:1.5px solid ' + g[1] + ';border-radius:999px;padding:2px 8px;">' + g[0] + '</span>').join('') + '</div>' : '')
         + '<div style="display:flex;gap:10px;margin-top:12px;">' + caixa('VENDA (bid)', fn(bid), verm) + caixa('COMPRA (ask)', fn(ask), verde) + '</div>'
         + '<div style="margin-top:8px;">' + linha('Delta', sinal + fn(Math.abs(delta)), cDelta) + linha('Delta do nível', sinal + pctDelta.toFixed(1).replace('.', ',') + '%', cDelta, negDelta) + linha('Total do nível', fn(total))
-        + linha('Parte do volume do candle', pctCandle.toFixed(1).replace('.', ',') + '%', null, negVol) + linha('Posição no candle', rank + 'º maior de ' + cl.linhas.length + ' níveis') + '</div>' + leitura + '</div>';
+        + linha('Parte do volume do candle', pctCandle.toFixed(1).replace('.', ',') + '%', null, negVol) + linha('Posição no candle', rank + 'º maior de ' + cl.linhas.length + ' níveis') + '</div>' + (leituraPar || leitura) + '</div>';
     document.body.appendChild(o);
 }
 function grFootprintAbrirNivelModal(p, v, total, tick) {
