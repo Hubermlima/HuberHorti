@@ -2947,7 +2947,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v308';
+const APP_VERSAO = 'v309';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3074,7 +3074,7 @@ function grMelhorCalcular(lado) {
     niv.filter(n => !(u.minP > 0 && u.maxP > 0) || (n.hi > u.minP && n.lo < u.maxP)).sort((x, y) => y.k - x.k).forEach((n, i) => { n.num = i + 1; });
     // TOQUE DEFENDIDO: candle cujo fundo (long) / topo (short) caiu DENTRO da faixa do nível e fechou do lado certo dele (long: acima; short: abaixo).
     // É a prova de que o preço já testou o nível e ele segurou — vale mesmo com delta contrário (absorção). Janela = a mesma da régua.
-    const porK = new Map(); niv.forEach(n => { n.def = 0; n.wick = null; porK.set(n.k, n); });
+    const porK = new Map(); niv.forEach(n => { n.def = 0; n.wick = null; n.toques = []; porK.set(n.k, n); });
     const tIni = cs.length ? cs[cs.length - 1].t - (u.dias || 21) * 86400000 : 0;
     cs.forEach(cd => {
         if (!(cd.t >= tIni)) return;
@@ -3084,7 +3084,8 @@ function grMelhorCalcular(lado) {
         [0, -s].forEach(dk => {
             const n = porK.get(k0 + dk); if (!n) return;
             if (dk === 0 && !(ext >= n.lo && ext <= n.hi)) return;
-            if (s > 0 ? fe < n.lo : fe > n.hi) { n.def++; n.wick = n.wick == null ? ext : (s > 0 ? Math.max(n.wick, ext) : Math.min(n.wick, ext)); }
+            const okD = s > 0 ? fe < n.lo : fe > n.hi; n.toques.push({ t: cd.t, ext, fe, ok: okD });
+            if (okD) { n.def++; n.wick = n.wick == null ? ext : (s > 0 ? Math.max(n.wick, ext) : Math.min(n.wick, ext)); }
         });
     });
     niv.forEach(n => {
@@ -3171,6 +3172,8 @@ function grMeMontarRelatorio(r) {
     const L = [];   // [texto, tipo]
     L.push(['Entrada ' + fp(r.entrada) + ' · Stop ' + fp(r.stop) + ' · Alvo 1 ' + fp(r.alvo1) + (r.alvo2 != null ? ' · Alvo 2 ' + fp(r.alvo2) : ''), 'plano']);
     L.push(['R:R ' + n1(r.rr1) + (r.rr2 != null ? ' / ' + n1(r.rr2) : '') + (r.semNo ? ' (sem suporte com volume e delta: alvo 2R)' : '') + (r.wick != null ? ' · stop 1 nível além do ' + (short ? 'topo' : 'fundo') + ' defendido (' + fp(r.wick) + ')' : ''), 'sub']);
+    const dg = K.toques || [];
+    L.push(['DIAG entrada: faixa ' + fp(K.lo) + '–' + fp(K.hi) + ' · toques ' + (dg.length ? dg.slice(-3).map(x => new Date(x.t).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }) + ' ' + (r.s > 0 ? 'topo ' : 'fundo ') + fp(x.ext) + ' fech ' + fp(x.fe) + (x.ok ? ' ✓' : ' ✗')).join(' | ') : 'nenhum') + ' · def ' + K.def, 'diag']);
     const entradaTxt = rot(r.numEntrada) + ' · ' + fp(r.lo) + ' – ' + fp(r.hi) + ' · ' + linhaN(K) + ' → ' + (porque.length ? porque.join(', ') : 'nenhum critério forte') + (fraco.length ? ' (mas ' + fraco.join(', ') + ')' : '');
     const niveis = [];
     niveis.push({ t: entradaTxt, tag: 'ENTRADA', c: cor, o: Math.min.apply(null, r.numEntrada.length ? r.numEntrada : [999]) });
@@ -3188,7 +3191,8 @@ function grMeMontarRelatorio(r) {
         + '<div style="border:2px solid ' + cor + ';border-radius:12px;padding:12px 14px;margin-top:6px;background:' + (short ? '#FEF2F2' : '#F0FDF4') + ';">'
         + '<div style="font-size:12px;font-weight:700;color:' + cor + ';">' + nome + ' · sinal ' + r.forca + ' (' + K.pisos + ' de 3 critérios)</div>'
         + '<div style="font-size:15px;font-weight:800;line-height:1.5;margin-top:4px;">' + L[0][0].replace(/ · /g, '<br>') + '</div>'
-        + '<div style="font-size:12.5px;color:#3A3A3C;margin-top:4px;">' + L[1][0] + '</div></div>'
+        + '<div style="font-size:12.5px;color:#3A3A3C;margin-top:4px;">' + L[1][0] + '</div>'
+        + (L[2] ? '<div style="font-size:11px;color:#8E8E93;margin-top:6px;line-height:1.35;">' + L[2][0] + '</div>' : '') + '</div>'
         + '<button onclick="grMelhorCriarCaixa()" style="width:100%;margin-top:10px;border:2px solid ' + cor + ';border-radius:12px;padding:12px;font-size:15px;font-weight:800;background:#fff;color:' + cor + ';">Criar Caixa</button>'
         + '<div style="margin-top:12px;">' + niveis.map(n => '<div style="font-size:12.5px;line-height:1.4;padding:6px 0;border-top:1px solid #F2F2F7;color:' + (n.tag ? '#1C1C1E' : '#6B6B70') + ';">'
             + (n.tag ? '<span style="font-weight:800;color:' + n.c + ';">' + n.tag + '</span> ' : '') + n.t + '</div>').join('') + '</div>'
