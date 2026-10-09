@@ -328,6 +328,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
     <div class="cva-topo">
       <button class="cva-aba" id="cva-aba-fav" onclick="cvAtivosSetAba('fav')" aria-label="Favoritos"></button>
       <button class="cva-aba" id="cva-aba-trd" onclick="cvAtivosSetAba('trd')" aria-label="Trades"></button>
+      <button class="cva-aba" id="cva-aba-ana" onclick="cvAtivosSetAba('ana')" aria-label="Análise"></button>
       <button class="cva-aba on" id="cva-aba-cripto" onclick="cvAtivosSetAba('cripto')">Crypto</button>
       <button class="cva-aba" id="cva-aba-acoes" onclick="cvAtivosSetAba('acoes')">Ações</button>
       <button class="cva-aba" id="cva-aba-forex" onclick="cvAtivosSetAba('forex')">Forex</button>
@@ -710,6 +711,7 @@ let _tickerDropdownAberto = false;
 // desenhos são amarrados ao ativo_id). Favoritos ficam no JSON de preferências (chave `favoritos`) e, como o resto do ambiente,
 // só vão para o servidor ao clicar em Sair.
 window._grFavoritos = window._grFavoritos || [];
+window._grAnaliseLista = window._grAnaliseLista || [];   // grupo Análise da busca de ativos (botão A). Trades e Análise são EXCLUSIVOS entre si; Favoritos é independente.
 window._grTradesLista = window._grTradesLista || [];   // grupo Trades da busca de ativos (marcado na mão com o botão T); chaves iguais às dos favoritos   // chaves = símbolo da Binance ('ETHUSDT')
 let _grBinLista = null;            // { ts, itens:[{sym, base, quote, preco, pct, qv, hi, lo}] }
 let _grBinListaCarregando = null;
@@ -813,7 +815,7 @@ function cvAtivosMontarItens() {
     }
     // favoritos: Binance (da lista) + Twelve Data (chave 'td:tipo:SYM', reconstruída sem gastar chamada)
     const out = bin();
-    (aba === 'trd' ? (window._grTradesLista || []) : (window._grFavoritos || [])).forEach(ch => {
+    (aba === 'trd' ? (window._grTradesLista || []) : aba === 'ana' ? (window._grAnaliseLista || []) : (window._grFavoritos || [])).forEach(ch => {
         const m = /^td:(acao|etf|forex):(.+)$/.exec(String(ch)); if (!m) return;
         const conhecido = cvAtivosListaTd(m[1]).find(x => x.sym === m[2]);
         out.push(conhecido || cvAtivosItemTd(m[1], m[2], ''));
@@ -975,9 +977,9 @@ function cvAtivosObservarSparks() {
 function cvAtivosRender() {
     const box = document.getElementById('cv-ativos-lista'); if (!box) return;
     const q = String((document.getElementById('cv-ativos-busca') || {}).value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toUpperCase().replace(/[\/\-\s]/g, '');
-    const favs = new Set(window._grFavoritos), trds = new Set(window._grTradesLista), atual = grBinSymbolAtual();
+    const favs = new Set(window._grFavoritos), trds = new Set(window._grTradesLista), anas = new Set(window._grAnaliseLista), atual = grBinSymbolAtual();
     _cvAtivosQBruta = String((document.getElementById('cv-ativos-busca') || {}).value || '').trim();
-    let itens = cvAtivosMontarItens().map(x => { x.fav = favs.has(x.chave); x.trd = trds.has(x.chave); return x; });
+    let itens = cvAtivosMontarItens().map(x => { x.fav = favs.has(x.chave); x.trd = trds.has(x.chave); x.ana = anas.has(x.chave); return x; });
     _cvAtivosMapa = {};
     const cmp = {
         vol: (a, b) => (b.qv - a.qv) || a.base.localeCompare(b.base),
@@ -987,12 +989,13 @@ function cvAtivosRender() {
     }[_cvAtivosOrdem];
     if (_cvAtivosAba === 'fav') itens = itens.filter(x => x.fav);
     if (_cvAtivosAba === 'trd') itens = itens.filter(x => x.trd);
+    if (_cvAtivosAba === 'ana') itens = itens.filter(x => x.ana);
     if (q) {
         itens = itens.filter(x => (x.bq || x.base).toUpperCase().includes(q) || x.sym.replace(/[\/\-\s]/g, '').toUpperCase().includes(q) || String((x.td ? x.nome : cvAtivosNome(x.base)) || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, '').includes(q));
         itens.sort((a, b) => (((b.bq || b.base) === q) - ((a.bq || a.base) === q)) || (((b.bq || b.base).startsWith(q)) - ((a.bq || a.base).startsWith(q))) || cmp(a, b));
     } else {
         itens.sort(cmp);
-        if (_cvAtivosAba !== 'fav' && _cvAtivosAba !== 'trd') itens = itens.filter(x => x.fav).concat(itens.filter(x => !x.fav));   // favoritos sempre no começo (a ordem de cada grupo se mantém)
+        if (_cvAtivosAba !== 'fav' && _cvAtivosAba !== 'trd' && _cvAtivosAba !== 'ana') itens = itens.filter(x => x.fav).concat(itens.filter(x => !x.fav));   // favoritos sempre no começo (a ordem de cada grupo se mantém)
     }
     const estrela = fav => fav
         ? '<svg width="22" height="22" viewBox="0 0 24 24" fill="#1C1C1E" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="' + HEROICON_STAR_SOLID + '"/></svg>'
@@ -1015,6 +1018,7 @@ function cvAtivosRender() {
             + '<div class="cva-row' + ((x.td ? _ativoFonte === 'td' : _ativoFonte === 'bin') && x.sym === atual ? ' atual' : '') + '" onclick="cvAtivosEscolher(\'' + k + '\')">'
             + '<button type="button" class="cva-star" aria-label="Favorito" onclick="event.stopPropagation();cvAtivosFavoritar(\'' + k + '\')">' + estrela(x.fav) + '</button>'
             + '<button type="button" class="cva-star" aria-label="Trades" onclick="event.stopPropagation();cvAtivosTrade(\'' + k + '\')">' + cvTIcone(x.trd, 22) + '</button>'
+            + '<button type="button" class="cva-star" aria-label="Análise" onclick="event.stopPropagation();cvAtivosAnalise(\'' + k + '\')">' + cvAIcone(x.ana, 22) + '</button>'
             + (x.td ? '<div class="cva-logo cva-letra" style="background:' + cvAtivosCorLetra(x.base) + '">' + x.base.charAt(0) + '</div>' : cvAtivosLogoHtml(x.base))
             + '<div class="cva-nome"><b>' + x.base + '</b><small>' + sub + '</small></div>'
             + '<div class="cva-spark"' + (x.binance ? ' data-sym="' + x.sym + '"' : '') + '>' + (x.binance ? cvAtivosSparkSvg(_cvAtivosSpark[x.sym]) : '') + '</div>'
@@ -1024,7 +1028,7 @@ function cvAtivosRender() {
             + '<div class="cva-det' + (aberto ? ' on' : '') + '" id="cva-det-' + k + '">' + det + '</div></div>';
     };
     let html = '';
-    if (!_grBinLista && (_cvAtivosAba === 'cripto' || _cvAtivosAba === 'fav' || _cvAtivosAba === 'trd')) {
+    if (!_grBinLista && (_cvAtivosAba === 'cripto' || _cvAtivosAba === 'fav' || _cvAtivosAba === 'trd' || _cvAtivosAba === 'ana')) {
         html += '<div class="cva-vazio">' + (_grBinListaCarregando ? 'Carregando a lista da Binance…' : 'Não consegui carregar a lista da Binance' + (_grBinListaErro ? ' (' + String(_grBinListaErro).replace(/</g, '&lt;') + ')' : '') + '.<br><button onclick="cvAtivosRecarregar()">Tentar de novo</button>') + '</div>';
     }
     // Só as primeiras linhas vão para a tela (o resto entra ao rolar até perto do fim): 500+ linhas com logo, estrela, seta e
@@ -1033,20 +1037,23 @@ function cvAtivosRender() {
     if (itens.length) html += itens.slice(0, _cvAtivosLimite).map(linha).join('');
     else if (_cvAtivosAba === 'fav' && !q) html += '<div class="cva-vazio">Nenhum favorito ainda.<br>Toque na estrela de um ativo para marcá-lo.</div>';
     else if (_cvAtivosAba === 'trd' && !q) html += '<div class="cva-vazio">Nenhum ativo no grupo Trades ainda.<br>Toque no T de um ativo para marcá-lo.</div>';
+    else if (_cvAtivosAba === 'ana' && !q) html += '<div class="cva-vazio">Nenhum ativo no grupo Análise ainda.<br>Toque no A de um ativo para marcá-lo.</div>';
     else html += '<div class="cva-vazio">Nenhum ativo encontrado' + (q ? ' para “' + q.replace(/</g, '&lt;') + '”' : '') + '.</div>';
     box.innerHTML = html;
     const fb = document.getElementById('cva-aba-fav');
     if (fb) fb.innerHTML = (_cvAtivosAba === 'fav' ? '<svg width="20" height="20" viewBox="0 0 24 24" fill="#1C1C1E" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="' + HEROICON_STAR_SOLID + '"/></svg>' : grHeroicon('star', 20, '#6C6C70')) + (favs.size ? '<span style="font-size:11px;">' + favs.size + '</span>' : '');
     const tb = document.getElementById('cva-aba-trd');
     if (tb) tb.innerHTML = cvTIcone(_cvAtivosAba === 'trd', 20) + (trds.size ? '<span style="font-size:11px;">' + trds.size + '</span>' : '');
+    const ab = document.getElementById('cva-aba-ana');
+    if (ab) ab.innerHTML = cvAIcone(_cvAtivosAba === 'ana', 20) + (anas.size ? '<span style="font-size:11px;">' + anas.size + '</span>' : '');
     const ob = document.getElementById('cva-ord-btn');
-    if (ob) ob.style.display = (_cvAtivosAba === 'cripto' || _cvAtivosAba === 'fav' || _cvAtivosAba === 'trd') ? '' : 'none';   // ordenar por volume/alta só faz sentido com dados da Binance
+    if (ob) ob.style.display = (_cvAtivosAba === 'cripto' || _cvAtivosAba === 'fav' || _cvAtivosAba === 'trd' || _cvAtivosAba === 'ana') ? '' : 'none';   // ordenar por volume/alta só faz sentido com dados da Binance
     if (ob) ob.innerHTML = CV_ORDENS[_cvAtivosOrdem] + grHeroicon('chevron-down', 14, '#6C6C70');
     cvAtivosObservarSparks();
 }
 function cvAtivosSetAba(a) {
-    _cvAtivosAba = ['fav', 'trd', 'cripto', 'acoes', 'forex'].indexOf(a) >= 0 ? a : 'cripto';
-    ['fav', 'trd', 'cripto', 'acoes', 'forex'].forEach(n => { const el = document.getElementById('cva-aba-' + n); if (el) el.classList.toggle('on', _cvAtivosAba === n); });
+    _cvAtivosAba = ['fav', 'trd', 'ana', 'cripto', 'acoes', 'forex'].indexOf(a) >= 0 ? a : 'cripto';
+    ['fav', 'trd', 'ana', 'cripto', 'acoes', 'forex'].forEach(n => { const el = document.getElementById('cva-aba-' + n); if (el) el.classList.toggle('on', _cvAtivosAba === n); });
     const stA = document.getElementById('cv-ativos-status'); if (stA) stA.textContent = '';
     if (_cvTdTimerBusca) { clearTimeout(_cvTdTimerBusca); _cvTdTimerBusca = null; }
     const box = document.getElementById('cv-ativos-lista'); if (box) box.scrollTop = 0;
@@ -1083,14 +1090,45 @@ async function cvAtivosRecarregar() {
 function cvTIcone(on, tam) {
     return '<svg width="' + tam + '" height="' + tam + '" viewBox="0 0 24 24" fill="none" stroke="' + (on ? '#1C1C1E' : '#8E8E93') + '" stroke-width="' + (on ? 2.2 : 1.8) + '" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.25 6.75h13.5M12 6.75v11.5"/></svg>';
 }
+function cvAIcone(on, tam) {
+    return '<svg width="' + tam + '" height="' + tam + '" viewBox="0 0 24 24" fill="none" stroke="' + (on ? '#1C1C1E' : '#8E8E93') + '" stroke-width="' + (on ? 2.2 : 1.8) + '" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 18.25 12 5.75l6 12.5M8.5 13.75h7"/></svg>';
+}
+// Grupo do ativo: Trades e Análise são EXCLUSIVOS (um ativo não pode estar em análise e em trade ao mesmo tempo); Favoritos é independente.
+function cvGrupoDe(chave) { return (window._grTradesLista || []).indexOf(chave) >= 0 ? 'trd' : ((window._grAnaliseLista || []).indexOf(chave) >= 0 ? 'ana' : ''); }
+function cvGrupoDefinir(chave, g) {
+    const rm = l => { const i = l.indexOf(chave); if (i >= 0) l.splice(i, 1); };
+    rm(window._grTradesLista); rm(window._grAnaliseLista);
+    if (g === 'trd') window._grTradesLista.push(chave); else if (g === 'ana') window._grAnaliseLista.push(chave);
+    try { grAmbienteSalvar(); } catch (e) {}   // pendente: vai para o servidor ao clicar em Sair
+}
 function cvAtivosTrade(k) {
     const x = _cvAtivosMapa[k]; if (!x) return;
-    const i = window._grTradesLista.indexOf(x.chave);
-    if (i >= 0) window._grTradesLista.splice(i, 1); else window._grTradesLista.push(x.chave);
-    try { grAmbienteSalvar(); } catch (e) {}   // pendente: vai para o servidor ao clicar em Sair
+    cvGrupoDefinir(x.chave, cvGrupoDe(x.chave) === 'trd' ? '' : 'trd');
     const box = document.getElementById('cv-ativos-lista'), topo = box ? box.scrollTop : 0;
     cvAtivosRender();
     if (box) box.scrollTop = topo;
+}
+function cvAtivosAnalise(k) {
+    const x = _cvAtivosMapa[k]; if (!x) return;
+    cvGrupoDefinir(x.chave, cvGrupoDe(x.chave) === 'ana' ? '' : 'ana');
+    const box = document.getElementById('cv-ativos-lista'), topo = box ? box.scrollTop : 0;
+    cvAtivosRender();
+    if (box) box.scrollTop = topo;
+}
+// Chave do ativo aberto nas listas de grupos (Binance: símbolo; Twelve Data: 'td:tipo:SYM').
+function cvAtivoChaveAtual() {
+    if (_ativoFonte !== 'td') return grBinSymbolAtual();
+    const tp = (typeof _ativoMeta !== 'undefined' && _ativoMeta) ? _ativoMeta.tipo : '', tk = Object.keys(CV_TD_TIPO).find(k => CV_TD_TIPO[k] === tp) || 'acao';
+    return 'td:' + tk + ':' + grBinSymbolAtual();
+}
+let _cvGrupoListaAberta = false;
+function cvGrupoAbrirLista() { _cvGrupoListaAberta = !_cvGrupoListaAberta; cvRenderMenuFpCfg(); }
+function cvGrupoEscolher(g) { cvGrupoDefinir(cvAtivoChaveAtual(), g); _cvGrupoListaAberta = false; cvRenderMenuFpCfg(); grDrawChart(); }
+function cvGrupoFav() {
+    const ch = cvAtivoChaveAtual(), i = window._grFavoritos.indexOf(ch);
+    if (i >= 0) window._grFavoritos.splice(i, 1); else window._grFavoritos.push(ch);
+    try { grAmbienteSalvar(); } catch (e) {}
+    cvRenderMenuFpCfg(); grDrawChart();
 }
 function cvAtivosFavoritar(k) {
     const x = _cvAtivosMapa[k]; if (!x) return;
@@ -1132,6 +1170,7 @@ async function cvAbrirBuscaAtivos() {
     _cvAtivosLimite = CV_ATIVOS_PAGINA;
     ov.classList.add('active'); _tickerDropdownAberto = true;
     cvAtivosAjustarViewport();
+    { const g0 = cvGrupoDe(cvAtivoChaveAtual()); if (g0) _cvAtivosAba = g0; }   // abre já no grupo (Trades/Análise) do ativo que está aberto
     cvAtivosSetAba(_cvAtivosAba);
     await grBinCarregarLista(false);
     cvAtivosRender();
@@ -1901,7 +1940,7 @@ function cvAbrirMenuFpCfg(qual, clientX, clientY) {
     cvFecharMenuFpCfg();
     if (jaAberto) return; // tocar no chip com o popup já aberto fecha, igual um toggle
     document.body.appendChild(menu); // sai de dentro de #cv-screen pro <body> -- mesmo contexto de empilhamento do overlay (ver nota acima)
-    _grFpCfgMenuQual = qual;
+    _grFpCfgMenuQual = qual; if (qual === 'grupo') _cvGrupoListaAberta = false;
     cvRenderMenuFpCfg();
     let overlay = document.getElementById('cv-fp-cfg-overlay');
     if (!overlay) {
@@ -1911,7 +1950,7 @@ function cvAbrirMenuFpCfg(qual, clientX, clientY) {
         overlay.onclick = cvFecharMenuFpCfg;
         document.body.appendChild(overlay);
     }
-    menu.style.width = qual === 'fluxo' ? '280px' : ((qual === 'deltaatr' || qual === 'setupcx') ? '260px' : '');
+    menu.style.width = qual === 'fluxo' ? '280px' : ((qual === 'deltaatr' || qual === 'setupcx') ? '260px' : (qual === 'grupo' ? '220px' : ''));
     menu.style.maxHeight = qual === 'fluxo' ? '70vh' : '';
     menu.style.overflowY = qual === 'fluxo' ? 'auto' : '';
     menu.style.left = Math.max(8, clientX) + 'px';
@@ -2008,6 +2047,15 @@ function cvRenderMenuFpCfg() {
             + (_grMeUltimo && _grMeUltimo.html && !_grMeCalculando
                 ? '<button type="button" onclick="grMelhorMostrar()" style="width:100%;margin-top:8px;border:none;border-radius:10px;padding:10px;font-size:13.5px;font-weight:700;background:#F2F2F7;color:#1C1C1E;">Último relatório · ' + (_grMeUltimo.lado === 'short' ? 'Short' : 'Long') + ' · ' + _grMeUltimo.hora.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) + '</button>' : '')
             + '<div style="font-size:11px;color:#8E8E93;margin-top:6px;line-height:1.4;">Analisa a régua que está na tela (dias e TF escolhidos acima).</div></div>';
+    } else if (_grFpCfgMenuQual === 'grupo') {
+        const ch = cvAtivoChaveAtual(), g = cvGrupoDe(ch), fav = (window._grFavoritos || []).indexOf(ch) >= 0, nomes = { '': 'Nenhum', trd: 'Trades', ana: 'Análise' };
+        const seta = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6C6C70" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;transition:transform .15s;' + (_cvGrupoListaAberta ? 'transform:rotate(180deg);' : '') + '"><polyline points="6 9 12 15 18 9"/></svg>';
+        menu.innerHTML = '<div style="font-size:13px;font-weight:700;color:#1C1C1E;">Grupo do ativo</div>'
+            + '<div style="font-size:11.5px;color:#8E8E93;margin:2px 0 8px;">Onde ele aparece na busca de ativos.</div>'
+            + '<button type="button" onclick="cvGrupoAbrirLista()" style="width:100%;display:flex;align-items:center;justify-content:space-between;border:1px solid #D1D1D6;background:#FFFFFF;border-radius:10px;padding:9px 10px;font-size:13px;font-weight:700;color:#1C1C1E;">' + nomes[g] + seta + '</button>'
+            + (_cvGrupoListaAberta ? '<div style="margin-top:4px;border:1px solid #E5E5EA;border-radius:10px;overflow:hidden;background:#FFFFFF;">' + ['', 'trd', 'ana'].map(k => '<button type="button" onclick="cvGrupoEscolher(\'' + k + '\')" style="display:flex;width:100%;align-items:center;justify-content:space-between;border:none;border-bottom:1px solid #F2F2F7;background:none;padding:9px 10px;font-size:13px;color:' + (k === g ? '#007AFF' : '#1C1C1E') + ';font-weight:' + (k === g ? '700' : '500') + ';text-align:left;">' + nomes[k] + (k === g ? '<span>✓</span>' : '') + '</button>').join('') + '</div>' : '')
+            + '<div style="display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding-top:10px;border-top:1px solid #F2F2F7;"><span style="font-size:13px;color:#1C1C1E;">★ Favorito</span><button type="button" onclick="cvGrupoFav()" style="border:none;border-radius:8px;padding:6px 12px;font-size:12.5px;font-weight:700;background:' + (fav ? '#1C1C1E' : '#F2F2F7') + ';color:' + (fav ? '#FFFFFF' : '#1C1C1E') + ';">' + (fav ? 'Sim' : 'Não') + '</button></div>'
+            + '<div style="font-size:11px;color:#8E8E93;margin-top:8px;line-height:1.4;">Trades e Análise não coexistem. Favorito pode ficar junto de qualquer um.</div>';
     } else if (_grFpCfgMenuQual === 'setupcx') {
         scRenderPopup(menu);
     } else if (_grFpCfgMenuQual === 'vp') {
@@ -2980,7 +3028,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v349';
+const APP_VERSAO = 'v350';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -5943,6 +5991,7 @@ if (_grTipoGrafico === 'linha') {
             // EMA — sempre presente (gerencia as EMAs). TF e Escala NÃO são indicadores (são variáveis de ambiente): moraram aqui,
             // agora ficam na badge retrátil (˅) logo abaixo da linha OHLC — ver grDesenharLinhaOhlc.
             grBarraChip('EMA', '#000000', (cx, cy) => cvAbrirMenuEma(cx, cy));
+            { const _gch = cvAtivoChaveAtual(), _gg = cvGrupoDe(_gch); grBarraChip('Grupo: ' + ({ trd: 'Trades', ana: 'Análise' }[_gg] || 'Nenhum') + ((window._grFavoritos || []).indexOf(_gch) >= 0 ? ' ★' : ''), '#000000', (cx, cy) => cvAbrirMenuFpCfg('grupo', cx, cy)); }
             // Tocar no chip agora SEMPRE abre os detalhes/valores do indicador (nunca mais desliga) — desligar
             // só pelo botão da barra lateral. É isso que tira as pílulas de preço grandes do eixo Y: o valor
             // completo mora nesse popup, o gráfico só mantém a linha.
@@ -10895,6 +10944,7 @@ function grAmbienteColetar() {
         porAtivo: mapa,
         favoritos: (window._grFavoritos || []).slice(),
         tradesLista: (window._grTradesLista || []).slice(),
+        analiseLista: (window._grAnaliseLista || []).slice(),
         faixasDA: (window._grFaixasDA || []).slice(),
         daTf: _grDaTf,
         daTfCustom: _grDaTfCustom,
@@ -10981,6 +11031,7 @@ async function grAmbienteCarregar() {
     _grDaTfCustom = (ambiente.daTfCustom && _cvTfCustomLimites[ambiente.daTfCustom.u] && ambiente.daTfCustom.a >= 1) ? { u: ambiente.daTfCustom.u, a: parseInt(ambiente.daTfCustom.a, 10) } : null;
     _grDaTf = (ambiente.daTf === 'custom' && _grDaTfCustom) ? 'custom' : (GR_DA_TFS.some(t => t.tf === ambiente.daTf) ? ambiente.daTf : null);
     if (Array.isArray(ambiente.tradesLista)) window._grTradesLista = ambiente.tradesLista.filter(f => typeof f === 'string' && f);
+    if (Array.isArray(ambiente.analiseLista)) window._grAnaliseLista = ambiente.analiseLista.filter(f => typeof f === 'string' && f && window._grTradesLista.indexOf(f) < 0);
     if (Array.isArray(ambiente.favoritos)) window._grFavoritos = ambiente.favoritos.filter(f => typeof f === 'string' && f);
     const fatiaIni = grAmbAtivoDoMapa(_ativoId, _ticker, window._grAmbRaizLegada);
     grAmbAtivoAplicar(fatiaIni); // define _grTf direto: os candles ainda não foram buscados (o cvAbrir busca já no TF certo)
