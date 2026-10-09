@@ -2968,7 +2968,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v345';
+const APP_VERSAO = 'v346';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -16302,6 +16302,15 @@ function scTickEm(def, all, T) {   // mesma regra de scTick (0,2×ATR, 5→10, m
     const bruto = Math.max(1, Math.round(0.2 * (soma / per) / 5) * 5);
     return Math.max(10, Math.round(bruto / 10) * 10);
 }
+function scDesfecho(lado, ent, stp, futuro, dist) {
+    const s = lado === 'short' ? 1 : -1; let tocou = false;
+    for (const c of futuro) {
+        if (!tocou) { if (s > 0 ? c.h >= ent : c.l <= ent) tocou = true; else continue; }
+        if (s > 0 ? c.c > stp : c.c < stp) return 'rompeu';
+        if (s > 0 ? c.l <= ent - dist : c.h >= ent + dist) return 'segurou';
+    }
+    return tocou ? 'indef' : 'semToque';
+}
 async function scHistorico() {
     if (_scHistRodando) return;
     if (!_grFootprintAtivo || !_grFootprintCandlesRaw || !_grFootprintCandlesRaw.length) { alert('Ligue o Fluxo (FX) e aguarde os dados carregarem.'); return; }
@@ -16314,7 +16323,7 @@ async function scHistorico() {
         const [allMa, allMi] = await Promise.all([scBuscarPeriodo(dMa, tMin - (dias + 60) * DIA), scBuscarPeriodo(dMi, tMin - (dias + 30) * DIA)]);
         const datas = []; for (let T = tMax; T >= tMin && datas.length < 170; T -= 2 * DIA) datas.push(Math.floor(T / 3600000) * 3600000);
         const est = {}, mk = (lado, n) => { const k = lado + '|' + n; return est[k] || (est[k] = { lado, n, segurou: 0, rompeu: 0, semToque: 0, indef: 0 }); };
-        let semZona = 0, total = 0;
+        let semZona = 0, total = 0; const ctl = { segurou: 0, rompeu: 0, semToque: 0, indef: 0 };
         for (let di = 0; di < datas.length; di++) {
             if (_scHistParar) break;
             const T = datas[di]; window._scAsOf = T; window._scReguaMemo = {};
@@ -16332,13 +16341,12 @@ async function scHistorico() {
                     const ev = scAvaliarCore(lado, dMi, tkMi, csMi, dias, dMa, rM, uMa, preco);
                     if (!ev.esc) { semZona++; continue; }
                     const rm = ev.esc.r, ent = rm.entrada, stp = rm.stop, dist = uMa.atr, conf = scConfirmacoes(lado, rm, ev.esc.u, ev.esc.cs, ev.esc.def), e = mk(lado, conf.n);
-                    let tocou = false, res = null;
-                    for (const c of futuro) {
-                        if (!tocou) { if (s > 0 ? c.h >= ent : c.l <= ent) tocou = true; else continue; }
-                        if (s > 0 ? c.c > stp : c.c < stp) { res = 'rompeu'; break; }
-                        if (s > 0 ? c.l <= ent - dist : c.h >= ent + dist) { res = 'segurou'; break; }
-                    }
-                    if (!tocou) e.semToque++; else if (!res) e.indef++; else e[res]++;
+                    const r1 = scDesfecho(lado, ent, stp, futuro, dist); e[r1]++;
+                    // CONTROLE: 5 entradas em níveis aleatórios do mesmo lado do preço (até 3 ATR do macro), com o MESMO risco e a mesma regra de desfecho
+                    const risco = Math.abs(stp - ent), tk = ev.esc.u.tick, cand = [];
+                    ev.esc.u.mapa.forEach((d, k) => { const c = k * tk, dd = s * (c - preco); if (dd >= 0 && dd <= 3 * dist) cand.push(c); });
+                    let sd = (T / 3600000 + (lado === 'short' ? 1 : 2)) % 2147483647 || 1; const rnd = () => { sd = (sd * 16807) % 2147483647; return sd / 2147483647; };
+                    for (let q = 0; q < 5 && cand.length; q++) { const c = cand[Math.floor(rnd() * cand.length)], r2 = scDesfecho(lado, c, c + s * risco, futuro, dist); ctl[r2]++; }
                 }
             } catch (e2) { aviso.push(e2.message || String(e2)); }
         }
@@ -16354,6 +16362,8 @@ async function scHistorico() {
         ];
         for (let n = 0; n <= 5; n++) { const x = soma(y => y.n === n); if (x.segurou + x.rompeu + x.semToque + x.indef > 0) lin.push(n + ' confirmações: ' + pc(x.segurou, x.rompeu) + ' (' + x.segurou + ' seguraram · ' + x.rompeu + ' romperam · ' + x.semToque + ' sem toque' + (x.indef ? ' · ' + x.indef + ' sem desfecho em 30 dias' : '') + ')'); }
         ['short', 'long'].forEach(l => { const x = soma(y => y.lado === l); lin.push((l === 'short' ? 'Só short: ' : 'Só long: ') + pc(x.segurou, x.rompeu) + ' (' + x.segurou + ' de ' + (x.segurou + x.rompeu) + ')'); });
+        lin.push('CONTROLE (entrada em nível aleatório do mesmo lado, mesmo stop): ' + pc(ctl.segurou, ctl.rompeu) + ' (' + ctl.segurou + ' de ' + (ctl.segurou + ctl.rompeu) + ')');
+        { const a = tot.segurou + tot.rompeu, c0 = ctl.segurou + ctl.rompeu; if (a > 0 && c0 > 0) { const dif = Math.round(100 * tot.segurou / a) - Math.round(100 * ctl.segurou / c0); lin.push('Motor × acaso: ' + (dif >= 0 ? '+' : '−') + Math.abs(dif) + ' pontos percentuais. ' + (dif >= 10 ? 'As zonas ganham do acaso com folga.' : dif > 3 ? 'Vantagem pequena sobre o acaso.' : 'Sem vantagem clara sobre o acaso.')); } }
         lin.push('Sem zona válida em ' + semZona + ' de ' + total + ' casos (macro não confirmou).');
         lin.push('Segurou = tocou a entrada e se afastou 1 ATR do macro (' + dMa.rot + ') sem fechar além do stop. Rompeu = fechou além do stop antes. Sem descida de timeframe no teste.');
         lin.push('Atenção: datas a cada 2 dias repetem zonas parecidas; leia como tendência, não como exatidão. Amostras pequenas (menos de 10) não provam nada.');
