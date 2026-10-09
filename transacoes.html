@@ -3028,7 +3028,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v354';
+const APP_VERSAO = 'v356';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -7651,7 +7651,7 @@ function grEdToqueMove(x, y) {
             // inteira reaparecia de uma vez (o "estranho" ao passar do último candle). A largura guardada não muda: voltando, a caixa reaparece inteira.
             let dI = dIdx;
             if (!o.tradeId) { o.t1 = grIndexToTime(grTimeToIndex(d.snap.t1) + dI); o.t2 = grIndexToTime(grTimeToIndex(d.snap.t2) + dI); }
-            if (!(o.pm > 0) && o.origem !== 'melhor' && o.origem !== 'setup') { o.entrada = mv(d.snap.entrada); o.alvo = mv(d.snap.alvo); o.stop = mv(d.snap.stop); }   // Melhor e Setup: corpo só anda na horizontal, os preços calculados não saem do lugar   // com PM: só desloca na horizontal
+            if (!(o.pm > 0) && !cvPosTravaV(o)) { o.entrada = mv(d.snap.entrada); o.alvo = mv(d.snap.alvo); o.stop = mv(d.snap.stop); }   // Melhor e Setup: corpo só anda na horizontal, os preços calculados não saem do lugar   // com PM: só desloca na horizontal
         }
     }
     grDrawChart();
@@ -7683,6 +7683,8 @@ function cvEdicaoIniciar(tipo, idx) {
     grDrawChart();
 }
 function cvPosCtxRemover() { const m = document.getElementById('cv-pos-ctx'); if (m) m.remove(); const d = document.getElementById('cv-pos-dados'); if (d) d.remove(); }
+function cvPosTravaV(z) { return z.travaV != null ? !!z.travaV : (z.origem === 'melhor' || z.origem === 'setup'); }   // Trava Vertical: corpo da caixa só anda na horizontal (padrão ligado no Melhor e no Setup)
+function cvPosMask(v) { return (v > 0 ? v : 0).toLocaleString('pt-BR', { minimumFractionDigits: 5, maximumFractionDigits: 5 }); }
 function cvPosDadosPainel(i, m) {   // modalzinho "Dados": Entrada, Stop, Risco %, Aporte — a caixa atualiza na tela enquanto digita
     let d = document.getElementById('cv-pos-dados');
     const pz = grPosicoes()[i];
@@ -7693,11 +7695,14 @@ function cvPosDadosPainel(i, m) {   // modalzinho "Dados": Entrada, Stop, Risco 
         d.style.cssText = 'position:fixed;z-index:9691;background:#FFFFFF;border-radius:9px;padding:6px 8px;box-shadow:0 1px 8px rgba(0,0,0,0.25);font-family:-apple-system,sans-serif;font-size:11px;color:#3A3A3C;display:grid;grid-template-columns:auto 96px;gap:4px 6px;align-items:center;';
         const campo = (id, rot, chave) => {
             const l = document.createElement('span'); l.textContent = rot; d.appendChild(l);
-            const inp = document.createElement('input'); inp.id = id; inp.type = 'text'; inp.inputMode = 'decimal'; inp.autocomplete = 'off';
+            const inp = document.createElement('input'); inp.id = id; inp.type = 'text'; inp.inputMode = 'numeric'; inp.autocomplete = 'off';
             inp.style.cssText = 'width:96px;height:24px;box-sizing:border-box;border:1px solid #D1D1D6;border-radius:6px;padding:0 6px;font-size:12px;text-align:right;background:#fff;color:#1C1C1E;';
             inp.addEventListener('focus', () => setTimeout(() => { try { inp.setSelectionRange(0, inp.value.length); } catch (e) {} }, 0));
-            inp.addEventListener('input', () => {
-                const t = String(inp.value).trim(), v = parseFloat(t.indexOf(',') >= 0 ? t.replace(/\./g, '').replace(',', '.') : t);   // vírgula = decimal; sem vírgula, o ponto é decimal
+            inp.maxLength = 22;
+            inp.addEventListener('input', () => {   // máscara: os dígitos entram pela direita, 5 casas fixas
+                const dg = String(inp.value).replace(/\D/g, '').slice(0, 15), v = (parseInt(dg || '0', 10)) / 1e5;
+                inp.value = cvPosMask(v);
+                try { inp.setSelectionRange(inp.value.length, inp.value.length); } catch (e) {}
                 const z = grPosicoes()[d._i]; if (!z) return;
                 if (chave === 'entrada' || chave === 'stop') { if (!(v > 0)) return; z[chave] = v; }
                 else if (v > 0) z[chave] = chave === 'simRisco' ? Math.min(v, 100) : v; else delete z[chave];
@@ -7710,12 +7715,17 @@ function cvPosDadosPainel(i, m) {   // modalzinho "Dados": Entrada, Stop, Risco 
         campo('cv-pos-dados-stop', 'Stop', 'stop');
         campo('cv-pos-dados-risco', 'Risco %', 'simRisco');
         campo('cv-pos-dados-aporte', 'Aporte', 'simAporte');
+        const lb = document.createElement('label'); lb.style.cssText = 'grid-column:1 / span 2;display:flex;align-items:center;gap:6px;margin-top:2px;font-size:12px;';
+        const ck = document.createElement('input'); ck.type = 'checkbox'; ck.id = 'cv-pos-dados-travav'; ck.style.cssText = 'width:16px;height:16px;margin:0;';
+        ck.addEventListener('change', () => { const z = grPosicoes()[d._i]; if (!z) return; z.travaV = ck.checked; try { grPosSalvar(); } catch (e) {} grDrawChart(); });
+        lb.appendChild(ck); lb.appendChild(document.createTextNode('Trava Vertical')); d.appendChild(lb);
         document.body.appendChild(d);
     }
     d._i = i;
+    d.querySelector('#cv-pos-dados-travav').checked = cvPosTravaV(pz);
     ['cv-pos-dados-risco', 'cv-pos-dados-aporte'].forEach(id => { const e = d.querySelector('#' + id); if (e) { e.style.display = pz.tradeId ? 'none' : ''; e.previousSibling.style.display = pz.tradeId ? 'none' : ''; } });   // risco/aporte só valem na caixa em análise
     const fmt = v => String(v).replace('.', ',');
-    const set = (id, val, preco) => { const e = d.querySelector('#' + id); if (!e) return; if (document.activeElement !== e) e.value = preco ? Number(val).toFixed(Math.max(5, (String(val).split('.')[1] || '').length)).replace('.', ',') : fmt(val); };
+    const set = (id, val, preco) => { const e = d.querySelector('#' + id); if (!e) return; if (document.activeElement !== e) e.value = cvPosMask(Number(val)); };
     set('cv-pos-dados-pe', pz.entrada, true);
     set('cv-pos-dados-stop', pz.stop, true);
     set('cv-pos-dados-risco', pz.simRisco > 0 ? pz.simRisco : GR_RISCO_ANALISE_PCT);
