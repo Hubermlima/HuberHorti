@@ -2968,7 +2968,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v344';
+const APP_VERSAO = 'v345';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -15955,13 +15955,18 @@ async function scTick(def) {
     return tick;
 }
 // Régua em memória: delta e volume por nível, nos minutos do Fluxo da janela.
+function scAgora() { return window._scAsOf || Date.now(); }   // teste histórico roda 'como se fosse' um dia passado
 function scRegua(tick, dias, rot) {
-    const fim = Date.now(), ini = fim - dias * 86400000, mapa = new Map(), totais = new Map();
+    const fim = scAgora(), mk = window._scAsOf ? tick + '|' + dias + '|' + fim : null;
+    if (mk && window._scReguaMemo && window._scReguaMemo[mk]) return window._scReguaMemo[mk];
+    const ini = fim - dias * 86400000, mapa = new Map(), totais = new Map();
     grFootprintParaCadaMinuto(ini, fim, m => {
         (m.niveis || []).forEach(n => { const k = Math.round(n.p / tick); mapa.set(k, (mapa.get(k) || 0) + (n.c - n.v)); totais.set(k, (totais.get(k) || 0) + (n.c + n.v)); });
     });
     let pocK = null, pv = 0; totais.forEach((v, k) => { if (v > pv) { pv = v; pocK = k; } });
-    return { tick, atr: 5 * tick, mapa, totais, pocK, dias, tfRot: rot };
+    const reg = { tick, atr: 5 * tick, mapa, totais, pocK, dias, tfRot: rot };
+    if (mk) { window._scReguaMemo = window._scReguaMemo || {}; window._scReguaMemo[mk] = reg; }
+    return reg;
 }
 function scCobertura(dias) {   // quantos dias de Fluxo existem de fato na janela
     const raw = _grFootprintCandlesRaw; if (!raw || !raw.length) return 0;
@@ -16064,7 +16069,7 @@ function scCalcular(lado, u, cs, preco, ibK) {
 // fixa do footprint (FOOTPRINT_IMBALANCE_RATIO = 3×), a mesma dos números azuis. Lado do short; o long é o espelho.
 function scMediana(a) { if (!a.length) return 0; const t = a.slice().sort((x, y) => x - y); return t[Math.floor(t.length / 2)]; }
 function scConfirmacoes(lado, r, u, cs, def) {
-    const s = lado === 'short' ? 1 : -1, tick = u.tick, fim = Date.now(), ini = fim - u.dias * 86400000, lo = r.lo, hi = r.hi, RZ = FOOTPRINT_IMBALANCE_RATIO;
+    const s = lado === 'short' ? 1 : -1, tick = u.tick, fim = scAgora(), ini = fim - u.dias * 86400000, lo = r.lo, hi = r.hi, RZ = FOOTPRINT_IMBALANCE_RATIO;
     const res = { n: 0, ev: { abs: null, big: null, trap: null, agg: null, chg: null }, toques: 0, falta: {} };
     const fx = (v, d) => (isFinite(v) ? v : 0).toFixed(d == null ? 1 : d).replace('.', ','), rz = (a, b) => b > 0 ? a / b : 0;
     const melhor = (chave, ok, falhas, t) => { const f = res.falta[chave]; if (!f || ok > f.ok || (ok === f.ok && t > f.t)) res.falta[chave] = { ok, falhas, t }; };   // candle que chegou mais perto: guarda o que faltou
@@ -16141,8 +16146,12 @@ function scAlvoMacro(rM, s, entrada, risco, atrM) {
 }
 // Zonas do micro na ordem do ranking do motor (volume, delta, defesa): vale a PRIMEIRA que passa na conferência do macro (A).
 async function scAvaliarTf(lado, chave, dias, dMa, rM, uMa, preco) {
-    const def = scDefTf(chave), s = lado === 'short' ? 1 : -1;
+    const def = scDefTf(chave);
     const [tk, cs] = await Promise.all([scTick(def), scCandles(def, dias)]);
+    return scAvaliarCore(lado, def, tk, cs, dias, dMa, rM, uMa, preco);
+}
+function scAvaliarCore(lado, def, tk, cs, dias, dMa, rM, uMa, preco) {
+    const s = lado === 'short' ? 1 : -1;
     const u = scRegua(tk, dias, def.rot), r0 = scCalcular(lado, u, cs, preco);
     if (r0.erro) return { def, erro: r0.erro, esc: null, comparadas: 0 };
     const ks = r0.niv.filter(n => n.rank > 0).sort((x, y) => y.rank - x.rank).map(n => n.k);
@@ -16231,11 +16240,12 @@ async function scRodar(lado) {
 }
 function scRelatorioFechar() { const ov = document.getElementById('sc-relatorio-overlay'); if (ov) ov.style.display = 'none'; }
 function scRelatorioCopiar() { try { navigator.clipboard.writeText((_scUltimo && _scUltimo.linhas || []).join('\n')); } catch (e) {} }
-function scRelatorioMostrar() {
-    if (!_scUltimo || !_scUltimo.linhas) return;
+function scRelatorioMostrar(o) {
+    o = (o && o.linhas) ? o : _scUltimo;
+    if (!o || !o.linhas) return;
     let ov = document.getElementById('sc-relatorio-overlay');
     if (!ov) { ov = document.createElement('div'); ov.id = 'sc-relatorio-overlay'; ov.style.cssText = 'display:none;position:fixed;inset:0;z-index:9800;background:rgba(0,0,0,0.4);align-items:flex-end;justify-content:center;'; ov.onclick = e => { if (e.target === ov) scRelatorioFechar(); }; document.body.appendChild(ov); }
-    const cor = _scUltimo.lado === 'short' ? '#DC2626' : '#16A34A', L = _scUltimo.linhas;
+    const cor = o.lado === 'short' ? '#DC2626' : (o.lado === 'long' ? '#16A34A' : '#1C1C1E'), L = o.linhas;
     ov.innerHTML = '<div style="background:#FFFFFF;width:100%;max-width:560px;border-radius:16px 16px 0 0;max-height:80vh;overflow-y:auto;padding:14px 16px calc(16px + env(safe-area-inset-bottom));font-family:-apple-system,sans-serif;color:#1C1C1E;box-sizing:border-box;">'
         + '<div style="font-size:13px;font-weight:800;color:' + cor + ';">' + L[0] + '</div>'
         + '<div style="font-size:15px;font-weight:800;line-height:1.4;margin-top:6px;">' + L[1] + '</div>'
@@ -16260,8 +16270,98 @@ function scRenderPopup(menu) {
             : '<div style="display:flex;gap:8px;"><button type="button" onclick="scRodar(\'short\')" style="flex:1;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:800;background:#FDECEC;color:#DC2626;">Short</button>'
               + '<button type="button" onclick="scRodar(\'long\')" style="flex:1;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:800;background:#E8F7EC;color:#16A34A;">Long</button></div>')
         + (_scUltimo && _scUltimo.linhas ? '<button type="button" onclick="scRelatorioMostrar()" style="width:100%;margin-top:8px;border:none;border-radius:10px;padding:10px;font-size:13px;font-weight:800;background:#1C1C1E;color:#FFFFFF;">Ver Relatório</button>' : '')
+        + '<div style="margin-top:12px;padding-top:12px;border-top:1px solid #F2F2F7;">'
+        + (_scHistRodando ? '<div style="font-size:12.5px;color:#8E8E93;padding:6px 0;">' + _scHistProg + '</div><button type="button" onclick="_scHistParar = true" style="width:100%;border:none;border-radius:10px;padding:9px;font-size:13px;font-weight:700;background:#FDECEC;color:#DC2626;">Parar</button>'
+            : '<button type="button" onclick="scHistorico()" style="width:100%;border:none;border-radius:10px;padding:10px;font-size:13px;font-weight:800;background:#F2F2F7;color:#1C1C1E;">Testar histórico</button>'
+              + (_scHist ? '<button type="button" onclick="scRelatorioMostrar(_scHist)" style="width:100%;margin-top:8px;border:none;border-radius:10px;padding:9px;font-size:13px;font-weight:700;background:#F2F2F7;color:#1C1C1E;">Ver teste</button>' : ''))
+        + '</div>'
         + (_scUltimo ? '<div style="font-size:11.5px;margin-top:8px;line-height:1.4;color:' + (_scUltimo.erro ? '#DC2626' : '#3A3A3C') + ';">' + _scUltimo.hora.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) + ' · ' + _scUltimo.txt + '</div>' : '')
         + '</div>';
+}
+
+// ── TESTE HISTÓRICO do Setup: roda o motor "como se fosse" cada dia passado (só dados anteriores) e mede se a zona segurou. Não cria caixa. ──
+let _scHist = null, _scHistRodando = false, _scHistParar = false, _scHistProg = '';
+async function scBuscarPeriodo(def, tIni) {
+    const sym = grBinSymbolAtual(), out = new Map(); let fimT = Date.now() + def.baseMs;
+    for (let it = 0; it < 14; it++) {
+        const arr = await grBuscarKlines(sym, def.bin, 1000, fimT);
+        if (!arr || !arr.length) break;
+        arr.forEach(k => { const c = grMapearKline(k); out.set(c.t, c); });
+        const primeiro = Number(arr[0][0]); if (primeiro <= tIni || arr.length < 2) break;
+        fimT = primeiro - 1;
+    }
+    let cs = Array.from(out.values()).sort((a, b) => a.t - b.t);
+    if (def.custom) cs = grAgruparCandles(cs, def.custom.u, def.custom.a);
+    return cs;
+}
+function scTickEm(def, all, T) {   // mesma regra de scTick (0,2×ATR, 5→10, mín. 10), só com candles FECHADOS até T
+    let n = 0; while (n < all.length && all[n].t + def.blocoMs <= T) n++;
+    const per = Math.min(FOOTPRINT_ATR_PERIODO, n - 1); if (per < 3) return 0;
+    let soma = 0;
+    for (let i = n - per; i < n; i++) { const h = Number(all[i].h), l = Number(all[i].l), cA = Number(all[i - 1].c); soma += Math.max(h - l, Math.abs(h - cA), Math.abs(l - cA)); }
+    const bruto = Math.max(1, Math.round(0.2 * (soma / per) / 5) * 5);
+    return Math.max(10, Math.round(bruto / 10) * 10);
+}
+async function scHistorico() {
+    if (_scHistRodando) return;
+    if (!_grFootprintAtivo || !_grFootprintCandlesRaw || !_grFootprintCandlesRaw.length) { alert('Ligue o Fluxo (FX) e aguarde os dados carregarem.'); return; }
+    _scHistRodando = true; _scHistParar = false; _scHistProg = 'Baixando candles…'; try { cvRenderMenuFpCfg(); } catch (e) {}
+    const DIA = 86400000, dias = _scCfg.dias, dMa = scDefTf(_scCfg.macro), dMi = scDefTf(_scCfg.micro);
+    const aviso = [];
+    try {
+        const raw = _grFootprintCandlesRaw, tMin = raw[0].ts + dias * DIA + DIA, tMax = Date.now() - 3 * DIA;
+        if (tMax - tMin < 6 * DIA) throw new Error('Fluxo carregado é curto demais para o teste (' + Math.floor((Date.now() - raw[0].ts) / DIA) + ' dias, preciso de ' + (dias + 9) + ').');
+        const [allMa, allMi] = await Promise.all([scBuscarPeriodo(dMa, tMin - (dias + 60) * DIA), scBuscarPeriodo(dMi, tMin - (dias + 30) * DIA)]);
+        const datas = []; for (let T = tMax; T >= tMin && datas.length < 170; T -= 2 * DIA) datas.push(Math.floor(T / 3600000) * 3600000);
+        const est = {}, mk = (lado, n) => { const k = lado + '|' + n; return est[k] || (est[k] = { lado, n, segurou: 0, rompeu: 0, semToque: 0, indef: 0 }); };
+        let semZona = 0, total = 0;
+        for (let di = 0; di < datas.length; di++) {
+            if (_scHistParar) break;
+            const T = datas[di]; window._scAsOf = T; window._scReguaMemo = {};
+            _scHistProg = 'Testando ' + (di + 1) + ' de ' + datas.length + ' datas…'; if (di % 4 === 0) { try { cvRenderMenuFpCfg(); } catch (e) {} await new Promise(r => setTimeout(r, 0)); }
+            try {
+                const csMa = allMa.filter(c => c.t + dMa.blocoMs <= T && c.t >= T - dias * DIA - dMa.blocoMs), csMi = allMi.filter(c => c.t + dMi.blocoMs <= T && c.t >= T - dias * DIA - dMi.blocoMs);
+                const futuro = allMi.filter(c => c.t >= T && c.t <= T + 30 * DIA);
+                const tkMa = scTickEm(dMa, allMa, T), tkMi = scTickEm(dMi, allMi, T);
+                if (!tkMa || !tkMi || !csMi.length || !csMa.length) continue;
+                const preco = Number(csMi[csMi.length - 1].c), uMa = scRegua(tkMa, dias, dMa.rot);
+                for (const lado of ['short', 'long']) {
+                    total++;
+                    const s = lado === 'short' ? 1 : -1, rM = scCalcular(lado, uMa, csMa, preco);
+                    if (rM.erro) { semZona++; continue; }
+                    const ev = scAvaliarCore(lado, dMi, tkMi, csMi, dias, dMa, rM, uMa, preco);
+                    if (!ev.esc) { semZona++; continue; }
+                    const rm = ev.esc.r, ent = rm.entrada, stp = rm.stop, dist = uMa.atr, conf = scConfirmacoes(lado, rm, ev.esc.u, ev.esc.cs, ev.esc.def), e = mk(lado, conf.n);
+                    let tocou = false, res = null;
+                    for (const c of futuro) {
+                        if (!tocou) { if (s > 0 ? c.h >= ent : c.l <= ent) tocou = true; else continue; }
+                        if (s > 0 ? c.c > stp : c.c < stp) { res = 'rompeu'; break; }
+                        if (s > 0 ? c.l <= ent - dist : c.h >= ent + dist) { res = 'segurou'; break; }
+                    }
+                    if (!tocou) e.semToque++; else if (!res) e.indef++; else e[res]++;
+                }
+            } catch (e2) { aviso.push(e2.message || String(e2)); }
+        }
+        window._scAsOf = null; window._scReguaMemo = null;
+        const pc = (a, b) => (a + b) > 0 ? Math.round(100 * a / (a + b)) + '%' : '–';
+        const soma = (f) => Object.values(est).filter(f).reduce((q, x) => ({ segurou: q.segurou + x.segurou, rompeu: q.rompeu + x.rompeu, semToque: q.semToque + x.semToque, indef: q.indef + x.indef }), { segurou: 0, rompeu: 0, semToque: 0, indef: 0 });
+        const tot = soma(() => true), fr = soma(x => x.n < 3), fo = soma(x => x.n >= 3);
+        const lin = [
+            'TESTE HISTÓRICO · ' + dias + ' dias · ' + dMa.rot + ' × ' + dMi.rot + ' · ' + datas.length + ' datas (a cada 2 dias)' + (_scHistParar ? ' · PARADO' : ''),
+            'Segurou ' + pc(tot.segurou, tot.rompeu) + ' das zonas tocadas (' + tot.segurou + ' seguraram · ' + tot.rompeu + ' romperam)',
+            'Fracas (0 a 2 confirmações): ' + pc(fr.segurou, fr.rompeu) + ' (' + fr.segurou + ' de ' + (fr.segurou + fr.rompeu) + ')',
+            'Fortes (3 ou mais): ' + pc(fo.segurou, fo.rompeu) + ' (' + fo.segurou + ' de ' + (fo.segurou + fo.rompeu) + ')'
+        ];
+        for (let n = 0; n <= 5; n++) { const x = soma(y => y.n === n); if (x.segurou + x.rompeu + x.semToque + x.indef > 0) lin.push(n + ' confirmações: ' + pc(x.segurou, x.rompeu) + ' (' + x.segurou + ' seguraram · ' + x.rompeu + ' romperam · ' + x.semToque + ' sem toque' + (x.indef ? ' · ' + x.indef + ' sem desfecho em 30 dias' : '') + ')'); }
+        ['short', 'long'].forEach(l => { const x = soma(y => y.lado === l); lin.push((l === 'short' ? 'Só short: ' : 'Só long: ') + pc(x.segurou, x.rompeu) + ' (' + x.segurou + ' de ' + (x.segurou + x.rompeu) + ')'); });
+        lin.push('Sem zona válida em ' + semZona + ' de ' + total + ' casos (macro não confirmou).');
+        lin.push('Segurou = tocou a entrada e se afastou 1 ATR do macro (' + dMa.rot + ') sem fechar além do stop. Rompeu = fechou além do stop antes. Sem descida de timeframe no teste.');
+        lin.push('Atenção: datas a cada 2 dias repetem zonas parecidas; leia como tendência, não como exatidão. Amostras pequenas (menos de 10) não provam nada.');
+        if (aviso.length) lin.push('Atenção: ' + aviso.length + ' data(s) com erro: ' + aviso[0]);
+        _scHist = { lado: null, hora: new Date(), linhas: lin };
+        scRelatorioMostrar(_scHist);
+    } catch (e) { window._scAsOf = null; window._scReguaMemo = null; _scHist = { lado: null, hora: new Date(), linhas: ['TESTE HISTÓRICO', 'Não consegui rodar: ' + (e.message || e)] }; scRelatorioMostrar(_scHist); }
+    _scHistRodando = false; _scHistProg = ''; try { cvRenderMenuFpCfg(); } catch (e) {}
 }
 </script>
 </body>
