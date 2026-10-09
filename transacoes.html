@@ -3028,7 +3028,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v350';
+const APP_VERSAO = 'v354';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -7682,7 +7682,50 @@ function cvEdicaoIniciar(tipo, idx) {
     _edSel = { tipo, idx };
     grDrawChart();
 }
-function cvPosCtxRemover() { const m = document.getElementById('cv-pos-ctx'); if (m) m.remove(); }
+function cvPosCtxRemover() { const m = document.getElementById('cv-pos-ctx'); if (m) m.remove(); const d = document.getElementById('cv-pos-dados'); if (d) d.remove(); }
+function cvPosDadosPainel(i, m) {   // modalzinho "Dados": Entrada, Stop, Risco %, Aporte — a caixa atualiza na tela enquanto digita
+    let d = document.getElementById('cv-pos-dados');
+    const pz = grPosicoes()[i];
+    if (!window._grDadosAberto || !pz || !m) { if (d) d.remove(); const sa = document.getElementById('cv-pos-ctx-dados-seta'); if (sa) sa.innerHTML = '&#9662;'; return; }
+    const sa = document.getElementById('cv-pos-ctx-dados-seta'); if (sa) sa.innerHTML = '&#9652;';
+    if (!d) {
+        d = document.createElement('div'); d.id = 'cv-pos-dados';
+        d.style.cssText = 'position:fixed;z-index:9691;background:#FFFFFF;border-radius:9px;padding:6px 8px;box-shadow:0 1px 8px rgba(0,0,0,0.25);font-family:-apple-system,sans-serif;font-size:11px;color:#3A3A3C;display:grid;grid-template-columns:auto 96px;gap:4px 6px;align-items:center;';
+        const campo = (id, rot, chave) => {
+            const l = document.createElement('span'); l.textContent = rot; d.appendChild(l);
+            const inp = document.createElement('input'); inp.id = id; inp.type = 'text'; inp.inputMode = 'decimal'; inp.autocomplete = 'off';
+            inp.style.cssText = 'width:96px;height:24px;box-sizing:border-box;border:1px solid #D1D1D6;border-radius:6px;padding:0 6px;font-size:12px;text-align:right;background:#fff;color:#1C1C1E;';
+            inp.addEventListener('focus', () => setTimeout(() => { try { inp.setSelectionRange(0, inp.value.length); } catch (e) {} }, 0));
+            inp.addEventListener('input', () => {
+                const t = String(inp.value).trim(), v = parseFloat(t.indexOf(',') >= 0 ? t.replace(/\./g, '').replace(',', '.') : t);   // vírgula = decimal; sem vírgula, o ponto é decimal
+                const z = grPosicoes()[d._i]; if (!z) return;
+                if (chave === 'entrada' || chave === 'stop') { if (!(v > 0)) return; z[chave] = v; }
+                else if (v > 0) z[chave] = chave === 'simRisco' ? Math.min(v, 100) : v; else delete z[chave];
+                grDrawChart();
+            });
+            inp.addEventListener('change', () => { try { grPosSalvar(); } catch (e) {} });
+            d.appendChild(inp);
+        };
+        campo('cv-pos-dados-pe', 'Entrada', 'entrada');
+        campo('cv-pos-dados-stop', 'Stop', 'stop');
+        campo('cv-pos-dados-risco', 'Risco %', 'simRisco');
+        campo('cv-pos-dados-aporte', 'Aporte', 'simAporte');
+        document.body.appendChild(d);
+    }
+    d._i = i;
+    ['cv-pos-dados-risco', 'cv-pos-dados-aporte'].forEach(id => { const e = d.querySelector('#' + id); if (e) { e.style.display = pz.tradeId ? 'none' : ''; e.previousSibling.style.display = pz.tradeId ? 'none' : ''; } });   // risco/aporte só valem na caixa em análise
+    const fmt = v => String(v).replace('.', ',');
+    const set = (id, val, preco) => { const e = d.querySelector('#' + id); if (!e) return; if (document.activeElement !== e) e.value = preco ? Number(val).toFixed(Math.max(5, (String(val).split('.')[1] || '').length)).replace('.', ',') : fmt(val); };
+    set('cv-pos-dados-pe', pz.entrada, true);
+    set('cv-pos-dados-stop', pz.stop, true);
+    set('cv-pos-dados-risco', pz.simRisco > 0 ? pz.simRisco : GR_RISCO_ANALISE_PCT);
+    set('cv-pos-dados-aporte', pz.simAporte > 0 ? pz.simAporte : GR_MARGEM_ANALISE);
+    const mr = m.getBoundingClientRect(), dw = d.offsetWidth || 170, dh = d.offsetHeight || 110;
+    let x = Math.max(4, Math.min(window.innerWidth - dw - 4, mr.left)), y = mr.bottom + 4;
+    const lim = window.innerHeight * 0.36;   // sobe se o teclado cobriria o modal
+    if (y > lim) y = Math.max(4, mr.top - dh - 4);
+    d.style.left = x + 'px'; d.style.top = y + 'px';
+}
 function cvPosCtxMenu(i, rx, ry, rw, rh) {   // menu de contexto da caixa selecionada (igual ao TradingView): olho, engrenagem, lixeira (+ risco e aporte na caixa Em Análise)
     const pz = grPosicoes()[i]; if (!pz) return cvPosCtxRemover();
     const cv = document.getElementById('gr-chart-canvas'); if (!cv) return;
@@ -7696,24 +7739,11 @@ function cvPosCtxMenu(i, rx, ry, rw, rh) {   // menu de contexto da caixa seleci
         bt('cv-pos-ctx-lock', '', '#1C1C1E', () => { const z = grPosicoes()[m._i]; if (!z) return; z.trancada = !z.trancada; try { grPosSalvar(); } catch (e) {} grDrawChart(); });
         bt('cv-pos-ctx-cfg', grHeroicon('cog-6-tooth', 16), '#1C1C1E', () => cvPosFormAbrir(m._i));
         bt('cv-pos-ctx-del', grHeroicon('trash', 16), '#EF5350', async () => { await cvPosApagarCaixa(m._i); cvEdicaoSair(true); grDrawChart(); });
-        const sim = document.createElement('div'); sim.id = 'cv-pos-ctx-sim'; sim.style.cssText = 'display:none;align-items:center;gap:3px;margin-left:4px;padding-left:6px;border-left:1px solid #E5E5EA;';
-        const campo = (id, rot, w, sufixo, chave, dec) => {
-            const l = document.createElement('span'); l.textContent = rot; sim.appendChild(l);
-            const inp = document.createElement('input'); inp.id = id; inp.type = 'text'; inp.inputMode = 'decimal'; inp.autocomplete = 'off';
-            inp.style.cssText = 'width:' + w + 'px;height:22px;box-sizing:border-box;border:1px solid #D1D1D6;border-radius:6px;padding:0 4px;font-size:11px;text-align:right;background:#fff;color:#1C1C1E;';
-            inp.addEventListener('focus', () => setTimeout(() => { try { inp.setSelectionRange(0, inp.value.length); } catch (e) {} }, 0));
-            inp.addEventListener('input', () => {
-                const v = parseFloat(String(inp.value).replace(/\./g, '').replace(',', '.'));
-                const z = grPosicoes()[m._i]; if (!z) return;
-                if (v > 0) z[chave] = chave === 'simRisco' ? Math.min(v, 100) : v; else delete z[chave];
-                grDrawChart();
-            });
-            inp.addEventListener('change', () => { try { grPosSalvar(); } catch (e) {} });
-            sim.appendChild(inp); if (sufixo) { const u = document.createElement('span'); u.textContent = sufixo; sim.appendChild(u); }
-        };
-        campo('cv-pos-ctx-risco', 'Risco', 34, '%', 'simRisco');
-        campo('cv-pos-ctx-aporte', 'Aporte', 52, '', 'simAporte');
-        m.appendChild(sim);
+        const dd = document.createElement('button'); dd.type = 'button'; dd.id = 'cv-pos-ctx-dados';
+        dd.style.cssText = 'display:none;align-items:center;gap:2px;height:22px;margin-left:4px;padding:0 6px;border:1px solid #D1D1D6;border-radius:6px;background:#fff;color:#1C1C1E;font-size:11px;';
+        dd.innerHTML = 'Dados <span id="cv-pos-ctx-dados-seta" style="font-size:9px;">&#9662;</span>';
+        dd.onclick = ev => { ev.stopPropagation(); window._grDadosAberto = !window._grDadosAberto; cvPosDadosPainel(m._i, m); };
+        m.appendChild(dd);
         bt('cv-pos-ctx-x', grHeroicon('x-mark', 16), '#6B6B70', () => { window._grCtxFechado = true; cvPosCtxRemover(); });   // fecha só a barra (a caixa continua selecionada); ao selecionar a caixa de novo ela volta
         m.lastChild.style.marginLeft = '4px';
         document.body.appendChild(m);
@@ -7721,19 +7751,14 @@ function cvPosCtxMenu(i, rx, ry, rw, rh) {   // menu de contexto da caixa seleci
     m._i = i;
     m.querySelector('#cv-pos-ctx-lock').innerHTML = grHeroicon(pz.trancada ? 'lock-closed' : 'lock-open', 16);
     m.querySelector('#cv-pos-ctx-olho').innerHTML = grHeroicon(pz.oculta ? 'eye-slash' : 'eye', 16);
-    const sm = m.querySelector('#cv-pos-ctx-sim'), analise = !pz.tradeId;
-    sm.style.display = analise ? 'flex' : 'none';
-    if (analise) {   // não mexe no campo que você está digitando
-        const fmt = v => String(v).replace('.', ',');
-        const ri = m.querySelector('#cv-pos-ctx-risco'), ai = m.querySelector('#cv-pos-ctx-aporte');
-        if (document.activeElement !== ri) ri.value = fmt(pz.simRisco > 0 ? pz.simRisco : GR_RISCO_ANALISE_PCT);
-        if (document.activeElement !== ai) ai.value = fmt(pz.simAporte > 0 ? pz.simAporte : GR_MARGEM_ANALISE);
-    }
+    const analise = !pz.tradeId;
+    m.querySelector('#cv-pos-ctx-dados').style.display = 'flex';
     const mw = m.offsetWidth || 90, mh = m.offsetHeight || 30;
     let x = rc.left + (rx + rw / 2) * sx - mw / 2, y = rc.top + ry * sy - mh - 30;
     if (y < rc.top + 4) y = Math.min(rc.bottom - mh - 4, rc.top + (ry + rh) * sy + 34);
     x = Math.max(rc.left + 4, Math.min(rc.right - mw - 4, x)); y = Math.max(rc.top + 4, Math.min(rc.bottom - mh - 4, y));
     m.style.left = x + 'px'; m.style.top = y + 'px';
+    cvPosDadosPainel(i, m);
 }
 function cvEdicaoSair(silencioso) {
     cvPosCtxRemover();
