@@ -2968,7 +2968,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v327';
+const APP_VERSAO = 'v329';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4406,7 +4406,7 @@ function cvPosDesvincular(pz) {
 // Versão enxuta para o JSON de preferências: caixa com trade guarda só o desenho (+ últimos preços, usados só se o trade sumir)
 function cvPosParaSalvar() {
     const out = {};
-    Object.keys(_grPosMapa).forEach(k => { out[k] = (_grPosMapa[k] || []).map(z => z.tradeId ? { id: z.id, lado: z.lado, t1: z.t1, t2: z.t2, tradeId: z.tradeId, entrada: z.entrada, alvo: z.alvo, stop: z.stop, trancada: z.trancada || undefined, trav: z.trav || undefined } : Object.assign({}, z, { oculta: undefined })); });
+    Object.keys(_grPosMapa).forEach(k => { out[k] = (_grPosMapa[k] || []).map(z => z.tradeId ? { id: z.id, lado: z.lado, t1: z.t1, t2: z.t2, tradeId: z.tradeId, entrada: z.entrada, alvo: z.alvo, stop: z.stop, trancada: z.trancada || undefined } : Object.assign({}, z, { oculta: undefined })); });
     return out;
 }
 // Trade ativo sem caixa no gráfico (ex.: o short antigo, ligado por SQL): cria a caixa a partir do trade.
@@ -7590,7 +7590,7 @@ function grEdToqueMove(x, y) {
             // inteira reaparecia de uma vez (o "estranho" ao passar do último candle). A largura guardada não muda: voltando, a caixa reaparece inteira.
             let dI = dIdx;
             if (!o.tradeId && !grPosTrav(o, 'h')) { o.t1 = grIndexToTime(grTimeToIndex(d.snap.t1) + dI); o.t2 = grIndexToTime(grTimeToIndex(d.snap.t2) + dI); }
-            if (!(o.pm > 0) && !grPosTrav(o, 'e') && !grPosTrav(o, 's') && !grPosTrav(o, 'a')) { o.entrada = mv(d.snap.entrada); o.alvo = mv(d.snap.alvo); o.stop = mv(d.snap.stop); }   // com PM: só desloca na horizontal
+            if (!(o.pm > 0) && !grPosSoHorizontal(o)) { o.entrada = mv(d.snap.entrada); o.alvo = mv(d.snap.alvo); o.stop = mv(d.snap.stop); }   // com PM: só desloca na horizontal
         }
     }
     grDrawChart();
@@ -7632,7 +7632,7 @@ function cvPosCtxMenu(i, rx, ry, rw, rh) {   // menu de contexto da caixa seleci
         m.style.cssText = 'position:fixed;z-index:9690;display:flex;align-items:center;gap:1px;background:#FFFFFF;border-radius:9px;padding:2px 4px;box-shadow:0 1px 8px rgba(0,0,0,0.25);font-family:-apple-system,sans-serif;font-size:11px;color:#3A3A3C;';
         const bt = (id, svg, cor, fn) => { const b = document.createElement('button'); b.type = 'button'; b.id = id; b.innerHTML = svg; b.style.cssText = 'width:26px;height:26px;background:none;border:none;color:' + cor + ';display:flex;align-items:center;justify-content:center;padding:0;'; b.onclick = ev => { ev.stopPropagation(); fn(); }; m.appendChild(b); };
         bt('cv-pos-ctx-olho', '', '#1C1C1E', () => { const z = grPosicoes()[m._i]; if (!z) return; z.oculta = !z.oculta; if (z.oculta) cvEdicaoSair(true); grDrawChart(); });
-        bt('cv-pos-ctx-lock', '', '#1C1C1E', () => { if (!grPosicoes()[m._i]) return; grPosTravasAbrir(m._i); });
+        bt('cv-pos-ctx-lock', '', '#1C1C1E', () => { const z = grPosicoes()[m._i]; if (!z) return; z.trancada = !z.trancada; try { grPosSalvar(); } catch (e) {} grDrawChart(); });
         bt('cv-pos-ctx-cfg', grHeroicon('cog-6-tooth', 16), '#1C1C1E', () => cvPosFormAbrir(m._i));
         bt('cv-pos-ctx-del', grHeroicon('trash', 16), '#EF5350', async () => { await cvPosApagarCaixa(m._i); cvEdicaoSair(true); grDrawChart(); });
         const sim = document.createElement('div'); sim.id = 'cv-pos-ctx-sim'; sim.style.cssText = 'display:none;align-items:center;gap:3px;margin-left:4px;padding-left:6px;border-left:1px solid #E5E5EA;';
@@ -16072,27 +16072,28 @@ function scAlvoMacro(rM, s, entrada, risco, atrM) {
     }
     return null;
 }
-// Avalia as melhores zonas de um TF micro: até 4 candidatas do ranking do motor (afastadas ≥ 3 níveis), cada uma conferida no macro (A), com alvo do macro (B) e R:R.
+// Zonas do micro na ordem do ranking do motor (volume, delta, defesa): vale a PRIMEIRA que passa na conferência do macro (A).
 async function scAvaliarTf(lado, chave, dias, dMa, rM, uMa, preco) {
     const def = scDefTf(chave), s = lado === 'short' ? 1 : -1;
     const [tk, cs] = await Promise.all([scTick(def), scCandles(def, dias)]);
     const u = scRegua(tk, dias, def.rot), r0 = scCalcular(lado, u, cs, preco);
-    if (r0.erro) return { def, erro: r0.erro, validas: [], comparadas: 0 };
-    const ks = [];
-    r0.niv.filter(n => n.rank > 0).sort((x, y) => y.rank - x.rank).forEach(n => { if (ks.length < 4 && ks.every(k => Math.abs(k - n.k) >= 3)) ks.push(n.k); });
-    const validas = []; let foraMacro = 0;
-    ks.forEach(k => {
+    if (r0.erro) return { def, erro: r0.erro, esc: null, comparadas: 0 };
+    const ks = r0.niv.filter(n => n.rank > 0).sort((x, y) => y.rank - x.rank).map(n => n.k);
+    let comparadas = 0;
+    for (const k of ks) {
+        if (comparadas >= 6) break;
         const r = k === r0.K.k ? r0 : scCalcular(lado, u, cs, preco, k);
-        if (r.erro) return;
+        if (r.erro) continue;
+        if (k !== r0.K.k && ks.slice(0, ks.indexOf(k)).some(k2 => Math.abs(k2 - k) < 3)) continue;   // colada numa zona já avaliada
+        comparadas++;
         const zonaMa = (rM.niv || []).filter(n => n.gate && n.disp && n.hi > r.lo && n.lo < r.hi);
-        if (!zonaMa.length) { foraMacro++; return; }
-        const risco = Math.abs(r.stop - r.entrada); if (!(risco > 0)) return;
+        if (!zonaMa.length) continue;
+        const risco = Math.abs(r.stop - r.entrada); if (!(risco > 0)) continue;
         const am = scAlvoMacro(rM, s, r.entrada, risco, uMa.atr), alvo = am ? am.alvo : r.entrada - s * 2 * risco;
-        if (!(s * (r.stop - r.entrada) > 0) || !(s * (r.entrada - alvo) > 0)) return;
-        validas.push({ r, zonaMa, am, alvo, risco, rr: Math.abs(r.entrada - alvo) / risco, def, u });
-    });
-    validas.sort((x, y) => y.rr - x.rr);
-    return { def, validas, best: validas[0] || null, comparadas: ks.length, foraMacro };
+        if (!(s * (r.stop - r.entrada) > 0) || !(s * (r.entrada - alvo) > 0)) continue;
+        return { def, esc: { r, zonaMa, am, alvo, risco, def, u }, comparadas };
+    }
+    return { def, esc: null, comparadas };
 }
 async function scRodar(lado) {
     if (_scCalculando) return;
@@ -16107,19 +16108,16 @@ async function scRodar(lado) {
         const uMa = scRegua(tkMa, dias, dMa.rot), rM = scCalcular(lado, uMa, csMa, preco);
         if (rM.erro) throw new Error('Macro ' + dMa.rot + ': ' + rM.erro);
         const cob = scCobertura(dias), avisoCob = cob < dias - 1 ? ' (Fluxo só tem ' + Math.floor(cob) + ' de ' + dias + ' dias)' : '';
-        // melhor zona por R:R; só desce de TF se a melhor ficar abaixo de 1 (piso do motor), parando em 1h
+        // desce de TF só se nenhuma zona do micro cair numa zona favorável do macro (piso: 1h)
         const cadeia = SC_ORDEM.slice(0, SC_ORDEM.indexOf(_scCfg.micro) + 1).reverse();
-        const tent = []; let esc = null, melhor = null, primeiroErro = null;
+        const tent = []; let esc = null, primeiroErro = null;
         for (const ch of cadeia) {
-            let ev; try { ev = await scAvaliarTf(lado, ch, dias, dMa, rM, uMa, preco); } catch (e) { ev = { def: scDefTf(ch), erro: e.message, validas: [], comparadas: 0 }; }
+            let ev; try { ev = await scAvaliarTf(lado, ch, dias, dMa, rM, uMa, preco); } catch (e) { ev = { def: scDefTf(ch), erro: e.message, esc: null, comparadas: 0 }; }
             if (ev.erro && !primeiroErro) primeiroErro = ev.def.rot + ': ' + ev.erro;
-            if (!primeiroErro && !ev.best && ev.foraMacro && !ev.erro) primeiroErro = ev.def.rot + ': ' + ev.foraMacro + ' zona(s) candidata(s), todas fora de zona favorável do macro ' + dMa.rot;
-            tent.push({ rot: ev.def.rot, rr: ev.best ? ev.best.rr : null, comp: ev.comparadas });
-            if (ev.best && (!melhor || ev.best.rr > melhor.rr)) melhor = ev.best;
-            if (ev.best && ev.best.rr >= 1) { esc = ev.best; break; }
+            tent.push({ rot: ev.def.rot, ok: !!ev.esc, comp: ev.comparadas });
+            if (ev.esc) { esc = ev.esc; break; }
         }
-        let abaixo1 = false;
-        if (!esc) { if (!melhor) throw new Error('Micro ' + (primeiroErro || 'sem zona válida') + '. Caixa não criada.' + avisoCob); esc = melhor; abaixo1 = true; }
+        if (!esc) throw new Error('Micro: ' + (primeiroErro || 'nenhuma zona de entrada cai numa zona favorável do macro ' + dMa.rot) + '. Caixa não criada.' + avisoCob);
         const rm = esc.r, entrada = rm.entrada, stop = rm.stop, risco = esc.risco, alvo = esc.alvo, am = esc.am, zonaMa = esc.zonaMa, dMi = esc.def, fraco = rm.forca === 'Fraco';
         // posição: logo à direita da última caixa existente (nada é apagado)
         const lista = grPosicoes(), n = _grAllCandles.length, cs0 = _grAllCandles;
@@ -16129,29 +16127,27 @@ async function scRodar(lado) {
         const t1 = fimMax > 0 ? fimMax + candleMs : Date.now(), t2 = t1 + dur;
         const pz = grPosNova(lado, n, entrada);
         pz.entrada = entrada; pz.stop = stop; pz.alvo = alvo; pz.origem = 'setup'; pz.tAbs = true; pz.t1 = t1; pz.t2 = t2;
-        pz.trav = { e: true, s: true, h: true, a: false, w: false };   // nasce travada, menos a altura do alvo e a largura
         pz.rotulo = 'Setup ' + dMa.rot + ' × ' + dMi.rot + (fraco ? ' · fraco' : '');
         lista.push(pz); grPosSalvar();
-        const f = x => Math.round(x).toLocaleString('pt-BR'), rrTxt = x => x.toFixed(1).replace('.', ',');
-        _scUltimo = { lado, hora: new Date(), txt: (lado === 'short' ? 'Short' : 'Long') + ' · entrada ' + f(entrada) + ' · stop ' + f(stop) + ' · alvo ' + f(alvo) + (am ? ' (nó macro)' : ' (2R)') + ' · R:R ' + rrTxt(esc.rr) + (fraco ? ' · sinal FRACO' : '') + (abaixo1 ? ' · R:R < 1' : '') + avisoCob };
+        const f = x => Math.round(x).toLocaleString('pt-BR');
+        _scUltimo = { lado, hora: new Date(), txt: (lado === 'short' ? 'Short' : 'Long') + ' · entrada ' + f(entrada) + ' · stop ' + f(stop) + ' · alvo ' + f(alvo) + (am ? ' (nó macro)' : ' (sem nó macro: 2R)') + (fraco ? ' · sinal FRACO' : '') + avisoCob };
         // Relatório curto
         {
             const pc = x => (x >= 0 ? '+' : '−') + (Math.abs(x) * 100).toFixed(1).replace('.', ',') + '%', rng = ns => { ns = ns.filter(Boolean).sort((x, y) => x - y); return !ns.length ? 'fora da tela' : (ns.length === 1 ? 'nível ' + ns[0] : 'níveis ' + ns[0] + ' a ' + ns[ns.length - 1]); };
             const porPavio = rm.wick != null && Math.abs(stop - (s > 0 ? rm.wick + rm.tick : rm.wick - rm.tick)) < 1;
             const L = [
                 (lado === 'short' ? 'SHORT' : 'LONG') + ' · ' + dias + ' dias · ' + dMa.rot + ' × ' + dMi.rot + ' · sinal ' + rm.forca + ' (' + rm.K.pisos + ' de 3)',
-                'Entrada ' + f(entrada) + ' · Stop ' + f(stop) + ' (' + pc((stop - entrada) / entrada) + ') · Alvo ' + f(alvo) + ' (' + pc((alvo - entrada) / entrada) + ') · R:R ' + rrTxt(esc.rr),
+                'Entrada ' + f(entrada) + ' · Stop ' + f(stop) + ' (' + pc((stop - entrada) / entrada) + ') · Alvo ' + f(alvo) + ' (' + pc((alvo - entrada) / entrada) + ')',
                 'Stop: ' + (porPavio ? 'pavio defendido em ' + f(rm.wick) + ' + 1 nível' : 'borda do bloco de volume do micro') + ' · ' + Math.round(risco / rm.tick) + ' níveis de ' + f(rm.tick),
                 'Macro: entrada dentro de ' + rng(zonaMa.map(x => x.num)) + ' (' + f(Math.min.apply(null, zonaMa.map(x => x.lo))) + '–' + f(Math.max.apply(null, zonaMa.map(x => x.hi))) + ')',
-                'Alvo: ' + (am ? 'nó macro, ' + rng(am.nums) + ', borda ' + f(am.alvo) : 'sem nó macro útil, 2R'),
-                'Micro: ' + tent.map(t => t.rot + (t.rr != null ? ' R:R ' + rrTxt(t.rr) : ' sem zona') + (t.comp ? ' (' + t.comp + ' zonas)' : '')).join(' → ')
+                'Alvo: ' + (am ? 'nó macro, ' + rng(am.nums) + ', borda ' + f(am.alvo) : 'sem nó macro útil, 2R')
             ];
-            if (abaixo1) L.push('Atenção: nenhum TF deu R:R ≥ 1; usei a melhor zona.');
+            if (tent.length > 1) L.push('Micro: ' + tent.map(t => t.rot + (t.ok ? ' ok' : ' sem zona no macro')).join(' → '));
             if (fraco) L.push('Atenção: sinal fraco.');
             if (avisoCob) L.push('Atenção: Fluxo' + avisoCob.replace(/^ \(Fluxo/, ' (').replace(/^ /, ''));
             _scUltimo.linhas = L;
         }
-        msg = 'Setup ' + _scUltimo.txt; cor = (fraco || abaixo1) ? '#F59E0B' : '#16A34A';
+        msg = 'Setup ' + _scUltimo.txt; cor = fraco ? '#F59E0B' : '#16A34A';
         cvFecharMenuFpCfg();
         try { cvEdicaoIniciar('ps', lista.length - 1); } catch (e) {}
         grDrawChart();
@@ -16197,39 +16193,13 @@ function scRenderPopup(menu) {
 }
 </script>
 
-<!-- ═══ Cadeados por dimensão das caixas (vale para TODAS: barra de indicadores, Melhor e Setup) ═══ -->
+<!-- ═══ Cadeado da caixa: um só, trava a caixa inteira (pz.trancada) ═══ -->
 <script>
-// pz.trancada = "travar tudo" (como sempre foi). pz.trav = { e: entrada, s: stop, a: alvo, w: largura, h: posição horizontal } — cada uma travada ou livre.
-const GR_TRAV_DIMS = [['e', 'Entrada'], ['s', 'Stop'], ['a', 'Alvo'], ['w', 'Largura'], ['h', 'Posição horizontal']];
-function grPosTrav(pz, k) { return !!(pz && (pz.trancada || (pz.trav && pz.trav[k]))); }
-function grPosTravAlguma(pz) { return !!(pz && (pz.trancada || (pz.trav && GR_TRAV_DIMS.some(d => pz.trav[d[0]])))); }
-function grPosTravasFechar() { const a = document.getElementById('cv-pos-travas'), b = document.getElementById('cv-pos-travas-ov'); if (a) a.remove(); if (b) b.remove(); }
-function grPosTravasAtualizarIcone(pz) { const b = document.getElementById('cv-pos-ctx-lock'); if (b && pz) b.innerHTML = grHeroicon(grPosTravAlguma(pz) ? 'lock-closed' : 'lock-open', 16); }
-function grPosTravasRender(i) {
-    const pz = grPosicoes()[i], box = document.getElementById('cv-pos-travas'); if (!pz || !box) return;
-    const sw = (on, dis) => '<span style="flex-shrink:0;width:38px;height:22px;border-radius:11px;background:' + (on ? '#1C1C1E' : '#D1D1D6') + ';position:relative;opacity:' + (dis ? 0.45 : 1) + ';"><span style="position:absolute;top:2px;left:' + (on ? 18 : 2) + 'px;width:18px;height:18px;border-radius:50%;background:#fff;"></span></span>';
-    const linha = (rot, on, dis, fn, forte) => '<button type="button" ' + (dis ? '' : 'onclick="' + fn + '"') + ' style="display:flex;align-items:center;justify-content:space-between;gap:14px;width:100%;border:none;background:none;padding:9px 2px;font-size:13.5px;' + (forte ? 'font-weight:800;border-bottom:1px solid #F2F2F7;' : 'font-weight:600;') + 'color:#1C1C1E;text-align:left;"><span>' + rot + '</span>' + sw(on, dis) + '</button>';
-    box.innerHTML = '<div style="font-size:12px;font-weight:800;color:#8E8E93;margin-bottom:2px;">Travas da caixa</div>'
-        + linha('Travar tudo', !!pz.trancada, false, 'grPosTravaAlternar(' + i + ',\'*\')', true)
-        + GR_TRAV_DIMS.map(d => linha(d[1], grPosTrav(pz, d[0]), !!pz.trancada, 'grPosTravaAlternar(' + i + ',\'' + d[0] + '\')', false)).join('');
-}
-function grPosTravaAlternar(i, k) {
-    const pz = grPosicoes()[i]; if (!pz) return;
-    if (k === '*') pz.trancada = !pz.trancada; else { pz.trav = pz.trav || {}; pz.trav[k] = !pz.trav[k]; }
-    try { grPosSalvar(); } catch (e) {}
-    grPosTravasRender(i); grPosTravasAtualizarIcone(pz); grDrawChart();
-}
-function grPosTravasAbrir(i) {
-    if (document.getElementById('cv-pos-travas')) { grPosTravasFechar(); return; }
-    const bar = document.getElementById('cv-pos-ctx'); if (!bar) return;
-    const ov = document.createElement('div'); ov.id = 'cv-pos-travas-ov'; ov.style.cssText = 'position:fixed;inset:0;z-index:9691;background:transparent;'; ov.onclick = grPosTravasFechar; document.body.appendChild(ov);
-    const box = document.createElement('div'); box.id = 'cv-pos-travas';
-    box.style.cssText = 'position:fixed;z-index:9692;width:230px;background:#fff;border-radius:12px;padding:10px 12px;box-shadow:0 2px 14px rgba(0,0,0,0.3);font-family:-apple-system,sans-serif;';
-    document.body.appendChild(box); grPosTravasRender(i);
-    const r = bar.getBoundingClientRect(), bw = box.offsetWidth, bh = box.offsetHeight;
-    let x = Math.max(8, Math.min(window.innerWidth - bw - 8, r.left)), y = r.bottom + 6; if (y + bh > window.innerHeight - 8) y = Math.max(8, r.top - bh - 6);
-    box.style.left = x + 'px'; box.style.top = y + 'px';
-}
+function grPosTrav(pz) { return !!(pz && pz.trancada); }
+function grPosTravAlguma(pz) { return !!(pz && pz.trancada); }
+function grPosTravasFechar() {}
+// Caixas geradas por motor (Melhor e Setup): destravada, ela se move só na HORIZONTAL; mover o corpo na vertical desfaria os números calculados.
+function grPosSoHorizontal(pz) { return !!(pz && (pz.origem === 'melhor' || pz.origem === 'setup')); }
 </script>
 </body>
 </html>
