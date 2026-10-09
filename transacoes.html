@@ -3030,7 +3030,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v372';
+const APP_VERSAO = 'v373';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -7948,7 +7948,7 @@ function cvAbrirMenuCandle(clientX, clientY, snap) {
             grDrawChart();
         } });
     }
-    if (_indState.novoFibo && snap.cross && window._longPressActive) {   // Novo Fibo: os dois pontos saem do crosshair
+    if (false && _indState.novoFibo && snap.cross && window._longPressActive) {   // (substituído: crosshair próprio do Novo Fibo, toque marca)
         const pCh = window._grCrosshairPrecoAtual;
         if (!_nfP1) {
             itens.push({ txt: 'Novo Fibo: ponto 1 aqui', icone: HEROICON_BOOKMARK, acao: () => { if (!(pCh > 0)) return; _nfP1 = { t: candle.t, p: pCh }; grAreaToast('Ponto 1 marcado. Mova o crosshair e abra Ações', '#2962FF'); grDrawChart(); } });
@@ -8121,12 +8121,20 @@ function grInitTouch() {
     // (causava o "salto" do crosshair pra posição inicial do toque).
     let _liveTouchX = 0, _liveTouchY = 0;
     canvas.addEventListener('touchstart', e => {
+        if (e.touches.length !== 1) window._nfT = null;
         if (e.touches.length === 1) {
             _liveTouchX = e.touches[0].clientX;
             _liveTouchY = e.touches[0].clientY;
             window._stopTap = window._stopJanelaVisivel ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : null; // janela do Stop aberta: um toque em qualquer lugar fecha
             const ex2 = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (grLW(canvas) / canvas.getBoundingClientRect().width);
             const ey2 = (e.touches[0].clientY - canvas.getBoundingClientRect().top) * (grLH(canvas) / canvas.getBoundingClientRect().height);
+            // Novo Fibo ligado: crosshair próprio. Arrastar move o crosshair (relativo, o dedo não cobre o ponto); toque simples marca o ponto (1º e 2º).
+            if (_indState.novoFibo) {
+                if (window._grCrosshairX == null && typeof _grCrosshairX === 'undefined') _grCrosshairX = (window._grPADLeft || 0) + (window._grChartW || 0) / 2;
+                window._nfT = { fx: ex2, fy: ey2, cx0: _grCrosshairX, cy0: window._longPressY, t0: Date.now(), moved: false };
+                window._longPressActive = true; clearTimeout(_longPressTimer); isDragging = false;
+                e.preventDefault(); return;
+            }
             // Modo edição de desenho: arrasto relativo da alça mais próxima
             if (_edSel && grEdToqueInicio(ex2, ey2)) { e.preventDefault(); return; }
             // Tabela de métricas: tocar e arrastar por cima dela move a janela (o ✕ é tratado como toque, pelos chips)
@@ -8507,6 +8515,17 @@ function grInitTouch() {
         if (e.touches.length === 1) {
             _liveTouchX = e.touches[0].clientX;
             _liveTouchY = e.touches[0].clientY;
+            if (_indState.novoFibo && window._nfT) {   // Novo Fibo: o dedo arrasta o crosshair (relativo)
+                const rcN = canvas.getBoundingClientRect(), nx0 = (e.touches[0].clientX - rcN.left) * (grLW(canvas) / rcN.width), ny0 = (e.touches[0].clientY - rcN.top) * (grLH(canvas) / rcN.height), N = window._nfT;
+                if (!N.moved && Math.hypot(nx0 - N.fx, ny0 - N.fy) > 8) N.moved = true;
+                if (N.moved) {
+                    const L = window._grPADLeft || 0, Wc = window._grChartW || 0, Tp = _grPAD.top, Hc = _grChartH;
+                    _grCrosshairX = Math.max(L, Math.min(L + Wc, N.cx0 + (nx0 - N.fx))); window._longPressY = Math.max(Tp, Math.min(Tp + Hc, N.cy0 + (ny0 - N.fy)));
+                    window._longPressActive = true; if (!_nfTimer) grNfAutoIniciar();
+                    grDrawChartWithCrosshair(window._longPressY);
+                }
+                e.preventDefault(); return;
+            }
             if (_edDrag) { const rc0 = canvas.getBoundingClientRect(); grEdToqueMove((e.touches[0].clientX - rc0.left) * (grLW(canvas) / rc0.width), (e.touches[0].clientY - rc0.top) * (grLH(canvas) / rc0.height)); e.preventDefault(); return; }
             if (window._grMetricasDrag) { // arrastando a tabela de métricas
                 const rc = canvas.getBoundingClientRect();
@@ -8826,6 +8845,11 @@ function grInitTouch() {
     let _lastTapTime = 0;
     let _lastTapTarget = null;
     canvas.addEventListener('touchend', e => {
+    if (_indState.novoFibo && window._nfT) {   // Novo Fibo: soltou. Toque simples (sem arrastar) = marca o ponto no crosshair
+        const N = window._nfT; window._nfT = null; grNfAutoParar(); isDragging = false;
+        if (!N.moved && Date.now() - N.t0 < 700) grNfConfirmar();
+        e.preventDefault(); return;
+    }
     if (window._edTapPend) {   // toque simples (sem arrastar) fora da caixa selecionada: solta a seleção
         const pend = window._edTapPend; window._edTapPend = null;
         const tc = e.changedTouches && e.changedTouches[0];
@@ -10818,10 +10842,21 @@ function cvToggleBandeira() {
 // ── NOVO FIBO: arrasta do ponto 1 ao ponto 2 (com ímã) e, ao soltar, aparecem os níveis, como no TradingView. Nível 0% = ponto 2; 100% = ponto 1. ──
 let _nfP1 = null, _nfUlt = 0, _nfAcc = 0, _novosFibos = [], _nfAtual = null, _nfDrawing = false, _nfDedo = null, _nfTimer = null;
 const NF_NIVEIS = [[0, '0', '#9AA0A6'], [0.236, '0,236', '#F23645'], [0.382, '0,382', '#FF9800'], [0.5, '0,5', '#4CAF50'], [0.618, '0,618', '#089981'], [0.786, '0,786', '#2962FF'], [1, '1', '#9AA0A6']];
+function grNfConfirmar() {   // toque simples com o Novo Fibo ligado: marca o ponto onde o crosshair está (1º toque = ponto 1; 2º = ponto 2, cria e libera a ferramenta)
+    const arr = _grAllCandles || [], ic = Math.max(0, Math.min(arr.length - 1, Math.floor(grXToIndex(_grCrosshairX)))), c = arr[ic], pr = grToPrice(window._longPressY);
+    if (!c || !(pr > 0)) return;
+    if (!_nfP1) { _nfP1 = { t: c.t, p: pr }; try { grAreaToast('Ponto 1 marcado. Arraste até o destino e toque de novo', '#2962FF'); } catch (e) {} grDrawChart(); return; }
+    if (c.t === _nfP1.t && Math.abs(pr - _nfP1.p) < 1e-9) return;
+    _novosFibos.push({ t1: _nfP1.t, p1: _nfP1.p, t2: c.t, p2: pr, cor: '#2962FF' }); _nfP1 = null; _nfAtual = null;
+    try { grAmbienteSalvar(); } catch (e) {}
+    window._longPressActive = false; window._nfT = null;
+    grFerramentaDesligar('novoFibo', ['cv-ind-novofibo']);   // ferramenta livre: a rolagem volta
+    grDrawChart();
+}
 function cvNfToggle() {
     _indState.novoFibo = !_indState.novoFibo;
-    if (!_indState.novoFibo) { _nfAtual = null; _nfP1 = null; _nfDrawing = false; grNfAutoParar(); }
-    else { try { cvEdicaoSair(true); } catch (e) {} try { const barra = document.getElementById('cv-barra-unificada'); if (barra) barra.classList.remove('active'); cvFecharMenuGrupo(); } catch (e) {} try { grAreaToast('Novo Fibo: segure para abrir o crosshair → Ações → ponto 1', '#2962FF'); } catch (e) {} }
+    if (!_indState.novoFibo) { _nfAtual = null; _nfP1 = null; _nfDrawing = false; window._nfT = null; window._longPressActive = false; grNfAutoParar(); }
+    else { try { cvEdicaoSair(true); } catch (e) {} try { const barra = document.getElementById('cv-barra-unificada'); if (barra) barra.classList.remove('active'); cvFecharMenuGrupo(); } catch (e) {} try { _grCrosshairX = (window._grPADLeft || 0) + (window._grChartW || 0) / 2; window._longPressY = _grPAD.top + _grChartH / 2; window._longPressActive = true; window._grCrosshairMaximizada = false; grAreaToast('Novo Fibo: arraste o crosshair e toque para marcar o ponto 1', '#2962FF'); } catch (e) {} }
     const b = document.getElementById('cv-ind-novofibo'); if (b) b.classList.toggle('active', _indState.novoFibo);
     grDrawChart();
 }
@@ -10839,7 +10874,7 @@ function grNfSnap(x, y) {   // ímã estilo TradingView: candle na coluna do pon
     return { t: c.t, p: melhor.p };
 }
 const NF_OFF = 40;   // o ponto fica 56 px ACIMA do dedo, pra você ver onde está marcando
-function grNfAutoAtivo() { return (_nfDrawing && _nfAtual) ? 'c' : ((_edDrag && _edSel && _edSel.tipo === 'nf' && _edDrag.moved && !_edDrag.bloq) ? 'e' : null); }
+function grNfAutoAtivo() { if (_indState.novoFibo && window._nfT && window._nfT.moved) return 'x'; return (_nfDrawing && _nfAtual) ? 'c' : ((_edDrag && _edSel && _edSel.tipo === 'nf' && _edDrag.moved && !_edDrag.bloq) ? 'e' : null); }
 function grNfAutoIniciar() { grNfAutoParar(); _nfUlt = performance.now(); _nfTimer = setTimeout(grNfAutoTick, 30); }
 function grNfAutoParar() { clearTimeout(_nfTimer); _nfTimer = null; }
 function grNfPonto(x, y) {   // aplica o ponto sob o dedo (já com o deslocamento pra cima) ao Novo Fibo em criação ou à alça que está sendo arrastada
@@ -10848,7 +10883,8 @@ function grNfPonto(x, y) {   // aplica o ponto sob o dedo (já com o deslocament
     else if (modo === 'e') { const o = grEdObjeto(); if (o) { if (_edDrag.k === 'a') { o.t1 = sp.t; o.p1 = sp.p; } else { o.t2 = sp.t; o.p2 = sp.p; } } }
 }
 function grNfAutoTick() {   // dedo perto da borda do gráfico: a tela rola sozinha enquanto você procura o ponto; velocidade por tempo (não depende do gráfico estar pesado)
-    _nfTimer = null; const modo = grNfAutoAtivo(); if (!modo || !_nfDedo) return;
+    _nfTimer = null; const modo = grNfAutoAtivo(); if (!modo || (modo !== 'x' && !_nfDedo)) return;
+    if (modo === 'x') _nfDedo = { x: _grCrosshairX, y: window._longPressY };
     const agora = performance.now(), dt = Math.min(120, agora - _nfUlt); _nfUlt = agora;
     const L = window._grPADLeft || 0, Wc = window._grChartW || 0, T = _grPAD.top, H = _grChartH, E = 64, x = _nfDedo.x, y = _nfDedo.y;
     const fr = d => Math.min(1, Math.max(0, d / E));
@@ -10867,7 +10903,7 @@ function grNfAutoTick() {   // dedo perto da borda do gráfico: a tela rola sozi
             else { const dP = px / _grYAxisPxPerDollar; _grYAxisCenter += dP; _grMinP += dP; _grMaxP += dP; }
         }
         window._grManualPanTs = Date.now();
-        grNfPonto(x, y);
+        if (modo !== 'x') grNfPonto(x, y);
         grDrawChart();
     }
     _nfTimer = setTimeout(grNfAutoTick, 16);
@@ -10903,7 +10939,7 @@ function grNfDesenhar(ctx, fx, fy, PAD, W, chartH, selIdx) {
     if (!_indState.novoFibo) { _nfP1 = null; if (!_nfDrawing) _nfAtual = null; }
     if (_nfP1) {   // ponto 1 marcado: pré-visualiza até onde o crosshair está
         let t2 = _nfP1.t, p2 = _nfP1.p;
-        if (window._longPressActive && window._grCrosshairPrecoAtual > 0 && _grCrosshairX != null) { const ic = Math.max(0, Math.min((_grAllCandles || []).length - 1, Math.floor(grXToIndex(_grCrosshairX)))); if (_grAllCandles[ic]) { t2 = _grAllCandles[ic].t; p2 = window._grCrosshairPrecoAtual; } }
+        if (window._longPressActive && _grCrosshairX != null) { const ic = Math.max(0, Math.min((_grAllCandles || []).length - 1, Math.floor(grXToIndex(_grCrosshairX)))), pc2 = grToPrice(window._longPressY); if (_grAllCandles[ic] && pc2 > 0) { t2 = _grAllCandles[ic].t; p2 = pc2; } }
         _nfAtual = { t1: _nfP1.t, p1: _nfP1.p, t2, p2, cor: '#2962FF', moved: true };
     }
     const lista = _novosFibos.map((f, i) => ({ f, i })).filter(o => !o.f.oculta); if (_nfAtual) lista.push({ f: _nfAtual, i: -1 });
