@@ -3029,7 +3029,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v359';
+const APP_VERSAO = 'v360';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -16231,6 +16231,33 @@ function scConfirmacoes(lado, r, u, cs, def) {
     res.n = Object.keys(res.ev).filter(k => res.ev[k]).length;
     return res;
 }
+// AMBIENTE (só leitura, não filtra): (1) faca caindo = aproximação dos últimos 3 candles do micro até a entrada, no 3º quartil das aproximações da própria janela;
+// (2) congestão = eficiência dos últimos 6 candles (deslocamento líquido ÷ percurso) igual ou abaixo da mediana da janela; (3) régua em volta da entrada (±1 ATR do macro):
+// delta/volume na faixa da entrada, à frente (lado do preço) e atrás (lado do stop); 'neutro' = abaixo do |delta/volume| mediano da régua.
+function scAmbiente(lado, esc) {
+    const s = lado === 'short' ? 1 : -1, r = esc.r, cs = esc.cs, n = cs.length, out = { faca: false, cong: false, er: null };
+    const C = i => Number(cs[i].c), tr = i => Math.max(Number(cs[i].h) - Number(cs[i].l), Math.abs(Number(cs[i].h) - C(i - 1)), Math.abs(Number(cs[i].l) - C(i - 1)));
+    if (n >= 14) {
+        const apr = []; for (let i = 3; i < n; i++) apr.push(s * (C(i) - C(i - 3)));
+        const pos = apr.filter(v => v > 0).sort((a, b) => a - b), q3 = pos.length >= 4 ? pos[Math.floor(pos.length * 0.75)] : Infinity, ult = apr[apr.length - 1];
+        out.faca = ult > 0 && ult >= q3;
+        const er = []; for (let i = 6; i < n; i++) { let t = 0; for (let j = i - 5; j <= i; j++) t += tr(j); er.push(t > 0 ? Math.abs(C(i) - C(i - 6)) / t : 0); }
+        out.er = er[er.length - 1]; out.cong = out.er <= scMediana(er);
+    }
+    const niv = r.niv || [], dpA = niv.map(x => Math.abs(x.dp)).sort((a, b) => a - b), dpMed = dpA.length ? dpA[Math.floor(dpA.length / 2)] : 0;
+    const atrM = (esc.uMa && esc.uMa.atr) || esc.u.atr, dentro = x => x.hi > r.lo && x.lo < r.hi;
+    const dpDe = f => { let d = 0, v = 0; niv.forEach(x => { if (f(x)) { d += x.d; v += x.v; } }); return v > 0 ? d / v : 0; };
+    const cls = dp => Math.abs(dp) < dpMed ? 'neutro' : (s * dp < 0 ? 'a favor' : 'contra');
+    out.ent = dpDe(dentro); out.frente = dpDe(x => !dentro(x) && s * (x.c - r.entrada) < 0 && Math.abs(x.c - r.entrada) <= atrM); out.atras = dpDe(x => !dentro(x) && s * (x.c - r.entrada) > 0 && Math.abs(x.c - r.entrada) <= atrM);
+    out.cEnt = cls(out.ent); out.cFrente = cls(out.frente); out.cAtras = cls(out.atras);
+    return out;
+}
+function scAmbTxt(lado, a) {
+    if (!a) return 'Ambiente: poucos candles para medir.';
+    const p = v => (v >= 0 ? '+' : '−') + (Math.abs(v) * 100).toFixed(1).replace('.', ',') + '%', fc = lado === 'long' ? 'queda acelerada até a entrada' : 'subida acelerada até a entrada';
+    const fr = lado === 'long' ? 'acima' : 'abaixo', at = lado === 'long' ? 'abaixo' : 'acima';
+    return 'Ambiente: ' + (a.faca ? 'FACA (' + fc + ')' : 'sem aceleração') + ' · ' + (a.cong ? 'em congestão' : 'em movimento direcional') + ' · nível da entrada ' + a.cEnt + ' (' + p(a.ent) + ') · ' + fr + ' (lado do preço) ' + a.cFrente + ' (' + p(a.frente) + ') · ' + at + ' (lado do stop) ' + a.cAtras + ' (' + p(a.atras) + ')';
+}
 // Alvo B: próximo nó forte do MACRO do lado oposto (volume ≥ mediana e delta a favor), a ≥ 1 ATR do macro da entrada e com R:R ≥ 1; senão 2R.
 function scAlvoMacro(rM, s, entrada, risco, atrM) {
     if (!rM || !rM.niv) return null;
@@ -16266,7 +16293,7 @@ function scAvaliarCore(lado, def, tk, cs, dias, dMa, rM, uMa, preco) {
         const risco = Math.abs(r.stop - r.entrada); if (!(risco > 0)) continue;
         const am = scAlvoMacro(rM, s, r.entrada, risco, uMa.atr), alvo = am ? am.alvo : r.entrada - s * 2 * risco;
         if (!(s * (r.stop - r.entrada) > 0) || !(s * (r.entrada - alvo) > 0)) continue;
-        return { def, esc: { r, zonaMa, am, alvo, risco, def, u, cs }, comparadas };
+        return { def, esc: { r, zonaMa, am, alvo, risco, def, u, cs, uMa }, comparadas };
     }
     return { def, esc: null, comparadas };
 }
@@ -16323,6 +16350,7 @@ async function scRodar(lado) {
             const ok = nomes.filter(x => E[x[0]]).map(x => x[1] + (E[x[0]].t ? ' (' + dh(E[x[0]].t) + ')' : ' (nível ' + f(E[x[0]].c) + ')')), nao = nomes.filter(x => !E[x[0]]).map(x => x[1]);
             L.push('Confirmações: ' + (ok.length ? ok.join(', ') : 'nenhuma') + (nao.length ? ' · faltaram ' + nao.join(', ') : '') + (conf.toques ? '' : ' · nenhum candle ' + dMi.rot + ' tocou a zona com footprint'));
             nomes.filter(x => !E[x[0]] && conf.falta && conf.falta[x[0]]).forEach(x => { const f = conf.falta[x[0]]; L.push('Faltou ' + x[1] + (f.t ? ' (melhor: ' + dh(f.t) + ')' : '') + ': ' + f.falhas.join(' · ')); });
+            L.push(scAmbTxt(lado, scAmbiente(lado, esc)));
             if (tent.length > 1) L.push('Micro: ' + tent.map(t => t.rot + (t.ok ? ' ok' : ' sem zona no macro')).join(' → '));
             if (fraco) L.push('Atenção: menos de 3 confirmações, caixa marcada como fraca.');
             if (avisoCob) L.push('Atenção: Fluxo' + avisoCob.replace(/^ \(Fluxo/, ' (').replace(/^ /, ''));
@@ -16339,7 +16367,7 @@ async function scRodar(lado) {
 }
 function scRelatorioFechar() { const ov = document.getElementById('sc-relatorio-overlay'); if (ov) ov.style.display = 'none'; }
 const SC_RES = { segurou: 'segurou', rompeu: 'rompeu', semToque: 'sem toque', indef: 'sem desfecho' };
-function scCasoTxt(c) { const d = new Date(c.T).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }), cn = c.c.segurou + c.c.rompeu; return d + ' · ' + (c.lado === 'short' ? 'Short' : 'Long') + ' · ' + c.n + '/5 · ' + SC_RES[c.r] + ' · acaso: ' + c.c.segurou + ' de ' + cn + ' seguraram'; }
+function scCasoTxt(c) { const d = new Date(c.T).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }), cn = c.c.segurou + c.c.rompeu; return d + ' · ' + (c.lado === 'short' ? 'Short' : 'Long') + ' · ' + c.n + '/5 · ' + SC_RES[c.r] + ' · acaso: ' + c.c.segurou + ' de ' + cn + ' seguraram' + (c.amb ? ' · ' + (c.amb.faca ? 'FACA' : 'sem faca') + ' · ' + (c.amb.cong ? 'congestão' : 'direcional') + ' · nível ' + c.amb.cEnt : ''); }
 function scRelatorioCopiar() { try { const o = window._scRelAtual || _scUltimo || {}; navigator.clipboard.writeText((o.linhas || []).concat(o.casos ? ['', 'CASOS (um por linha):'].concat(o.casos.map(scCasoTxt)) : []).join('\n')); } catch (e) {} }
 // toque num caso da lista: cria SÓ a caixa daquele dia (a anterior de teste some) e leva o gráfico até ela. Caixa de teste nunca é salva.
 async function scCasoMostrar(i) {
@@ -16455,7 +16483,7 @@ async function scHistorico() {
                     const ev = scAvaliarCore(lado, dMi, tkMi, csMi, dias, dMa, rM, uMa, preco);
                     if (!ev.esc) { semZona++; continue; }
                     const rm = ev.esc.r, ent = rm.entrada, stp = rm.stop, dist = uMa.atr, conf = scConfirmacoes(lado, rm, ev.esc.u, ev.esc.cs, ev.esc.def), e = mk(lado, conf.n);
-                    const r1 = scDesfecho(lado, ent, stp, futuro, dist); e[r1]++; const caso = { T, lado, n: conf.n, ent, stp, alvo: ev.esc.alvo, r: r1, c: { segurou: 0, rompeu: 0, semToque: 0, indef: 0 } }; casos.push(caso);
+                    const r1 = scDesfecho(lado, ent, stp, futuro, dist); e[r1]++; const caso = { T, lado, n: conf.n, ent, stp, alvo: ev.esc.alvo, r: r1, c: { segurou: 0, rompeu: 0, semToque: 0, indef: 0 } }; caso.amb = scAmbiente(lado, ev.esc); casos.push(caso);
                     // CONTROLE: 5 entradas em níveis aleatórios do mesmo lado do preço, NA MESMA DISTÂNCIA do preço que a entrada do motor (±50%), com o mesmo risco e a mesma regra de desfecho
                     const risco = Math.abs(stp - ent), tk = ev.esc.u.tick, atrMi = ev.esc.u.atr, dEng = Math.max(0, s * (ent - preco)), dLo = Math.max(0, dEng * 0.5 - tk), dHi = dEng * 1.5 + tk, cand = [];
                     ev.esc.u.mapa.forEach((d, k) => { const c = k * tk, dd = s * (c - preco); if (dd >= dLo && dd <= dHi) cand.push(c); });
@@ -16489,6 +16517,11 @@ async function scHistorico() {
             lin.push('Largura ' + f1(w.m) + ' ATR do ' + dMi.rot + ' (≈' + f1(med(w.lar)) + '%): motor ' + Math.round(pe) + '% · acaso ' + Math.round(pcn) + '% · ' + (dif >= 0 ? '+' : '−') + Math.abs(dif) + ' pts (' + a + ' casos)');
             if (a >= 20 && (!melhor || dif > melhor.dif)) melhor = { m: w.m, dif, pct: med(w.lar) }; });
           if (melhor) lin.push('Largura com maior vantagem sobre o acaso: ' + f1(melhor.m) + ' ATR do ' + dMi.rot + ' (≈' + f1(melhor.pct) + '%), ' + (melhor.dif >= 5 ? 'vantagem de ' + melhor.dif + ' pontos.' : 'mas a vantagem é de só ' + melhor.dif + ' ponto(s): sem largura que ganhe do acaso.')); }
+        { const gr = (rot, f) => { const x = casos.filter(c => c.amb && f(c.amb)).reduce((q, c) => { q[c.r] = (q[c.r] || 0) + 1; return q; }, {}), sg = x.segurou || 0, rp = x.rompeu || 0; return rot + ': ' + pc(sg, rp) + ' (' + sg + ' de ' + (sg + rp) + ')'; };
+          lin.push('AMBIENTE (casos do motor; segurou entre os que tocaram):');
+          lin.push(gr('Faca caindo SIM', a => a.faca) + ' · ' + gr('NÃO', a => !a.faca));
+          lin.push(gr('Em congestão SIM', a => a.cong) + ' · ' + gr('NÃO (direcional)', a => !a.cong));
+          lin.push(gr('Nível da entrada a favor', a => a.cEnt === 'a favor') + ' · ' + gr('neutro', a => a.cEnt === 'neutro') + ' · ' + gr('contra', a => a.cEnt === 'contra')); }
         lin.push('Sem zona válida em ' + semZona + ' de ' + total + ' casos (macro não confirmou).');
         lin.push('Segurou = tocou a entrada e se afastou 1 ATR do macro (' + dMa.rot + ') sem fechar além do stop. Rompeu = fechou além do stop antes. Sem descida de timeframe no teste.');
         lin.push('Atenção: datas a cada 2 dias repetem zonas parecidas; leia como tendência, não como exatidão. Amostras pequenas (menos de 10) não provam nada.');
