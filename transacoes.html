@@ -2968,7 +2968,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v342';
+const APP_VERSAO = 'v343';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -16065,7 +16065,9 @@ function scCalcular(lado, u, cs, preco, ibK) {
 function scMediana(a) { if (!a.length) return 0; const t = a.slice().sort((x, y) => x - y); return t[Math.floor(t.length / 2)]; }
 function scConfirmacoes(lado, r, u, cs, def) {
     const s = lado === 'short' ? 1 : -1, tick = u.tick, fim = Date.now(), ini = fim - u.dias * 86400000, lo = r.lo, hi = r.hi, RZ = FOOTPRINT_IMBALANCE_RATIO;
-    const res = { n: 0, ev: { abs: null, big: null, trap: null, agg: null, chg: null }, toques: 0 };
+    const res = { n: 0, ev: { abs: null, big: null, trap: null, agg: null, chg: null }, toques: 0, falta: {} };
+    const fx = (v, d) => (isFinite(v) ? v : 0).toFixed(d == null ? 1 : d).replace('.', ','), rz = (a, b) => b > 0 ? a / b : 0;
+    const melhor = (chave, ok, falhas, t) => { const f = res.falta[chave]; if (!f || ok > f.ok || (ok === f.ok && t > f.t)) res.falta[chave] = { ok, falhas, t }; };   // candle que chegou mais perto: guarda o que faltou
     const cand = cs.map(c => ({ c, rows: new Map(), D: 0 }));
     const idxDe = ts => { let a = 0, b = cs.length - 1, r0 = -1; while (a <= b) { const m = (a + b) >> 1; if (cs[m].t <= ts) { r0 = m; a = m + 1; } else b = m - 1; } return r0; };
     grFootprintParaCadaMinuto(Math.max(ini, cs.length ? cs[0].t : ini), fim, m => {
@@ -16084,20 +16086,35 @@ function scConfirmacoes(lado, r, u, cs, def) {
         const medVol = scMediana(rows.map(w => w.vol)), medAbsD = scMediana(rows.map(w => Math.abs(w.d))), medPush = scMediana(rows.map(w => w.push));
         const nz = zona.length, P = zona.reduce((q, w) => q + w.push, 0), R = zona.reduce((q, w) => q + w.resp, 0);
         const recusou = s > 0 ? x.c.c < lo : x.c.c > hi, contra = s > 0 ? x.c.c < x.c.o : x.c.c > x.c.o;
-        if (P > R && (P - R) / nz >= medAbsD && (P + R) / nz >= medVol && recusou) marca('abs', x);                       // 1) Absorption
-        if (P / nz >= medPush && recusou && contra) marca('trap', x);                                                    // 3) Trapped Traders
+        { const c = [P > R, (P - R) / nz >= medAbsD, (P + R) / nz >= medVol, recusou], fl = [];
+          if (!c[0]) fl.push('empurrão ' + fx(rz(P, R)) + '× a resposta (precisa mais de 1×)');
+          if (c[0] && !c[1]) fl.push('delta líquido por nível ' + fx(rz((P - R) / nz, medAbsD)) + '× da mediana (precisa 1×)');
+          if (!c[2]) fl.push('volume por nível ' + fx(rz((P + R) / nz, medVol)) + '× da mediana (precisa 1×)');
+          if (!c[3]) fl.push('não fechou fora da zona');
+          if (c.every(Boolean)) marca('abs', x); else melhor('abs', c.filter(Boolean).length, fl, x.c.t); }                       // 1) Absorption
+        { const c = [P / nz >= medPush, recusou, contra], fl = [];
+          if (!c[0]) fl.push('empurrão por nível ' + fx(rz(P / nz, medPush)) + '× da mediana (precisa 1×)');
+          if (!c[1]) fl.push('não fechou fora da zona');
+          if (!c[2]) fl.push('candle não foi contra o empurrão');
+          if (c.every(Boolean)) marca('trap', x); else melhor('trap', c.filter(Boolean).length, fl, x.c.t); }                  // 3) Trapped Traders
         // 4) Aggressive Traders: ≥ 3 linhas seguidas com imbalance diagonal do lado da operação, dentro da zona ou colado nela
         const kz0 = Math.min.apply(null, zona.map(w => w.k)) - 1, kz1 = Math.max.apply(null, zona.map(w => w.k)) + 1;
         const flag = k => { const w = x.rows.get(k); if (!w) return false; return s > 0 ? (w.bid > 0 && w.bid >= RZ * ((x.rows.get(k + 1) || { ask: 0 }).ask)) : (w.ask > 0 && w.ask >= RZ * ((x.rows.get(k - 1) || { bid: 0 }).bid)); };
         const ks = rows.map(w => w.k).sort((a, b) => a - b); let run = [];
         for (let j = 0; j <= ks.length; j++) {
             if (j < ks.length && flag(ks[j]) && (!run.length || ks[j] === run[run.length - 1] + 1)) { run.push(ks[j]); continue; }
-            if (run.length >= 3 && run[run.length - 1] >= kz0 && run[0] <= kz1) marca('agg', x, { n: run.length });
+            if (run.length && run[run.length - 1] >= kz0 && run[0] <= kz1) { if (run.length >= 3) marca('agg', x, { n: run.length }); else melhor('agg', run.length, ['maior sequência de imbalance: ' + run.length + (run.length === 1 ? ' linha' : ' linhas') + ' (precisa 3)'], x.c.t); }
             run = (j < ks.length && flag(ks[j])) ? [ks[j]] : [];
         }
         // 5) Change in Delta: dois candles seguidos de toque; o fluxo do lado oposto ao da operação se destaca e o seguinte vira, também se destacando
         const nx = cand[i + 1];
-        if (nx && tocou(nx) && s * x.D > 0 && Math.abs(x.D) >= medD && s * nx.D < 0 && Math.abs(nx.D) >= medD) marca('chg', nx);
+        { const c = [!!(nx && tocou(nx)), s * x.D > 0, Math.abs(x.D) >= medD, !!(nx && s * nx.D < 0), !!(nx && Math.abs(nx.D) >= medD)], fl = [];
+          if (!c[0]) fl.push('sem 2º candle seguido tocando a zona');
+          if (!c[1]) fl.push('delta do 1º candle não foi do lado oposto à operação');
+          if (c[1] && !c[2]) fl.push('delta do 1º candle ' + fx(rz(Math.abs(x.D), medD)) + '× da mediana (precisa 1×)');
+          if (c[0] && !c[3]) fl.push('delta do 2º candle não virou');
+          if (c[0] && c[3] && !c[4]) fl.push('delta do 2º candle ' + fx(rz(Math.abs(nx.D), medD)) + '× da mediana (precisa 1×)');
+          if (c.every(Boolean)) marca('chg', nx); else melhor('chg', c.filter(Boolean).length, fl, x.c.t); }
     });
     // 2) Big Limit: nível da faixa com volume outlier na régua (cerca superior do intervalo interquartil)
     const vs = (r.niv || []).map(n => n.v).sort((a, b) => a - b);
@@ -16105,7 +16122,8 @@ function scConfirmacoes(lado, r, u, cs, def) {
         const q1 = vs[Math.floor(vs.length * 0.25)], q3 = vs[Math.floor(vs.length * 0.75)], cerca = q3 + 1.5 * (q3 - q1);
         const g = (r.niv || []).filter(n => n.k >= r.band.a.k && n.k <= r.band.b.k && n.v > cerca).sort((a, b) => b.v - a.v)[0];
         if (g) res.ev.big = { t: null, c: g.c };
-    }
+        else { const mx = Math.max.apply(null, (r.niv || []).filter(n => n.k >= r.band.a.k && n.k <= r.band.b.k).map(n => n.v)); res.falta.big = { ok: 0, falhas: ['maior nível da faixa ' + fx(rz(mx, cerca), 2) + '× da cerca de outlier (precisa passar de 1×)'], t: 0 }; }
+    } else res.falta.big = { ok: 0, falhas: ['régua com poucos níveis para medir outlier'], t: 0 };
     res.n = Object.keys(res.ev).filter(k => res.ev[k]).length;
     return res;
 }
@@ -16196,6 +16214,7 @@ async function scRodar(lado) {
             const nomes = [['abs', 'Absorption'], ['big', 'Big Limit'], ['trap', 'Trapped Traders'], ['agg', 'Aggressive Traders'], ['chg', 'Change in Delta']];
             const ok = nomes.filter(x => E[x[0]]).map(x => x[1] + (E[x[0]].t ? ' (' + dh(E[x[0]].t) + ')' : ' (nível ' + f(E[x[0]].c) + ')')), nao = nomes.filter(x => !E[x[0]]).map(x => x[1]);
             L.push('Confirmações: ' + (ok.length ? ok.join(', ') : 'nenhuma') + (nao.length ? ' · faltaram ' + nao.join(', ') : '') + (conf.toques ? '' : ' · nenhum candle ' + dMi.rot + ' tocou a zona com footprint'));
+            nomes.filter(x => !E[x[0]] && conf.falta && conf.falta[x[0]]).forEach(x => { const f = conf.falta[x[0]]; L.push('Faltou ' + x[1] + (f.t ? ' (melhor: ' + dh(f.t) + ')' : '') + ': ' + f.falhas.join(' · ')); });
             if (tent.length > 1) L.push('Micro: ' + tent.map(t => t.rot + (t.ok ? ' ok' : ' sem zona no macro')).join(' → '));
             if (fraco) L.push('Atenção: menos de 3 confirmações, caixa marcada como fraca.');
             if (avisoCob) L.push('Atenção: Fluxo' + avisoCob.replace(/^ \(Fluxo/, ' (').replace(/^ /, ''));
@@ -16205,7 +16224,6 @@ async function scRodar(lado) {
         cvFecharMenuFpCfg();
         try { cvEdicaoIniciar('ps', lista.length - 1); } catch (e) {}
         grDrawChart();
-        scRelatorioMostrar();
     } catch (e) { msg = e.message || String(e); cor = '#EF5350'; _scUltimo = { lado, hora: new Date(), txt: msg, erro: true }; }
     _scCalculando = false;
     try { cvRenderMenuFpCfg(); } catch (e) {}
@@ -16218,7 +16236,7 @@ function scRelatorioMostrar() {
     let ov = document.getElementById('sc-relatorio-overlay');
     if (!ov) { ov = document.createElement('div'); ov.id = 'sc-relatorio-overlay'; ov.style.cssText = 'display:none;position:fixed;inset:0;z-index:9800;background:rgba(0,0,0,0.4);align-items:flex-end;justify-content:center;'; ov.onclick = e => { if (e.target === ov) scRelatorioFechar(); }; document.body.appendChild(ov); }
     const cor = _scUltimo.lado === 'short' ? '#DC2626' : '#16A34A', L = _scUltimo.linhas;
-    ov.innerHTML = '<div style="background:#FFFFFF;width:100%;max-width:560px;border-radius:16px 16px 0 0;padding:14px 16px calc(16px + env(safe-area-inset-bottom));font-family:-apple-system,sans-serif;color:#1C1C1E;box-sizing:border-box;">'
+    ov.innerHTML = '<div style="background:#FFFFFF;width:100%;max-width:560px;border-radius:16px 16px 0 0;max-height:80vh;overflow-y:auto;padding:14px 16px calc(16px + env(safe-area-inset-bottom));font-family:-apple-system,sans-serif;color:#1C1C1E;box-sizing:border-box;">'
         + '<div style="font-size:13px;font-weight:800;color:' + cor + ';">' + L[0] + '</div>'
         + '<div style="font-size:15px;font-weight:800;line-height:1.4;margin-top:6px;">' + L[1] + '</div>'
         + L.slice(2).map(x => '<div style="font-size:12.5px;line-height:1.4;margin-top:6px;color:' + (/^Atenção/.test(x) ? '#B45309' : '#3A3A3C') + ';">' + x + '</div>').join('')
@@ -16241,7 +16259,7 @@ function scRenderPopup(menu) {
         + (_scCalculando ? '<div style="font-size:12.5px;color:#8E8E93;padding:10px 0;">Calculando macro e micro…</div>'
             : '<div style="display:flex;gap:8px;"><button type="button" onclick="scRodar(\'short\')" style="flex:1;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:800;background:#FDECEC;color:#DC2626;">Short</button>'
               + '<button type="button" onclick="scRodar(\'long\')" style="flex:1;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:800;background:#E8F7EC;color:#16A34A;">Long</button></div>')
-        + (_scUltimo && _scUltimo.linhas ? '<button type="button" onclick="scRelatorioMostrar()" style="width:100%;margin-top:8px;border:none;border-radius:10px;padding:9px;font-size:13px;font-weight:700;background:#F2F2F7;color:#1C1C1E;">Último relatório</button>' : '')
+        + (_scUltimo && _scUltimo.linhas ? '<button type="button" onclick="scRelatorioMostrar()" style="width:100%;margin-top:8px;border:none;border-radius:10px;padding:10px;font-size:13px;font-weight:800;background:#1C1C1E;color:#FFFFFF;">Ver Relatório</button>' : '')
         + (_scUltimo ? '<div style="font-size:11.5px;margin-top:8px;line-height:1.4;color:' + (_scUltimo.erro ? '#DC2626' : '#3A3A3C') + ';">' + _scUltimo.hora.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) + ' · ' + _scUltimo.txt + '</div>' : '')
         + '</div>';
 }
