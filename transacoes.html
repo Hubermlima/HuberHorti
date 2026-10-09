@@ -3030,7 +3030,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v363';
+const APP_VERSAO = 'v365';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -7629,7 +7629,7 @@ function grEdToqueMove(x, y) {
     if (!(preco > 0)) return true;
     const tp = _edSel.tipo;
     if (tp === 'tl') { if (d.k === 'a') { o.t1 = grIndexToTime(idx); o.p1 = preco; } else { o.t2 = grIndexToTime(idx); o.p2 = preco; } if (o.canal) grCanalAjustar(o); }
-    else if (tp === 'nf') { const spE = grNfSnap(nx, ny); if (d.k === 'a') { o.t1 = spE.t; o.p1 = spE.p; } else { o.t2 = spE.t; o.p2 = spE.p; } }
+    else if (tp === 'nf') { _nfDedo = { x, y }; grNfPonto(x, y); if (!_nfTimer) grNfAutoIniciar(); }
     else if (tp === 'bd') {
         const m = o.mastro;
         if (d.k === 'a') { m.t1 = grIndexToTime(idx); m.p1 = preco; }
@@ -7663,10 +7663,12 @@ function grEdToqueMove(x, y) {
 }
 async function grEdToqueFim() {
     if (!_edDrag) return false;
-    const moveu = _edDrag.moved, bloq = _edDrag.bloq;
+    const moveu = _edDrag.moved, bloq = _edDrag.bloq, dd0 = _edDrag;
+    grNfAutoParar();
     _edDrag = null;
     if (bloq) return true;
     if (moveu && _grStopLib) _grStopLib = null;
+    if (!moveu && _edSel && _edSel.tipo === 'nf' && grNfTocouDentro(dd0.fx, dd0.fy)) { window._nfCtxAberto = !window._nfCtxAberto; grDrawChart(); return true; }   // Novo Fibo: tocar de novo nele abre/fecha a barra com a lixeira
     if (!moveu) { cvEdicaoSair(); return true; }   // toque simples no price action: libera o desenho
     const o = grEdObjeto(); if (!o) return true;
     try {
@@ -7776,7 +7778,7 @@ function cvPosCtxMenu(i, rx, ry, rw, rh) {   // menu de contexto da caixa seleci
     cvPosDadosPainel(i, m);
 }
 function cvEdicaoSair(silencioso) {
-    cvPosCtxRemover();
+    cvPosCtxRemover(); window._nfCtxAberto = false; try { cvNfCtxRemover(); } catch (e) {}
     _edSel = null; _edDrag = null;
     const b = document.getElementById('cv-edicao-bar'); if (b) b.remove();
     cvFecharPaletaCor();
@@ -8228,7 +8230,7 @@ function grInitTouch() {
             }
             // Modo Novo Fibo — encosta no ponto 1, arrasta até o ponto 2 (com ímã; a tela rola sozinha nas bordas) e solta para criar
             if (_indState.novoFibo) {
-                const sp0 = grNfSnap(ex2, ey2);
+                const sp0 = grNfSnap(ex2, ey2 - NF_OFF);
                 _nfDrawing = true; _nfDedo = { x: ex2, y: ey2, x0: ex2, y0: ey2 };
                 _nfAtual = { t1: sp0.t, p1: sp0.p, t2: sp0.t, p2: sp0.p, cor: '#2962FF', moved: false };
                 grNfAutoIniciar(); grDrawChart();
@@ -8516,7 +8518,7 @@ function grInitTouch() {
                 const rcN = canvas.getBoundingClientRect(), xN = (e.touches[0].clientX - rcN.left) * (grLW(canvas) / rcN.width), yN = toCanvasY(e.touches[0].clientY);
                 _nfDedo.x = xN; _nfDedo.y = yN;
                 if (Math.hypot(xN - _nfDedo.x0, yN - _nfDedo.y0) > 10) _nfAtual.moved = true;
-                const spN = grNfSnap(xN, yN); _nfAtual.t2 = spN.t; _nfAtual.p2 = spN.p;
+                grNfPonto(xN, yN);
                 grDrawChart();
                 e.preventDefault();
                 return;
@@ -10795,7 +10797,7 @@ function cvToggleBandeira() {
     grDrawChart();
 }
 // ── NOVO FIBO: arrasta do ponto 1 ao ponto 2 (com ímã) e, ao soltar, aparecem os níveis, como no TradingView. Nível 0% = ponto 2; 100% = ponto 1. ──
-let _nfAcc = 0, _novosFibos = [], _nfAtual = null, _nfDrawing = false, _nfDedo = null, _nfTimer = null;
+let _nfUlt = 0, _nfAcc = 0, _novosFibos = [], _nfAtual = null, _nfDrawing = false, _nfDedo = null, _nfTimer = null;
 const NF_NIVEIS = [[0, '0', '#9AA0A6'], [0.236, '0,236', '#F23645'], [0.382, '0,382', '#FF9800'], [0.5, '0,5', '#4CAF50'], [0.618, '0,618', '#089981'], [0.786, '0,786', '#2962FF'], [1, '1', '#9AA0A6']];
 function cvNfToggle() {
     _indState.novoFibo = !_indState.novoFibo;
@@ -10804,41 +10806,83 @@ function cvNfToggle() {
     const b = document.getElementById('cv-ind-novofibo'); if (b) b.classList.toggle('active', _indState.novoFibo);
     grDrawChart();
 }
-function grNfSnap(x, y) {   // ponto do gráfico sob o dedo, com ímã: candle mais próximo (tempo) e, de preço, o OHLC do candle ou a borda da régua que estiver a menos de 14 px
+function grNfSnap(x, y) {   // ponto do gráfico sob o dedo, com ímã: pavio/corpo (O,H,L,C) dos candles vizinhos ou borda da régua, o que estiver mais perto (raio 32 px)
     const arr = _grAllCandles || [], pLivre = grToPrice(y);
-    if (window._grImaOff) return { t: grIndexToTime(grXToIndex(x) - 0.5), p: pLivre };
-    const i = Math.round(grXToIndex(x) - 0.5), c = (i >= 0 && i < arr.length) ? arr[i] : null;
-    let melhor = { p: pLivre, d: 14 };
-    const tenta = v => { v = Number(v); if (!(v > 0)) return; const d = Math.abs(grLineY(v) - y); if (d < melhor.d) melhor = { p: v, d }; };
-    if (c) { tenta(c.o); tenta(c.h); tenta(c.l); tenta(c.c); }
-    const pr = grMagnetRegua(y, pLivre); if (pr !== pLivre) tenta(pr);
-    return { t: grIndexToTime(i), p: melhor.p };
+    const i0 = Math.round(grXToIndex(x) - 0.5);
+    if (window._grImaOff) { window._nfSnapPt = null; return { t: grIndexToTime(i0), p: pLivre }; }
+    let melhor = { t: grIndexToTime(i0), p: pLivre, d: 32, snap: false };
+    for (let i = i0 - 1; i <= i0 + 1; i++) {
+        const c = (i >= 0 && i < arr.length) ? arr[i] : null; if (!c) continue;
+        const dx = Math.abs(grIndexToX(i) - x);
+        [c.o, c.h, c.l, c.c].forEach(v => { v = Number(v); if (!(v > 0)) return; const d = Math.hypot(dx, grLineY(v) - y); if (d < melhor.d) melhor = { t: grIndexToTime(i), p: v, d, snap: true }; });
+    }
+    const pr = grMagnetRegua(y, pLivre);
+    if (pr !== pLivre) { const d = Math.abs(grLineY(pr) - y); if (d < melhor.d) melhor = { t: grIndexToTime(i0), p: pr, d, snap: true }; }
+    window._nfSnapPt = melhor.snap ? { t: melhor.t, p: melhor.p } : null;
+    return { t: melhor.t, p: melhor.p };
 }
-function grNfAutoIniciar() { clearInterval(_nfTimer); _nfTimer = setInterval(grNfAutoTick, 40); }
-function grNfAutoParar() { clearInterval(_nfTimer); _nfTimer = null; }
-function grNfAutoTick() {   // dedo perto da borda do gráfico: a tela rola sozinha enquanto você procura o ponto 2
-    if (!_nfDrawing || !_nfAtual || !_nfDedo) return;
-    const L = window._grPADLeft || 0, Wc = window._grChartW || 0, T = _grPAD.top, H = _grChartH, E = 44, x = _nfDedo.x, y = _nfDedo.y;
+const NF_OFF = 56;   // o ponto fica 56 px ACIMA do dedo, pra você ver onde está marcando
+function grNfAutoAtivo() { return (_nfDrawing && _nfAtual) ? 'c' : ((_edDrag && _edSel && _edSel.tipo === 'nf' && _edDrag.moved && !_edDrag.bloq) ? 'e' : null); }
+function grNfAutoIniciar() { grNfAutoParar(); _nfUlt = performance.now(); _nfTimer = setTimeout(grNfAutoTick, 30); }
+function grNfAutoParar() { clearTimeout(_nfTimer); _nfTimer = null; }
+function grNfPonto(x, y) {   // aplica o ponto sob o dedo (já com o deslocamento pra cima) ao Novo Fibo em criação ou à alça que está sendo arrastada
+    const sp = grNfSnap(x, y - NF_OFF), modo = grNfAutoAtivo();
+    if (modo === 'c') { _nfAtual.t2 = sp.t; _nfAtual.p2 = sp.p; }
+    else if (modo === 'e') { const o = grEdObjeto(); if (o) { if (_edDrag.k === 'a') { o.t1 = sp.t; o.p1 = sp.p; } else { o.t2 = sp.t; o.p2 = sp.p; } } }
+}
+function grNfAutoTick() {   // dedo perto da borda do gráfico: a tela rola sozinha enquanto você procura o ponto; velocidade por tempo (não depende do gráfico estar pesado)
+    _nfTimer = null; const modo = grNfAutoAtivo(); if (!modo || !_nfDedo) return;
+    const agora = performance.now(), dt = Math.min(120, agora - _nfUlt); _nfUlt = agora;
+    const L = window._grPADLeft || 0, Wc = window._grChartW || 0, T = _grPAD.top, H = _grChartH, E = 64, x = _nfDedo.x, y = _nfDedo.y;
     const fr = d => Math.min(1, Math.max(0, d / E));
     let h = 0, v = 0;
     if (x < L + E) h = -fr(L + E - x); else if (x > L + Wc - E) h = fr(x - (L + Wc - E));
     if (y < T + E) v = fr(T + E - y); else if (y > T + H - E) v = -fr(y - (T + H - E));
-    if (!h && !v) return;
-    if (h) {
-        const base = window._grStartIdx != null ? window._grStartIdx : _grOffset, maxOff = (_grAllCandles || []).length + Math.floor(_grZoom * 0.5);
-        _nfAcc = (_nfAcc || 0) + h * Math.max(0.3, _grZoom / 80); const passo = Math.trunc(_nfAcc); _nfAcc -= passo;   // velocidade proporcional à proximidade da borda e ao zoom
-        if (passo) _grOffset = Math.max(0, Math.min(maxOff, Math.round(base + passo)));
+    if (h || v) {
+        if (h) {
+            const base = window._grStartIdx != null ? window._grStartIdx : _grOffset, maxOff = (_grAllCandles || []).length + Math.floor(_grZoom * 0.5);
+            _nfAcc = (_nfAcc || 0) + h * Math.max(8, _grZoom * 0.6) * dt / 1000; const passo = Math.trunc(_nfAcc); _nfAcc -= passo;   // até ~60% da tela por segundo, na borda
+            if (passo) { _grOffset = Math.max(0, Math.min(maxOff, Math.round(base + passo))); window._grStartIdx = _grOffset; }
+        }
+        if (v && _grYAxisPxPerDollar) {
+            const px = v * 320 * dt / 1000;
+            if (_grEscalaLog && _grYAxisCenter > 0) { const f = Math.exp(px / (_grYAxisPxPerDollar * grLogRefAtual())); _grYAxisCenter *= f; _grMinP *= f; _grMaxP *= f; }
+            else { const dP = px / _grYAxisPxPerDollar; _grYAxisCenter += dP; _grMinP += dP; _grMaxP += dP; }
+        }
+        window._grManualPanTs = Date.now();
+        grNfPonto(x, y);
+        grDrawChart();
     }
-    if (v && _grYAxisPxPerDollar) {
-        const px = v * 10;
-        if (_grEscalaLog && _grYAxisCenter > 0) _grYAxisCenter *= Math.exp(px / (_grYAxisPxPerDollar * grLogRefAtual())); else _grYAxisCenter += px / _grYAxisPxPerDollar;
+    _nfTimer = setTimeout(grNfAutoTick, 16);
+}
+function cvNfCtxMenu(i) {   // barra de contexto do Novo Fibo (aparece ao tocar de novo nele): olho, lixeira, fechar
+    const f = _novosFibos[i], cv = document.getElementById('gr-chart-canvas'); if (!f || !cv) return cvNfCtxRemover();
+    const rc = cv.getBoundingClientRect(), sx = rc.width / grLW(cv), sy = rc.height / grLH(cv);
+    let m = document.getElementById('cv-nf-ctx');
+    if (!m) {
+        m = document.createElement('div'); m.id = 'cv-nf-ctx';
+        m.style.cssText = 'position:fixed;z-index:9690;display:flex;align-items:center;gap:1px;background:#FFFFFF;border-radius:9px;padding:2px 4px;box-shadow:0 1px 8px rgba(0,0,0,0.25);';
+        const bt = (svg, cor, fn) => { const b = document.createElement('button'); b.type = 'button'; b.innerHTML = svg; b.style.cssText = 'width:30px;height:30px;background:none;border:none;color:' + cor + ';display:flex;align-items:center;justify-content:center;padding:0;'; b.onclick = ev => { ev.stopPropagation(); fn(); }; ['touchstart','touchend','mousedown'].forEach(n => b.addEventListener(n, ev => ev.stopPropagation(), { passive: true })); m.appendChild(b); };
+        bt(grHeroicon('eye-slash', 16), '#1C1C1E', () => { const z = _novosFibos[m._i]; if (!z) return; z.oculta = true; try { grAmbienteSalvar(); } catch (e) {} cvEdicaoSair(true); grDrawChart(); });
+        bt(grHeroicon('trash', 16), '#EF5350', () => { if (!_novosFibos[m._i]) return; _novosFibos.splice(m._i, 1); try { grAmbienteSalvar(); } catch (e) {} cvEdicaoSair(true); grDrawChart(); });
+        bt(grHeroicon('x-mark', 16), '#6B6B70', () => { cvEdicaoSair(); });
+        document.body.appendChild(m);
     }
-    window._grManualPanTs = Date.now();
-    grDrawChart();
-    const sp = grNfSnap(x, y); _nfAtual.t2 = sp.t; _nfAtual.p2 = sp.p;
-    grDrawChart();
+    m._i = i;
+    const x1 = grIndexToX(grTimeToIndex(f.t1)), x2 = grIndexToX(grTimeToIndex(f.t2)), y1 = grLineY(f.p1), y2 = grLineY(f.p2), mw = m.offsetWidth || 100, mh = m.offsetHeight || 34;
+    let x = rc.left + ((x1 + x2) / 2) * sx - mw / 2, y = rc.top + Math.min(y1, y2) * sy - mh - 30;
+    if (y < rc.top + 4) y = Math.min(rc.bottom - mh - 4, rc.top + Math.max(y1, y2) * sy + 34);
+    x = Math.max(rc.left + 4, Math.min(rc.right - mw - 4, x)); y = Math.max(rc.top + 4, Math.min(rc.bottom - mh - 4, y));
+    m.style.left = x + 'px'; m.style.top = y + 'px';
+}
+function cvNfCtxRemover() { const m = document.getElementById('cv-nf-ctx'); if (m) m.remove(); }
+function grNfTocouDentro(px, py) {   // o toque simples caiu em cima do Novo Fibo selecionado (entre as alças, com 28 px de folga)?
+    const f = _novosFibos[_edSel && _edSel.tipo === 'nf' ? _edSel.idx : -1]; if (!f) return false;
+    const x1 = grIndexToX(grTimeToIndex(f.t1)), x2 = grIndexToX(grTimeToIndex(f.t2)), y1 = grLineY(f.p1), y2 = grLineY(f.p2), M = 28;
+    return px >= Math.min(x1, x2) - M && px <= Math.max(x1, x2) + M && py >= Math.min(y1, y2) - M && py <= Math.max(y1, y2) + M;
 }
 function grNfDesenhar(ctx, fx, fy, PAD, W, chartH, selIdx) {
+    if (window._nfCtxAberto && _edSel && _edSel.tipo === 'nf' && _novosFibos[_edSel.idx]) cvNfCtxMenu(_edSel.idx); else cvNfCtxRemover();
     const lista = _novosFibos.map((f, i) => ({ f, i })).filter(o => !o.f.oculta); if (_nfAtual) lista.push({ f: _nfAtual, i: -1 });
     lista.forEach(({ f, i }) => {
         const x1 = fx(f.t1), x2 = fx(f.t2), y1 = fy(f.p1), y2 = fy(f.p2), xL = Math.min(x1, x2), xR = Math.max(x1, x2);
@@ -10852,7 +10896,8 @@ function grNfDesenhar(ctx, fx, fy, PAD, W, chartH, selIdx) {
             ctx.fillStyle = cor; ctx.fillText(txt, tx, yy - 3);
         });
         ctx.strokeStyle = '#9AA0A6'; ctx.lineWidth = 1; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); ctx.setLineDash([]);
-        if (i < 0) { [[x1, y1], [x2, y2]].forEach(([hx, hy]) => { ctx.beginPath(); ctx.arc(hx, hy, 5, 0, Math.PI * 2); ctx.fillStyle = '#FFFFFF'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = '#2962FF'; ctx.stroke(); }); }
+        if (i < 0) { ctx.setLineDash([2, 3]); ctx.strokeStyle = '#2962FF'; ctx.beginPath(); ctx.moveTo(x2, y2); ctx.lineTo(x2, y2 + NF_OFF); ctx.stroke(); ctx.setLineDash([]); [[x1, y1], [x2, y2]].forEach(([hx, hy]) => { ctx.beginPath(); ctx.arc(hx, hy, 5, 0, Math.PI * 2); ctx.fillStyle = '#FFFFFF'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = '#2962FF'; ctx.stroke(); }); }
+        if (window._nfSnapPt && (i < 0 || (_edSel && _edSel.tipo === 'nf' && _edSel.idx === i && _edDrag && _edDrag.moved))) { const sx = fx(window._nfSnapPt.t), sy = fy(window._nfSnapPt.p); ctx.strokeStyle = '#FFB300'; ctx.lineWidth = 2; ctx.setLineDash([]); ctx.beginPath(); ctx.arc(sx, sy, 7, 0, Math.PI * 2); ctx.stroke(); }   // anel amarelo = o ímã pegou neste ponto
         ctx.restore();
     });
 }
