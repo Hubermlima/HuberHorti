@@ -2968,7 +2968,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v326';
+const APP_VERSAO = 'v327';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4406,7 +4406,7 @@ function cvPosDesvincular(pz) {
 // Versão enxuta para o JSON de preferências: caixa com trade guarda só o desenho (+ últimos preços, usados só se o trade sumir)
 function cvPosParaSalvar() {
     const out = {};
-    Object.keys(_grPosMapa).forEach(k => { out[k] = (_grPosMapa[k] || []).map(z => z.tradeId ? { id: z.id, lado: z.lado, t1: z.t1, t2: z.t2, tradeId: z.tradeId, entrada: z.entrada, alvo: z.alvo, stop: z.stop, trancada: z.trancada || undefined } : Object.assign({}, z, { oculta: undefined })); });
+    Object.keys(_grPosMapa).forEach(k => { out[k] = (_grPosMapa[k] || []).map(z => z.tradeId ? { id: z.id, lado: z.lado, t1: z.t1, t2: z.t2, tradeId: z.tradeId, entrada: z.entrada, alvo: z.alvo, stop: z.stop, trancada: z.trancada || undefined, trav: z.trav || undefined } : Object.assign({}, z, { oculta: undefined })); });
     return out;
 }
 // Trade ativo sem caixa no gráfico (ex.: o short antigo, ligado por SQL): cria a caixa a partir do trade.
@@ -7507,7 +7507,7 @@ function grEdAlcas(fx, fy) {
         // Caixa mais larga que a tela (ex.: criada no 3D e vista no 4h): as alças são presas à parte VISÍVEL, pra sempre dar pra alcançar e encolher.
         const L = grPadL() + 16, R = grPadL() + (window._grChartW || 300) - 16;
         const cl = x => Math.max(L, Math.min(R, x));
-        const xa0 = fx(o.t1), xb0 = fx(o.t2v || o.t2), xa = cl(xa0), xb = cl(xb0), xm = (cl(Math.min(xa0, xb0)) + cl(Math.max(xa0, xb0))) / 2; const hs = []; if (o.alvo > 0) hs.push({ k: 'a', x: xm, y: fy(o.alvo) }); if (o.stop > 0) hs.push({ k: 's', x: xm, y: fy(o.stop) }); hs.push({ k: 'e', x: xm, y: fy(cvPosPivo(o)) }, { k: 'l', x: xa, y: fy(cvPosPivo(o)) }, { k: 'r', x: xb, y: fy(cvPosPivo(o)) }); return hs; }
+        const xa0 = fx(o.t1), xb0 = fx(o.t2v || o.t2), xa = cl(xa0), xb = cl(xb0), xm = (cl(Math.min(xa0, xb0)) + cl(Math.max(xa0, xb0))) / 2; const hs = []; if (o.alvo > 0 && !grPosTrav(o, 'a')) hs.push({ k: 'a', x: xm, y: fy(o.alvo) }); if (o.stop > 0 && !grPosTrav(o, 's')) hs.push({ k: 's', x: xm, y: fy(o.stop) }); if (!grPosTrav(o, 'e')) hs.push({ k: 'e', x: xm, y: fy(cvPosPivo(o)) }); if (!grPosTrav(o, 'w')) hs.push({ k: 'l', x: xa, y: fy(cvPosPivo(o)) }, { k: 'r', x: xb, y: fy(cvPosPivo(o)) }); return hs; }
     return [];
 }
 function grEdCor() { const o = grEdObjeto(); if (o && _edSel.tipo === 'ps') return o.lado === 'short' ? '#EF5350' : '#26A69A'; if (o && _edSel.tipo === 'al') return grAlertaCor(o); return (o && (o.cor || '#FFD700')) || '#FFD700'; }
@@ -7578,19 +7578,19 @@ function grEdToqueMove(x, y) {
     else if (tp === 'hl') o.p = preco;
     else if (tp === 'al') o.preco = preco;
     else if (tp === 'ps') {
-        if (d.k === 'a') o.alvo = preco;
-        else if (d.k === 's') o.stop = preco;
-        else if (d.k === 'e') { if (!(o.pm > 0)) o.entrada = preco; }   // com PM a linha central é o PM: travada
-        else if (d.k === 'l') { if (!o.tradeId) o.t1 = grIndexToTime(idx); }   // a borda esquerda não passa do limite de rolagem (senão a caixa 'reaparece' inteira ao cruzá-lo)   // com trade, a borda esquerda é fixa no 1º aporte
-        else if (d.k === 'r') o.t2 = grIndexToTime(idx);
+        if (d.k === 'a') { if (!grPosTrav(o, 'a')) o.alvo = preco; }
+        else if (d.k === 's') { if (!grPosTrav(o, 's')) o.stop = preco; }
+        else if (d.k === 'e') { if (!(o.pm > 0) && !grPosTrav(o, 'e')) o.entrada = preco; }   // com PM a linha central é o PM: travada
+        else if (d.k === 'l') { if (!o.tradeId && !grPosTrav(o, 'w')) o.t1 = grIndexToTime(idx); }   // a borda esquerda não passa do limite de rolagem (senão a caixa 'reaparece' inteira ao cruzá-lo)   // com trade, a borda esquerda é fixa no 1º aporte
+        else if (d.k === 'r') { if (!grPosTrav(o, 'w')) o.t2 = grIndexToTime(idx); }
         else if (d.k === 'm') {   // corpo: desloca tempo e preços juntos (em escala log mantém as distâncias em %)
             const dIdx = grXToIndex(nx) - grXToIndex(d.hx), p0 = grToPrice(d.hy), p1 = grToPrice(ny);
             const mv = v => _grEscalaLog ? v * (p1 / p0) : v + (p1 - p0);
             // Arrastar a caixa pra direita: a borda esquerda para no limite de rolagem. Antes, ao cruzá-lo a caixa deixava de ser cortada e a largura
             // inteira reaparecia de uma vez (o "estranho" ao passar do último candle). A largura guardada não muda: voltando, a caixa reaparece inteira.
             let dI = dIdx;
-            if (!o.tradeId) { o.t1 = grIndexToTime(grTimeToIndex(d.snap.t1) + dI); o.t2 = grIndexToTime(grTimeToIndex(d.snap.t2) + dI); }
-            if (!(o.pm > 0)) { o.entrada = mv(d.snap.entrada); o.alvo = mv(d.snap.alvo); o.stop = mv(d.snap.stop); }   // com PM: só desloca na horizontal
+            if (!o.tradeId && !grPosTrav(o, 'h')) { o.t1 = grIndexToTime(grTimeToIndex(d.snap.t1) + dI); o.t2 = grIndexToTime(grTimeToIndex(d.snap.t2) + dI); }
+            if (!(o.pm > 0) && !grPosTrav(o, 'e') && !grPosTrav(o, 's') && !grPosTrav(o, 'a')) { o.entrada = mv(d.snap.entrada); o.alvo = mv(d.snap.alvo); o.stop = mv(d.snap.stop); }   // com PM: só desloca na horizontal
         }
     }
     grDrawChart();
@@ -7621,7 +7621,7 @@ function cvEdicaoIniciar(tipo, idx) {
     _edSel = { tipo, idx };
     grDrawChart();
 }
-function cvPosCtxRemover() { const m = document.getElementById('cv-pos-ctx'); if (m) m.remove(); }
+function cvPosCtxRemover() { const m = document.getElementById('cv-pos-ctx'); if (m) m.remove(); try { grPosTravasFechar(); } catch (e) {} }
 function cvPosCtxMenu(i, rx, ry, rw, rh) {   // menu de contexto da caixa selecionada (igual ao TradingView): olho, engrenagem, lixeira (+ risco e aporte na caixa Em Análise)
     const pz = grPosicoes()[i]; if (!pz) return cvPosCtxRemover();
     const cv = document.getElementById('gr-chart-canvas'); if (!cv) return;
@@ -7632,7 +7632,7 @@ function cvPosCtxMenu(i, rx, ry, rw, rh) {   // menu de contexto da caixa seleci
         m.style.cssText = 'position:fixed;z-index:9690;display:flex;align-items:center;gap:1px;background:#FFFFFF;border-radius:9px;padding:2px 4px;box-shadow:0 1px 8px rgba(0,0,0,0.25);font-family:-apple-system,sans-serif;font-size:11px;color:#3A3A3C;';
         const bt = (id, svg, cor, fn) => { const b = document.createElement('button'); b.type = 'button'; b.id = id; b.innerHTML = svg; b.style.cssText = 'width:26px;height:26px;background:none;border:none;color:' + cor + ';display:flex;align-items:center;justify-content:center;padding:0;'; b.onclick = ev => { ev.stopPropagation(); fn(); }; m.appendChild(b); };
         bt('cv-pos-ctx-olho', '', '#1C1C1E', () => { const z = grPosicoes()[m._i]; if (!z) return; z.oculta = !z.oculta; if (z.oculta) cvEdicaoSair(true); grDrawChart(); });
-        bt('cv-pos-ctx-lock', '', '#1C1C1E', () => { const z = grPosicoes()[m._i]; if (!z) return; z.trancada = !z.trancada; try { grPosSalvar(); } catch (e) {} grDrawChart(); });
+        bt('cv-pos-ctx-lock', '', '#1C1C1E', () => { if (!grPosicoes()[m._i]) return; grPosTravasAbrir(m._i); });
         bt('cv-pos-ctx-cfg', grHeroicon('cog-6-tooth', 16), '#1C1C1E', () => cvPosFormAbrir(m._i));
         bt('cv-pos-ctx-del', grHeroicon('trash', 16), '#EF5350', async () => { await cvPosApagarCaixa(m._i); cvEdicaoSair(true); grDrawChart(); });
         const sim = document.createElement('div'); sim.id = 'cv-pos-ctx-sim'; sim.style.cssText = 'display:none;align-items:center;gap:3px;margin-left:4px;padding-left:6px;border-left:1px solid #E5E5EA;';
@@ -7658,7 +7658,7 @@ function cvPosCtxMenu(i, rx, ry, rw, rh) {   // menu de contexto da caixa seleci
         document.body.appendChild(m);
     }
     m._i = i;
-    m.querySelector('#cv-pos-ctx-lock').innerHTML = grHeroicon(pz.trancada ? 'lock-closed' : 'lock-open', 16);
+    m.querySelector('#cv-pos-ctx-lock').innerHTML = grHeroicon(grPosTravAlguma(pz) ? 'lock-closed' : 'lock-open', 16);
     m.querySelector('#cv-pos-ctx-olho').innerHTML = grHeroicon(pz.oculta ? 'eye-slash' : 'eye', 16);
     const sm = m.querySelector('#cv-pos-ctx-sim'), analise = !pz.tradeId;
     sm.style.display = analise ? 'flex' : 'none';
@@ -15892,9 +15892,10 @@ function grFootprintCandleProcessarToque(clientY) {
 // confere se ela cai numa zona favorável do macro (A), puxa o alvo do próximo nó forte do macro (B) e cria UMA caixa, ao lado das que já existem.
 // Não mexe na régua da tela nem no TF do gráfico.
 const SC_TFS = {
-    '1h': { rot: '1 Hora', bin: '1h' }, '4h': { rot: '4 Horas', bin: '4h' }, '1d': { rot: 'Diário', bin: '1d' },
-    '3d': { rot: '3 Dias', custom: { u: 'dia', a: 3 } }, '1w': { rot: 'Semanal', bin: '1w' }
+    '1h': { rot: '1 Hora', bin: '1h' }, '2h': { rot: '2 Horas', bin: '2h' }, '3h': { rot: '3 Horas', custom: { u: 'hor', a: 3 } }, '4h': { rot: '4 Horas', bin: '4h' },
+    '1d': { rot: 'Diário', bin: '1d' }, '3d': { rot: '3 Dias', custom: { u: 'dia', a: 3 } }, '1w': { rot: 'Semanal', bin: '1w' }
 };
+const SC_ORDEM = ['1h', '2h', '3h', '4h', '1d', '3d', '1w'];   // do menor para o maior; a descida de TF anda para trás nesta lista e para em 1h
 const SC_DIAS = [7, 14, 21, 30, 45, 60, 90];
 let _scCfg = (function () {
     let c = null; try { c = JSON.parse(localStorage.getItem('grSetupCx') || 'null'); } catch (e) {}
@@ -15966,7 +15967,7 @@ function scCobertura(dias) {   // quantos dias de Fluxo existem de fato na janel
     const raw = _grFootprintCandlesRaw; if (!raw || !raw.length) return 0;
     return Math.min(dias, (Date.now() - raw[0].ts) / 86400000);
 }
-function scCalcular(lado, u, cs, preco) {
+function scCalcular(lado, u, cs, preco, ibK) {
     if (!u || !u.mapa || u.mapa.size < 6) return { erro: 'Régua sem dados suficientes.' };
     if (!(preco > 0)) return { erro: 'Sem preço atual.' };
     const s = lado === 'short' ? 1 : -1, tick = u.tick, atr = Math.max(u.atr || 0, tick);
@@ -16007,6 +16008,7 @@ function scCalcular(lado, u, cs, preco) {
     });
     let ib = -1;
     niv.forEach((n, i) => { if (n.rank > 0 && (ib < 0 || n.rank > niv[ib].rank)) ib = i; });
+    if (ibK != null) { const j = niv.findIndex(n => n.k === ibK && n.rank > 0); if (j < 0) return { erro: 'Zona indisponível.' }; ib = j; }
     if (ib < 0) return { erro: niv.some(n => n.lado) ? 'Sem setup ' + lado + ' válido: nenhum nível ' + (s > 0 ? 'acima' : 'abaixo') + ' do preço tem volume acima da mediana da régua.' : 'Não há nível da régua ' + (s > 0 ? 'acima' : 'abaixo') + ' do preço atual.' };
     let a = ib, b = ib;
     while (b - a < 2) {   // faixa de até 3 níveis colados que também têm delta do lado certo e volume acima da mediana
@@ -16070,29 +16072,55 @@ function scAlvoMacro(rM, s, entrada, risco, atrM) {
     }
     return null;
 }
+// Avalia as melhores zonas de um TF micro: até 4 candidatas do ranking do motor (afastadas ≥ 3 níveis), cada uma conferida no macro (A), com alvo do macro (B) e R:R.
+async function scAvaliarTf(lado, chave, dias, dMa, rM, uMa, preco) {
+    const def = scDefTf(chave), s = lado === 'short' ? 1 : -1;
+    const [tk, cs] = await Promise.all([scTick(def), scCandles(def, dias)]);
+    const u = scRegua(tk, dias, def.rot), r0 = scCalcular(lado, u, cs, preco);
+    if (r0.erro) return { def, erro: r0.erro, validas: [], comparadas: 0 };
+    const ks = [];
+    r0.niv.filter(n => n.rank > 0).sort((x, y) => y.rank - x.rank).forEach(n => { if (ks.length < 4 && ks.every(k => Math.abs(k - n.k) >= 3)) ks.push(n.k); });
+    const validas = []; let foraMacro = 0;
+    ks.forEach(k => {
+        const r = k === r0.K.k ? r0 : scCalcular(lado, u, cs, preco, k);
+        if (r.erro) return;
+        const zonaMa = (rM.niv || []).filter(n => n.gate && n.disp && n.hi > r.lo && n.lo < r.hi);
+        if (!zonaMa.length) { foraMacro++; return; }
+        const risco = Math.abs(r.stop - r.entrada); if (!(risco > 0)) return;
+        const am = scAlvoMacro(rM, s, r.entrada, risco, uMa.atr), alvo = am ? am.alvo : r.entrada - s * 2 * risco;
+        if (!(s * (r.stop - r.entrada) > 0) || !(s * (r.entrada - alvo) > 0)) return;
+        validas.push({ r, zonaMa, am, alvo, risco, rr: Math.abs(r.entrada - alvo) / risco, def, u });
+    });
+    validas.sort((x, y) => y.rr - x.rr);
+    return { def, validas, best: validas[0] || null, comparadas: ks.length, foraMacro };
+}
 async function scRodar(lado) {
     if (_scCalculando) return;
     if (!_grFootprintAtivo || !_grFootprintCandlesRaw) { alert('Ligue o Fluxo (FX) e aguarde os dados carregarem.'); return; }
     _scCalculando = true; cvRenderMenuFpCfg();
     let msg = null, cor = '#8E8E93';
     try {
-        const dMa = scDefTf(_scCfg.macro), dMi = scDefTf(_scCfg.micro), dias = _scCfg.dias, s = lado === 'short' ? 1 : -1;
-        const [tkMa, tkMi, csMa, csMi] = await Promise.all([scTick(dMa), scTick(dMi), scCandles(dMa, dias), scCandles(dMi, dias)]);
-        const preco = _grAllCandles.length ? Number(_grAllCandles[_grAllCandles.length - 1].c) : Number(csMi[csMi.length - 1].c);
-        const uMa = scRegua(tkMa, dias, dMa.rot), uMi = scRegua(tkMi, dias, dMi.rot);
+        const dMa = scDefTf(_scCfg.macro), dias = _scCfg.dias, s = lado === 'short' ? 1 : -1;
+        const [tkMa, csMa] = await Promise.all([scTick(dMa), scCandles(dMa, dias)]);
+        const csM0 = await scCandles(scDefTf(_scCfg.micro), dias);
+        const preco = _grAllCandles.length ? Number(_grAllCandles[_grAllCandles.length - 1].c) : Number(csM0[csM0.length - 1].c);
+        const uMa = scRegua(tkMa, dias, dMa.rot), rM = scCalcular(lado, uMa, csMa, preco);
+        if (rM.erro) throw new Error('Macro ' + dMa.rot + ': ' + rM.erro);
         const cob = scCobertura(dias), avisoCob = cob < dias - 1 ? ' (Fluxo só tem ' + Math.floor(cob) + ' de ' + dias + ' dias)' : '';
-        const rm = scCalcular(lado, uMi, csMi, preco);
-        if (rm.erro) throw new Error('Micro ' + dMi.rot + ': ' + rm.erro + avisoCob);
-        const rM = scCalcular(lado, uMa, csMa, preco);
-        // A) a faixa de entrada do micro tem que tocar uma zona favorável do macro (nível do lado certo, volume ≥ mediana e delta de disputa/absorção)
-        const zonaMa = (rM.niv || []).filter(n => n.gate && n.disp && n.hi > rm.lo && n.lo < rm.hi);
-        if (!zonaMa.length) throw new Error('Entrada do micro (' + Math.round(rm.lo).toLocaleString('pt-BR') + '–' + Math.round(rm.hi).toLocaleString('pt-BR') + ') está fora de zona favorável do macro ' + dMa.rot + '. Caixa não criada.' + avisoCob);
-        const entrada = rm.entrada, stop = rm.stop, risco = Math.abs(stop - entrada);
-        // B) alvo = próximo nó forte do macro; sem nó, 2R
-        const am = scAlvoMacro(rM, s, entrada, risco, uMa.atr);
-        const alvo = am ? am.alvo : entrada - s * 2 * risco;
-        if (!(s * (stop - entrada) > 0) || !(s * (entrada - alvo) > 0)) throw new Error('Números não formam caixa válida (entrada, stop e alvo fora de ordem).');
-        const fraco = rm.forca === 'Fraco';
+        // melhor zona por R:R; só desce de TF se a melhor ficar abaixo de 1 (piso do motor), parando em 1h
+        const cadeia = SC_ORDEM.slice(0, SC_ORDEM.indexOf(_scCfg.micro) + 1).reverse();
+        const tent = []; let esc = null, melhor = null, primeiroErro = null;
+        for (const ch of cadeia) {
+            let ev; try { ev = await scAvaliarTf(lado, ch, dias, dMa, rM, uMa, preco); } catch (e) { ev = { def: scDefTf(ch), erro: e.message, validas: [], comparadas: 0 }; }
+            if (ev.erro && !primeiroErro) primeiroErro = ev.def.rot + ': ' + ev.erro;
+            if (!primeiroErro && !ev.best && ev.foraMacro && !ev.erro) primeiroErro = ev.def.rot + ': ' + ev.foraMacro + ' zona(s) candidata(s), todas fora de zona favorável do macro ' + dMa.rot;
+            tent.push({ rot: ev.def.rot, rr: ev.best ? ev.best.rr : null, comp: ev.comparadas });
+            if (ev.best && (!melhor || ev.best.rr > melhor.rr)) melhor = ev.best;
+            if (ev.best && ev.best.rr >= 1) { esc = ev.best; break; }
+        }
+        let abaixo1 = false;
+        if (!esc) { if (!melhor) throw new Error('Micro ' + (primeiroErro || 'sem zona válida') + '. Caixa não criada.' + avisoCob); esc = melhor; abaixo1 = true; }
+        const rm = esc.r, entrada = rm.entrada, stop = rm.stop, risco = esc.risco, alvo = esc.alvo, am = esc.am, zonaMa = esc.zonaMa, dMi = esc.def, fraco = rm.forca === 'Fraco';
         // posição: logo à direita da última caixa existente (nada é apagado)
         const lista = grPosicoes(), n = _grAllCandles.length, cs0 = _grAllCandles;
         const candleMs = n > 1 ? Math.max(60000, cs0[n - 1].t - cs0[n - 2].t) : 86400000;
@@ -16101,27 +16129,29 @@ async function scRodar(lado) {
         const t1 = fimMax > 0 ? fimMax + candleMs : Date.now(), t2 = t1 + dur;
         const pz = grPosNova(lado, n, entrada);
         pz.entrada = entrada; pz.stop = stop; pz.alvo = alvo; pz.origem = 'setup'; pz.tAbs = true; pz.t1 = t1; pz.t2 = t2;
+        pz.trav = { e: true, s: true, h: true, a: false, w: false };   // nasce travada, menos a altura do alvo e a largura
         pz.rotulo = 'Setup ' + dMa.rot + ' × ' + dMi.rot + (fraco ? ' · fraco' : '');
         lista.push(pz); grPosSalvar();
-        const f = x => Math.round(x).toLocaleString('pt-BR');
-        _scUltimo = { lado, hora: new Date(), txt: (lado === 'short' ? 'Short' : 'Long') + ' · entrada ' + f(entrada) + ' · stop ' + f(stop) + ' · alvo ' + f(alvo) + (am ? ' (nó macro)' : ' (2R)') + ' · R:R ' + (Math.abs(entrada - alvo) / risco).toFixed(1).replace('.', ',') + (fraco ? ' · sinal FRACO' : '') + avisoCob };
-        msg = 'Setup ' + _scUltimo.txt; cor = fraco ? '#F59E0B' : '#16A34A';
+        const f = x => Math.round(x).toLocaleString('pt-BR'), rrTxt = x => x.toFixed(1).replace('.', ',');
+        _scUltimo = { lado, hora: new Date(), txt: (lado === 'short' ? 'Short' : 'Long') + ' · entrada ' + f(entrada) + ' · stop ' + f(stop) + ' · alvo ' + f(alvo) + (am ? ' (nó macro)' : ' (2R)') + ' · R:R ' + rrTxt(esc.rr) + (fraco ? ' · sinal FRACO' : '') + (abaixo1 ? ' · R:R < 1' : '') + avisoCob };
         // Relatório curto
         {
             const pc = x => (x >= 0 ? '+' : '−') + (Math.abs(x) * 100).toFixed(1).replace('.', ',') + '%', rng = ns => { ns = ns.filter(Boolean).sort((x, y) => x - y); return !ns.length ? 'fora da tela' : (ns.length === 1 ? 'nível ' + ns[0] : 'níveis ' + ns[0] + ' a ' + ns[ns.length - 1]); };
             const porPavio = rm.wick != null && Math.abs(stop - (s > 0 ? rm.wick + rm.tick : rm.wick - rm.tick)) < 1;
-            const nivStop = Math.round(risco / rm.tick);
             const L = [
                 (lado === 'short' ? 'SHORT' : 'LONG') + ' · ' + dias + ' dias · ' + dMa.rot + ' × ' + dMi.rot + ' · sinal ' + rm.forca + ' (' + rm.K.pisos + ' de 3)',
-                'Entrada ' + f(entrada) + ' · Stop ' + f(stop) + ' (' + pc((stop - entrada) / entrada) + ') · Alvo ' + f(alvo) + ' (' + pc((alvo - entrada) / entrada) + ') · R:R ' + (Math.abs(entrada - alvo) / risco).toFixed(1).replace('.', ','),
-                'Stop: ' + (porPavio ? 'pavio defendido em ' + f(rm.wick) + ' + 1 nível' : 'borda do bloco de volume do micro') + ' · ' + nivStop + ' níveis de ' + f(rm.tick),
-                'Macro: entrada dentro de ' + rng(zonaMa.map(n => n.num)) + ' (' + f(Math.min.apply(null, zonaMa.map(n => n.lo))) + '–' + f(Math.max.apply(null, zonaMa.map(n => n.hi))) + ')',
-                'Alvo: ' + (am ? 'nó macro, ' + rng(am.nums) + ', borda ' + f(am.alvo) : 'sem nó macro útil, 2R')
+                'Entrada ' + f(entrada) + ' · Stop ' + f(stop) + ' (' + pc((stop - entrada) / entrada) + ') · Alvo ' + f(alvo) + ' (' + pc((alvo - entrada) / entrada) + ') · R:R ' + rrTxt(esc.rr),
+                'Stop: ' + (porPavio ? 'pavio defendido em ' + f(rm.wick) + ' + 1 nível' : 'borda do bloco de volume do micro') + ' · ' + Math.round(risco / rm.tick) + ' níveis de ' + f(rm.tick),
+                'Macro: entrada dentro de ' + rng(zonaMa.map(x => x.num)) + ' (' + f(Math.min.apply(null, zonaMa.map(x => x.lo))) + '–' + f(Math.max.apply(null, zonaMa.map(x => x.hi))) + ')',
+                'Alvo: ' + (am ? 'nó macro, ' + rng(am.nums) + ', borda ' + f(am.alvo) : 'sem nó macro útil, 2R'),
+                'Micro: ' + tent.map(t => t.rot + (t.rr != null ? ' R:R ' + rrTxt(t.rr) : ' sem zona') + (t.comp ? ' (' + t.comp + ' zonas)' : '')).join(' → ')
             ];
+            if (abaixo1) L.push('Atenção: nenhum TF deu R:R ≥ 1; usei a melhor zona.');
             if (fraco) L.push('Atenção: sinal fraco.');
             if (avisoCob) L.push('Atenção: Fluxo' + avisoCob.replace(/^ \(Fluxo/, ' (').replace(/^ /, ''));
             _scUltimo.linhas = L;
         }
+        msg = 'Setup ' + _scUltimo.txt; cor = (fraco || abaixo1) ? '#F59E0B' : '#16A34A';
         cvFecharMenuFpCfg();
         try { cvEdicaoIniciar('ps', lista.length - 1); } catch (e) {}
         grDrawChart();
@@ -16164,6 +16194,41 @@ function scRenderPopup(menu) {
         + (_scUltimo && _scUltimo.linhas ? '<button type="button" onclick="scRelatorioMostrar()" style="width:100%;margin-top:8px;border:none;border-radius:10px;padding:9px;font-size:13px;font-weight:700;background:#F2F2F7;color:#1C1C1E;">Último relatório</button>' : '')
         + (_scUltimo ? '<div style="font-size:11.5px;margin-top:8px;line-height:1.4;color:' + (_scUltimo.erro ? '#DC2626' : '#3A3A3C') + ';">' + _scUltimo.hora.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) + ' · ' + _scUltimo.txt + '</div>' : '')
         + '</div>';
+}
+</script>
+
+<!-- ═══ Cadeados por dimensão das caixas (vale para TODAS: barra de indicadores, Melhor e Setup) ═══ -->
+<script>
+// pz.trancada = "travar tudo" (como sempre foi). pz.trav = { e: entrada, s: stop, a: alvo, w: largura, h: posição horizontal } — cada uma travada ou livre.
+const GR_TRAV_DIMS = [['e', 'Entrada'], ['s', 'Stop'], ['a', 'Alvo'], ['w', 'Largura'], ['h', 'Posição horizontal']];
+function grPosTrav(pz, k) { return !!(pz && (pz.trancada || (pz.trav && pz.trav[k]))); }
+function grPosTravAlguma(pz) { return !!(pz && (pz.trancada || (pz.trav && GR_TRAV_DIMS.some(d => pz.trav[d[0]])))); }
+function grPosTravasFechar() { const a = document.getElementById('cv-pos-travas'), b = document.getElementById('cv-pos-travas-ov'); if (a) a.remove(); if (b) b.remove(); }
+function grPosTravasAtualizarIcone(pz) { const b = document.getElementById('cv-pos-ctx-lock'); if (b && pz) b.innerHTML = grHeroicon(grPosTravAlguma(pz) ? 'lock-closed' : 'lock-open', 16); }
+function grPosTravasRender(i) {
+    const pz = grPosicoes()[i], box = document.getElementById('cv-pos-travas'); if (!pz || !box) return;
+    const sw = (on, dis) => '<span style="flex-shrink:0;width:38px;height:22px;border-radius:11px;background:' + (on ? '#1C1C1E' : '#D1D1D6') + ';position:relative;opacity:' + (dis ? 0.45 : 1) + ';"><span style="position:absolute;top:2px;left:' + (on ? 18 : 2) + 'px;width:18px;height:18px;border-radius:50%;background:#fff;"></span></span>';
+    const linha = (rot, on, dis, fn, forte) => '<button type="button" ' + (dis ? '' : 'onclick="' + fn + '"') + ' style="display:flex;align-items:center;justify-content:space-between;gap:14px;width:100%;border:none;background:none;padding:9px 2px;font-size:13.5px;' + (forte ? 'font-weight:800;border-bottom:1px solid #F2F2F7;' : 'font-weight:600;') + 'color:#1C1C1E;text-align:left;"><span>' + rot + '</span>' + sw(on, dis) + '</button>';
+    box.innerHTML = '<div style="font-size:12px;font-weight:800;color:#8E8E93;margin-bottom:2px;">Travas da caixa</div>'
+        + linha('Travar tudo', !!pz.trancada, false, 'grPosTravaAlternar(' + i + ',\'*\')', true)
+        + GR_TRAV_DIMS.map(d => linha(d[1], grPosTrav(pz, d[0]), !!pz.trancada, 'grPosTravaAlternar(' + i + ',\'' + d[0] + '\')', false)).join('');
+}
+function grPosTravaAlternar(i, k) {
+    const pz = grPosicoes()[i]; if (!pz) return;
+    if (k === '*') pz.trancada = !pz.trancada; else { pz.trav = pz.trav || {}; pz.trav[k] = !pz.trav[k]; }
+    try { grPosSalvar(); } catch (e) {}
+    grPosTravasRender(i); grPosTravasAtualizarIcone(pz); grDrawChart();
+}
+function grPosTravasAbrir(i) {
+    if (document.getElementById('cv-pos-travas')) { grPosTravasFechar(); return; }
+    const bar = document.getElementById('cv-pos-ctx'); if (!bar) return;
+    const ov = document.createElement('div'); ov.id = 'cv-pos-travas-ov'; ov.style.cssText = 'position:fixed;inset:0;z-index:9691;background:transparent;'; ov.onclick = grPosTravasFechar; document.body.appendChild(ov);
+    const box = document.createElement('div'); box.id = 'cv-pos-travas';
+    box.style.cssText = 'position:fixed;z-index:9692;width:230px;background:#fff;border-radius:12px;padding:10px 12px;box-shadow:0 2px 14px rgba(0,0,0,0.3);font-family:-apple-system,sans-serif;';
+    document.body.appendChild(box); grPosTravasRender(i);
+    const r = bar.getBoundingClientRect(), bw = box.offsetWidth, bh = box.offsetHeight;
+    let x = Math.max(8, Math.min(window.innerWidth - bw - 8, r.left)), y = r.bottom + 6; if (y + bh > window.innerHeight - 8) y = Math.max(8, r.top - bh - 6);
+    box.style.left = x + 'px'; box.style.top = y + 'px';
 }
 </script>
 </body>
