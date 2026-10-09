@@ -2550,7 +2550,14 @@ function grVwapCarregarAncoras() {
 // disso porque a lista de candles pode recarregar (troca de timeframe,
 // scroll de histórico, refresh) e os índices deixam de bater.
 function grVwapIdxPorTs(ts) {
-    return _grAllCandles.findIndex(c => c.t === ts);
+    const a = _grAllCandles; if (!a || !a.length) return -1;
+    const ex = a.findIndex(c => c.t === ts); if (ex >= 0) return ex;
+    // Sem candle com esse horário exato (ex.: âncora num candle de 4h às 08:00 e o gráfico agora em 1D/3D): usa o candle que CONTÉM o horário,
+    // pra âncora não sumir ao subir de timeframe.
+    let i = -1; for (let k = a.length - 1; k >= 0; k--) { if (a[k].t <= ts) { i = k; break; } }
+    if (i < 0) return -1;
+    const dur = i + 1 < a.length ? a[i + 1].t - a[i].t : (i > 0 ? a[i].t - a[i - 1].t : 0);
+    return (dur > 0 && ts >= a[i].t + dur) ? -1 : i;
 }
 // Classifica automaticamente se o candle ancorado é mais perto de um topo ou
 // de um fundo LOCAL (janela de ±15 candles ao redor) — decide a cor da linha
@@ -2609,7 +2616,7 @@ function grVwapAtualizarBotaoLimpar() {
 // a lista de candles recarrega, timestamp não).
 let _grValueAreaAncoraTs = null;
 function _grValueAreaLSKey() {
-    return 'gr_va_ancora_' + (_ativoId || 'default') + '_' + _grTf;
+    return 'gr_va_ancora_' + (_ativoId || 'default') + '_todos';   // por ATIVO: vale em qualquer timeframe (igual ao Volume Profile); só o timestamp do candle é guardado
 }
 function grValueAreaSalvarAncora() {
     try {
@@ -2618,8 +2625,7 @@ function grValueAreaSalvarAncora() {
     } catch (e) {}
     grValueAreaAtualizarRotuloMenu();
 }
-// A âncora do Value Area é guardada POR ATIVO E POR TIMEFRAME (a chave inclui _grTf). Estas funções olham todos os
-// timeframes do ativo: o item de menu "Desancorar Value Area" remove a âncora de qualquer lugar (antes só dava pra
+// A âncora do Value Area agora é guardada só POR ATIVO (antes era por ativo e timeframe: ao trocar de TF ela sumia). Estas funções também enxergam as chaves antigas por timeframe: o item de menu "Desancorar Value Area" remove a âncora de qualquer lugar (antes só dava pra
 // remover tocando no MESMO candle ancorado — impossível quando você não lembra qual foi — e só naquele timeframe).
 function grValueAreaChavesAncora() {
     const prefixo = 'gr_va_ancora_' + (_ativoId || 'default') + '_';
@@ -2653,7 +2659,13 @@ function grValueAreaDesancorar() {
 }
 function grValueAreaCarregarAncora() {
     try {
-        const raw = localStorage.getItem(_grValueAreaLSKey());
+        let raw = localStorage.getItem(_grValueAreaLSKey());
+        if (!raw) {   // migração: as âncoras antigas eram uma por timeframe; adota a mais recente e apaga as antigas
+            const antigas = grValueAreaChavesAncora().filter(k => k !== _grValueAreaLSKey()); let melhor = null;
+            antigas.forEach(k => { const v = parseInt(localStorage.getItem(k)); if (v > 0 && (melhor == null || v > melhor)) melhor = v; });
+            if (melhor != null) { localStorage.setItem(_grValueAreaLSKey(), String(melhor)); raw = String(melhor); }
+            antigas.forEach(k => localStorage.removeItem(k));
+        }
         _grValueAreaAncoraTs = raw ? parseInt(raw) : null;
     } catch (e) { _grValueAreaAncoraTs = null; }
     grValueAreaAtualizarRotuloMenu();
@@ -2968,7 +2980,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v347';
+const APP_VERSAO = 'v349';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
