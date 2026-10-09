@@ -2968,7 +2968,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v334';
+const APP_VERSAO = 'v336';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -16000,10 +16000,10 @@ function scCalcular(lado, u, cs, preco, ibK) {
         n.gate = n.lado && n.pv >= 0.5;   // piso de volume tirado da própria régua: nível abaixo da MEDIANA dos níveis nunca vira entrada
         n.dist = Math.max(0, s * (n.c - preco));
         n.pos = Math.max(0, Math.min(1, s > 0 ? (n.c - loW) / rng : (hiW - n.c) / rng));
-        n.abs = n.def > 0 && s * n.d > 0 && Math.abs(n.dp) >= dpMed && Math.abs(n.d) >= dAbsMed;   // absorção: delta CONTRÁRIO com volume, o preço tocou e o nível segurou (os agressores perderam)
+        n.abs = false;   // absorção: delta CONTRÁRIO com volume, o preço tocou e o nível segurou (os agressores perderam)
         n.disp = n.fav || n.abs;
-        n.c1 = n.pv >= 0.5; n.c2 = (n.fav && Math.abs(n.dp) >= dpMed && Math.abs(n.d) >= dAbsMed) || n.abs; n.c3 = n.def > 0;   // delta decisivo = percentual E tamanho (valor absoluto) acima da mediana da régua
-        n.pisos = (n.c1 ? 1 : 0) + (n.c2 ? 1 : 0) + (n.c3 ? 1 : 0);
+        n.c1 = n.pv >= 0.5; n.c2 = (n.fav && Math.abs(n.dp) >= dpMed && Math.abs(n.d) >= dAbsMed) || n.abs; n.c3 = false;   // SETUP: sem price action (testado/defendido, pavio): a nota do nível é só footprint (volume + delta); a absorção é lida nos candles, nas confirmações   // delta decisivo = percentual E tamanho (valor absoluto) acima da mediana da régua
+        n.pisos = (n.c1 ? 1 : 0) + (n.c2 ? 1 : 0);
         n.rank = n.gate ? n.pisos + 0.3 * n.pv + 0.2 * Math.exp(-n.dist / (2.5 * atr)) : 0;   // critérios mandam; volume e proximidade desempatam
     });
     let ib = -1;
@@ -16033,7 +16033,7 @@ function scCalcular(lado, u, cs, preco, ibK) {
         const defendeu = s > 0 ? fe < niv[a].lo : fe > niv[b].hi;
         if (dentroBloco && defendeu) wick = wick == null ? ext : (s > 0 ? Math.max(wick, ext) : Math.min(wick, ext));
     });
-    if (wick != null) stopV = s > 0 ? Math.max(stopV, wick + tick) : Math.min(stopV, wick - tick);
+    // SETUP: o pavio NÃO entra no stop (é ruído e quebra a lógica dos footprints): o stop é só a borda de trás do nó.
     const entrada = s > 0 ? lo : hi, stop = stopV, risco = Math.abs(stop - entrada), K = niv[ib];
     // ALVOS = SUPORTE/RESISTÊNCIA do lado oposto: nós com volume acima da mediana E delta favorável (short: delta positivo = compradores defendendo; long: negativo), a ≥ 1 ATR da entrada. O alvo fica na borda de FRENTE do nó (onde o preço encontra o suporte e tende a segurar).
     // Alvos: nós de alto volume do lado oposto, a ≥ 1 ATR da entrada, agrupando níveis colados. Alvo = a borda de trás do nó (a primeira onde o preço tende a segurar fica antes dela).
@@ -16099,11 +16099,11 @@ function scConfirmacoes(lado, r, u, cs, def) {
         const nx = cand[i + 1];
         if (nx && tocou(nx) && s * x.D > 0 && Math.abs(x.D) >= medD && s * nx.D < 0 && Math.abs(nx.D) >= medD) marca('chg', nx);
     });
-    // 2) Big Limit: nível da faixa com volume outlier na régua (cerca superior do intervalo interquartil) e defendido
+    // 2) Big Limit: nível da faixa com volume outlier na régua (cerca superior do intervalo interquartil)
     const vs = (r.niv || []).map(n => n.v).sort((a, b) => a - b);
     if (vs.length >= 8 && r.band) {
         const q1 = vs[Math.floor(vs.length * 0.25)], q3 = vs[Math.floor(vs.length * 0.75)], cerca = q3 + 1.5 * (q3 - q1);
-        const g = (r.niv || []).filter(n => n.k >= r.band.a.k && n.k <= r.band.b.k && n.v > cerca && n.def > 0).sort((a, b) => b.v - a.v)[0];
+        const g = (r.niv || []).filter(n => n.k >= r.band.a.k && n.k <= r.band.b.k && n.v > cerca).sort((a, b) => b.v - a.v)[0];
         if (g) res.ev.big = { t: null, c: g.c };
     }
     res.n = Object.keys(res.ev).filter(k => res.ev[k]).length;
@@ -16187,7 +16187,7 @@ async function scRodar(lado) {
             const L = [
                 (lado === 'short' ? 'SHORT' : 'LONG') + ' · ' + dias + ' dias · ' + dMa.rot + ' × ' + dMi.rot + ' · ' + conf.n + ' de 5 confirmações',
                 'Entrada ' + f(entrada) + ' · Stop ' + f(stop) + ' (' + pc((stop - entrada) / entrada) + ') · Alvo ' + f(alvo) + ' (' + pc((alvo - entrada) / entrada) + ')',
-                'Stop: ' + (porPavio ? 'pavio defendido em ' + f(rm.wick) + ' + 1 nível' : 'borda de trás do nó de entrada') + ' · ' + Math.round(risco / rm.tick) + ' níveis de ' + f(rm.tick),
+                'Stop: borda de trás do nó de entrada · ' + Math.round(risco / rm.tick) + (Math.round(risco / rm.tick) === 1 ? ' nível' : ' níveis') + ' de ' + f(rm.tick),
                 'Macro: entrada dentro de ' + rng(zonaMa.map(x => x.num)) + ' (' + f(Math.min.apply(null, zonaMa.map(x => x.lo))) + '–' + f(Math.max.apply(null, zonaMa.map(x => x.hi))) + ')',
                 'Alvo: ' + (am ? 'nó macro, ' + rng(am.nums) + ', borda ' + f(am.alvo) : 'sem nó macro útil, 2R')
             ];
