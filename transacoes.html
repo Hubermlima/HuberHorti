@@ -3029,7 +3029,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v358';
+const APP_VERSAO = 'v359';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4467,7 +4467,7 @@ function cvPosDesvincular(pz) {
 // Versão enxuta para o JSON de preferências: caixa com trade guarda só o desenho (+ últimos preços, usados só se o trade sumir)
 function cvPosParaSalvar() {
     const out = {};
-    Object.keys(_grPosMapa).forEach(k => { out[k] = (_grPosMapa[k] || []).map(z => z.tradeId ? { id: z.id, lado: z.lado, t1: z.t1, t2: z.t2, tradeId: z.tradeId, entrada: z.entrada, alvo: z.alvo, stop: z.stop, trancada: z.trancada || undefined } : Object.assign({}, z, { oculta: undefined })); });
+    Object.keys(_grPosMapa).forEach(k => { out[k] = (_grPosMapa[k] || []).filter(z => !z.teste).map(z => z.tradeId ? { id: z.id, lado: z.lado, t1: z.t1, t2: z.t2, tradeId: z.tradeId, entrada: z.entrada, alvo: z.alvo, stop: z.stop, trancada: z.trancada || undefined } : Object.assign({}, z, { oculta: undefined })); });
     return out;
 }
 // Trade ativo sem caixa no gráfico (ex.: o short antigo, ligado por SQL): cria a caixa a partir do trade.
@@ -16338,10 +16338,24 @@ async function scRodar(lado) {
     try { grAreaToast(msg, cor); } catch (e) {}
 }
 function scRelatorioFechar() { const ov = document.getElementById('sc-relatorio-overlay'); if (ov) ov.style.display = 'none'; }
-function scRelatorioCopiar() { try { navigator.clipboard.writeText((_scUltimo && _scUltimo.linhas || []).join('\n')); } catch (e) {} }
+const SC_RES = { segurou: 'segurou', rompeu: 'rompeu', semToque: 'sem toque', indef: 'sem desfecho' };
+function scCasoTxt(c) { const d = new Date(c.T).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }), cn = c.c.segurou + c.c.rompeu; return d + ' · ' + (c.lado === 'short' ? 'Short' : 'Long') + ' · ' + c.n + '/5 · ' + SC_RES[c.r] + ' · acaso: ' + c.c.segurou + ' de ' + cn + ' seguraram'; }
+function scRelatorioCopiar() { try { const o = window._scRelAtual || _scUltimo || {}; navigator.clipboard.writeText((o.linhas || []).concat(o.casos ? ['', 'CASOS (um por linha):'].concat(o.casos.map(scCasoTxt)) : []).join('\n')); } catch (e) {} }
+// toque num caso da lista: cria SÓ a caixa daquele dia (a anterior de teste some) e leva o gráfico até ela. Caixa de teste nunca é salva.
+async function scCasoMostrar(i) {
+    const c = _scHist && _scHist.casos && _scHist.casos[i]; if (!c) return;
+    scRelatorioFechar(); try { cvFecharMenuFpCfg(); } catch (e) {}
+    const lista = grPosicoes(); for (let k = lista.length - 1; k >= 0; k--) if (lista[k].teste) lista.splice(k, 1);
+    const pz = grPosNova(c.lado, 0, c.ent);
+    pz.entrada = c.ent; pz.stop = c.stp; pz.alvo = c.alvo; pz.origem = 'setup'; pz.tAbs = true; pz.teste = true; pz.t1 = c.T; pz.t2 = c.T + 10 * 86400000;
+    pz.rotulo = 'Teste ' + new Date(c.T).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) + ' · ' + c.n + '/5 · ' + SC_RES[c.r];
+    lista.push(pz);
+    try { await cvIrParaCaixa(pz.id); } catch (e) { grDrawChart(); }
+}
 function scRelatorioMostrar(o) {
     o = (o && o.linhas) ? o : _scUltimo;
     if (!o || !o.linhas) return;
+    window._scRelAtual = o;
     let ov = document.getElementById('sc-relatorio-overlay');
     if (!ov) { ov = document.createElement('div'); ov.id = 'sc-relatorio-overlay'; ov.style.cssText = 'display:none;position:fixed;inset:0;z-index:9800;background:rgba(0,0,0,0.4);align-items:flex-end;justify-content:center;'; ov.onclick = e => { if (e.target === ov) scRelatorioFechar(); }; document.body.appendChild(ov); }
     const cor = o.lado === 'short' ? '#DC2626' : (o.lado === 'long' ? '#16A34A' : '#1C1C1E'), L = o.linhas;
@@ -16349,6 +16363,7 @@ function scRelatorioMostrar(o) {
         + '<div style="font-size:13px;font-weight:800;color:' + cor + ';">' + L[0] + '</div>'
         + '<div style="font-size:15px;font-weight:800;line-height:1.4;margin-top:6px;">' + L[1] + '</div>'
         + L.slice(2).map(x => '<div style="font-size:12.5px;line-height:1.4;margin-top:6px;color:' + (/^Atenção/.test(x) ? '#B45309' : '#3A3A3C') + ';">' + x + '</div>').join('')
+        + (o.casos && o.casos.length ? '<div style="font-size:12px;font-weight:800;margin-top:12px;">CASOS · toque para ver a caixa no gráfico</div>' + o.casos.map((c, i) => '<div onclick="scCasoMostrar(' + i + ')" style="font-size:12px;line-height:1.35;padding:7px 8px;margin-top:4px;border-radius:8px;background:#F2F2F7;color:' + (c.r === 'segurou' ? '#16A34A' : c.r === 'rompeu' ? '#DC2626' : '#6B6B70') + ';">' + scCasoTxt(c) + '</div>').join('') : '')
         + '<div style="display:flex;gap:8px;margin-top:12px;"><button onclick="scRelatorioCopiar()" style="flex:1;border:none;background:#E5E5EA;color:#1C1C1E;border-radius:8px;padding:9px;font-size:13px;font-weight:700;">Copiar</button>'
         + '<button onclick="scRelatorioFechar()" style="flex:1;border:none;background:#1C1C1E;color:#FFFFFF;border-radius:8px;padding:9px;font-size:13px;font-weight:700;">Fechar</button></div></div>';
     ov.style.display = 'flex';
@@ -16422,7 +16437,7 @@ async function scHistorico() {
         const [allMa, allMi] = await Promise.all([scBuscarPeriodo(dMa, tMin - (dias + 60) * DIA), scBuscarPeriodo(dMi, tMin - (dias + 30) * DIA)]);
         const datas = []; for (let T = tMax; T >= tMin && datas.length < 170; T -= 2 * DIA) datas.push(Math.floor(T / 3600000) * 3600000);
         const est = {}, mk = (lado, n) => { const k = lado + '|' + n; return est[k] || (est[k] = { lado, n, segurou: 0, rompeu: 0, semToque: 0, indef: 0 }); };
-        let semZona = 0, total = 0; const ctl = { segurou: 0, rompeu: 0, semToque: 0, indef: 0 }, larNo = [], wst = [0.5, 1, 1.5, 2, 3].map(m => ({ m, e: { segurou: 0, rompeu: 0, semToque: 0, indef: 0 }, c: { segurou: 0, rompeu: 0, semToque: 0, indef: 0 }, lar: [] }));
+        const casos = []; let semZona = 0, total = 0; const ctl = { segurou: 0, rompeu: 0, semToque: 0, indef: 0 }, larNo = [], wst = [0.5, 1, 1.5, 2, 3].map(m => ({ m, e: { segurou: 0, rompeu: 0, semToque: 0, indef: 0 }, c: { segurou: 0, rompeu: 0, semToque: 0, indef: 0 }, lar: [] }));
         for (let di = 0; di < datas.length; di++) {
             if (_scHistParar) break;
             const T = datas[di]; window._scAsOf = T; window._scReguaMemo = {};
@@ -16440,13 +16455,13 @@ async function scHistorico() {
                     const ev = scAvaliarCore(lado, dMi, tkMi, csMi, dias, dMa, rM, uMa, preco);
                     if (!ev.esc) { semZona++; continue; }
                     const rm = ev.esc.r, ent = rm.entrada, stp = rm.stop, dist = uMa.atr, conf = scConfirmacoes(lado, rm, ev.esc.u, ev.esc.cs, ev.esc.def), e = mk(lado, conf.n);
-                    const r1 = scDesfecho(lado, ent, stp, futuro, dist); e[r1]++;
+                    const r1 = scDesfecho(lado, ent, stp, futuro, dist); e[r1]++; const caso = { T, lado, n: conf.n, ent, stp, alvo: ev.esc.alvo, r: r1, c: { segurou: 0, rompeu: 0, semToque: 0, indef: 0 } }; casos.push(caso);
                     // CONTROLE: 5 entradas em níveis aleatórios do mesmo lado do preço, NA MESMA DISTÂNCIA do preço que a entrada do motor (±50%), com o mesmo risco e a mesma regra de desfecho
                     const risco = Math.abs(stp - ent), tk = ev.esc.u.tick, atrMi = ev.esc.u.atr, dEng = Math.max(0, s * (ent - preco)), dLo = Math.max(0, dEng * 0.5 - tk), dHi = dEng * 1.5 + tk, cand = [];
                     ev.esc.u.mapa.forEach((d, k) => { const c = k * tk, dd = s * (c - preco); if (dd >= dLo && dd <= dHi) cand.push(c); });
                     let sd = (T / 3600000 + (lado === 'short' ? 1 : 2)) % 2147483647 || 1; const rnd = () => { sd = (sd * 16807) % 2147483647; return sd / 2147483647; };
                     const ctrl = []; for (let q = 0; q < 5 && cand.length; q++) ctrl.push(cand[Math.floor(rnd() * cand.length)]);
-                    ctrl.forEach(c => { ctl[scDesfecho(lado, c, c + s * risco, futuro, dist)]++; });
+                    ctrl.forEach(c => { const rc = scDesfecho(lado, c, c + s * risco, futuro, dist); ctl[rc]++; caso.c[rc]++; });
                     larNo.push(risco / ent * 100);
                     // LARGURA: mesma entrada, stop em múltiplos do ATR do micro (motor e controle, na mesma largura)
                     wst.forEach(w => { const rr = w.m * atrMi; w.e[scDesfecho(lado, ent, ent + s * rr, futuro, dist)]++; ctrl.forEach(c => { w.c[scDesfecho(lado, c, c + s * rr, futuro, dist)]++; }); w.lar.push(rr / ent * 100); });
@@ -16478,7 +16493,7 @@ async function scHistorico() {
         lin.push('Segurou = tocou a entrada e se afastou 1 ATR do macro (' + dMa.rot + ') sem fechar além do stop. Rompeu = fechou além do stop antes. Sem descida de timeframe no teste.');
         lin.push('Atenção: datas a cada 2 dias repetem zonas parecidas; leia como tendência, não como exatidão. Amostras pequenas (menos de 10) não provam nada.');
         if (aviso.length) lin.push('Atenção: ' + aviso.length + ' data(s) com erro: ' + aviso[0]);
-        _scHist = { lado: null, hora: new Date(), linhas: lin };
+        _scHist = { lado: null, hora: new Date(), linhas: lin, casos: casos.slice().sort((a, b) => b.T - a.T) };
         scRelatorioMostrar(_scHist);
     } catch (e) { window._scAsOf = null; window._scReguaMemo = null; _scHist = { lado: null, hora: new Date(), linhas: ['TESTE HISTÓRICO', 'Não consegui rodar: ' + (e.message || e)] }; scRelatorioMostrar(_scHist); }
     _scHistRodando = false; _scHistProg = ''; try { cvRenderMenuFpCfg(); } catch (e) {}
