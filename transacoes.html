@@ -3234,7 +3234,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v433';
+const APP_VERSAO = 'v435';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4828,6 +4828,24 @@ function grTeseInvalida(pz) {
     if (_grTeseCache.size > 300) _grTeseCache.clear();
     _grTeseCache.set(k, inv);
     return inv;
+}
+// ENTRADA PERDIDA (só da caixa Em Análise): o preço chegou ao alvo sem nunca ter tocado a entrada (zona de captura). Mesmo candle tocando os dois: conta como entrou.
+const _grPerdidaCache = new Map();
+function grEntradaPerdida(pz) {
+    const arr = _grAllCandles;
+    if (!arr || !arr.length || pz.tradeId || pz.previa || !(pz.entrada > 0) || !(pz.alvo > 0) || pz.alvo === pz.entrada) return false;
+    const t0 = Math.min(pz.t1, pz.t2), u = arr[arr.length - 1];
+    const k = [pz.id, t0, pz.entrada, pz.alvo, arr.length, u.h, u.l, _grTf].join('|');
+    if (_grPerdidaCache.has(k)) return _grPerdidaCache.get(k);
+    const curto = pz.alvo < pz.entrada; let res = false;
+    for (let i = 0; i < arr.length; i++) {
+        const c = arr[i]; if (c.t < t0) continue;
+        if (curto ? c.h >= pz.entrada : c.l <= pz.entrada) { res = false; break; }
+        if (curto ? c.l <= pz.alvo : c.h >= pz.alvo) { res = true; break; }
+    }
+    if (_grPerdidaCache.size > 300) _grPerdidaCache.clear();
+    _grPerdidaCache.set(k, res);
+    return res;
 }
 let _grListraPadrao = null;
 function grListraPadrao(ctx) {
@@ -7211,7 +7229,9 @@ if (fibsParaDesenhar.length > 0) {
                     if (rgbm && niv.length > 1) { let prev = yE; niv.forEach((pr, ix) => { const yy = toY(pr); if (ix > 0) { ctx.fillStyle = 'rgba(' + rgbm[1] + ',' + rgbm[2] + ',' + rgbm[3] + ',' + Math.min(0.32, 0.1 * ix) + ')'; ctx.fillRect(xa, Math.min(prev, yy), xb - xa, Math.abs(yy - prev)); } prev = yy; }); }
                 }
                 if (tS && !pz.scalp) { ctx.fillStyle = cz.fs; ctx.fillRect(xa, Math.min(yE, yS), xb - xa, Math.abs(yS - yE)); }
-                const teseInv = cz.st === 'analise' && !pz.previa && grTeseInvalida(pz);
+                const teseInv0 = cz.st === 'analise' && !pz.previa && grTeseInvalida(pz);
+                const perdida = !teseInv0 && cz.st === 'analise' && !pz.previa && grEntradaPerdida(pz);
+                const teseInv = teseInv0 || perdida, marcaTxt = teseInv0 ? 'Tese Inválida' : 'Entrada perdida', marcaCor = teseInv0 ? '#C62828' : '#6B6B70';
                 if (teseInv) {   // tese inválida: cinza + listras diagonais por cima da caixa inteira
                     const yTop = Math.min(yE, yA, yS), hTot = Math.max(yE, yA, yS) - yTop;
                     ctx.fillStyle = 'rgba(150,155,165,0.22)'; ctx.fillRect(xa, yTop, xb - xa, hTot);
@@ -7283,10 +7303,10 @@ if (fibsParaDesenhar.length > 0) {
                         const cy = y2 > y1 ? (y1 + y2) / 2 : y1, fs = Math.max(8, Math.min(13, Math.abs(xb - xa) / 7));
                         const cx0 = Math.max(PAD.left + 40, Math.min(W - PAD.right - 40, (xa + xb) / 2));
                         ctx.save(); ctx.font = '600 ' + fs + 'px -apple-system'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-                        const tw = ctx.measureText('Tese Inválida').width, bw = tw + fs * 1.2, bh = fs * 1.9;
-                        ctx.fillStyle = '#FFFFFF'; ctx.strokeStyle = '#C62828'; ctx.lineWidth = 1.2;
+                        const tw = ctx.measureText(marcaTxt).width, bw = tw + fs * 1.2, bh = fs * 1.9;
+                        ctx.fillStyle = '#FFFFFF'; ctx.strokeStyle = marcaCor; ctx.lineWidth = 1.2;
                         ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(cx0 - bw / 2, cy - bh / 2, bw, bh, 5); else ctx.rect(cx0 - bw / 2, cy - bh / 2, bw, bh); ctx.fill(); ctx.stroke();
-                        ctx.fillStyle = '#C62828'; ctx.fillText('Tese Inválida', cx0, cy + 0.5);
+                        ctx.fillStyle = marcaCor; ctx.fillText(marcaTxt, cx0, cy + 0.5);
                         ctx.restore();
                     }
                     const inter = (lista, cor, pref, ref) => (lista || []).forEach((it, ix) => {
@@ -16910,6 +16930,9 @@ function scConfirmacoes(lado, r, u, cs, def) {
         } else res.falta.fibo = { ok: 0, falhas: ['poucos dados para traçar o Fibonacci'], t: 0 };
     }
     res.n = Object.keys(res.ev).filter(k => res.ev[k]).length;
+    // Desconto automático 3: faca caindo (long) / foguete subindo (short) — o preço chegou na zona acelerando contra a operação (aproximação dos últimos 3 candles no 3º quartil da janela)
+    res.faca = { pen: 0 };
+    try { const am0 = scAmbiente(lado, { r, cs }); if (am0.faca) res.faca = { pen: 1 }; } catch (e) {}
     // Desconto automático (não é um critério a mais): "nunca vender em suporte / comprar em resistência". Cada referência ANCORADA e visível (VWAP, POC da
     // Value Area, maior nível do VP) que cai na zona (±1 nível da grade) e está do lado de baixo do preço (short) / de cima (long) tira 1 ponto. Sem âncora: sem desconto.
     res.sup = { pen: 0, refs: [] };
@@ -16958,9 +16981,14 @@ async function scStatusCalcular(pz) {
     const sc = await scScoreCaixa(base), conf = base._scConf;
     const px = (typeof _precoAtual === 'number' && _precoAtual > 0) ? _precoAtual : conf.ultFech, itens = [], pn = x => Math.round(x * 100) + '%', vir = v => v.toFixed(1).replace('.', ',');
     if (stop != null && px) {
-        const dist = s * (stop - px), med = conf.medRange;
+        let med = conf.medRange, tfR = '';
+        try {   // a régua é o TF em que se acompanha a operação (o maior em que um candle típico cabe na zona de captura); sem ele, o micro
+            let ta = pz.tfAcomp; if (!ta) { const t0 = await scTfAcompanhar(Math.abs(stop - ent)); if (t0 && t0.rot) ta = { chave: t0.chave, rot: t0.rot }; }
+            if (ta) { const m = await scMedRangeTf(ta.chave); if (m > 0) { med = m; tfR = ' de ' + ta.rot; } }
+        } catch (e) {}
+        const dist = s * (stop - px);
         if (dist <= 0) itens.push({ n: 2, txt: 'o preço já passou do stop' });
-        else if (med > 0) { const q = dist / med; itens.push({ n: q < 1 ? 2 : (q < 2 ? 1 : 0), txt: q < 1 ? 'o stop está a menos de 1 candle normal de distância' : 'o stop está a ' + vir(q) + ' candles normais de distância' }); }
+        else if (med > 0) { const q = dist / med; itens.push({ n: q < 1 ? 2 : (q < 2 ? 1 : 0), txt: q < 1 ? 'o stop está a menos de 1 candle normal' + tfR + ' de distância' : 'o stop está a ' + vir(q) + ' candles normais' + tfR + ' de distância' }); }
     }
     const ult = conf.fluxo.ult;
     if (ult.length) { const nC = ult.filter(d => s * d > 0 && Math.abs(d) >= conf.fluxo.medD).length; itens.push({ n: nC >= 3 ? 2 : (nC === 2 ? 1 : 0), txt: nC === 0 ? 'o fluxo não foi contra você nos últimos ' + ult.length + ' candles' : 'o fluxo foi contra você em ' + nC + ' dos últimos ' + ult.length + ' candles' }); }
@@ -17013,7 +17041,9 @@ function scScoreDe(conf) {
     if (sup) itens.push({ k: 'sup', nome: 'Em ' + (conf.lado === 'long' ? 'resistência' : 'suporte'), ok: false, pts: '−' + sup.pen, det: sup.refs.join(' · ') });
     const enc = conf.enc && conf.enc.pen > 0 ? conf.enc : null;
     if (enc) itens.push({ k: 'enc', nome: (conf.lado === 'long' ? 'Compradores' : 'Vendedores') + ' no prejuízo', ok: false, pts: '−1', det: Math.round(enc.pct * 100) + '% de quem ' + (conf.lado === 'long' ? 'comprou' : 'vendeu') + ' está perdendo dinheiro agora (normal: ' + Math.round(enc.med * 100) + '%)' });
-    return { n: Math.max(0, conf.n - (sup ? sup.pen : 0) - (enc ? enc.pen : 0)), total: SC_CONF_TOTAL, itens };
+    const faca = conf.faca && conf.faca.pen > 0 ? conf.faca : null;
+    if (faca) itens.push({ k: 'faca', nome: conf.lado === 'long' ? 'Faca caindo' : 'Foguete subindo', ok: false, pts: '−1', det: 'o preço chegou na zona rápido demais, ' + (conf.lado === 'long' ? 'caindo' : 'subindo') + ' sem frear' });
+    return { n: Math.max(0, conf.n - (sup ? sup.pen : 0) - (enc ? enc.pen : 0) - (faca ? 1 : 0)), total: SC_CONF_TOTAL, itens };
 }
 // AMBIENTE (só leitura, não filtra): (1) faca caindo = aproximação dos últimos 3 candles do micro até a entrada, no 3º quartil das aproximações da própria janela;
 // (2) congestão = eficiência dos últimos 6 candles (deslocamento líquido ÷ percurso) igual ou abaixo da mediana da janela; (a leitura de nível/suporte/resistência saiu do ambiente).
@@ -17060,19 +17090,27 @@ function scAvaliarCore(lado, def, tk, cs, dias, dMa, rM, uMa, preco) {
     if (!banda) return { def, esc: null, comparadas: 0 };
     // candidatos: níveis do micro (do lado certo do preço, com volume) que tocam o sino; os mais próximos do pico primeiro, sem colar uns nos outros. O delta NÃO ordena: a nota decide.
     const ks = [];
-    r0.niv.filter(n => n.rank > 0 && n.hi > banda.lo && n.lo < banda.hi).sort((x, y) => Math.abs(x.c - banda.pico) - Math.abs(y.c - banda.pico)).forEach(n => { if (ks.length < 3 && ks.every(k2 => Math.abs(k2 - n.k) >= 3)) ks.push(n.k); });
+    const dPico = n => Math.min.apply(null, banda.picos.map(pk => Math.abs(n.c - pk)));
+    r0.niv.filter(n => n.rank > 0 && banda.faixas.some(fx => n.hi > fx.lo && n.lo < fx.hi)).sort((x, y) => dPico(x) - dPico(y)).forEach(n => { if (ks.length < 3 && ks.every(k2 => Math.abs(k2 - n.k) >= 3)) ks.push(n.k); });
     const cands = []; let comparadas = 0;
     ks.forEach((k, i) => {
         const r = k === r0.K.k ? r0 : scCalcular(lado, u, cs, preco, k);
         if (r.erro) return;
         comparadas++;
         const risco = Math.abs(r.stop - r.entrada); if (!(risco > 0)) return;
-        const am = scAlvoMacro(rM, s, r.entrada, risco, uMa.atr), alvo = am ? am.alvo : r.entrada - s * 2 * risco;
+        if (window._scMedMin > 0 && risco < window._scMedMin) return;   // stop no ruído: nem um candle típico do menor TF (5 min) cabe na zona de captura
+        if (scZonaQueimada(lado, r.entrada, r.tick)) return;            // esta zona já deu stop há pouco (dentro de um candle do macro): não repete
+        // ALVO: o mais perto entre o nó macro e o PICO do sino (volta ao valor), desde que dê R/R ≥ 1; sem nenhum dos dois, 2R
+        const am = scAlvoMacro(rM, s, r.entrada, risco, uMa.atr);
+        const pk = banda.picos.filter(pp => s * (r.entrada - pp) > 0 && Math.abs(r.entrada - pp) / risco >= 1).sort((x, y) => Math.abs(r.entrada - x) - Math.abs(r.entrada - y))[0];
+        let alvo, alvoTipo;
+        if (pk != null && (!am || Math.abs(r.entrada - pk) < Math.abs(r.entrada - am.alvo))) { alvo = pk; alvoTipo = 'pico'; }
+        else if (am) { alvo = am.alvo; alvoTipo = 'macro'; } else { alvo = r.entrada - s * 2 * risco; alvoTipo = '2R'; }
         if (!(s * (r.stop - r.entrada) > 0) || !(s * (r.entrada - alvo) > 0)) return;
         // a ignição já passou? A partir do PREÇO DE AGORA, o que falta até o alvo tem de ser pelo menos o risco até o stop (mesma régua R/R ≥ 1 dos alvos)
         const falta = s * (preco - alvo), arrisca = s * (r.stop - preco);
         if (!(falta > 0) || !(arrisca > 0) || falta / arrisca < 1) return;
-        cands.push({ def, esc: { r, zonaMa: banda.niveis, banda, am, alvo, risco, def, u, cs, uMa }, comparadas, ord: i });
+        cands.push({ def, esc: { r, zonaMa: banda.niveis, banda, am: alvoTipo === 'macro' ? am : null, alvoTipo, alvo, risco, def, u, cs, uMa }, comparadas, ord: i });
     });
     if (!cands.length) return { def, esc: null, comparadas };
     if (cands.length > 1) {   // maior nota (confirmações menos descontos); empate: o mais perto do pico
@@ -17080,6 +17118,19 @@ function scAvaliarCore(lado, def, tk, cs, dias, dMa, rM, uMa, preco) {
         let m = cands[0]; cands.forEach(c => { if (c.nota > m.nota) m = c; }); return m;
     }
     return cands[0];
+}
+// Zona queimada: uma caixa do motor no mesmo lado e na mesma entrada (±1 nível) deu Tese Inválida dentro do último candle do macro
+function scZonaQueimada(lado, entrada, tick) {
+    try {
+        const tLim = Date.now() - scDefTf(_scCfg.macro).blocoMs;
+        return grPosicoes().some(z => z.origem === 'setup' && !z.tradeId && !z.teste && z.lado === lado && Math.max(z.t1, z.t2) >= tLim && Math.abs(z.entrada - entrada) <= tick && grTeseInvalida(z));
+    } catch (e) { return false; }
+}
+// Tamanho típico (mediana de máxima − mínima) dos candles de um TF nos últimos 7 dias
+async function scMedRangeTf(chave) {
+    const cs = await scCandles(scDefTf(chave), 7);
+    const rg = cs.filter(c => Number(c.h) > Number(c.l)).map(c => Number(c.h) - Number(c.l));
+    return rg.length >= 20 ? scMediana(rg) : 0;
 }
 // ZONA QUENTE (zona de conflagração) = o SINO principal: os níveis colados em volta do pico de volume com volume acima da média do próprio perfil.
 // Uma fonte só: se há VP ancorado, o sino do VP; senão, se há Value Area ancorada, o sino dela (pico = POC); senão, a régua do macro na janela de dias.
@@ -17093,13 +17144,25 @@ function scBandaQuente(rM, tick) {
     if (!pts) { pts = ((rM && rM.niv) || []).map(n => ({ k: n.k, v: n.v, lo: n.lo, hi: n.hi, num: n.num })); fonte = 'janela de dias'; }
     pts = pts.filter(x => x.v > 0).sort((x, y) => x.k - y.k);
     if (pts.length < 3) return null;
-    const med = pts.reduce((q, x) => q + x.v, 0) / pts.length;
+    // sino ESTREITO: só os degraus no quarto mais negociado do perfil (volume no 3º quartil ou acima), colados ao pico
+    const vs = pts.map(x => x.v).sort((x, y) => x - y), q3 = vs[Math.floor(vs.length * 0.75)];
     let ip = 0; pts.forEach((x, i) => { if (x.v > pts[ip].v) ip = i; });
     let a = ip, b = ip;
-    while (a > 0 && pts[a - 1].k === pts[a].k - 1 && pts[a - 1].v > med) a--;
-    while (b < pts.length - 1 && pts[b + 1].k === pts[b].k + 1 && pts[b + 1].v > med) b++;
+    while (a > 0 && pts[a - 1].k === pts[a].k - 1 && pts[a - 1].v >= q3) a--;
+    while (b < pts.length - 1 && pts[b + 1].k === pts[b].k + 1 && pts[b + 1].v >= q3) b++;
     const niveis = pts.slice(a, b + 1);
-    return { lo: niveis[0].lo, hi: niveis[niveis.length - 1].hi, pico: (pts[ip].lo + pts[ip].hi) / 2, niveis, fonte };
+    const faixas = [{ lo: niveis[0].lo, hi: niveis[niveis.length - 1].hi }], picos = [(pts[ip].lo + pts[ip].hi) / 2];
+    // reforço: a POC da Value Area ancorada sempre conta; se cair fora do sino, o degrau dela vira mais uma zona quente
+    try {
+        if (_grFootprintAtivo && _grValueAreaAncoraTs != null && !_grVaOculta) {
+            const va = grFootprintCalcularValueArea();
+            if (va && va.poc > 0) {
+                picos.push(va.poc);
+                if (!(va.poc >= faixas[0].lo && va.poc <= faixas[0].hi)) { const k = Math.round(va.poc / tick); faixas.push({ lo: k * tick - tick / 2, hi: k * tick + tick / 2, poc: true }); }
+            }
+        }
+    } catch (e) {}
+    return { lo: faixas[0].lo, hi: faixas[0].hi, pico: picos[0], picos, faixas, niveis, fonte };
 }
 async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fechar o menu, sem selecionar a caixa (usado pelo Play) · opts.scalp: caixa de scalp (só contorno), à direita, sem duplicar
     opts = opts || {}; const sil = !!opts.silencioso;
@@ -17115,6 +17178,7 @@ async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fecha
         const preco = _grAllCandles.length ? Number(_grAllCandles[_grAllCandles.length - 1].c) : Number(csM0[csM0.length - 1].c);
         const uMa = scRegua(tkMa, dias, dMa.rot), rM = scCalcular(lado, uMa, csMa, preco);
         if (rM.erro) throw new Error('Macro ' + dMa.rot + ': ' + rM.erro);
+        try { window._scMedMin = await scMedRangeTf(SC_ORDEM[0]); } catch (e) { window._scMedMin = 0; }
         const cob = scCobertura(dias), avisoCob = cob < dias - 1 ? ' (Fluxo só tem ' + Math.floor(cob) + ' de ' + dias + ' dias)' : '';
         // desce de TF só se nenhuma zona do micro cair numa zona favorável do macro (piso: 1h)
         const bMi = scDefTf(_scCfg.micro).blocoMs, pisoMs = bMi >= 3600000 ? 3600000 : 0;   // desce do micro até 1h (micro de 1h ou mais) ou até o menor TF (micro de minutos)
@@ -17126,7 +17190,7 @@ async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fecha
             tent.push({ rot: ev.def.rot, ok: !!ev.esc, comp: ev.comparadas });
             if (ev.esc) { esc = ev.esc; break; }
         }
-        if (!esc) throw new Error('Micro: ' + (primeiroErro || 'nenhuma entrada válida no sino do macro ' + dMa.rot + ' (sem zona, ou a ignição já passou: o que falta até o alvo é menor que o risco)') + '. Caixa não criada.' + avisoCob);
+        if (!esc) throw new Error('Micro: ' + (primeiroErro || 'nenhuma entrada válida no sino (sem zona, stop curto demais, zona que já deu stop há pouco, ou a ignição já passou)') + '. Caixa não criada.' + avisoCob);
         const rm = esc.r, entrada = rm.entrada, stop = rm.stop, risco = esc.risco, alvo = esc.alvo, am = esc.am, zonaMa = esc.zonaMa, dMi = esc.def, conf = scConfirmacoes(lado, rm, esc.u, esc.cs, esc.def), fraco = conf.n < 3;
         if (opts.soAvaliar) throw { soAval: true, aval: { nota: scScoreDe(conf).n, fraco } };   // usado pelo Motor: só mede o lado, não desenha
         // posição: logo à direita da última caixa existente (nada é apagado)
@@ -17146,10 +17210,11 @@ async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fecha
         const pz = grPosNova(lado, n, entrada);
         pz.entrada = entrada; pz.stop = stop; pz.alvo = alvo; pz.origem = 'setup'; pz.tAbs = true; pz.t1 = t1; pz.t2 = t2;
         pz.rotulo = 'Setup ' + dMa.rot + ' × ' + dMi.rot + (fraco ? ' · fraco' : ''); pz.score = scScoreDe(conf);
+        if (tfSug && tfSug.rot) pz.tfAcomp = { chave: tfSug.chave, rot: tfSug.rot };
         if (opts.scalp) pz.scalp = true;
         if (!dup) { lista.push(pz); grPosSalvar(); }
         const f = x => Math.round(x).toLocaleString('pt-BR');
-        _scUltimo = { lado, hora: new Date(), txt: (lado === 'short' ? 'Short' : 'Long') + ' · entrada ' + f(entrada) + ' · stop ' + f(stop) + ' · alvo ' + f(alvo) + (am ? ' (nó macro)' : ' (sem nó macro: 2R)') + (' · ' + conf.n + ' de ' + SC_CONF_TOTAL + ' confirmações') + (fraco ? ' · FRACO' : '') + (tfSug && tfSug.rot ? ' · acompanhe no ' + tfSug.rot : '') + avisoCob };
+        _scUltimo = { lado, hora: new Date(), txt: (lado === 'short' ? 'Short' : 'Long') + ' · entrada ' + f(entrada) + ' · stop ' + f(stop) + ' · alvo ' + f(alvo) + (esc.alvoTipo === 'pico' ? ' (pico do sino)' : am ? ' (nó macro)' : ' (2R)') + (' · ' + conf.n + ' de ' + SC_CONF_TOTAL + ' confirmações') + (fraco ? ' · FRACO' : '') + (tfSug && tfSug.rot ? ' · acompanhe no ' + tfSug.rot : '') + avisoCob };
         // Relatório curto
         {
             const pc = x => (x >= 0 ? '+' : '−') + (Math.abs(x) * 100).toFixed(1).replace('.', ',') + '%', rng = ns => { ns = ns.filter(Boolean).sort((x, y) => x - y); return !ns.length ? 'fora da tela' : (ns.length === 1 ? 'nível ' + ns[0] : 'níveis ' + ns[0] + ' a ' + ns[ns.length - 1]); };
@@ -17158,8 +17223,8 @@ async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fecha
                 (lado === 'short' ? 'SHORT' : 'LONG') + ' · ' + dias + ' dias · ' + dMa.rot + ' × ' + dMi.rot + ' · ' + conf.n + ' de ' + SC_CONF_TOTAL + ' confirmações',
                 'Entrada ' + f(entrada) + ' · Stop ' + f(stop) + ' (' + pc((stop - entrada) / entrada) + ') · Alvo ' + f(alvo) + ' (' + pc((alvo - entrada) / entrada) + ')',
                 'Stop: borda de trás do nó de entrada · ' + Math.round(risco / rm.tick) + (Math.round(risco / rm.tick) === 1 ? ' nível' : ' níveis') + ' de ' + f(rm.tick),
-                'Zona quente (sino do ' + esc.banda.fonte + '): entrada dentro de ' + rng(zonaMa.map(x => x.num)) + ' (' + f(Math.min.apply(null, zonaMa.map(x => x.lo))) + '–' + f(Math.max.apply(null, zonaMa.map(x => x.hi))) + ')',
-                'Alvo: ' + (am ? 'nó macro, ' + rng(am.nums) + ', borda ' + f(am.alvo) : 'sem nó macro útil, 2R')
+                'Zona quente (sino do ' + esc.banda.fonte + '): ' + esc.banda.faixas.map(fx => f(fx.lo) + '–' + f(fx.hi) + (fx.poc ? ' (POC da VA)' : '')).join(' + '),
+                'Alvo: ' + (esc.alvoTipo === 'pico' ? 'pico do sino (' + f(alvo) + '), a volta ao valor' : am ? 'nó macro, ' + rng(am.nums) + ', borda ' + f(am.alvo) : 'sem nó macro nem pico útil, 2R')
             ];
             if (tfSug) L.push(tfSug.rot ? 'Acompanhe no gráfico de ' + tfSug.rot + ': um candle típico (' + f(tfSug.med) + ') cabe na zona de captura (' + f(tfSug.h) + ')' : 'Nenhum timeframe cabe: já no de ' + tfSug.menor + ' um candle típico (' + f(tfSug.med) + ') é maior que a zona de captura (' + f(tfSug.h) + ')');
             const dh = t => new Date(t).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }), E = conf.ev;
@@ -17189,7 +17254,7 @@ async function scTfAcompanhar(h) {
         const def = scDefTf(k); let cs; try { cs = await scCandles(def, 7); } catch (e) { continue; }
         const rg = cs.filter(c => Number(c.h) > Number(c.l)).map(c => Number(c.h) - Number(c.l)); if (rg.length < 20) continue;
         const med = scMediana(rg); if (!menor) menor = { menor: def.rot, med };
-        if (med <= h) melhor = { rot: def.rot, med, h }; else break;
+        if (med <= h) melhor = { rot: def.rot, med, h, chave: k }; else break;
     }
     return melhor || (menor ? { rot: null, menor: menor.menor, med: menor.med, h } : null);
 }
@@ -17205,7 +17270,8 @@ async function scMotor() {
         const ns = a && a.aval ? a.aval.nota : null, nl = b && b.aval ? b.aval.nota : null;
         if (ns == null && nl == null) { fim('Motor: nenhum lado tem entrada válida no sino (sem zona, ou a ignição já passou). Nada criado.', '#EF5350', true); return; }
         if (ns != null && nl != null && ns === nl) { fim('Motor: sem lado claro (short ' + ns + ' × long ' + nl + '). Nada criado.', '#F59E0B', true); return; }
-        const lado = nl == null || (ns != null && ns > nl) ? 'short' : 'long';
+        const lado = nl == null || (ns != null && ns > nl) ? 'short' : 'long', nv = lado === 'short' ? ns : nl;
+        if (nv < 3) { fim('Motor: o melhor lado é ' + (lado === 'short' ? 'Short' : 'Long') + ' com nota ' + nv + ' (fraco, menos de 3). Nada criado.', '#F59E0B', true); return; }
         await scRodar(lado, {});
         const rot = 'Motor → ' + (lado === 'short' ? 'Short' : 'Long') + ' (short ' + (ns == null ? 'sem entrada' : ns) + ' × long ' + (nl == null ? 'sem entrada' : nl) + ')';
         if (_scUltimo && !_scUltimo.erro && _scUltimo.linhas) { _scUltimo.txt = rot + ' · ' + _scUltimo.txt; _scUltimo.linhas.splice(2, 0, rot); }
