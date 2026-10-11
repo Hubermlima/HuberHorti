@@ -3249,7 +3249,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v442';
+const APP_VERSAO = 'v444';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -8131,6 +8131,20 @@ function cvPosStatusIniciar(pz, forcar) {
     });
     const mm = document.getElementById('cv-pos-ctx'); if (mm) { const st = mm.querySelector('#cv-pos-ctx-status'); if (st && !pz._stat) cvPosStatusBotao(pz, st); }
 }
+// Copia em texto a caixa + Score + Status (pra colar na conversa em vez de foto). Se o Status ainda não foi calculado, calcula antes.
+async function cvPosCopiarTudo(i) {
+    const pz = grPosicoes()[i]; if (!pz) return;
+    try { if (!pz._stat && scStatusElegivel(pz)) pz._stat = await scStatusCalcular(pz); } catch (e) {}
+    const f = x => x > 0 ? Math.round(x).toLocaleString('pt-BR') : '—', dh = t => new Date(t).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const L = [], t0 = Math.min(pz.t1 || 0, pz.t2 || 0);
+    L.push('CAIXA · ' + (pz.lado === 'long' ? 'Long' : 'Short') + ' · ' + (pz.origem === 'setup' ? 'motor ' + (pz.motorV || 'antigo') : pz.pm > 0 ? 'posição real' : 'manual') + (t0 > 0 ? ' · criada ' + dh(t0) : '') + ' · copiado ' + dh(Date.now()));
+    L.push('Entrada ' + f(pz.entrada) + (pz.pm > 0 ? ' · PM ' + f(pz.pm) : '') + ' · Stop ' + f(pz.stop) + ' · Alvo ' + f(pz.alvo) + ' · preço agora ' + f(_precoAtual));
+    if (pz.tfAcomp) L.push('Acompanhar no ' + pz.tfAcomp.rot);
+    if (pz.score) { L.push('SCORE ' + pz.score.n + '/' + pz.score.total + (pz.origem === 'setup' ? ' (na criação)' : '')); pz.score.itens.forEach(it => L.push((it.ok ? '✓ ' : '✗ ') + it.nome + (it.det ? ': ' + it.det : '') + ' [' + it.pts + ']')); }
+    const x = pz._stat;
+    if (x) { L.push('STATUS ' + SC_STATUS_ROT[x.nivel] + (x.R != null ? ' · resultado agora ' + (x.R >= 0 ? '+' : '−') + Math.abs(x.R).toFixed(1).replace('.', ',') + 'R' : '')); x.itens.forEach(it => L.push('• ' + ['ok', 'atenção', 'perigo'][it.n] + ': ' + it.txt)); }
+    try { await navigator.clipboard.writeText(L.join('\n')); grAreaToast('Copiado: cole na conversa', '#16A34A'); } catch (e) { try { scRelatorioMostrar({ lado: null, linhas: L }); } catch (e2) {} }   // iPhone recusou copiar direto: mostra o texto com o botão Copiar
+}
 function cvPosStatusPainel(i, m) {   // painel Status: o geral (Saudável / Atenção / Perigo) e cada leitura com o motivo
     let d = document.getElementById('cv-pos-status');
     const pz = grPosicoes()[i];
@@ -8140,7 +8154,8 @@ function cvPosStatusPainel(i, m) {   // painel Status: o geral (Saudável / Aten
     if (!x) d.innerHTML = '<div style="font-weight:800;color:#1C1C1E;margin-bottom:3px;">Status</div><div style="color:' + (pz._statErro ? '#DC2626' : '#6B6B70') + ';line-height:1.35;">' + (pz._statErro ? pz._statErro : 'Calculando…') + '</div>';
     else d.innerHTML = '<div style="font-weight:800;color:' + SC_STATUS_COR[x.nivel] + ';margin-bottom:3px;">' + (pz.lado === 'long' ? 'Long' : 'Short') + ' · ' + SC_STATUS_ROT[x.nivel] + '</div>'
         + x.itens.map(it => '<div style="display:flex;gap:6px;align-items:baseline;line-height:1.35;"><span style="width:10px;color:' + SC_STATUS_COR[it.n] + ';">&#9679;</span><span style="flex:1;">' + it.txt + '</span></div>').join('')
-        + (x.R != null ? '<div style="margin-top:4px;color:#6B6B70;">Resultado agora: <b style="color:#1C1C1E;">' + (x.R >= 0 ? '+' : '−') + Math.abs(x.R).toFixed(1).replace('.', ',') + 'R</b></div>' : '');
+        + (x.R != null ? '<div style="margin-top:4px;color:#6B6B70;">Resultado agora: <b style="color:#1C1C1E;">' + (x.R >= 0 ? '+' : '−') + Math.abs(x.R).toFixed(1).replace('.', ',') + 'R</b></div>' : '')
+        + '<button type="button" onclick="cvPosCopiarTudo(' + i + ')" style="width:100%;margin-top:6px;border:none;border-radius:7px;padding:6px;font-size:11.5px;font-weight:700;background:#F2F2F7;color:#1C1C1E;">Copiar Score + Status</button>';
     const r = m.getBoundingClientRect(), W = window.innerWidth, H = window.innerHeight, dw = d.offsetWidth, dh = d.offsetHeight;
     let xx = Math.max(4, Math.min(W - dw - 4, r.left)), y = r.bottom + 4; if (y + dh > H - 4) y = Math.max(4, r.top - dh - 4);
     d.style.left = xx + 'px'; d.style.top = y + 'px';
@@ -8163,7 +8178,8 @@ function cvPosScorePainel(i, m) {   // painel Score: cada critério do escore, p
     if (!window._grScoreAberto || !pz || !pz.score || !m) { if (d) d.remove(); return; }
     if (!d) { d = document.createElement('div'); d.id = 'cv-pos-score'; d.style.cssText = 'position:fixed;z-index:9691;background:#FFFFFF;border-radius:9px;padding:7px 9px;box-shadow:0 1px 8px rgba(0,0,0,0.25);font-family:-apple-system,sans-serif;font-size:11px;color:#3A3A3C;min-width:170px;max-width:290px;'; d.addEventListener('touchstart', ev => ev.stopPropagation(), { passive: true }); document.body.appendChild(d); }
     const sc = pz.score;
-    d.innerHTML = '<div style="font-weight:800;color:#1C1C1E;margin-bottom:3px;">' + (pz.lado === 'long' ? 'Long' : 'Short') + ' Score (' + sc.n + '/' + sc.total + ')</div>' + sc.itens.map(it => '<div style="display:flex;gap:6px;align-items:baseline;line-height:1.35;"><span style="width:10px;font-weight:800;color:' + (it.ok ? '#16A34A' : '#DC2626') + ';">' + (it.ok ? '✓' : '✗') + '</span><span style="flex:1;"><b>' + it.nome + '</b>' + (it.det ? ' <span style="color:#8E8E93;">' + it.det + '</span>' : '') + '</span><span style="font-weight:700;color:#1C1C1E;">' + it.pts + '</span></div>').join('');
+    d.innerHTML = '<div style="font-weight:800;color:#1C1C1E;margin-bottom:3px;">' + (pz.lado === 'long' ? 'Long' : 'Short') + ' Score (' + sc.n + '/' + sc.total + ')</div>' + sc.itens.map(it => '<div style="display:flex;gap:6px;align-items:baseline;line-height:1.35;"><span style="width:10px;font-weight:800;color:' + (it.ok ? '#16A34A' : '#DC2626') + ';">' + (it.ok ? '✓' : '✗') + '</span><span style="flex:1;"><b>' + it.nome + '</b>' + (it.det ? ' <span style="color:#8E8E93;">' + it.det + '</span>' : '') + '</span><span style="font-weight:700;color:#1C1C1E;">' + it.pts + '</span></div>').join('')
+        + '<button type="button" onclick="cvPosCopiarTudo(' + i + ')" style="width:100%;margin-top:6px;border:none;border-radius:7px;padding:6px;font-size:11.5px;font-weight:700;background:#F2F2F7;color:#1C1C1E;">Copiar Score + Status</button>';
     const r = m.getBoundingClientRect(), W = window.innerWidth, H = window.innerHeight, dw = d.offsetWidth, dh = d.offsetHeight;
     let x = Math.max(4, Math.min(W - dw - 4, r.left)), y = r.bottom + 4; if (y + dh > H - 4) y = Math.max(4, r.top - dh - 4);
     d.style.left = x + 'px'; d.style.top = y + 'px';
@@ -17238,7 +17254,7 @@ async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fecha
         pz.motorV = SC_MOTOR_VERSAO;
         if (!dup) { lista.push(pz); grPosSalvar(); scRegistrar({ id: pz.id, mv: SC_MOTOR_VERSAO, modo: opts.modo || (opts.scalp ? 'play' : 'trader'), lado, nota: pz.score ? pz.score.n : null, ent: entrada, stp: stop, alvo, alvoTipo: esc.alvoTipo || (am ? 'macro' : '2R'), mi: dMi.rot, ma: dMa.rot, tfA: tfSug && tfSug.rot ? tfSug.rot : null, val: dMa.blocoMs, sym: grBinSymbolAtual() }); }
         const f = x => Math.round(x).toLocaleString('pt-BR');
-        _scUltimo = { lado, hora: new Date(), txt: (lado === 'short' ? 'Short' : 'Long') + ' · entrada ' + f(entrada) + ' · stop ' + f(stop) + ' · alvo ' + f(alvo) + (esc.alvoTipo === 'pico' ? ' (pico do sino)' : am ? ' (nó macro)' : ' (2R)') + (' · ' + conf.n + ' de ' + SC_CONF_TOTAL + ' confirmações') + (fraco ? ' · FRACO' : '') + (tfSug && tfSug.rot ? ' · acompanhe no ' + tfSug.rot : '') + avisoCob };
+        _scUltimo = { pzId: pz.id, lado, hora: new Date(), txt: (lado === 'short' ? 'Short' : 'Long') + ' · entrada ' + f(entrada) + ' · stop ' + f(stop) + ' · alvo ' + f(alvo) + (esc.alvoTipo === 'pico' ? ' (pico do sino)' : am ? ' (nó macro)' : ' (2R)') + (' · ' + conf.n + ' de ' + SC_CONF_TOTAL + ' confirmações') + (fraco ? ' · FRACO' : '') + (tfSug && tfSug.rot ? ' · acompanhe no ' + tfSug.rot : '') + avisoCob };
         // Relatório curto
         {
             const pc = x => (x >= 0 ? '+' : '−') + (Math.abs(x) * 100).toFixed(1).replace('.', ',') + '%', rng = ns => { ns = ns.filter(Boolean).sort((x, y) => x - y); return !ns.length ? 'fora da tela' : (ns.length === 1 ? 'nível ' + ns[0] : 'níveis ' + ns[0] + ' a ' + ns[ns.length - 1]); };
@@ -17479,6 +17495,25 @@ function scPlayUI() {
     el.textContent = '⏸ ' + (_scPlay.rodando ? 'analisando…' : 'próx. análise ' + scPlayFmt(_scPlay.prox - Date.now())) + (_scPlay.ultimo ? ' · ' + _scPlay.ultimo : '');
     el.style.right = Math.max(6, window.innerWidth - rc.right + 8) + 'px'; el.style.top = (rc.top + 52) + 'px';
 }
+// Ver Relatório: o relatório da criação + como a caixa está AGORA (preço, Score atual, Status e o desfecho no histórico), tudo num texto só pra copiar
+async function scRelatorioCompleto() {
+    const o = _scUltimo; if (!o || !o.linhas) return;
+    const pz = o.pzId != null ? grPosicoes().find(z => z.id === o.pzId) : null;
+    const base = o.linhas.slice(), f = x => x > 0 ? Math.round(x).toLocaleString('pt-BR') : '—', dh = t => new Date(t).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    if (pz) {
+        try { grAreaToast('Atualizando Score e Status…', '#8E8E93'); } catch (e) {}
+        let st = null; try { st = await scStatusCalcular(pz); pz._stat = st; } catch (e) {}
+        base.push('— AGORA (' + dh(Date.now()) + ') · preço ' + f(_precoAtual) + ' —');
+        if (st) {
+            base.push('Status: ' + SC_STATUS_ROT[st.nivel] + (st.R != null ? ' · resultado ' + (st.R >= 0 ? '+' : '−') + Math.abs(st.R).toFixed(1).replace('.', ',') + 'R' : ''));
+            st.itens.forEach(it => base.push('• ' + ['ok', 'atenção', 'perigo'][it.n] + ': ' + it.txt));
+        }
+        try { await scRegAtualizar(); } catch (e) {}
+        const reg = scRegLista().find(r => r.id === pz.id);
+        if (reg) base.push('Histórico: ' + SC_REG_ROT[reg.st] + (reg.tFim ? ' ' + dh(reg.tFim) : reg.tEnt ? ' ' + dh(reg.tEnt) : ''));
+    } else if (o.pzId != null) base.push('— a caixa deste relatório não está mais no gráfico —');
+    scRelatorioMostrar(Object.assign({}, o, { linhas: base }));
+}
 function scRelatorioFechar() { const ov = document.getElementById('sc-relatorio-overlay'); if (ov) ov.style.display = 'none'; }
 const SC_RES = { segurou: 'segurou', rompeu: 'rompeu', semToque: 'sem toque', indef: 'sem desfecho' };
 function scCasoTxt(c) { const d = new Date(c.T).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }), cn = c.c.segurou + c.c.rompeu; return d + ' · ' + (c.lado === 'short' ? 'Short' : 'Long') + ' · ' + c.n + '/' + SC_CONF_TOTAL + ' · ' + SC_RES[c.r] + ' · acaso: ' + c.c.segurou + ' de ' + cn + ' seguraram' + (c.amb ? ' · ' + (c.amb.faca ? 'FACA' : 'sem faca') + ' · ' + (c.amb.cong ? 'congestão' : 'direcional') : ''); }
@@ -17565,7 +17600,7 @@ function scRenderPopup(menu) {
               + '<button type="button" onclick="scMotor()" style="flex:1;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:800;background:#F2F2F7;color:#1C1C1E;">Motor</button></div>'
               + (_scTraderAberto ? '<div style="display:flex;gap:8px;margin-top:8px;"><button type="button" onclick="scRodar(\'short\')" style="flex:1;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:800;background:#FDECEC;color:#DC2626;">Short</button>'
               + '<button type="button" onclick="scRodar(\'long\')" style="flex:1;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:800;background:#E8F7EC;color:#16A34A;">Long</button></div>' : ''))
-        + (_scUltimo && _scUltimo.linhas ? '<button type="button" onclick="scRelatorioMostrar()" style="width:100%;margin-top:8px;border:none;border-radius:10px;padding:10px;font-size:13px;font-weight:800;background:#1C1C1E;color:#FFFFFF;">Ver Relatório</button>' : '')
+        + (_scUltimo && _scUltimo.linhas ? '<button type="button" onclick="scRelatorioCompleto()" style="width:100%;margin-top:8px;border:none;border-radius:10px;padding:10px;font-size:13px;font-weight:800;background:#1C1C1E;color:#FFFFFF;">Ver Relatório</button>' : '')
         + '<div style="display:flex;gap:8px;margin-top:8px;"><button type="button" onclick="scSobreMostrar()" style="flex:1;border:none;border-radius:10px;padding:9px;font-size:13px;font-weight:700;background:#F2F2F7;color:#1C1C1E;">Sobre (' + SC_MOTOR_VERSAO + ')</button>'
         + '<button type="button" onclick="scHistoricoMostrar()" style="flex:1;border:none;border-radius:10px;padding:9px;font-size:13px;font-weight:700;background:#F2F2F7;color:#1C1C1E;">Histórico (' + scRegLista().length + ')</button></div>'
         + '<div style="margin-top:12px;padding-top:12px;border-top:1px solid #F2F2F7;">'
