@@ -3031,7 +3031,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v389';
+const APP_VERSAO = 'v391';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4018,7 +4018,9 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
     yCorpoTopo = Math.max(yCorpoTopo, Math.round(toY(candle.h)), yMin);
     yCorpoBase = Math.min(yCorpoBase, Math.round(toY(candle.l)), yMax);
     const sobe = candle.c >= candle.o;
-    if (FOOTPRINT_SKIN === 'tv') {   // skin TradingView: o candle (pavio + corpo) fica NO MEIO, entre a coluna de venda e a de compra
+    if (candle._vivo) {   // candle em formação: pavio+corpo saem na camada rápida (acompanham cada trade); aqui só guardamos a geometria
+        window._cotVivo = { t: candle.t, tipo: FOOTPRINT_SKIN === 'tv' ? 'tv' : 'bar', cxC: xCel + wCel / 2, tvGap, xSlot, barW, yMin, yMax };
+    } else if (FOOTPRINT_SKIN === 'tv') {   // skin TradingView: o candle (pavio + corpo) fica NO MEIO, entre a coluna de venda e a de compra
         const cxC = xCel + wCel / 2, cor = grCorCandleOu(sobe, sobe ? '#089981' : '#F23645');
         ctx.fillStyle = cor;
         const yh = Math.max(yMin, Math.round(toY(candle.h))), yl = Math.min(yMax, Math.round(toY(candle.l)));
@@ -4050,6 +4052,40 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
 // Um desenho por quadro: o touchmove dispara mais rápido que a tela redesenha e cada desenho é síncrono e
 // pesado — sem agrupar, os eventos se acumulam e o gráfico "arrasta atrasado" (o arrasto ainda chamava
 // grDrawChart 2x por evento, um por eixo).
+// Pavio + corpo do candle em formação, na camada rápida. Mesmas regras de desenho do gráfico principal (que só guardou a
+// geometria em window._cotVivo); máxima/mínima/fechamento saem do último candle real + a cotação atual.
+function grCotVivoDesenhar(ctx, g) {
+    const v = window._cotVivo, real = _grAllCandles[_grAllCandles.length - 1];
+    if (!v || !real || real.t !== v.t || !(_precoAtual > 0)) return;
+    const P = _precoAtual, o = real.o, h = Math.max(real.h, P), l = Math.min(real.l, P), toY = g.toY, sobe = P >= o;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(g.padL, g.y0, g.W - g.padR - g.padL, g.y1 - g.y0); ctx.clip();
+    ctx.setLineDash([]);
+    if (v.tipo === 'simple') {
+        const cc = grCorCandle(sobe), x = v.x, cW = v.cW;
+        ctx.strokeStyle = cc.stroke; ctx.fillStyle = cc.fill; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(x, toY(h)); ctx.lineTo(x, toY(l)); ctx.stroke();
+        const bT = toY(Math.max(o, P)), bB = toY(Math.min(o, P)), bH = Math.max(1, bB - bT);
+        ctx.fillRect(x - cW / 2, bT, cW, bH);
+        if (_grTemaClaro || cc.custom) ctx.strokeRect(x - cW / 2, bT, cW, bH);
+    } else {
+        let yT = Math.round(toY(Math.max(o, P))), yB = Math.round(toY(Math.min(o, P)));
+        yT = Math.max(yT, Math.round(toY(h)), v.yMin); yB = Math.min(yB, Math.round(toY(l)), v.yMax);
+        if (v.tipo === 'tv') {
+            const cxC = v.cxC, tvGap = v.tvGap, cor = grCorCandleOu(sobe, sobe ? '#089981' : '#F23645');
+            const yh = Math.max(v.yMin, Math.round(toY(h))), yl = Math.min(v.yMax, Math.round(toY(l)));
+            const brc = grBrancoNoClaro(cor);
+            ctx.fillStyle = brc ? '#5C5C5C' : cor; ctx.fillRect(Math.round(cxC) - 0.5, yh, 1, Math.max(1, yl - yh));
+            ctx.fillStyle = cor; ctx.fillRect(Math.round(cxC - tvGap), yT, Math.round(tvGap * 2), Math.max(2, yB - yT));
+            if (brc) { ctx.strokeStyle = '#5C5C5C'; ctx.lineWidth = 1; ctx.strokeRect(Math.round(cxC - tvGap) + 0.5, yT + 0.5, Math.round(tvGap * 2) - 1, Math.max(2, yB - yT) - 1); }
+        } else {
+            const corB = grCorCandleOu(sobe, sobe ? '#2E7D32' : '#D32F2F');
+            ctx.fillStyle = corB; ctx.fillRect(Math.round(v.xSlot), yT, v.barW, Math.max(2, yB - yT));
+            if (grBrancoNoClaro(corB)) { ctx.strokeStyle = '#5C5C5C'; ctx.lineWidth = 1; ctx.strokeRect(Math.round(v.xSlot) + 0.5, yT + 0.5, v.barW - 1, Math.max(2, yB - yT) - 1); }
+        }
+    }
+    ctx.restore();
+}
 // Camada leve da cotação: linha de preço + etiqueta no eixo. Usa a escala do último desenho completo (window._cotGeo), então
 // acompanha cada trade na hora (no máx. 1 vez por quadro) sem custo de redesenhar candles/footprint/caixas.
 function grCotOverlayDesenhar() {
@@ -4062,6 +4098,7 @@ function grCotOverlayDesenhar() {
     const lastCandle = _grAllCandles[_grAllCandles.length - 1];
     const precoColor = lastCandle ? grCorCandleOu(lastCandle.c >= lastCandle.o, lastCandle.c >= lastCandle.o ? '#26A69A' : '#EF5350') : '#FFFFFF';
     const yPreco = g.toY(_precoAtual);
+    grCotVivoDesenhar(ctx, g);
     ctx.save();
     ctx.globalAlpha = 1;
     ctx.strokeStyle = precoColor;
@@ -5245,6 +5282,7 @@ function grDrawCandles(candles, emptyRight) {
         emptyRight = emptyRight || 0;
         try { grPosAjustarLargura(); } catch (e) {}   // largura das caixas = fração da tela × zoom, em qualquer TF
         window._compValores = {};
+        window._cotVivo = null;   // corpo do candle em formação: desenhado pela camada rápida da cotação (grCotOverlayDesenhar)
         if (candles && candles.length) {
             window._grVisibleTRange = { from: candles[0].t, to: candles[candles.length - 1].t };
         }
@@ -5908,6 +5946,9 @@ if (_grTipoGrafico === 'linha') {
         ctx.fillStyle = color;
         ctx.lineWidth = 1;
         ctx.setLineDash([]);
+        if (c._vivo) {   // candle em formação: pavio+corpo saem na camada rápida da cotação
+            window._cotVivo = { t: c.t, tipo: 'simple', x, cW };
+        } else {
         // Wick
         ctx.beginPath();
         ctx.moveTo(x, toY(c.h));
@@ -5919,6 +5960,7 @@ if (_grTipoGrafico === 'linha') {
         const bodyH = Math.max(1, bodyBot - bodyTop);
         ctx.fillRect(x - cW / 2, bodyTop, cW, bodyH);
         if (_grTemaClaro || cc.custom) ctx.strokeRect(x - cW / 2, bodyTop, cW, bodyH);
+        }
         const slotWAbs = chartW / Math.max(totalSlots, 1);
         if (absorcao === 'alta') grDesenharSimboloAbsorcao(ctx, x, toY(c.l), 'compradora', absExcessoPct, slotWAbs, PAD.top, PAD.top + chartH);
         else if (absorcao === 'baixa') grDesenharSimboloAbsorcao(ctx, x, toY(c.h), 'vendedora', absExcessoPct, slotWAbs, PAD.top, PAD.top + chartH);
@@ -6607,7 +6649,7 @@ const aBX = W - PAD.right + 1, aBY = yR2 - aBH / 2;
             const yPreco = toY(_precoAtual);
             // A linha e a etiqueta da cotação ficam numa camada própria (grCotOverlayDesenhar), redesenhada a cada trade do WebSocket
             // sem refazer o gráfico inteiro. Aqui só guardamos a geometria deste desenho (escala e margens).
-            window._cotGeo = { W, H, padL: PAD.left, padR: PAD.right, toY };
+            window._cotGeo = { W, H, padL: PAD.left, padR: PAD.right, toY, y0: PAD.top, y1: PAD.top + chartH };
             grCotOverlayDesenhar();
             // O badge "Δ" ao vivo que ficava aqui (grCrosshairZonaDeltaPreco) saiu — redundante com a régua
             // Delta ATR, que é a leitura oficial agora (grade e janela diferentes, número não batia com o dela).
@@ -16240,10 +16282,11 @@ const SC_TFS = {
 };
 const SC_ORDEM = ['5m', '15m', '30m', '1h', '2h', '3h', '4h', '1d', '3d', '1w'];   // do menor para o maior; a descida de TF anda para trás nesta lista e para em 1h (micro de 1h ou mais) ou no menor (micro de minutos)
 const SC_DIAS = [1, 2, 3, 5, 7, 14, 21, 30, 45, 60, 90];
+const SC_PLAY_INTERVALOS = [5, 10, 15, 30, 60, 120, 240];   // minutos entre uma análise automática e a próxima (Play)
 let _scCfg = (function () {
     let c = null; try { c = JSON.parse(localStorage.getItem('grSetupCx') || 'null'); } catch (e) {}
     c = c && typeof c === 'object' ? c : {};
-    return { dias: SC_DIAS.includes(c.dias) ? c.dias : 30, macro: SC_TFS[c.macro] ? c.macro : '3d', micro: SC_TFS[c.micro] ? c.micro : '4h', ligado: c.ligado === true };
+    return { dias: SC_DIAS.includes(c.dias) ? c.dias : 30, macro: SC_TFS[c.macro] ? c.macro : '3d', micro: SC_TFS[c.micro] ? c.micro : '4h', ligado: c.ligado === true, intervalo: SC_PLAY_INTERVALOS.includes(c.intervalo) ? c.intervalo : 15 };
 })();
 let _scCalculando = false, _scUltimo = null;
 _indState.setupCx = _scCfg.ligado;
@@ -16577,6 +16620,7 @@ function scAvaliarCore(lado, def, tk, cs, dias, dMa, rM, uMa, preco) {
 async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fechar o menu, sem selecionar a caixa (usado pelo Play) · opts.scalp: caixa de scalp (só contorno), à direita, sem duplicar
     opts = opts || {}; const sil = !!opts.silencioso;
     if (_scCalculando) return { ocupado: true };
+    if (!sil && _scPlay.on) _scPlay.prox = scPlayProxima();   // análise manual reinicia a contagem do Play
     if (!_grFootprintAtivo || !_grFootprintCandlesRaw) { if (!sil) alert('Ligue o Fluxo (FX) e aguarde os dados carregarem.'); return { erro: true, msg: 'Fluxo desligado ou sem dados.' }; }
     _scCalculando = true; cvRenderMenuFpCfg();
     let msg = null, cor = '#8E8E93', dup = false;
@@ -16651,7 +16695,8 @@ async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fecha
 }
 // ── PLAY / PAUSE: a cada fechamento de candle do TF micro, roda o motor (short e long) e cria as caixas de scalp. Só funciona com o app aberto; ao voltar de segundo plano roda na hora se passou do horário. ──
 const _scPlay = { on: false, prox: 0, tmr: null, rodando: false, ultimo: '' };
-function scPlayProxima() { const ms = scDefTf(_scCfg.micro).blocoMs; return (Math.floor(Date.now() / ms) + 1) * ms + 4000; }   // 4 s depois do fechamento, pra Binance e o Fluxo fecharem o candle
+function scPlayProxima() { return Date.now() + _scCfg.intervalo * 60000; }   // intervalo escolhido pelo usuário, contado a partir de agora (Play ligado, análise automática ou manual)
+function scIntervaloRot(m) { return m >= 60 ? (m / 60) + ' h' : m + ' min'; }
 function scPlayFmt(ms) { const t = Math.max(0, Math.ceil(ms / 1000)), h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), q = t % 60, z = v => (v < 10 ? '0' : '') + v; return (h ? h + ':' + z(m) : m) + ':' + z(q); }
 function scPlayToggle() {
     if (_scPlay.on) { scPlayParar(); return; }
@@ -16722,6 +16767,7 @@ function scRelatorioMostrar(o) {
 }
 function scDefinirDias(v) { _scCfg.dias = parseInt(v) || 30; scSalvar(); cvRenderMenuFpCfg(); }
 function scDefinirMacro(v) { if (SC_TFS[v]) _scCfg.macro = v; scSalvar(); cvRenderMenuFpCfg(); }
+function scDefinirIntervalo(v) { const m = parseInt(v); if (SC_PLAY_INTERVALOS.includes(m)) _scCfg.intervalo = m; scSalvar(); if (_scPlay.on) _scPlay.prox = scPlayProxima(); cvRenderMenuFpCfg(); try { scPlayUI(); } catch (e) {} }
 function scDefinirMicro(v) { if (SC_TFS[v]) _scCfg.micro = v; scSalvar(); cvRenderMenuFpCfg(); }
 function scRenderPopup(menu) {
     const ico = { cal: '<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>', rel: '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/>' };
@@ -16731,8 +16777,9 @@ function scRenderPopup(menu) {
         + grConfigCombo(ico.rel, 'Timeframe macro', 'Zona favorável e alvo', 'cv-cfg-sc-macro', tfs, _scCfg.macro, 'scDefinirMacro')
         + grConfigCombo(ico.rel, 'Timeframe micro', 'Entrada e stop', 'cv-cfg-sc-micro', tfs, _scCfg.micro, 'scDefinirMicro')
         + '<div style="font-size:11.5px;color:#8E8E93;margin-top:8px;line-height:1.4;">Fluxo carregado: ' + (cob >= _scCfg.dias - 1 ? 'cobre a janela' : '<b style="color:#DC2626;">só ' + Math.floor(cob) + ' dias</b>') + '. As réguas rodam em memória; a régua da tela não muda.</div>'
+        + grConfigCombo(ico.rel, 'Intervalo do Play', 'Tempo entre análises automáticas', 'cv-cfg-sc-int', SC_PLAY_INTERVALOS.map(m => [m, scIntervaloRot(m)]), _scCfg.intervalo, 'scDefinirIntervalo')
         + '<div style="margin-top:12px;padding-top:12px;border-top:1px solid #F2F2F7;">'
-        + '<button type="button" onclick="scPlayToggle()" style="width:100%;margin-bottom:8px;border:none;border-radius:10px;padding:10px;font-size:13px;font-weight:800;background:' + (_scPlay.on ? '#FDECEC' : '#1C1C1E') + ';color:' + (_scPlay.on ? '#DC2626' : '#FFFFFF') + ';">' + (_scPlay.on ? '⏸ Pause' : '▶ Play · analisa a cada candle ' + scDefTf(_scCfg.micro).rot) + '</button>'
+        + '<button type="button" onclick="scPlayToggle()" style="width:100%;margin-bottom:8px;border:none;border-radius:10px;padding:10px;font-size:13px;font-weight:800;background:' + (_scPlay.on ? '#FDECEC' : '#1C1C1E') + ';color:' + (_scPlay.on ? '#DC2626' : '#FFFFFF') + ';">' + (_scPlay.on ? '⏸ Pause' : '▶ Play · analisa a cada ' + scIntervaloRot(_scCfg.intervalo)) + '</button>'
         + (_scCalculando ? '<div style="font-size:12.5px;color:#8E8E93;padding:10px 0;">Calculando macro e micro…</div>'
             : '<div style="display:flex;gap:8px;"><button type="button" onclick="scRodar(\'short\')" style="flex:1;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:800;background:#FDECEC;color:#DC2626;">Short</button>'
               + '<button type="button" onclick="scRodar(\'long\')" style="flex:1;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:800;background:#E8F7EC;color:#16A34A;">Long</button></div>')
