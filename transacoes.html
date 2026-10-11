@@ -405,6 +405,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
     <div id="gr-chart-canvas-wrap" style="position:relative;flex:1;min-height:0;">
       <canvas id="gr-chart-canvas" style="width:100%;height:100%;display:block;" onclick="if(_tickerDropdownAberto){cvToggleTickerDropdown();}"></canvas>
       <canvas id="gr-valuearea-overlay-canvas" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:6;"></canvas>
+      <canvas id="gr-cot-overlay-canvas" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:6;"></canvas>
       <canvas id="gr-crosshair-overlay-canvas" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:6;"></canvas>
       <canvas id="gr-metricas-canvas" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:7;"></canvas>
     </div>
@@ -1459,6 +1460,7 @@ function cvIniciarRealTime() {
             _precoAtual = novoPreco;
             grPerf('cotação (WebSocket)');
             grFootprintAtualizarLinhaPrecoAtual();
+            grCotOverlayAgendar();   // linha/etiqueta da cotação a cada trade, sem redesenhar o gráfico
             // Detecção de cruzamento alertas
             if (precoAntes > 0 && _grAlertas.length > 0) {
                 _grAlertas.forEach(alerta => {
@@ -3029,7 +3031,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v386';
+const APP_VERSAO = 'v388';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4048,6 +4050,51 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
 // Um desenho por quadro: o touchmove dispara mais rápido que a tela redesenha e cada desenho é síncrono e
 // pesado — sem agrupar, os eventos se acumulam e o gráfico "arrasta atrasado" (o arrasto ainda chamava
 // grDrawChart 2x por evento, um por eixo).
+// Camada leve da cotação: linha de preço + etiqueta no eixo. Usa a escala do último desenho completo (window._cotGeo), então
+// acompanha cada trade na hora (no máx. 1 vez por quadro) sem custo de redesenhar candles/footprint/caixas.
+function grCotOverlayDesenhar() {
+    const cv = document.getElementById('gr-cot-overlay-canvas'), g = window._cotGeo;
+    if (!cv || !g) return;
+    grDimensionarCanvas(cv, g.W, g.H);
+    const ctx = grPrepararCtx(cv);
+    ctx.clearRect(0, 0, g.W, g.H);
+    if (!(_precoAtual > 0)) return;
+    const lastCandle = _grAllCandles[_grAllCandles.length - 1];
+    const precoColor = lastCandle ? grCorCandleOu(lastCandle.c >= lastCandle.o, lastCandle.c >= lastCandle.o ? '#26A69A' : '#EF5350') : '#FFFFFF';
+    const yPreco = g.toY(_precoAtual);
+    ctx.save();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = precoColor;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(g.padL, yPreco); ctx.lineTo(g.W - g.padR - 5, yPreco); ctx.stroke();   // vai até a ponta da seta do badge
+    ctx.restore();
+    const txt = fmtN(_precoAtual);
+    ctx.font = 'bold 10px -apple-system';
+    const bH = 16, bW = g.padR - 4;
+    const bX = g.W - g.padR + 1, bY = yPreco - bH / 2;
+    ctx.fillStyle = precoColor;
+    const tip = 6, r = 3;
+    ctx.beginPath();
+    ctx.moveTo(bX - tip, yPreco);
+    ctx.lineTo(bX + 1, bY);
+    ctx.lineTo(bX + bW - r, bY); ctx.arcTo(bX + bW, bY, bX + bW, bY + r, r);
+    ctx.lineTo(bX + bW, bY + bH - r); ctx.arcTo(bX + bW, bY + bH, bX + bW - r, bY + bH, r);
+    ctx.lineTo(bX + 1, bY + bH);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#FFFFFF';
+    ctx.textAlign = 'right';
+    ctx.fillText(txt, bX + bW - 4, bY + bH - 3);
+    window._cotHandleY = yPreco;
+    window._cotHandleX = bX - 6;
+    window._cotHandleW = bW + 6;
+}
+let _cotRaf = false;
+function grCotOverlayAgendar() {
+    if (_cotRaf) return;
+    _cotRaf = true;
+    requestAnimationFrame(() => { _cotRaf = false; try { grCotOverlayDesenhar(); } catch (e) {} });
+}
 let _grDesenhoAgendado = false;
 function grAgendarDesenho() {
     if (_grDesenhoAgendado) return;
@@ -6558,33 +6605,10 @@ const aBX = W - PAD.right + 1, aBY = yR2 - aBH / 2;
             const lastCandle = _grAllCandles[_grAllCandles.length - 1];
             const precoColor = lastCandle ? grCorCandleOu(lastCandle.c >= lastCandle.o, lastCandle.c >= lastCandle.o ? '#26A69A' : '#EF5350') : '#FFFFFF';
             const yPreco = toY(_precoAtual);
-            ctx.save();
-            ctx.globalAlpha = 1;  // linha contínua e com contraste total, na mesma cor do badge
-            ctx.strokeStyle = precoColor;
-            ctx.lineWidth = 1.5;
-            ctx.setLineDash([]);
-            ctx.beginPath(); ctx.moveTo(PAD.left, yPreco); ctx.lineTo(W - PAD.right - 5, yPreco); ctx.stroke();   // vai até a ponta da seta do badge
-            ctx.restore();
-            ctx.setLineDash([]);
-            // Badge no eixo (direita) — com ponta em seta apontando para o candle em formação
-            const txt = fmtN(_precoAtual);
-            ctx.font = 'bold 10px -apple-system';
-            const bH = 16, bW = PAD.right - 4;
-            const bX = W - PAD.right + 1, bY = yPreco - bH / 2;
-            ctx.fillStyle = precoColor;
-            {
-                const tip = 6, r = 3;
-                ctx.beginPath();
-                ctx.moveTo(bX - tip, yPreco);
-                ctx.lineTo(bX + 1, bY);
-                ctx.lineTo(bX + bW - r, bY); ctx.arcTo(bX + bW, bY, bX + bW, bY + r, r);
-                ctx.lineTo(bX + bW, bY + bH - r); ctx.arcTo(bX + bW, bY + bH, bX + bW - r, bY + bH, r);
-                ctx.lineTo(bX + 1, bY + bH);
-                ctx.closePath(); ctx.fill();
-            }
-            ctx.fillStyle = '#FFFFFF';
-            ctx.textAlign = 'right';
-            ctx.fillText(txt, bX + bW - 4, bY + bH - 3);
+            // A linha e a etiqueta da cotação ficam numa camada própria (grCotOverlayDesenhar), redesenhada a cada trade do WebSocket
+            // sem refazer o gráfico inteiro. Aqui só guardamos a geometria deste desenho (escala e margens).
+            window._cotGeo = { W, H, padL: PAD.left, padR: PAD.right, toY };
+            grCotOverlayDesenhar();
             // O badge "Δ" ao vivo que ficava aqui (grCrosshairZonaDeltaPreco) saiu — redundante com a régua
             // Delta ATR, que é a leitura oficial agora (grade e janela diferentes, número não batia com o dela).
             // Handle C removido: o toque no próprio badge continua abrindo a janelinha C
@@ -7827,19 +7851,19 @@ function cvAbrirMenuDesenhos(clientX, clientY) {
     overlay.onclick = cvFecharMenuDesenhos;
     const menu = document.createElement('div');
     menu.id = 'cv-desenhos-menu';
-    menu.style.cssText = 'position:fixed;z-index:9701;background:#FFFFFF;border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,0.22);min-width:250px;max-width:calc(100vw - 16px);max-height:60vh;overflow-y:auto;font-family:-apple-system,sans-serif;padding:4px 0;';
+    menu.style.cssText = 'position:fixed;z-index:9701;background:#FFFFFF;border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,0.22);min-width:190px;max-width:min(260px,calc(100vw - 16px));max-height:50vh;overflow-y:auto;font-family:-apple-system,sans-serif;padding:2px 0;';
     const cab = document.createElement('div');
     cab.textContent = 'Design';
-    cab.style.cssText = 'padding:8px 14px 6px;font-size:11px;font-weight:700;color:#8E8E93;text-transform:uppercase;letter-spacing:0.4px;';
+    cab.style.cssText = 'padding:5px 10px 3px;font-size:9.5px;font-weight:700;color:#8E8E93;text-transform:uppercase;letter-spacing:0.4px;';
     menu.appendChild(cab);
     // Cores dos candles: dois controles (alta e baixa); tocar abre a paleta.
     const corRow = document.createElement('div');
-    corRow.style.cssText = 'display:flex;align-items:center;gap:18px;padding:6px 14px 10px;';
+    corRow.style.cssText = 'display:flex;align-items:center;gap:12px;padding:3px 10px 7px;';
     [['alta', 'Candle de alta'], ['baixa', 'Candle de baixa']].forEach(([k, rot]) => {
         const it = document.createElement('button'); it.type = 'button';
-        it.style.cssText = 'display:flex;align-items:center;gap:8px;background:transparent;border:0;padding:0;cursor:pointer;font-size:13px;color:#000000;font-family:inherit;';
+        it.style.cssText = 'display:flex;align-items:center;gap:5px;background:transparent;border:0;padding:0;cursor:pointer;font-size:11px;color:#000000;font-family:inherit;';
         const sw = document.createElement('span');
-        sw.style.cssText = 'width:26px;height:26px;border-radius:6px;background:' + grCorCandle(k === 'alta').fill + ';border:1.5px solid #000000;flex-shrink:0;';
+        sw.style.cssText = 'width:18px;height:18px;border-radius:5px;background:' + grCorCandle(k === 'alta').fill + ';border:1.5px solid #000000;flex-shrink:0;';
         const tx = document.createElement('span'); tx.textContent = rot;
         it.appendChild(sw); it.appendChild(tx);
         it.onclick = ev => { ev.stopPropagation(); const r = it.getBoundingClientRect(); cvAbrirPaletaCor(r.left, r.bottom + 6, grCorCandle(k === 'alta').fill, c => { window._grCorCandle[k] = c; grDrawChart(); grAmbienteSalvar(); cvAbrirMenuDesenhos(); }); };
@@ -7848,26 +7872,26 @@ function cvAbrirMenuDesenhos(clientX, clientY) {
     menu.appendChild(corRow);
     // Ímã da régua nas alças de entrada/stop/alvo: ligado/desligado.
     const imaRow = document.createElement('div');
-    imaRow.style.cssText = 'border-top:1px solid #F2F2F7;padding:6px 14px;';
+    imaRow.style.cssText = 'border-top:1px solid #F2F2F7;padding:3px 10px;zoom:.8;';
     imaRow.innerHTML = grConfigComboCab(null, 'Ímã nas alças da caixa', null, 'cv-cfg-ima', [['1', 'Ligado'], ['0', 'Desligado']], window._grImaOff ? '0' : '1', 'grDesignDefinirIma');
     imaRow.onclick = ev => ev.stopPropagation();
     menu.appendChild(imaRow);
     linhas.forEach(l => {
         const row = document.createElement('div');
-        row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:2px 4px 2px 14px;border-top:1px solid #F2F2F7;';
+        row.style.cssText = 'display:flex;align-items:center;gap:4px;padding:0 2px 0 10px;border-top:1px solid #F2F2F7;';
         const dot = document.createElement(l.setCor ? 'button' : 'span');
-        dot.style.cssText = 'flex-shrink:0;width:22px;height:22px;border-radius:5px;margin-right:2px;background:' + (l.cor || '#8E8E93') + ';border:1px solid rgba(0,0,0,0.25);padding:0;' + (l.setCor ? 'cursor:pointer;' : '');
+        dot.style.cssText = 'flex-shrink:0;width:16px;height:16px;border-radius:4px;margin-right:1px;background:' + (l.cor || '#8E8E93') + ';border:1px solid rgba(0,0,0,0.25);padding:0;' + (l.setCor ? 'cursor:pointer;' : '');
         if (l.setCor) { dot.type = 'button'; dot.setAttribute('aria-label', 'Cor de ' + l.nome); dot.onclick = ev => { ev.stopPropagation(); const r = dot.getBoundingClientRect(); cvAbrirPaletaCor(r.left, r.bottom + 6, l.cor, async c => { await l.setCor(c); grDrawChart(); cvAbrirMenuDesenhos(); }); }; }
         const txt = document.createElement('div');
-        txt.style.cssText = 'flex:1;min-width:0;padding:7px 0;cursor:pointer;';
+        txt.style.cssText = 'flex:1;min-width:0;padding:4px 0;cursor:pointer;';
         if (l.edit) txt.onclick = ev => { ev.stopPropagation(); cvFecharMenuDesenhos(); l.edit(); };
-        txt.innerHTML = '<div style="font-size:14px;font-weight:400;color:#1C1C1E;">' + l.nome + '</div><div style="font-size:11px;color:#8E8E93;">' + l.det + '</div>';
+        txt.innerHTML = '<div style="font-size:12px;font-weight:400;color:#1C1C1E;">' + l.nome + '</div><div style="font-size:9.5px;color:#8E8E93;">' + l.det + '</div>';
         const x = document.createElement('button');
         x.type = 'button'; x.innerHTML = grHeroicon('x-mark', 20); x.setAttribute('aria-label', 'Apagar ' + l.nome);
         x.style.cssText = 'flex-shrink:0;width:44px;height:44px;background:none;border:none;color:#EF5350;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;';
         x.onclick = async ev => { ev.stopPropagation(); await l.apagar(); grDrawChart(); cvAbrirMenuDesenhos(); };
         row.appendChild(txt);   // cor, espessura, engrenagem e lixeira agora ficam no menu de contexto de cada desenho; aqui só nome + olho
-        if (l.olho) { const ol = document.createElement('button'); ol.type = 'button'; ol.innerHTML = grHeroicon(l.oculta ? 'eye-slash' : 'eye', 22); ol.setAttribute('aria-label', (l.oculta ? 'Mostrar ' : 'Esconder ') + l.nome); ol.style.cssText = 'flex-shrink:0;width:40px;height:44px;background:none;border:none;color:#1C1C1E;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;'; ol.onclick = ev => { ev.stopPropagation(); l.olho(); grDrawChart(); cvAbrirMenuDesenhos(); }; if (l.oculta) txt.style.opacity = '.4'; row.appendChild(ol); }
+        if (l.olho) { const ol = document.createElement('button'); ol.type = 'button'; ol.innerHTML = grHeroicon(l.oculta ? 'eye-slash' : 'eye', 17); ol.setAttribute('aria-label', (l.oculta ? 'Mostrar ' : 'Esconder ') + l.nome); ol.style.cssText = 'flex-shrink:0;width:30px;height:32px;background:none;border:none;color:#1C1C1E;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;'; ol.onclick = ev => { ev.stopPropagation(); l.olho(); grDrawChart(); cvAbrirMenuDesenhos(); }; if (l.oculta) txt.style.opacity = '.4'; row.appendChild(ol); }
         menu.appendChild(row);
     });
     document.body.appendChild(overlay);
