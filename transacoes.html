@@ -1369,14 +1369,13 @@ function cvAbrir() {
 function grAplicarPrecoNoCandleEmFormacao(preco) {
     if (!(preco > 0) || !_grAllCandles.length) return;
     const last = _grAllCandles[_grAllCandles.length - 1];
-    if (grInicioPeriodoAtual(Date.now()) !== last.t) {   // virou o período: o WebSocket abre o candle novo; se ele não está entregando (app suspenso), refaz os candles pela exchange (no máx. a cada 10 s)
-        if (Date.now() - (window._grVirouTs || 0) > 10000) {
-            window._grVirouTs = Date.now();
-            grReconciliarUltimosCandles();
-            if (_grFootprintAtivo) { try { grFootprintAtualizarSeAtivo(); grFootprintLivePreencherBuraco(); } catch (e) {} }
-        }
+    const ini = grInicioPeriodoAtual(Date.now());
+    if (ini > last.t) {   // virou o período sem WebSocket (app suspenso): abre o candle novo AQUI, leve, e acerta a ponta pela exchange uma vez por período
+        _grAllCandles.push({ t: ini, o: preco, h: preco, l: preco, c: preco, v: 0, bv: 0 });
+        if (Date.now() - (window._grVirouTs || 0) > 10000) { window._grVirouTs = Date.now(); grReconciliarUltimosCandles(); }
         return;
     }
+    if (ini !== last.t) return;
     last.c = preco; last.h = Math.max(last.h, preco); last.l = Math.min(last.l, preco);
 }
 // Twelve Data não tem WebSocket no plano grátis: a cada 60 s refaz os últimos candles (1 chamada) e a cotação é o fechamento do último.
@@ -2324,7 +2323,20 @@ async function grReconciliarUltimosCandles() {
     if (!_grAllCandles.length) return;
     window._grReconciliando = true; window._grReconciliandoTs = Date.now();
     try {
-        if (_grTf === '1week' || _grTf === 'custom') {
+        if (_grTf === 'custom' && _grTfCustomUnit && _grTfCustomAmount) {
+            // personalizado: busca só a PONTA na base nativa e reagrupa (antes recarregava o gráfico inteiro do zero, o que travava a tela ao voltar)
+            const d = await grBuscarKlines(grBinSymbolAtual(), grBaseIntervalCustom(_grTfCustomUnit, _grTfCustomAmount), 300, null);
+            const base = d.map(grMapearKline);
+            let grp = grAgruparCandles(base, _grTfCustomUnit, _grTfCustomAmount);
+            if (grp.length > 1) grp = grp.slice(1);   // o 1º bloco pode ter vindo pela metade
+            if (grp.length) {
+                const desde = grp[0].t;
+                _grAllCandles = _grAllCandles.filter(c => c.t < desde).concat(grp);
+                if (window._grBaseCandles && window._grBaseCandles.length && base.length) window._grBaseCandles = window._grBaseCandles.filter(c => c.t < base[0].t).concat(base);
+                window._grAbsSerie = null; _grZonasCache = null; window._grClusterCache = new Map();
+                grDrawChart();
+            }
+        } else if (_grTf === '1week' || _grTf === 'custom') {
             const noFim = _grOffset >= _grAllCandles.length - _grZoom - 2;
             _grAllCandles = []; window._grBaseCandles = [];
             await grRenderChart();
@@ -3234,7 +3246,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v435';
+const APP_VERSAO = 'v436';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
