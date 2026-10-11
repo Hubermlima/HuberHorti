@@ -127,7 +127,7 @@ background:#FFF;border-radius:28px 28px 0 0;box-shadow:0 -8px 30px rgba(0,0,0,0.
 .tags-scroll{flex:1;overflow-y:scroll;padding:12px 16px 8px;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;}
 .tags-wrap{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-content:flex-start;}
 
-.tag{border-radius:10px;font-family:'Inter',sans-serif;font-weight:400;font-size:13px;padding:10px 14px;cursor:pointer;border:none;display:flex;flex-direction:column;align-items:center;transition:transform 0.15s;-webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none;min-height:52px;justify-content:center;overflow:hidden;width:100%;}
+.tag{position:relative;border-radius:10px;font-family:'Inter',sans-serif;font-weight:400;font-size:13px;padding:12px 14px 8px;cursor:pointer;border:none;display:flex;flex-direction:column;align-items:center;transition:transform 0.15s;-webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none;min-height:52px;justify-content:center;overflow:hidden;width:100%;}
 
 
 
@@ -137,7 +137,10 @@ background:#FFF;border-radius:28px 28px 0 0;box-shadow:0 -8px 30px rgba(0,0,0,0.
 
 .tag-verde{background:#D1FAE5;color:#065F46;}
 .tag-vermelho{background:#FEE2E2;color:#991B1B;}
-.tag-nome{white-space:nowrap;font-weight:600;overflow:hidden;text-overflow:ellipsis;max-width:100%;}
+.tag-nome{white-space:nowrap;font-weight:400;font-size:11.5px;overflow:hidden;text-overflow:ellipsis;max-width:100%;}
+/* Saldo atual em estoque: cantinho no topo direito da pílula. A pílula já tem overflow:hidden + raio, então o canto acompanha a curva dela. */
+.tag-saldo{position:absolute;top:0;right:0;font-size:8px;font-weight:500;line-height:1;padding:2px 6px 3px 7px;border-bottom-left-radius:8px;background:rgba(0,0,0,0.07);color:#475569;white-space:nowrap;letter-spacing:0;}
+.tag-saldo.neg{background:#FEE2E2;color:#B91C1C;}
 
 
 .tag-info{font-size:11px;font-weight:500;margin-top:3px;opacity:1;white-space:nowrap;}
@@ -844,6 +847,8 @@ document.getElementById('menu-movimentacoes').style.opacity = '0.3';
 document.getElementById('menu-movimentacoes').style.pointerEvents = 'none';
 
 
+document.addEventListener('visibilitychange', () => { if (!document.hidden && _todosProdutos.length) carregarSaldosEstoque(); });
+
 let _nuvemOrdem = [
   'Batata Portuguesa','Cebola Nacional','Tomate','Repolho',
   'Cenoura','Maca No. 180','Pimentao Regional','Limao Taiti',
@@ -1270,7 +1275,7 @@ document.addEventListener('touchstart', (e) => {
 
 
 
-function openSheet() { document.getElementById('sheet').classList.add('open'); document.getElementById('overlay').classList.add('active'); const lock = document.getElementById('lock-overlay'); if (lock) lock.style.display = 'none'; }
+function openSheet() { carregarSaldosEstoque(); document.getElementById('sheet').classList.add('open'); document.getElementById('overlay').classList.add('active'); const lock = document.getElementById('lock-overlay'); if (lock) lock.style.display = 'none'; }
 
 
 async function duplicarPedido() {
@@ -1320,6 +1325,7 @@ async function duplicarPedido() {
   _itensPedidoAtual = novoItens;
   _pedidoAtualId = null;
   _pedidoAbertoId = null;
+  _saldoOriginal = {}; _saldoPedidoForaCiclo = false;
   _tagFormSoLeitura = false;
   _injetarExtrasNaLista();
   montarNuvemTags(false);
@@ -1615,7 +1621,80 @@ document.getElementById('tf-unit').addEventListener('blur', () => { tfCalc('unit
   document.getElementById(id).addEventListener('focus', (e) => { setTimeout(() => e.target.select(), 50); });
 });
 
+// ── Saldo em estoque de cada produto (canto da pílula) ──
+// Saldo = (estoque_inicial.quantidade_inicial + compras do ciclo atual) − vendas do ciclo atual. Mesma conta da Conferência de Estoque.
+// _saldoBase: saldo vindo do banco (já inclui os pedidos de venda JÁ SALVOS). _saldoOriginal: o que o pedido aberto tinha salvo no banco.
+// Na tela: saldo = base + (salvo do pedido aberto) − (quantidade que está no pedido agora) → muda na hora ao alterar/remover item,
+// e depois de salvar o pedido o saldo é recarregado do banco.
+let _saldoBase = null;
+let _saldoOriginal = {};
+let _saldoPedidoForaCiclo = false;   // pedido aberto é de ciclo passado: não entra na conta do saldo atual
+let _nuvemSoLeitura = false;
+let _saldoCarregando = null;
+
+function saldoDoProduto(prodId, soLeitura) {
+  if (!_saldoBase) return null;
+  const base = _saldoBase[prodId] || 0;
+  if (soLeitura || _saldoPedidoForaCiclo) return base;   // pedido só pra leitura ou de ciclo passado: mostra o saldo atual do produto, sem mexer
+  const atual = _itensPedidoAtual[prodId] ? (parseFloat(_itensPedidoAtual[prodId].quantidade) || 0) : 0;
+  return base + (_saldoOriginal[prodId] || 0) - atual;
+}
+
+function _saldoSnapshotPedido() {
+  const o = {};
+  Object.values(_itensPedidoAtual).forEach(i => { const q = parseFloat(i.quantidade) || 0; if (q > 0) o[i.produto_id] = q; });
+  return o;
+}
+
+async function carregarSaldosEstoque(novaOriginal) {
+  const { d0, d7 } = window.cicloAtual;
+  const d0Str = d0.toLocaleDateString('en-CA', {timeZone:'America/Manaus'});
+  const d7Str = d7.toLocaleDateString('en-CA', {timeZone:'America/Manaus'});
+  const d7ISO = new Date(new Date(`${d0Str}T00:00:00+00:00`).getTime() + 7 * 86400000).toISOString();
+  const em = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
+  // itens de uma lista de pedidos, em blocos (evita URL gigante) e paginando (limite de 1000 linhas por consulta)
+  const itensDosPedidos = async (tabela, colPedido, ids) => {
+    const todos = [];
+    for (const bloco of em(ids, 80)) {
+      for (let de = 0; ; de += 1000) {
+        const { data, error } = await window.db.from(tabela).select('produto_id, quantidade').in(colPedido, bloco).range(de, de + 999);
+        if (error) throw error;
+        todos.push(...(data || []));
+        if (!data || data.length < 1000) break;
+      }
+    }
+    return todos;
+  };
+  try {
+    const [iniRes, pcRes, pvRes] = await Promise.all([
+      window.db.from('estoque_inicial').select('produto_id, quantidade_inicial'),
+      window.db.from('pedidos_compras').select('id').gte('data', d0Str).lte('data', d7Str),
+      window.db.from('pedidos_vendas').select('id').gte('data', d0Str).lt('data', d7ISO)
+    ]);
+    if (iniRes.error) throw iniRes.error;
+    if (pcRes.error) throw pcRes.error;
+    if (pvRes.error) throw pvRes.error;
+    const [compras, vendas] = await Promise.all([
+      itensDosPedidos('itens_pedidos_compras', 'pedido_compra_id', (pcRes.data || []).map(p => p.id)),
+      itensDosPedidos('itens_pedidos_vendas', 'pedido_venda_id', (pvRes.data || []).map(p => p.id))
+    ]);
+    const saldo = {};
+    const soma = (id, v) => { saldo[id] = (saldo[id] || 0) + v; };
+    (iniRes.data || []).forEach(e => soma(e.produto_id, parseFloat(e.quantidade_inicial) || 0));
+    compras.forEach(c => soma(c.produto_id, parseFloat(c.quantidade) || 0));
+    vendas.forEach(v => soma(v.produto_id, -(parseFloat(v.quantidade) || 0)));
+    _saldoBase = saldo;
+    if (novaOriginal) _saldoOriginal = novaOriginal;
+    montarNuvemTags(_nuvemSoLeitura);
+  } catch (err) {
+    console.error('Saldo de estoque:', err);   // sem saldo não atrapalha o pedido: as pílulas só ficam sem o número
+  }
+}
+// depois de salvar o pedido: o que está na tela passa a ser o "salvo" e o saldo é recarregado do banco
+async function saldoAposSalvar() { await carregarSaldosEstoque(_saldoSnapshotPedido()); }
+
 function montarNuvemTags(soLeitura) {
+  _nuvemSoLeitura = !!soLeitura;
   const wrap = document.getElementById('tags-wrap');
   const ordemAlfa = [..._nuvemOrdem].sort((a, b) => a.localeCompare(b, 'pt-BR'));
   wrap.innerHTML = ordemAlfa.map((nome) => {
@@ -1635,7 +1714,9 @@ function montarNuvemTags(soLeitura) {
       info = `<span class="tag-info">${fmtNum(parseFloat(item.quantidade))} · R$${fmtNum(parseFloat(item.preco_unit))} · R$${fmtNum(total)}</span>`;
     }
     const sl = soLeitura ? 'true' : 'false';
-    return `<button class="tag ${classe}" data-id="${prod.id}" data-nome="${prod.nome.replace(/"/g,'&quot;')}" data-custo="${prod.preco_medio_compra||0}" data-sl="${sl}"><span class="tag-nome">${nome}</span>${info}</button>`;
+    const saldo = saldoDoProduto(prod.id, soLeitura);
+    const saldoHtml = saldo === null ? '' : `<span class="tag-saldo${saldo < 0 ? ' neg' : ''}">${fmtNum(saldo)}</span>`;
+    return `<button class="tag ${classe}" data-id="${prod.id}" data-nome="${prod.nome.replace(/"/g,'&quot;')}" data-custo="${prod.preco_medio_compra||0}" data-sl="${sl}">${saldoHtml}<span class="tag-nome">${nome}</span>${info}</button>`;
   }).join('');
   wrap.querySelectorAll('.tag').forEach(bindTagLongPress);
 }
@@ -1847,6 +1928,7 @@ async function salvarDadosSinc() {
       document.getElementById('save-modal-fatura-wrap').style.display = 'block';
     }
         const clienteIdAtual = document.getElementById('busca-cliente').dataset.selectedId;
+    await saldoAposSalvar();
     await upsertMovimentoAVista(clienteIdAtual, valorTotalNum);
     if (clienteIdAtual) await carregarExtratoDetalhado(clienteIdAtual);
 
@@ -1939,6 +2021,7 @@ async function salvarDadosSincComModal() {
       document.getElementById('save-modal-fatura-wrap').style.display = 'block';
     }
         const clienteIdAtual = document.getElementById('busca-cliente').dataset.selectedId;
+    await saldoAposSalvar();
     await upsertMovimentoAVista(clienteIdAtual, valorTotalNum);
     if (clienteIdAtual) await carregarExtratoDetalhado(clienteIdAtual);
 
@@ -1997,7 +2080,8 @@ async function abrirNotaPorId(pedidoId, readonly) {
     _itensPedidoAtual[it.produto_id] = it;
 });
 
-    if (!readonly) _pedidoAtualId = pedidoId;
+    { const ped = (_extratoPedidos || []).find(x => x.id === pedidoId); _saldoPedidoForaCiclo = !!ped && ped.dentroCiclo === false; }
+    if (!readonly) { _pedidoAtualId = pedidoId; _saldoOriginal = _saldoSnapshotPedido(); }
     _injetarExtrasNaLista(); montarNuvemTags(readonly); atualizarSumarioSheet();
         const nomeCliente = document.getElementById('busca-cliente').value || 'Pedido';
         if (readonly) {
@@ -2022,7 +2106,7 @@ function _injetarExtrasNaLista() {
 
 async function carregarProdutosCliente(clienteUuid) {
   setEstado('salvando');
-  _itensPedidoAtual = {}; _pedidoAtualId = null; _pedidoAbertoId = null;
+  _itensPedidoAtual = {}; _pedidoAtualId = null; _pedidoAbertoId = null; _saldoOriginal = {}; _saldoPedidoForaCiclo = false;
   _nuvemOrdem = [...NUVEM_FAVORITOS];
   const dataCiclo = document.getElementById('data-ciclo').value;
   try {
@@ -2042,6 +2126,7 @@ async function carregarProdutosCliente(clienteUuid) {
 });
 
       _injetarExtrasNaLista();
+      _saldoOriginal = _saldoSnapshotPedido();
     }
     montarNuvemTags(false); atualizarSumarioSheet();
     await carregarExtratoDetalhado(clienteUuid);
@@ -2502,7 +2587,8 @@ document.getElementById('del-modal-confirmar').addEventListener('click', async (
   try {
     await window.db.from('itens_pedidos_vendas').delete().eq('pedido_venda_id', idParaDeletar);
     await window.db.from('pedidos_vendas').delete().eq('id', idParaDeletar);
-    if (_pedidoAtualId === idParaDeletar) { _pedidoAtualId = null; _pedidoAbertoId = null; _itensPedidoAtual = {}; }
+    if (_pedidoAtualId === idParaDeletar) { _pedidoAtualId = null; _pedidoAbertoId = null; _itensPedidoAtual = {}; _saldoOriginal = {}; }
+    carregarSaldosEstoque();   // o pedido apagado devolve as quantidades ao saldo
     setEstado('sincronizado');
     const clienteId = document.getElementById('busca-cliente').dataset.selectedId;
     if (clienteId) await carregarExtratoDetalhado(clienteId);
@@ -2510,7 +2596,7 @@ document.getElementById('del-modal-confirmar').addEventListener('click', async (
 });
 
 function iniciarNovaVenda() {
-  _itensPedidoAtual = {}; _pedidoAtualId = null;
+  _itensPedidoAtual = {}; _pedidoAtualId = null; _saldoOriginal = {}; _saldoPedidoForaCiclo = false;
   _nuvemOrdem = [...NUVEM_FAVORITOS];
   montarNuvemTags(false); atualizarSumarioSheet();
   const nomeCliente = document.getElementById('busca-cliente').value || 'Nova Venda';
@@ -2542,7 +2628,7 @@ window.db.from('clientes').select('id, nome, margem_tipo, margem_valor, prazo_pa
 
 window.db.from('produtos').select('id, nome, preco_medio_compra, peso_por_unid, unid_venda').order('nome').then(({ data }) => {
 
-  if (data) { _todosProdutos = data; montarNuvemTags(false); }
+  if (data) { _todosProdutos = data; montarNuvemTags(false); carregarSaldosEstoque(); }
 });
 
 inputBusca.addEventListener('input', (e) => {
