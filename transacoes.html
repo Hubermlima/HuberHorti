@@ -3096,7 +3096,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v402';
+const APP_VERSAO = 'v403';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -16524,8 +16524,7 @@ function scCalcular(lado, u, cs, preco, ibK) {
 }
 
 // 5 confirmações do Dale lidas no footprint dos candles do TF micro que TOCARAM a zona (+ o nível somado da régua pro Big Limit). "Se destaca" = acima da mediana
-// do mesmo tipo de número (nas linhas do próprio candle, ou nos candles da janela); o Big Limit usa outlier (regra do intervalo interquartil). Só o imbalance usa a razão
-// fixa do footprint (FOOTPRINT_IMBALANCE_RATIO = 3×), a mesma dos números azuis. Lado do short; o long é o espelho.
+// do mesmo tipo de número (nas linhas do próprio candle, ou nos candles da janela); o Big Limit usa outlier (regra do intervalo interquartil). Aggressive Traders mede a intensidade do lado da operação na zona contra a média da janela (sem a razão fixa de 3×). Lado do short; o long é o espelho.
 function scMediana(a) { if (!a.length) return 0; const t = a.slice().sort((x, y) => x - y); return t[Math.floor(t.length / 2)]; }
 function scConfirmacoes(lado, r, u, cs, def) {
     const s = lado === 'short' ? 1 : -1, tick = u.tick, fim = scAgora(), ini = fim - u.dias * 86400000, lo = r.lo, hi = r.hi, RZ = FOOTPRINT_IMBALANCE_RATIO;
@@ -16541,6 +16540,8 @@ function scConfirmacoes(lado, r, u, cs, def) {
     const emJanela = x => x.c.t + def.blocoMs > ini && x.rows.size > 0;
     const tocou = x => emJanela(x) && Number(x.c.h) >= lo && Number(x.c.l) <= hi;
     const medD = scMediana(cand.filter(emJanela).map(x => Math.abs(x.D)));
+    // média, nos candles da janela, da fatia de volume do lado da operação (short: bid; long: ask) no candle inteiro — a régua de comparação da intensidade
+    const baseAgg = (() => { const v = []; cand.forEach(x => { if (!emJanela(x)) return; let pa = 0, ra = 0; x.rows.forEach(w => { pa += s > 0 ? w.ask : w.bid; ra += s > 0 ? w.bid : w.ask; }); if (pa + ra > 0) v.push(ra / (pa + ra)); }); return v.length ? v.reduce((q, w) => q + w, 0) / v.length : 0.5; })();
     const noZona = k => k * tick + tick / 2 > lo && k * tick - tick / 2 < hi;
     const marca = (chave, x, extra) => { if (!res.ev[chave] || x.c.t > res.ev[chave].t) res.ev[chave] = Object.assign({ t: x.c.t }, extra || {}); };
     cand.forEach((x, i) => {
@@ -16561,15 +16562,12 @@ function scConfirmacoes(lado, r, u, cs, def) {
           if (!c[1]) fl.push('não fechou fora da zona');
           if (!c[2]) fl.push('candle não foi contra o empurrão');
           if (c.every(Boolean)) marca('trap', x); else melhor('trap', c.filter(Boolean).length, fl, x.c.t); }                  // 3) Trapped Traders
-        // 4) Aggressive Traders: ≥ 3 linhas seguidas com imbalance diagonal do lado da operação, dentro da zona ou colado nela
-        const kz0 = Math.min.apply(null, zona.map(w => w.k)) - 1, kz1 = Math.max.apply(null, zona.map(w => w.k)) + 1;
-        const flag = k => { const w = x.rows.get(k); if (!w) return false; return s > 0 ? (w.bid > 0 && w.bid >= RZ * ((x.rows.get(k + 1) || { ask: 0 }).ask)) : (w.ask > 0 && w.ask >= RZ * ((x.rows.get(k - 1) || { bid: 0 }).bid)); };
-        const ks = rows.map(w => w.k).sort((a, b) => a - b); let run = [];
-        for (let j = 0; j <= ks.length; j++) {
-            if (j < ks.length && flag(ks[j]) && (!run.length || ks[j] === run[run.length - 1] + 1)) { run.push(ks[j]); continue; }
-            if (run.length && run[run.length - 1] >= kz0 && run[0] <= kz1) { if (run.length >= 3) marca('agg', x, { n: run.length }); else melhor('agg', run.length, ['maior sequência de imbalance: ' + run.length + (run.length === 1 ? ' linha' : ' linhas') + ' (precisa 3)'], x.c.t); }
-            run = (j < ks.length && flag(ks[j])) ? [ks[j]] : [];
-        }
+        // 4) Aggressive Traders (intensidade): na zona, a fatia do volume que é do lado da operação (short: bid; long: ask) fica ACIMA da média
+        //    dessa mesma fatia nos candles da janela (e o lado da operação domina a zona). Não depende do tamanho da linha da grade.
+        { const I = rz(R, P + R), c = [I > baseAgg, R > P], fl = [];
+          if (!c[1]) fl.push('o lado da operação não domina a zona (' + fx(I * 100, 0) + '% do volume)');
+          if (!c[0]) fl.push('intensidade ' + fx(I * 100, 0) + '% do volume da zona; média da janela ' + fx(baseAgg * 100, 0) + '% (precisa passar da média)');
+          if (c.every(Boolean)) marca('agg', x, { pct: I, med: baseAgg }); else melhor('agg', c.filter(Boolean).length, fl, x.c.t); }
         // 5) Change in Delta: dois candles seguidos de toque; o fluxo do lado oposto ao da operação se destaca e o seguinte vira, também se destacando
         const nx = cand[i + 1];
         { const c = [!!(nx && tocou(nx)), s * x.D > 0, Math.abs(x.D) >= medD, !!(nx && s * nx.D < 0), !!(nx && Math.abs(nx.D) >= medD)], fl = [];
