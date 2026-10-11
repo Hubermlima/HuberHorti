@@ -1369,7 +1369,14 @@ function cvAbrir() {
 function grAplicarPrecoNoCandleEmFormacao(preco) {
     if (!(preco > 0) || !_grAllCandles.length) return;
     const last = _grAllCandles[_grAllCandles.length - 1];
-    if (grInicioPeriodoAtual(Date.now()) !== last.t) return; // virou o período: candle novo quem abre é o WebSocket/reconciliação
+    if (grInicioPeriodoAtual(Date.now()) !== last.t) {   // virou o período: o WebSocket abre o candle novo; se ele não está entregando (app suspenso), refaz os candles pela exchange (no máx. a cada 10 s)
+        if (Date.now() - (window._grVirouTs || 0) > 10000) {
+            window._grVirouTs = Date.now();
+            grReconciliarUltimosCandles();
+            if (_grFootprintAtivo) { try { grFootprintAtualizarSeAtivo(); grFootprintLivePreencherBuraco(); } catch (e) {} }
+        }
+        return;
+    }
     last.c = preco; last.h = Math.max(last.h, preco); last.l = Math.min(last.l, preco);
 }
 // Twelve Data não tem WebSocket no plano grátis: a cada 60 s refaz os últimos candles (1 chamada) e a cotação é o fechamento do último.
@@ -1490,6 +1497,7 @@ function cvIniciarRealTime() {
                 const inicioTrade = grInicioPeriodoAtual(d.T > 0 ? d.T : Date.now());
                 const qv = parseFloat(d.q) || 0;
                 if (inicioTrade > last.t) {
+                    try { const dd = grFootprintMsPorCandle(); if (_grTf !== '1month' && inicioTrade - last.t > dd * 1.5 && Date.now() - (window._grVirouTs || 0) > 10000) { window._grVirouTs = Date.now(); setTimeout(grReconciliarUltimosCandles, 0); } } catch (err) {}   // pulou candles (app suspenso): refaz pela exchange
                     _grAllCandles.push({ t: inicioTrade, o: novoPreco, h: novoPreco, l: novoPreco, c: novoPreco, v: qv, bv: d.m === false ? qv : 0 });
                 } else if (inicioTrade === last.t) {
                     last.c = novoPreco;
@@ -2335,8 +2343,9 @@ async function grReconciliarUltimosCandles() {
     } catch (err) { /* sem rede: tenta de novo no próximo retorno */ } finally { window._grReconciliando = false; }
 }
 function grAoVoltarDoSegundoPlano() {
-    if (!_grAllCandles.length || !window._cvWsUltimaMsg) return;
-    if (Date.now() - window._cvWsUltimaMsg <= 8000) return; // WebSocket ativo: nada a fazer
+    if (!_grAllCandles.length) return;
+    let virou = false; try { virou = grInicioPeriodoAtual(Date.now()) > _grAllCandles[_grAllCandles.length - 1].t; } catch (err) {}   // o último candle é de um período que já acabou
+    if (!virou && (!window._cvWsUltimaMsg || Date.now() - window._cvWsUltimaMsg <= 8000)) return; // WebSocket ativo e candle em dia: nada a fazer
     try {
         const st = window._cvWs ? window._cvWs.readyState : 3;
         if (st >= 2 || (st === 0 && Date.now() - (window._cvWsCriadoEm || 0) > 10000)) cvIniciarRealTime();
@@ -3225,7 +3234,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v430';
+const APP_VERSAO = 'v432';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -17122,9 +17131,9 @@ async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fecha
         const lista = grPosicoes(), n = _grAllCandles.length, cs0 = _grAllCandles;
         const candleMs = n > 1 ? Math.max(60000, cs0[n - 1].t - cs0[n - 2].t) : 86400000;
         const dur = Math.max(2, Math.floor((_grZoom || 15) * 0.1)) * candleMs;
-        // nasce no ESPAÇO VAZIO logo à direita do candle em formação (o 1º slot sem candle), com a largura de sempre limitada ao espaço vazio que a tela tem à direita
+        // nasce AGORA, colada no candle em formação (não no próximo slot do TF do gráfico, que no 4H pode ficar horas à frente), com a largura de sempre limitada ao espaço vazio que a tela tem à direita
         const extraSlots = Math.max(1, Math.floor(grComputarZoomEfetivo() * 0.15));
-        let t1 = n > 0 ? cs0[n - 1].t + candleMs : Date.now(), t2 = t1 + Math.min(dur, extraSlots * candleMs);
+        let t1 = Date.now(), t2 = t1 + Math.min(dur, extraSlots * candleMs);
         if (opts.scalp) {   // scalp: nasce no candle micro atual e vale por 12 candles micro; as vencidas (6 candles além da validade) somem; caixa igual à anterior não duplica
             t1 = Math.floor(Date.now() / dMi.blocoMs) * dMi.blocoMs; t2 = t1 + 12 * dMi.blocoMs;
             for (let k = lista.length - 1; k >= 0; k--) { const z = lista[k]; if (z.scalp && !z.tradeId && Math.max(z.t1, z.t2) < Date.now() - 6 * dMi.blocoMs && !(_edSel && _edSel.tipo === 'ps' && _edSel.idx === k)) lista.splice(k, 1); }
