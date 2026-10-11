@@ -3246,7 +3246,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v436';
+const APP_VERSAO = 'v437';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -17204,7 +17204,13 @@ async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fecha
         }
         if (!esc) throw new Error('Micro: ' + (primeiroErro || 'nenhuma entrada válida no sino (sem zona, stop curto demais, zona que já deu stop há pouco, ou a ignição já passou)') + '. Caixa não criada.' + avisoCob);
         const rm = esc.r, entrada = rm.entrada, stop = rm.stop, risco = esc.risco, alvo = esc.alvo, am = esc.am, zonaMa = esc.zonaMa, dMi = esc.def, conf = scConfirmacoes(lado, rm, esc.u, esc.cs, esc.def), fraco = conf.n < 3;
-        if (opts.soAvaliar) throw { soAval: true, aval: { nota: scScoreDe(conf).n, fraco } };   // usado pelo Motor: só mede o lado, não desenha
+        if (opts.soAvaliar) {   // usado pelo Motor: só mede o lado, não desenha (leva o resumo pro relatório do Motor)
+            const sd = scScoreDe(conf), f0 = x => Math.round(x).toLocaleString('pt-BR');
+            throw { soAval: true, aval: { nota: sd.n, fraco, entrada, stop, alvo, alvoTipo: esc.alvoTipo || (am ? 'macro' : '2R'), tf: dMi.rot,
+                ok: sd.itens.filter(x => x.ok).map(x => x.nome), nao: sd.itens.filter(x => !x.ok && !String(x.pts).startsWith('−')).map(x => x.nome),
+                desc: sd.itens.filter(x => String(x.pts).startsWith('−')).map(x => x.nome + ' ' + x.pts),
+                zona: esc.banda ? 'sino do ' + esc.banda.fonte + ': ' + esc.banda.faixas.map(fx => f0(fx.lo) + '–' + f0(fx.hi)).join(' + ') : '' } };
+        }   // usado pelo Motor: só mede o lado, não desenha
         // posição: logo à direita da última caixa existente (nada é apagado)
         const lista = grPosicoes(), n = _grAllCandles.length, cs0 = _grAllCandles;
         const candleMs = n > 1 ? Math.max(60000, cs0[n - 1].t - cs0[n - 2].t) : 86400000;
@@ -17276,9 +17282,22 @@ async function scMotor() {
     if (_scMotorOn || _scCalculando) return;
     if (!_grFootprintAtivo || !_grFootprintCandlesRaw) { alert('Ligue o Fluxo (FX) e aguarde os dados carregarem.'); return; }
     _scMotorOn = true;
-    const fim = (txt, cor, erro) => { _scUltimo = { lado: null, hora: new Date(), txt, erro: !!erro }; try { grAreaToast(txt, cor); } catch (e) {} try { cvRenderMenuFpCfg(); } catch (e) {} };
+    let a = null, b = null;
+    // relatório também quando nada é criado: o que cada lado achou (ou por que não achou)
+    const lados = () => {
+        const f0 = x => Math.round(x).toLocaleString('pt-BR'), L = [];
+        [['Short', a], ['Long', b]].forEach(([nm, r]) => {
+            const v = r && r.aval;
+            if (!v) { L.push(nm + ': sem entrada · ' + String((r && r.msg) || 'sem dados').replace(/^Micro: /, '')); return; }
+            L.push(nm + ': nota ' + v.nota + ' · entrada ' + f0(v.entrada) + ' · stop ' + f0(v.stop) + ' · alvo ' + f0(v.alvo) + ' (' + (v.alvoTipo === 'pico' ? 'pico do sino' : v.alvoTipo === 'macro' ? 'nó macro' : '2R') + ') · micro ' + v.tf);
+            L.push(nm + ' · passou: ' + (v.ok.length ? v.ok.join(', ') : 'nada') + ' · faltou: ' + (v.nao.length ? v.nao.join(', ') : 'nada') + (v.desc.length ? ' · descontos: ' + v.desc.join(', ') : ''));
+            if (v.zona) L.push(nm + ' · zona quente (' + v.zona + ')');
+        });
+        return L;
+    };
+    const fim = (txt, cor, erro) => { _scUltimo = { lado: null, hora: new Date(), txt, erro: !!erro, linhas: ['MOTOR · nada criado', txt.replace(/^Motor: /, '')].concat(lados()) }; try { grAreaToast(txt, cor); } catch (e) {} try { cvRenderMenuFpCfg(); } catch (e) {} };
     try {
-        const a = await scRodar('short', { silencioso: true, soAvaliar: true }), b = await scRodar('long', { silencioso: true, soAvaliar: true });
+        a = await scRodar('short', { silencioso: true, soAvaliar: true }); b = await scRodar('long', { silencioso: true, soAvaliar: true });
         const ns = a && a.aval ? a.aval.nota : null, nl = b && b.aval ? b.aval.nota : null;
         if (ns == null && nl == null) { fim('Motor: nenhum lado tem entrada válida no sino (sem zona, ou a ignição já passou). Nada criado.', '#EF5350', true); return; }
         if (ns != null && nl != null && ns === nl) { fim('Motor: sem lado claro (short ' + ns + ' × long ' + nl + '). Nada criado.', '#F59E0B', true); return; }
