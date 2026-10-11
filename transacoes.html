@@ -3225,7 +3225,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v425';
+const APP_VERSAO = 'v426';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -17045,49 +17045,47 @@ function scAvaliarCore(lado, def, tk, cs, dias, dMa, rM, uMa, preco) {
     const s = lado === 'short' ? 1 : -1;
     const u = scRegua(tk, dias, def.rot), r0 = scCalcular(lado, u, cs, preco);
     if (r0.erro) return { def, erro: r0.erro, esc: null, comparadas: 0 };
-    const ks = r0.niv.filter(n => n.rank > 0).sort((x, y) => y.rank - x.rank).map(n => n.k);
-    let comparadas = 0;
-    const quentes = scZonasQuentes(rM, uMa.tick), cands = [];
-    for (const k of ks) {
-        if (comparadas >= 6 || cands.length >= 3) break;
+    const banda = scBandaQuente(rM, uMa.tick);
+    if (!banda) return { def, esc: null, comparadas: 0 };
+    // candidatos: níveis do micro (do lado certo do preço, com volume) que tocam o sino; os mais próximos do pico primeiro, sem colar uns nos outros. O delta NÃO ordena: a nota decide.
+    const ks = [];
+    r0.niv.filter(n => n.rank > 0 && n.hi > banda.lo && n.lo < banda.hi).sort((x, y) => Math.abs(x.c - banda.pico) - Math.abs(y.c - banda.pico)).forEach(n => { if (ks.length < 3 && ks.every(k2 => Math.abs(k2 - n.k) >= 3)) ks.push(n.k); });
+    const cands = []; let comparadas = 0;
+    ks.forEach((k, i) => {
         const r = k === r0.K.k ? r0 : scCalcular(lado, u, cs, preco, k);
-        if (r.erro) continue;
-        if (k !== r0.K.k && ks.slice(0, ks.indexOf(k)).some(k2 => Math.abs(k2 - k) < 3)) continue;   // colada numa zona já avaliada
+        if (r.erro) return;
         comparadas++;
-        const zonaMa = quentes.filter(n => n.hi > r.lo && n.lo < r.hi);   // só vale entrada em cima de zona muito negociada (delta de qualquer sinal: a absorção é lida nas confirmações)
-        if (!zonaMa.length) continue;
-        const risco = Math.abs(r.stop - r.entrada); if (!(risco > 0)) continue;
+        const risco = Math.abs(r.stop - r.entrada); if (!(risco > 0)) return;
         const am = scAlvoMacro(rM, s, r.entrada, risco, uMa.atr), alvo = am ? am.alvo : r.entrada - s * 2 * risco;
-        if (!(s * (r.stop - r.entrada) > 0) || !(s * (r.entrada - alvo) > 0)) continue;
-        cands.push({ def, esc: { r, zonaMa, am, alvo, risco, def, u, cs, uMa }, comparadas });
-    }
+        if (!(s * (r.stop - r.entrada) > 0) || !(s * (r.entrada - alvo) > 0)) return;
+        cands.push({ def, esc: { r, zonaMa: banda.niveis, banda, am, alvo, risco, def, u, cs, uMa }, comparadas, ord: i });
+    });
     if (!cands.length) return { def, esc: null, comparadas };
-    if (cands.length > 1) {   // entre as zonas quentes, fica a de maior nota (confirmações menos descontos); empate: a de melhor posição no ranking do motor
+    if (cands.length > 1) {   // maior nota (confirmações menos descontos); empate: o mais perto do pico
         cands.forEach(c => { try { c.nota = scScoreDe(scConfirmacoes(lado, c.esc.r, u, cs, def)).n; } catch (e) { c.nota = -1; } });
-        let b = cands[0]; cands.forEach(c => { if (c.nota > b.nota) b = c; }); return b;
+        let m = cands[0]; cands.forEach(c => { if (c.nota > m.nota) m = c; }); return m;
     }
     return cands[0];
 }
-// ZONAS QUENTES (zona de conflagração): níveis do macro com volume ACIMA DA MÉDIA da régua (onde mais se negociou: o sino do VP) + a POC da Value Area e o maior nível do VP, se ancorados.
-// Só do lado certo do preço (long abaixo, short acima). Sem número fixo: a média vem da própria régua.
-function scZonasQuentes(rM, tick) {
-    const niv = (rM && rM.niv) || [], out = [];
-    if (!niv.length) return out;
-    const med = niv.reduce((q, n) => q + n.v, 0) / niv.length;
-    niv.forEach(n => { if (n.lado && n.v > med) out.push(n); });
+// ZONA QUENTE (zona de conflagração) = o SINO principal: os níveis colados em volta do pico de volume com volume acima da média do próprio perfil.
+// Uma fonte só: se há VP ancorado, o sino do VP; senão, se há Value Area ancorada, o sino dela (pico = POC); senão, a régua do macro na janela de dias.
+function scBandaQuente(rM, tick) {
+    let pts = null, fonte = '';
     try {
-        const px = (typeof _precoAtual === 'number' && _precoAtual > 0) ? _precoAtual : rM.preco, s = rM.s;
-        const refs = [];
-        if (_grFootprintAtivo) {
-            if (_grValueAreaAncoraTs != null && !_grVaOculta) { const va = grFootprintCalcularValueArea(); if (va && va.poc) refs.push(va.poc); }
-            if (_grVpAncoraTs != null && !_grVpOculta) {
-                const d = grVpObterMapa();
-                if (d && d.mapa.size) { const g = new Map(); d.mapa.forEach((v, pr) => { const k = Math.round(pr / tick); g.set(k, (g.get(k) || 0) + v.c + v.v); }); let mk = null, mv = 0; g.forEach((v, k) => { if (v > mv) { mv = v; mk = k; } }); if (mk != null) refs.push(mk * tick); }
-            }
-        }
-        refs.forEach(v => { if (s > 0 ? v > px : v < px) out.push({ k: Math.round(v / tick), lo: v - tick / 2, hi: v + tick / 2, c: v, v: 0, ref: true }); });
-    } catch (e) {}
-    return out;
+        const grade = mapa => { const g = new Map(); mapa.forEach((v, pr) => { const k = Math.round(pr / tick); g.set(k, (g.get(k) || 0) + v.c + v.v); }); return Array.from(g.entries()).map(([k, v]) => ({ k, v, lo: k * tick - tick / 2, hi: k * tick + tick / 2 })); };
+        if (_grFootprintAtivo && _grVpAncoraTs != null && !_grVpOculta) { const d = grVpObterMapa(); if (d && d.mapa.size) { pts = grade(d.mapa); fonte = 'VP ancorado'; } }
+        if (!pts && _grFootprintAtivo && _grValueAreaAncoraTs != null && !_grVaOculta) { const m = grFootprintObterMapaBaseValueArea(); if (m && m.size) { pts = grade(m); fonte = 'Value Area ancorada'; } }
+    } catch (e) { pts = null; }
+    if (!pts) { pts = ((rM && rM.niv) || []).map(n => ({ k: n.k, v: n.v, lo: n.lo, hi: n.hi, num: n.num })); fonte = 'janela de dias'; }
+    pts = pts.filter(x => x.v > 0).sort((x, y) => x.k - y.k);
+    if (pts.length < 3) return null;
+    const med = pts.reduce((q, x) => q + x.v, 0) / pts.length;
+    let ip = 0; pts.forEach((x, i) => { if (x.v > pts[ip].v) ip = i; });
+    let a = ip, b = ip;
+    while (a > 0 && pts[a - 1].k === pts[a].k - 1 && pts[a - 1].v > med) a--;
+    while (b < pts.length - 1 && pts[b + 1].k === pts[b].k + 1 && pts[b + 1].v > med) b++;
+    const niveis = pts.slice(a, b + 1);
+    return { lo: niveis[0].lo, hi: niveis[niveis.length - 1].hi, pico: (pts[ip].lo + pts[ip].hi) / 2, niveis, fonte };
 }
 async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fechar o menu, sem selecionar a caixa (usado pelo Play) · opts.scalp: caixa de scalp (só contorno), à direita, sem duplicar
     opts = opts || {}; const sil = !!opts.silencioso;
@@ -17147,7 +17145,7 @@ async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fecha
                 (lado === 'short' ? 'SHORT' : 'LONG') + ' · ' + dias + ' dias · ' + dMa.rot + ' × ' + dMi.rot + ' · ' + conf.n + ' de ' + SC_CONF_TOTAL + ' confirmações',
                 'Entrada ' + f(entrada) + ' · Stop ' + f(stop) + ' (' + pc((stop - entrada) / entrada) + ') · Alvo ' + f(alvo) + ' (' + pc((alvo - entrada) / entrada) + ')',
                 'Stop: borda de trás do nó de entrada · ' + Math.round(risco / rm.tick) + (Math.round(risco / rm.tick) === 1 ? ' nível' : ' níveis') + ' de ' + f(rm.tick),
-                'Zona quente (mais negociada): entrada dentro de ' + rng(zonaMa.map(x => x.num)) + ' (' + f(Math.min.apply(null, zonaMa.map(x => x.lo))) + '–' + f(Math.max.apply(null, zonaMa.map(x => x.hi))) + ')',
+                'Zona quente (sino do ' + esc.banda.fonte + '): entrada dentro de ' + rng(zonaMa.map(x => x.num)) + ' (' + f(Math.min.apply(null, zonaMa.map(x => x.lo))) + '–' + f(Math.max.apply(null, zonaMa.map(x => x.hi))) + ')',
                 'Alvo: ' + (am ? 'nó macro, ' + rng(am.nums) + ', borda ' + f(am.alvo) : 'sem nó macro útil, 2R')
             ];
             const dh = t => new Date(t).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }), E = conf.ev;
