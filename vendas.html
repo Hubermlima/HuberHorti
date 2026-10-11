@@ -177,6 +177,12 @@ right:-60px;background:rgba(255,255,255,0.75);border-radius:14px;box-shadow:0 8p
 .tf-nav-btn{width:32px;height:32px;border-radius:50%;border:none;background:#F2F2F7;font-size:16px;font-weight:500;color:#1C1C1E;cursor:pointer;-webkit-tap-highlight-color:transparent;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
 
 .tf-nav-btn:active{background:#E5E5EA;}
+.tf-sair-menu{position:absolute;top:32px;right:0;min-width:150px;background:#FFF;border-radius:14px;box-shadow:0 8px 24px rgba(0,0,0,0.18),0 2px 8px rgba(0,0,0,0.08);border:1px solid #F0F0F5;overflow:hidden;display:none;flex-direction:column;z-index:5;}
+.tf-sair-menu.open{display:flex;}
+.tf-sair-item{padding:11px 14px;font-size:14px;font-weight:600;color:#007AFF;white-space:nowrap;cursor:pointer;-webkit-tap-highlight-color:transparent;}
+.tf-sair-item:not(:last-child){border-bottom:1px solid #F5F5F5;}
+.tf-sair-item.descartar{color:#EF4444;}
+.tf-sair-item:active{background:#F5F5F5;}
 .tf-inner-card{background:#F8F8FA;border-radius:14px;padding:8px 10px;margin-top:6px;}
 
 .extrato-swipe-wrap{position:relative;overflow:hidden;border-radius:0;margin-bottom:0;-webkit-user-select:none;user-select:none;border-bottom:0.5px solid #E5E5EA;}
@@ -631,9 +637,15 @@ border-radius:10px;padding:2px 6px;}
   <svg viewBox="0 0 24 24" style="width:14px;height:14px;stroke:#1C1C1E;stroke-width:2.5;fill:none"><path d="M8.25 4.5l7.5 7.5-7.5 7.5"/></svg>
 </button>
 
-    <button style="width:26px;height:26px;border-radius:50%;border:none;background:#F2F2F7;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;" onmousedown="event.preventDefault()" onclick="tagFormConfirmar()">
-      <svg viewBox="0 0 24 24" style="width:12px;height:12px;stroke:#1C1C1E;stroke-width:2.5;fill:none"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-    </button>
+    <div style="position:relative;flex-shrink:0;">
+      <button id="tf-x-btn" style="width:26px;height:26px;border-radius:50%;border:none;background:#F2F2F7;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;" onmousedown="event.preventDefault()" onclick="tagFormSair()">
+        <svg viewBox="0 0 24 24" style="width:12px;height:12px;stroke:#1C1C1E;stroke-width:2.5;fill:none"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+      <div class="tf-sair-menu" id="tf-sair-menu">
+        <div class="tf-sair-item" onmousedown="event.preventDefault()" onclick="tagFormConfirmar()">Salvar</div>
+        <div class="tf-sair-item descartar" onmousedown="event.preventDefault()" onclick="tagFormDescartar()">Sair sem Salvar</div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1441,6 +1453,7 @@ function abrirTagForm(prodId, prodNome, custo, tagEl, soLeitura) {
     el.className = 'tf-row-input' + (soLeitura ? ' readonly' : '');
   });
   tfExpandirDetalhes();
+  tagFormMenuFechar();
   const form = document.getElementById('tag-form');
  form.style.left = '50%';
 form.style.top = '120px';
@@ -1465,7 +1478,27 @@ function tfToggleDetalhes() {
   chevron.style.transform = aberto ? '' : 'rotate(180deg)';
 }
 
+// X do modal: abre as opções Salvar / Sair sem Salvar (em modo só leitura, apenas fecha)
+function tagFormSair() {
+  if (!_tagFormProduto) return;
+  if (_tagFormSoLeitura) { fecharTagForm(); return; }
+  document.getElementById('tf-sair-menu').classList.toggle('open');
+}
+function tagFormMenuFechar() {
+  const m = document.getElementById('tf-sair-menu');
+  if (m) m.classList.remove('open');
+}
+// Sair sem Salvar: nada foi gravado em _itensPedidoAtual enquanto o modal estava aberto, então basta fechar
+function tagFormDescartar() {
+  fecharTagForm();
+}
+document.addEventListener('touchstart', e => {
+  const m = document.getElementById('tf-sair-menu');
+  if (m && m.classList.contains('open') && !e.target.closest('#tf-sair-menu') && !e.target.closest('#tf-x-btn')) m.classList.remove('open');
+}, {passive: true});
+
 function fecharTagForm() {
+  tagFormMenuFechar();
   document.getElementById('tag-form').style.display = 'none';
   document.getElementById('tf-sugestoes').classList.remove('open');
   numpadFechar();
@@ -1572,7 +1605,14 @@ function tagFormConfirmar() {
   const q = parseNum(document.getElementById('tf-quant').value);
   const u = parseNum(document.getElementById('tf-unit').value);
   const t = parseNum(document.getElementById('tf-total').value);
-  if (q <= 0) { fecharTagForm(); return; }
+  if (q <= 0) {
+    // quantidade zerada = remover o item do pedido (antes isso era feito na hora pelo teclado; agora só ao salvar)
+    const existia = !!_itensPedidoAtual[_tagFormProduto.id];
+    delete _itensPedidoAtual[_tagFormProduto.id];
+    fecharTagForm();
+    if (existia) { montarNuvemTags(); atualizarSumarioSheet(); setEstado('editando'); }
+    return;
+  }
   const prUnit = u > 0 ? u : (t > 0 ? t / q : 0);
   const prTotal = t > 0 ? t : q * prUnit;
   const custo = _tagFormProduto.preco_medio_compra || 0;
@@ -3123,15 +3163,7 @@ function numpadDel() {
 
   const campo = _numpadCampoAtivo === 'tf-quant' ? 'quant' : _numpadCampoAtivo === 'tf-unit' ? 'unit' : 'total';
   tfCalc(campo);
-  if (_numpadCampoAtivo === 'tf-quant' && !el.value) {
-  if (_tagFormProduto) {
-    delete _itensPedidoAtual[_tagFormProduto.id];
-    montarNuvemTags(); atualizarSumarioSheet();
-        setEstado('editando');
-  }
-}
-
-
+  // (removido) apagar a quantidade até zerar não tira mais o item do pedido na hora: só ao Salvar. Assim "Sair sem Salvar" realmente descarta.
 }
 
 
