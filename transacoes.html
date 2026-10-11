@@ -3249,7 +3249,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v439';
+const APP_VERSAO = 'v441';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -17283,7 +17283,7 @@ async function scTfAcompanhar(h) {
     return melhor || (menor ? { rot: null, menor: menor.menor, med: menor.med, h } : null);
 }
 // ══ VERSÃO DO MOTOR + REGISTRO das caixas que ele cria (gravado junto com as caixas, nas preferências, ao tocar em Sair) ══
-const SC_MOTOR_VERSAO = 'M1';
+const SC_MOTOR_VERSAO = 'M2';
 function scRegLista() { if (!Array.isArray(window._scRegistro)) window._scRegistro = []; return window._scRegistro; }
 function scRegistrar(o) {
     const L = scRegLista();
@@ -17301,7 +17301,12 @@ async function scRegGravarServidor() {
     try {
         const q = await db.from('preferencias').select('indicadores').eq('id', 1).single();
         if (!q.error && q.data) {
-            const ind = q.data.indicadores || {}; ind.scRegistro = scRegLista();
+            const ind = q.data.indicadores || {};
+            // MESCLA com o que já está no servidor (outro aparelho/aba pode ter gravado): uma linha por caixa (id + hora de criação), fica a mais avançada
+            const nv = { aguardando: 0, entrou: 1 }, chave = r => r.id + '|' + r.t0, m = new Map();
+            (Array.isArray(ind.scRegistro) ? ind.scRegistro : []).concat(scRegLista()).forEach(r => { const k = chave(r), a = m.get(k); if (!a || (nv[r.st] != null ? nv[r.st] : 2) > (nv[a.st] != null ? nv[a.st] : 2)) m.set(k, r); });
+            const junto = Array.from(m.values()).sort((a, b) => a.t0 - b.t0).slice(-300);
+            window._scRegistro = junto; ind.scRegistro = junto;
             const r = await db.from('preferencias').upsert({ id: 1, indicadores: ind, updated_at: new Date().toISOString() });
             ok = !(r && r.error);
         }
@@ -17385,7 +17390,7 @@ function scSobreMostrar() {
         'Nota (0 a 7): Absorção, Ordem grande, Traders presos, Agressores e Virada de delta (só toques recentes, dentro de um candle do macro), RSI e Fibonacci.',
         'Descontos (−1 cada): suporte/resistência contra, o seu lado no prejuízo, faca caindo / foguete subindo.',
         'Não cria: se a ignição já passou (o que falta até o alvo é menor que o risco) ou se a mesma zona deu stop há pouco.',
-        'Botão Motor: compara Long × Short e fica com a maior nota. Empate ou nota abaixo de 3: nada criado. Botão Trader: você escolhe o lado; nota baixa só é avisada.',
+        'Botão Motor: compara Long × Short e fica com a maior nota; empate na nota, fica com o melhor R/R. Não há nota mínima: caixa com nota baixa sai marcada como fraca, e o histórico vai dizer a partir de que nota vale a pena. Botão Trader: você escolhe o lado.',
         'Acompanhar: no maior timeframe em que um candle típico cabe na zona de captura.',
         'Histórico: toda caixa do motor é registrada com a versão (' + SC_MOTOR_VERSAO + '), a nota e o desfecho (alvo, stop, entrada perdida ou expirou). Grava sozinho no servidor a cada mudança.'] });
 }
@@ -17413,11 +17418,20 @@ async function scMotor() {
         a = await scRodar('short', { silencioso: true, soAvaliar: true }); b = await scRodar('long', { silencioso: true, soAvaliar: true });
         const ns = a && a.aval ? a.aval.nota : null, nl = b && b.aval ? b.aval.nota : null;
         if (ns == null && nl == null) { fim('Motor: nenhum lado tem entrada válida no sino (sem zona, ou a ignição já passou). Nada criado.', '#EF5350', true); return; }
-        if (ns != null && nl != null && ns === nl) { fim('Motor: sem lado claro (short ' + ns + ' × long ' + nl + '). Nada criado.', '#F59E0B', true); return; }
-        const lado = nl == null || (ns != null && ns > nl) ? 'short' : 'long', nv = lado === 'short' ? ns : nl;
-        if (nv < 3) { fim('Motor: o melhor lado é ' + (lado === 'short' ? 'Short' : 'Long') + ' com nota ' + nv + ' (fraco, menos de 3). Nada criado.', '#F59E0B', true); return; }
+        // Sempre escolhe um lado quando há entrada (sem nota mínima: o histórico é que vai dizer, com dados, a partir de que nota vale a pena).
+        // Empate na nota: desempata pelo R/R (ganho até o alvo ÷ risco até o stop); empate também no R/R: nada criado.
+        const rrDe = v => v && Math.abs(v.stop - v.entrada) > 0 ? Math.abs(v.alvo - v.entrada) / Math.abs(v.stop - v.entrada) : 0;
+        let lado, porRR = false;
+        if (nl == null) lado = 'short'; else if (ns == null) lado = 'long';
+        else if (ns !== nl) lado = ns > nl ? 'short' : 'long';
+        else {
+            const rs = rrDe(a.aval), rl = rrDe(b.aval);
+            if (Math.abs(rs - rl) < 0.05) { fim('Motor: sem lado claro (short ' + ns + ' × long ' + nl + ', mesmo R/R). Nada criado.', '#F59E0B', true); return; }
+            lado = rs > rl ? 'short' : 'long'; porRR = true;
+        }
         await scRodar(lado, { modo: 'motor' });
-        const rot = 'Motor → ' + (lado === 'short' ? 'Short' : 'Long') + ' (short ' + (ns == null ? 'sem entrada' : ns) + ' × long ' + (nl == null ? 'sem entrada' : nl) + ')';
+        const vir = x => x.toFixed(1).replace('.', ',');
+        const rot = 'Motor → ' + (lado === 'short' ? 'Short' : 'Long') + ' (short ' + (ns == null ? 'sem entrada' : ns) + ' × long ' + (nl == null ? 'sem entrada' : nl) + (porRR ? '; empate na nota, desempate pelo R/R ' + vir(rrDe(a.aval)) + ' × ' + vir(rrDe(b.aval)) : '') + ')';
         if (_scUltimo && !_scUltimo.erro && _scUltimo.linhas) { _scUltimo.txt = rot + ' · ' + _scUltimo.txt; _scUltimo.linhas.splice(2, 0, rot); }
     } finally { _scMotorOn = false; try { cvRenderMenuFpCfg(); } catch (e) {} }
 }
