@@ -3174,7 +3174,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v412';
+const APP_VERSAO = 'v413';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -16625,7 +16625,7 @@ function scCalcular(lado, u, cs, preco, ibK) {
 function scMediana(a) { if (!a.length) return 0; const t = a.slice().sort((x, y) => x - y); return t[Math.floor(t.length / 2)]; }
 function scConfirmacoes(lado, r, u, cs, def) {
     const s = lado === 'short' ? 1 : -1, tick = u.tick, fim = scAgora(), ini = fim - u.dias * 86400000, lo = r.lo, hi = r.hi, RZ = FOOTPRINT_IMBALANCE_RATIO;
-    const res = { n: 0, ev: { abs: null, big: null, trap: null, agg: null, chg: null, rsi: null, fibo: null }, toques: 0, falta: {} };
+    const res = { lado, n: 0, ev: { abs: null, big: null, trap: null, agg: null, chg: null, rsi: null, fibo: null }, toques: 0, falta: {} };
     const fx = (v, d) => (isFinite(v) ? v : 0).toFixed(d == null ? 1 : d).replace('.', ','), rz = (a, b) => b > 0 ? a / b : 0;
     const melhor = (chave, ok, falhas, t) => { const f = res.falta[chave]; if (!f || ok > f.ok || (ok === f.ok && t > f.t)) res.falta[chave] = { ok, falhas, t }; };   // candle que chegou mais perto: guarda o que faltou
     const cand = cs.map(c => ({ c, rows: new Map(), D: 0 }));
@@ -16710,6 +16710,21 @@ function scConfirmacoes(lado, r, u, cs, def) {
         } else res.falta.fibo = { ok: 0, falhas: ['poucos candles do micro para a perna'], t: 0 };
     }
     res.n = Object.keys(res.ev).filter(k => res.ev[k]).length;
+    // Desconto automático (não é um critério a mais): "nunca vender em suporte / comprar em resistência". Cada referência ANCORADA e visível (VWAP, POC da
+    // Value Area, maior nível do VP) que cai na zona (±1 nível da grade) e está do lado de baixo do preço (short) / de cima (long) tira 1 ponto. Sem âncora: sem desconto.
+    res.sup = { pen: 0, refs: [] };
+    try {
+        const refs = [], px = (typeof _precoAtual === 'number' && _precoAtual > 0) ? _precoAtual : null;
+        if (px != null && _grFootprintAtivo) {
+            _grVwapAncoras.forEach(a => { if (a.oculta) return; const i = grVwapIdxPorTs(a.ts); if (i < 0) return; const v = grVWAPAncorado(_grAllCandles, i).filter(x => x != null).pop(); if (v) refs.push(['VWAP', v]); });
+            if (_grValueAreaAncoraTs != null && !_grVaOculta) { const va = grFootprintCalcularValueArea(); if (va && va.poc) refs.push(['POC', va.poc]); }
+            if (_grVpAncoraTs != null && !_grVpOculta) {
+                const d = grVpObterMapa();
+                if (d && d.mapa.size) { const g = new Map(); d.mapa.forEach((v, pr) => { const k = Math.round(pr / tick); g.set(k, (g.get(k) || 0) + v.c + v.v); }); let mk = null, mv = 0; g.forEach((v, k) => { if (v > mv) { mv = v; mk = k; } }); if (mk != null) refs.push(['VP', mk * tick]); }
+            }
+        }
+        refs.forEach(([nome, v]) => { if (v >= lo - tick && v <= hi + tick && (s > 0 ? v <= px + tick : v >= px - tick)) { res.sup.pen++; res.sup.refs.push(nome + ' ' + Math.round(v).toLocaleString('pt-BR')); } });
+    } catch (e) {}
     return res;
 }
 const SC_CONF_TOTAL = 7;
@@ -16752,7 +16767,9 @@ function scScoreDe(conf) {
         else if (!conf.toques && ['abs', 'trap', 'agg', 'chg'].includes(k)) det = 'nenhum candle tocou a zona';
         return { k, nome, ok: !!e, pts: e ? 1 : 0, det };
     });
-    return { n: conf.n, total: SC_CONF_TOTAL, itens };
+    const sup = conf.sup && conf.sup.pen > 0 ? conf.sup : null;
+    if (sup) itens.push({ k: 'sup', nome: 'Em ' + (conf.lado === 'long' ? 'resistência' : 'suporte'), ok: false, pts: '−' + sup.pen, det: sup.refs.join(' · ') });
+    return { n: Math.max(0, conf.n - (sup ? sup.pen : 0)), total: SC_CONF_TOTAL, itens };
 }
 // AMBIENTE (só leitura, não filtra): (1) faca caindo = aproximação dos últimos 3 candles do micro até a entrada, no 3º quartil das aproximações da própria janela;
 // (2) congestão = eficiência dos últimos 6 candles (deslocamento líquido ÷ percurso) igual ou abaixo da mediana da janela; (a leitura de nível/suporte/resistência saiu do ambiente).
