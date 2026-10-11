@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+er<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <script src="https://cdn.jsdelivr.net/npm/eruda"></script>
@@ -2651,21 +2651,23 @@ function _grVwapLSKey() {
 // É um jeito ALÉM dos outros (ferramenta da barra, chip, Footprint ▾). As áreas de toque ficam em window._grAncHits / _grVpHits e perdem para células/candles do footprint.
 let _grVaOculta = false, _grVpOculta = false;
 window._grAncHits = []; window._grVpHits = [];
-// Badge à esquerda (VWAP / POC da VA / maior nível do VP). Fica sempre visível: se o preço sai da tela, gruda no topo/rodapé com ▲/▼.
-// Os três são desenhados em canvases/momentos diferentes: guardo o y de cada um (por chave) e empurro pra baixo se colidir com outro.
-window._grBadgeEsqY = {};
-function grBadgeEsq(ctx, chave, y, txt, cor, corTxt) {
-    const PADL = window._grPADLeft != null ? window._grPADLeft : (typeof _grPAD !== 'undefined' ? _grPAD.left : 0), chartH = (typeof _grChartH !== 'undefined' ? _grChartH : 0), top = (typeof _grPAD !== 'undefined' ? _grPAD.top : 0);
-    const pH = 14, yMin = top + pH / 2 + 1, yMax = top + chartH - pH / 2 - 1;
-    let yb = Math.max(yMin, Math.min(yMax, y));
-    const seta = y < yMin ? '▲ ' : (y > yMax ? '▼ ' : '');
-    Object.keys(window._grBadgeEsqY).forEach(k => { if (k !== chave && Math.abs(window._grBadgeEsqY[k] - yb) < pH) yb = Math.min(yMax, window._grBadgeEsqY[k] + pH); });
-    window._grBadgeEsqY[chave] = yb;
-    ctx.save(); ctx.font = 'bold 10px -apple-system';
-    const t = seta + txt, w = ctx.measureText(t).width + 10;
-    ctx.fillStyle = cor; ctx.beginPath(); ctx.roundRect(PADL + 2, yb - pH / 2, w, pH, 3); ctx.fill();
-    ctx.fillStyle = corTxt || '#FFF'; ctx.textAlign = 'left'; ctx.fillText(t, PADL + 7, yb + pH / 2 - 3.5);
-    ctx.restore();
+// Painel fixo no canto superior direito do priceaction: valor da VWAP, POC da Value Area e maior nível do VP. Não rola com o gráfico.
+// Cada desenhista (VWAP/VA/VP) grava suas linhas por chave; chave sem linhas = some. É um div por cima do gráfico (pointer-events:none).
+window._grPainelItens = {};
+function grPainelValores(chave, linhas) {
+    if (linhas && linhas.length) window._grPainelItens[chave] = linhas; else delete window._grPainelItens[chave];
+    const ref = document.getElementById('gr-valuearea-overlay-canvas'); if (!ref || !ref.parentNode) return;
+    let el = document.getElementById('gr-painel-valores');
+    if (!el) {
+        el = document.createElement('div'); el.id = 'gr-painel-valores';
+        el.style.cssText = 'position:absolute;z-index:8;pointer-events:none;display:none;flex-direction:column;gap:3px;align-items:stretch;padding:5px 7px;border-radius:6px;font:700 11px -apple-system,sans-serif;font-variant-numeric:tabular-nums;background:rgba(20,20,24,0.82);box-shadow:0 1px 4px rgba(0,0,0,0.35);';
+        ref.parentNode.appendChild(el);
+    }
+    const todas = ['vwap', 'va', 'vp'].flatMap(k => window._grPainelItens[k] || []);
+    const pad = (typeof _grPAD !== 'undefined') ? _grPAD : { top: 0, right: 0 };
+    el.style.top = (pad.top + 6) + 'px'; el.style.right = (pad.right + 8) + 'px';
+    el.style.display = todas.length ? 'flex' : 'none';
+    el.innerHTML = todas.map(l => '<div style="display:flex;justify-content:space-between;gap:12px;color:' + l.cor + '"><span>' + l.rot + '</span><span>' + l.val + '</span></div>').join('');
 }
 function grAncCtxFechar() { ['cv-anc-ctx', 'cv-anc-ctx-ov'].forEach(i => { const e = document.getElementById(i); if (e) e.remove(); }); }
 function grAncCtxAbrir(tipo, ts, cx, cy) {
@@ -3170,7 +3172,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v408';
+const APP_VERSAO = 'v409';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -5861,7 +5863,7 @@ function grDrawCandles(candles, emptyRight) {
                 window._grAncHits.push({ x: PAD.left + (i / totalSlots) * chartW, y: y - 12, w: slotW, h: 24, abrir: (cx, cy) => grAncCtxAbrir(tipo, ts, cx, cy) });
             }
         };
-        delete window._grBadgeEsqY.vwap;
+        const _pnVwap = [];
         if (_grFootprintAtivo && _grVwapAncoras.length > 0) {
             _grVwapAncoras.forEach(ancora => {
                 if (ancora.oculta) return;
@@ -5900,10 +5902,11 @@ function grDrawCandles(candles, emptyRight) {
                         ctx.textAlign = 'right';
                         ctx.fillText(tv, pXv + pW - 1, yv + pH/2 - 3);
                     }
-                    grBadgeEsq(ctx, 'vwap', yv, 'V ' + fmtN(lastVwap), CorVwap);
+                    _pnVwap.push({ rot: 'VWAP', val: fmtN(lastVwap), cor: CorVwap === '#C62828' ? '#EF5350' : '#64B5F6' });
                 }
             });
         }
+        grPainelValores('vwap', _pnVwap);
         grVwapAtualizarBotaoLimpar();
         // ── Zonas ZII marcadas (linha, não mais faixa preenchida) ──────────
         // Uma linha tracejada no meio do nível — aparece em QUALQUER
@@ -5932,7 +5935,7 @@ function grDrawCandles(candles, emptyRight) {
         // ── Value Area (VAH/POC/VAL) — mesma janela "Dias: X" do footprint ──
         // Desenhada no canvasVA (acima do overlay do footprint) — não no
         // canvas principal — pra não ficar escondida atrás das barras.
-        delete window._grBadgeEsqY.va;
+        let _pnVa = null;
         if (ctxVA && _grFootprintAtivo && _grFootprintBins && _grValueAreaAncoraTs != null && !_grVaOculta) {
             const va = grFootprintCalcularValueArea();
             if (va) {
@@ -5972,7 +5975,7 @@ function grDrawCandles(candles, emptyRight) {
                 desenharLinhaVA(va.poc, 'POC', corPoc);
                 desenharLinhaVA(va.val, 'VAL', corVA);
                 if (va.ancorado) [va.vah, va.poc, va.val].forEach(pv => grAncRegLinha('va', _grValueAreaAncoraTs, () => toY(pv)));
-                grBadgeEsq(ctxVA, 'va', toY(va.poc), 'POC ' + fmtN(va.poc), corPoc);
+                _pnVa = [{ rot: 'POC', val: fmtN(va.poc), cor: '#EF5350' }];
                 // Marcador no candle de início do período — se ancorado, é o
                 // candle-âncora escolhido (mesmo estilo do VWAP ancorado); se
                 // NÃO ancorado, marca onde a janela rolante "Dias: X" começa,
@@ -6004,6 +6007,7 @@ function grDrawCandles(candles, emptyRight) {
                 }
             }
         }
+        grPainelValores('va', _pnVa);
        // ── Alertas: linha contínua + pílula de preço no eixo (igual à linha horizontal) ──
         {
             const als = _grAlertas.map(al => ({ p: al.preco, cor: grAlertaCor(al), on: al.habilitado !== false }));
@@ -14027,7 +14031,7 @@ function grFootprintDesenharOverlay() {
     // (não depende mais de _indOculto.footprint: essa trava vem de fábrica LIGADA — "histograma escondido por padrão", do
     // histograma antigo à direita — e escondia o perfil a cada recarga. Vale só o botão "Barras" (salvo) e ter âncora.)
     window._grVpHits = [];
-    delete window._grBadgeEsqY.vp;
+    grPainelValores('vp', null);
     if (!_grMostrarBarrasPA || _grVpAncoraTs == null || _grVpOculta) return;
     if (typeof _grMinP === 'undefined' || typeof _grPAD === 'undefined' || !window._grChartW) return;
     if (_grMaxP === _grMinP) return; // gráfico ainda não renderizou escala válida
@@ -14077,7 +14081,7 @@ function grFootprintDesenharOverlay() {
             if (!grPlAtivo()) window._grVpHits.push({ x: xBase, y: yTopo - 2, w: barW, h: h + 4, abrir: (cx, cy) => grAncCtxAbrir('vp', _grVpAncoraTs, cx, cy) });
         });
         ctx.restore();
-        if (ag.pocPreco != null) grBadgeEsq(ctx, 'vp', grLineY(ag.pocPreco), 'VP ' + fmtN(ag.pocPreco), '#FFB300', '#000');
+        if (ag.pocPreco != null) grPainelValores('vp', [{ rot: 'VP', val: fmtN(ag.pocPreco), cor: '#FFB300' }]);
         if (_grVpCarregando) aviso('Carregando dias… ' + _grVpCarregando.feitos + '/' + _grVpCarregando.total);
     } else if (_grVpCarregando) {
         aviso('Carregando dias… ' + _grVpCarregando.feitos + '/' + _grVpCarregando.total);
