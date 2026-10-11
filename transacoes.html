@@ -2641,6 +2641,23 @@ function _grVwapLSKey() {
 // É um jeito ALÉM dos outros (ferramenta da barra, chip, Footprint ▾). As áreas de toque ficam em window._grAncHits / _grVpHits e perdem para células/candles do footprint.
 let _grVaOculta = false, _grVpOculta = false;
 window._grAncHits = []; window._grVpHits = [];
+// ── Seleção por toque (padrão TradingView): tocar no objeto o SELECIONA — aparecem as bolinhas e o menu de contexto. Tocar fora (ou no X) desmarca.
+// Vale para: vwap, va, vp, ema, bol (Bollinger), rsi, zii, area, fib (Fibonacci), al (alerta). Os desenhos manuais (Tendência, Canal, Novo Fibo, Livre,
+// Linha horizontal e Caixa) têm o sistema próprio de alças (_edSel) e não passam por aqui.
+window._grAncSel = null;          // {tipo, ts} do objeto selecionado
+window._grAncDotsMain = [];       // bolinhas a pintar por cima de tudo no canvas principal (zeradas a cada quadro)
+function grAncSelEh(tipo, ts) { const s = window._grAncSel; return !!s && s.tipo === tipo && s.ts === ts; }
+function grAncBolinhas(ctx, pts, corPadrao) {   // mesmo visual das alças dos desenhos: halo, miolo branco e aro na cor do objeto
+    if (!ctx || !pts || !pts.length) return;
+    ctx.save(); ctx.setLineDash([]); ctx.globalAlpha = 1;
+    pts.forEach(p => {
+        if (!p || !isFinite(p.x) || !isFinite(p.y)) return;
+        ctx.beginPath(); ctx.arc(p.x, p.y, 13, 0, Math.PI * 2); ctx.fillStyle = 'rgba(255,255,255,0.18)'; ctx.fill();
+        ctx.beginPath(); ctx.arc(p.x, p.y, 7, 0, Math.PI * 2); ctx.fillStyle = '#FFFFFF'; ctx.fill();
+        ctx.lineWidth = 2.5; ctx.strokeStyle = p.cor || corPadrao || '#2962FF'; ctx.stroke();
+    });
+    ctx.restore();
+}
 // Painel fixo no canto superior direito do priceaction: valor da VWAP, POC da Value Area e maior nível do VP. Não rola com o gráfico.
 // Cada desenhista (VWAP/VA/VP) grava suas linhas por chave; chave sem linhas = some. É um div por cima do gráfico (pointer-events:none).
 window._grPainelItens = {};
@@ -2661,9 +2678,45 @@ function grPainelValores(chave, linhas) {
     el.style.display = todas.length ? 'flex' : 'none';
     el.innerHTML = todas.map(l => '<div style="display:flex;justify-content:space-between;gap:8px;color:#000"><span>' + l.rot + '</span><span>' + l.val + '</span></div>').join('');
 }
-function grAncCtxFechar() { ['cv-anc-ctx', 'cv-anc-ctx-ov'].forEach(i => { const e = document.getElementById(i); if (e) e.remove(); }); }
+function grAncCtxFechar(manter) {   // fecha o menu e DESMARCA o objeto (some com as bolinhas); manter=true só troca o menu, sem redesenhar
+    ['cv-anc-ctx', 'cv-anc-ctx-ov'].forEach(i => { const e = document.getElementById(i); if (e) e.remove(); });
+    if (!manter && window._grAncSel) { window._grAncSel = null; try { grDrawChart(); } catch (e) {} }
+}
+// Título, ponto de busca do objeto e quais botões o menu tem: [olho, engrenagem, lixeira].
+function grAncInfo(tipo, ts) {
+    switch (tipo) {
+        case 'vwap': return { titulo: 'VWAP', btn: [1, 1, 1] };
+        case 'va':   return { titulo: 'Value Area', btn: [1, 1, 1] };
+        case 'vp':   return { titulo: 'Volume Profile', btn: [1, 1, 1] };
+        case 'ema':  { const e = _grEmaCustom.find(x => x.id === ts); return { titulo: 'EMA ' + (e ? e.periodo : ''), btn: [0, 1, 1] }; }
+        case 'bol':  return { titulo: 'Bollinger', btn: [1, 1, 0] };
+        case 'rsi':  return { titulo: 'RSI', btn: [1, 1, 0] };
+        case 'zii':  return { titulo: 'ZII', btn: [0, 0, 1] };
+        case 'area': return { titulo: 'Área', btn: [0, 1, 1] };
+        case 'fib':  return { titulo: 'Fibonacci ' + (ts + 1), btn: [0, 1, 1] };
+        case 'al':   return { titulo: 'Alerta ' + (ts + 1), btn: [1, 1, 1] };
+    }
+    return { titulo: '', btn: [0, 0, 0] };
+}
+function grAncCfg(tipo, ts, cx, cy) {   // engrenagem: abre a configuração que cada objeto já tinha
+    if (tipo === 'vwap' || tipo === 'va' || tipo === 'vp') cvAbrirMenuFpCfg(tipo, cx, cy);
+    else if (tipo === 'bol') cvAbrirMenuFpCfg('bollinger', cx, cy);
+    else if (tipo === 'rsi') cvAbrirMenuFpCfg('rsi', cx, cy);
+    else if (tipo === 'ema') cvAbrirMenuEma(cx, cy);
+    else if (tipo === 'area') grAreaAbrirRelatorio();
+    else if (tipo === 'fib') cvFibAbrirEditar(ts);
+    else if (tipo === 'al') {   // cor do alerta (mesma paleta da lista de alertas)
+        const a = _grAlertas[ts]; if (!a) return;
+        cvAbrirPaletaCor(Math.max(8, Math.min(cx - 130, window.innerWidth - 300)), cy + 12, grAlertaCor(a), c => {
+            a.cor = c; if (a.id != null) _grAlertaCores[a.id] = c;
+            grAlertasJsonSalvar(); grDrawChart();
+        });
+    }
+}
 function grAncCtxAbrir(tipo, ts, cx, cy) {
-    grAncCtxFechar();
+    grAncCtxFechar(true);
+    window._grAncSel = { tipo, ts };
+    const info = grAncInfo(tipo, ts);
     const t0 = Date.now();
     const ov = document.createElement('div'); ov.id = 'cv-anc-ctx-ov'; ov.style.cssText = 'position:fixed;inset:0;z-index:9689;background:transparent;';
     ov.onclick = ev => { ev.stopPropagation(); if (Date.now() - t0 > 350) grAncCtxFechar(); };
@@ -2671,13 +2724,13 @@ function grAncCtxAbrir(tipo, ts, cx, cy) {
     m.style.cssText = 'position:fixed;z-index:9690;display:flex;align-items:center;gap:1px;background:#FFFFFF;border-radius:9px;padding:2px 4px;box-shadow:0 1px 8px rgba(0,0,0,0.25);font-family:-apple-system,sans-serif;';
     const seguro = b => ['touchstart', 'touchend', 'mousedown'].forEach(n => b.addEventListener(n, ev => ev.stopPropagation(), { passive: true }));
     const bt = (svg, cor, fn) => { const b = document.createElement('button'); b.type = 'button'; b.innerHTML = svg; b.style.cssText = 'width:30px;height:30px;background:none;border:none;color:' + cor + ';display:flex;align-items:center;justify-content:center;padding:0;'; b.onclick = ev => { ev.stopPropagation(); fn(b); }; seguro(b); m.appendChild(b); return b; };
-    const titulo = { vwap: 'VWAP', va: 'Value Area', vp: 'Volume Profile' }[tipo];
-    const rot = document.createElement('span'); rot.textContent = titulo; rot.style.cssText = 'font-size:12px;font-weight:700;color:#1C1C1E;padding:0 6px 0 4px;white-space:nowrap;'; m.appendChild(rot);
-    bt(grHeroicon('eye-slash', 16), '#1C1C1E', () => { grAncCtxFechar(); grAncOlho(tipo, ts); });
-    bt(grHeroicon('cog-6-tooth', 16), '#1C1C1E', () => { grAncCtxFechar(); cvAbrirMenuFpCfg(tipo, cx, cy); });
-    bt(grHeroicon('trash', 16), '#EF5350', () => { grAncCtxFechar(); grAncRemover(tipo, ts); });
+    const rot = document.createElement('span'); rot.textContent = info.titulo; rot.style.cssText = 'font-size:12px;font-weight:700;color:#1C1C1E;padding:0 6px 0 4px;white-space:nowrap;'; m.appendChild(rot);
+    if (info.btn[0]) bt(grHeroicon('eye-slash', 16), '#1C1C1E', () => { grAncCtxFechar(); grAncOlho(tipo, ts); });
+    if (info.btn[1]) bt(grHeroicon('cog-6-tooth', 16), '#1C1C1E', () => { grAncCtxFechar(); grAncCfg(tipo, ts, cx, cy); });
+    if (info.btn[2]) bt(grHeroicon('trash', 16), '#EF5350', () => { grAncCtxFechar(); grAncRemover(tipo, ts); });
     bt(grHeroicon('x-mark', 16), '#6B6B70', () => grAncCtxFechar());
     document.body.appendChild(ov); document.body.appendChild(m);
+    try { grDrawChart(); } catch (e) {}   // mostra as bolinhas do objeto selecionado
     const mw = m.offsetWidth || 160, mh = m.offsetHeight || 34;
     let x = cx - mw / 2, y = cy - mh - 26;
     if (y < 8) y = cy + 30;
@@ -2686,14 +2739,22 @@ function grAncCtxAbrir(tipo, ts, cx, cy) {
 function grAncOlho(tipo, ts) {   // oculta/mostra sem apagar a âncora; mostrar de novo: pelo olho na engrenagem do chip ou do Footprint ▾
     if (tipo === 'vwap') { const a = _grVwapAncoras.find(x => x.ts === ts); if (!a) return; a.oculta = !a.oculta; grVwapSalvarAncoras(); }
     else if (tipo === 'va') _grVaOculta = !_grVaOculta;
-    else _grVpOculta = !_grVpOculta;
+    else if (tipo === 'vp') _grVpOculta = !_grVpOculta;
+    else if (tipo === 'bol') { cvToggleBol(); return; }                 // indicador sem "ocultar": o olho desliga (liga de novo no botão da barra)
+    else if (tipo === 'rsi') { cvToggleInd('rsi'); return; }
+    else if (tipo === 'al') { cvAlertaToggleHab(ts); return; }          // olho = desabilita/habilita o alerta (mesma chave da lista)
     grDrawChart();
     try { const mn = document.getElementById('cv-fp-cfg-menu'); if (mn && mn.classList.contains('active')) cvRenderMenuFpCfg(); } catch (e) {}
 }
 function grAncRemover(tipo, ts) {
     if (tipo === 'vwap') grVwapRemoverAncora(ts);
     else if (tipo === 'va') { _grVaOculta = false; grValueAreaDesancorar(); }
-    else { _grVpOculta = false; grVpRemover(); }
+    else if (tipo === 'vp') { _grVpOculta = false; grVpRemover(); }
+    else if (tipo === 'ema') cvRemoverEmaCustom(ts);
+    else if (tipo === 'zii') { _grZiiZonas = _grZiiZonas.filter((z, k) => k !== ts); grDrawChart(); try { grFootprintAtualizarBotaoExplodir(); } catch (e) {} }
+    else if (tipo === 'area') { grAreaApagar(); grAreaApagar(); }       // a função pede 2 toques no botão; aqui o toque na lixeira já é a confirmação
+    else if (tipo === 'fib') cvFibExcluirIdx(ts).then(() => grDrawChart());
+    else if (tipo === 'al') cvExcluirAlertaDireto(ts);
 }
 function grVwapSalvarAncoras() {
     try { localStorage.setItem(_grVwapLSKey(), JSON.stringify(_grVwapAncoras)); } catch (e) {}
@@ -5768,6 +5829,7 @@ function grDrawCandles(candles, emptyRight) {
         // Guarda o valor atual no próprio item (item.valorTxt) pra lista do modal mostrar sem recalcular.
         _grEmaCustom.forEach(item => {
             const vals = extrairJanela(grEMA(allCloses, item.periodo), item.periodo);
+            item._janela = vals;   // guardada pra área de toque / bolinhas da seleção (registradas mais abaixo)
             desenharLinha(vals, item.cor, 1.2);
             const v = vals.filter(v=>v!=null).pop();
             item.valorTxt = v != null ? fmtN(v) : null;
@@ -5844,16 +5906,30 @@ function grDrawCandles(candles, emptyRight) {
         // (vermelho = candle mais perto de um topo local, azul = mais perto
         // de um fundo local — classificação automática, ver grVwapClassificarTipo).
         window._grAncHits = [];
+        window._grAncDotsMain = [];
         // Áreas de toque de uma linha: uma fatia por candle da tela, sem as colunas em que a linha passa atrás do candle (aí o toque é do candle).
-        const grAncRegLinha = (tipo, ts, yDeSlot) => {
+        // sobreCandle=true (EMA, Bollinger): fora do modo Fluxo não há célula de footprint pra disputar o toque, então a linha vale inteira.
+        const grAncRegLinha = (tipo, ts, yDeSlot, sobreCandle) => {
             if (grPlAtivo()) return;
             const slotW = chartW / totalSlots;
             for (let i = 0; i < visible; i++) {
                 const y = yDeSlot(i); if (y == null || !isFinite(y) || y < PAD.top - 12 || y > PAD.top + chartH + 12) continue;
                 const cd = candles[i];
-                if (cd) { const yh = toY(cd.h), yl = toY(cd.l); if (y >= yh - 6 && y <= yl + 6) continue; }
-                window._grAncHits.push({ x: PAD.left + (i / totalSlots) * chartW, y: y - 12, w: slotW, h: 24, abrir: (cx, cy) => grAncCtxAbrir(tipo, ts, cx, cy) });
+                if (cd && !(sobreCandle && !_grFootprintAtivo)) { const yh = toY(cd.h), yl = toY(cd.l); if (y >= yh - 6 && y <= yl + 6) continue; }
+                window._grAncHits.push({ x: PAD.left + (i / totalSlots) * chartW, y: y - 12, w: slotW, h: 24, cel: true, abrir: (cx, cy) => grAncCtxAbrir(tipo, ts, cx, cy) });
             }
+        };
+        // Ajudantes da seleção: x do centro do candle i, linha horizontal tocável, e bolinhas ao longo de uma série (primeiro, intermediários e último ponto).
+        const grAncXc = i => PAD.left + (i / totalSlots) * chartW + cW / 2;
+        const grAncRegHoriz = (tipo, ts, y, x0, x1) => {
+            if (grPlAtivo() || y == null || !isFinite(y) || y < PAD.top - 12 || y > PAD.top + chartH + 12) return;
+            window._grAncHits.push({ x: x0, y: y - 12, w: Math.max(4, x1 - x0), h: 24, cel: true, abrir: (cx, cy) => grAncCtxAbrir(tipo, ts, cx, cy) });
+        };
+        const grAncDotsSerie = (vals, cor, n) => {
+            const ok = []; vals.forEach((v, i) => { if (v != null && isFinite(toY(v))) ok.push(i); });
+            if (!ok.length) return;
+            const pick = new Set(); for (let k = 0; k < n; k++) pick.add(ok[Math.round(k * (ok.length - 1) / Math.max(1, n - 1))]);
+            pick.forEach(i => { const y = toY(vals[i]); if (y >= PAD.top && y <= PAD.top + chartH) window._grAncDotsMain.push({ x: grAncXc(i), y, cor }); });
         };
         const _pnVwap = [];
         if (_grFootprintAtivo && _grVwapAncoras.length > 0) {
@@ -5866,6 +5942,11 @@ function grDrawCandles(candles, emptyRight) {
                 const CorVwap = ancora.tipo === 'topo' ? '#C62828' : '#1565C0';
                 desenharLinha(vwapVis, CorVwap, 0.5); // bem mais fina, a pedido
                 grAncRegLinha('vwap', ancora.ts, i => (vwapVis[i] == null ? null : toY(vwapVis[i])));
+                if (grAncSelEh('vwap', ancora.ts)) {   // selecionada: bolinhas ao longo da linha e no candle-âncora
+                    grAncDotsSerie(vwapVis, CorVwap, 4);
+                    const cSel = _grAllCandles[idxA], xSel = grIndexToX(idxA);
+                    if (cSel && xSel >= PAD.left - 10 && xSel <= PAD.left + chartW + 10) window._grAncDotsMain.push({ x: xSel, y: toY((cSel.h + cSel.l + cSel.c) / 3), cor: CorVwap });
+                }
                 // Marcador (bolinha) no candle-âncora exato.
                 const cAncora = _grAllCandles[idxA];
                 const xAncora = grIndexToX(idxA);
@@ -5889,6 +5970,58 @@ function grDrawCandles(candles, emptyRight) {
         }
         grPainelValores('vwap', _pnVwap);
         grVwapAtualizarBotaoLimpar();
+        // ── Seleção por toque dos demais objetos do canvas: EMA, Bollinger, RSI, ZII, Área, Fibonacci e Alertas ──
+        // Cada um registra a área de toque (abre o menu de contexto) e, se for o selecionado, as bolinhas (pintadas no fim do quadro, por cima de tudo).
+        {
+            const xMeio = PAD.left + chartW / 2, xDir = PAD.left + chartW;
+            const dentro = y => y >= PAD.top && y <= PAD.top + chartH;
+            _grEmaCustom.forEach(item => {
+                const vals = item._janela; if (!vals) return;
+                grAncRegLinha('ema', item.id, i => (vals[i] == null ? null : toY(vals[i])), true);
+                if (grAncSelEh('ema', item.id)) grAncDotsSerie(vals, item.cor, 4);
+            });
+            if (_indState.bollinger && bolUpper && bolLower) {
+                [bolUpper, bolMid, bolLower].forEach(serie => { if (serie) grAncRegLinha('bol', 0, i => (serie[i] == null ? null : toY(serie[i])), true); });
+                if (grAncSelEh('bol', 0)) { grAncDotsSerie(bolUpper, '#64B5F6', 3); grAncDotsSerie(bolLower, '#64B5F6', 3); }
+            }
+            if (_indState.rsi && rsiNiveisJanela && _grRsiNiveis.length) {   // o que se vê do RSI no preço: o trecho tracejado à direita do último candle
+                _grRsiNiveis.forEach(nv => {
+                    const serie = rsiNiveisJanela[nv]; if (!serie) return;
+                    let iU = -1; for (let i = serie.length - 1; i >= 0; i--) if (serie[i] != null) { iU = i; break; }
+                    if (iU < 0) return;
+                    const y = toY(serie[iU]), x0 = grAncXc(iU);
+                    grAncRegHoriz('rsi', 0, y, x0, xDir);
+                    if (grAncSelEh('rsi', 0) && dentro(y)) { const cr = grRsiCorLinha(nv); window._grAncDotsMain.push({ x: x0, y, cor: cr }, { x: (x0 + xDir) / 2, y, cor: cr }); }
+                });
+            }
+            if (!_indOculto.ziiZonas) _grZiiZonas.forEach((zona, k) => {
+                const y = toY((zona.lo + zona.hi) / 2);
+                grAncRegHoriz('zii', k, y, PAD.left, xDir);
+                if (grAncSelEh('zii', k) && dentro(y)) window._grAncDotsMain.push({ x: xMeio, y, cor: zona.tipo === 'compra' ? '#4CAF50' : '#EF5350' });
+            });
+            _fibs.forEach((fib, k) => {
+                const hi = Math.max(fib.p1, fib.p2), lo = Math.min(fib.p1, fib.p2), diff = hi - lo, sobe = fib.p2 > fib.p1;
+                [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1].forEach(r => {
+                    const y = toY(sobe ? lo + diff * (1 - r) : hi - diff * (1 - r));
+                    grAncRegHoriz('fib', k, y, PAD.left, xDir);
+                    if ((r === 0 || r === 1) && grAncSelEh('fib', k) && dentro(y)) window._grAncDotsMain.push({ x: xMeio, y, cor: FIB_CORES[k % FIB_CORES.length] });
+                });
+            });
+            _grAlertas.forEach((al, k) => {
+                const y = toY(al.preco);
+                grAncRegHoriz('al', k, y, PAD.left, xDir);
+                if (grAncSelEh('al', k) && dentro(y)) window._grAncDotsMain.push({ x: xMeio, y, cor: grAlertaCor(al) });
+            });
+            if (areaGeo && !_grAreaArmada && !grPlAtivo()) {   // Área: o toque vale no contorno (o miolo continua livre pro gráfico)
+                const { x1, x2, yTopo, yBase } = areaGeo, yA = Math.min(yTopo, yBase), yB = Math.max(yTopo, yBase);
+                const xa = Math.max(PAD.left, x1), xb = Math.min(xDir, x2);
+                if (xb > xa) {
+                    grAncRegHoriz('area', 1, yTopo, xa, xb); grAncRegHoriz('area', 1, yBase, xa, xb);
+                    [x1, x2].forEach(xx => { if (xx >= PAD.left && xx <= xDir && yB > yA) window._grAncHits.push({ x: xx - 12, y: yA, w: 24, h: yB - yA, cel: true, abrir: (cx, cy) => grAncCtxAbrir('area', 1, cx, cy) }); });
+                    if (grAncSelEh('area', 1)) [[x1, yTopo], [x2, yTopo], [x1, yBase], [x2, yBase]].forEach(([px, py]) => { if (px >= PAD.left && px <= xDir && dentro(py)) window._grAncDotsMain.push({ x: px, y: py, cor: '#FFB74D' }); });
+                }
+            }
+        }
         // ── Zonas ZII marcadas (linha, não mais faixa preenchida) ──────────
         // Uma linha tracejada no meio do nível — aparece em QUALQUER
         // candle/timeframe, então dá pra rolar o histórico inteiro e ver se
@@ -5956,6 +6089,9 @@ function grDrawCandles(candles, emptyRight) {
                 desenharLinhaVA(va.poc, 'POC', corPoc);
                 desenharLinhaVA(va.val, 'VAL', corVA);
                 if (va.ancorado) [va.vah, va.poc, va.val].forEach(pv => grAncRegLinha('va', _grValueAreaAncoraTs, () => toY(pv)));
+                if (grAncSelEh('va', _grValueAreaAncoraTs)) {   // selecionada: uma bolinha no meio de cada linha (VAH, POC, VAL)
+                    grAncBolinhas(ctxVA, [[va.vah, corVA], [va.poc, corPoc], [va.val, corVA]].map(([pv, cr]) => ({ x: PAD.left + chartW / 2, y: toY(pv), cor: cr })).filter(p => p.y >= PAD.top && p.y <= PAD.top + _grChartH));
+                }
                 _pnVa = [{ rot: 'POC', val: fmtN(va.poc), cor: '#EF5350' }];
                 // Marcador no candle de início do período — se ancorado, é o
                 // candle-âncora escolhido (mesmo estilo do VWAP ancorado); se
@@ -7178,6 +7314,7 @@ if (fibsParaDesenhar.length > 0) {
         }
         try { grNfDesenhar(ctx, t => toXIdx2(grTimeToIndex(t)), p => toY(p), PAD, W, chartH); } catch (eNf) {}
         grEdAlcasDesenhar(ctx, t => toXIdx2(grTimeToIndex(t)), p => toY(p));
+        grAncBolinhas(ctx, window._grAncDotsMain);   // bolinhas do objeto selecionado (VWAP, EMA, Bollinger, RSI, ZII, Área, Fibonacci, Alerta) por cima de tudo
         // ── Régua de Medição: descartável, linha + caixa com % e USD ──
         if (_medidaAtual) {
             const corMedida = '#8B5CF6';
@@ -14038,6 +14175,7 @@ function grFootprintDesenharOverlay() {
         ctx.fillStyle = '#FFC107'; ctx.fillText(txt, xBase + 7, chartTop + 13);
     };
     const dados = grVpObterMapa();
+    const bolinhasVp = [];   // bolinhas da seleção (pintadas no fim, por cima das barras)
     if (dados && dados.mapa.size > 0) {
         const tick = grVpTick(pxPorDolar);
         const ag = grVpAgrupar(dados, tick);
@@ -14061,9 +14199,16 @@ function grFootprintDesenharOverlay() {
             ctx.fillRect(xBase, yTopo, buyW, h);
             ctx.fillStyle = 'rgba(239,83,80,' + alpha + ')';           // venda (vermelho): pra fora
             ctx.fillRect(xBase + buyW, yTopo, barW - buyW, h);
-            if (!grPlAtivo()) window._grVpHits.push({ x: xBase, y: yTopo - 2, w: barW, h: h + 4, abrir: (cx, cy) => grAncCtxAbrir('vp', _grVpAncoraTs, cx, cy) });
+            if (!grPlAtivo()) window._grVpHits.push({ x: xBase, y: yTopo - 2, w: barW, h: h + 4, cel: true, abrir: (cx, cy) => grAncCtxAbrir('vp', _grVpAncoraTs, cx, cy) });
         });
         ctx.restore();
+        if (ag.pocPreco != null && grAncSelEh('vp', _grVpAncoraTs)) {   // ponta da barra do POC
+            const vPoc = ag.mapa.get(ag.pocPreco), totPoc = vPoc ? vPoc.c + vPoc.v : 0;
+            if (totPoc > 0 && ag.maxTotal > 0) {
+                const yPoc = (grLineY(ag.pocPreco + tick / 2) + grLineY(ag.pocPreco - tick / 2)) / 2;
+                if (yPoc >= chartTop && yPoc <= chartBottom) bolinhasVp.push({ x: xBase + (totPoc / ag.maxTotal) * maxBarW, y: yPoc });
+            }
+        }
         if (ag.pocPreco != null) grPainelValores('vp', [{ rot: 'VP', val: fmtN(ag.pocPreco), cor: '#FFB300' }]);
         if (_grVpCarregando) aviso('Carregando dias… ' + _grVpCarregando.feitos + '/' + _grVpCarregando.total);
     } else if (_grVpCarregando) {
@@ -14085,7 +14230,11 @@ function grFootprintDesenharOverlay() {
         ctx.beginPath(); ctx.roundRect(xLab - w / 2, chartBottom - 16, w, 13, 3); ctx.fill();
         ctx.fillStyle = '#FFC107'; ctx.fillText(txt, xLab, chartBottom - 6);
         ctx.restore();
+        if (grAncSelEh('vp', _grVpAncoraTs)) {   // selecionado: bolinhas no alto e no pé da linha da âncora
+            bolinhasVp.push({ x: Math.round(xBase) + 0.5, y: chartTop + 24 }, { x: Math.round(xBase) + 0.5, y: chartBottom - 30 });
+        }
     }
+    grAncBolinhas(ctx, bolinhasVp, '#FFB300');
 }
 let _grFootprintNivelAtual = null; // {p, tick, v, total} do último nível aberto — usado pelos botões de série temporal e marcar zona ZII
 // ── Modal de UM nível do footprint dos candles (toque numa célula) ─────────────────────────────────────────────────────────────
