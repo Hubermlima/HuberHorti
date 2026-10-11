@@ -1400,6 +1400,7 @@ async function cvAtualizarPrecoRealTime() {
         if (!wsVivo) grAplicarPrecoNoCandleEmFormacao(novoPreco); // sem WebSocket: o candle acompanha a mesma cotação da linha
         // Atualiza globais
         _precoAtual = novoPreco;
+        try { scRegChecarPreco(novoPreco); } catch (e) {}
         grPerf('cotação (REST)');
         grFootprintAtualizarLinhaPrecoAtual();
         if (!_regAtual && _grPm > 0) {
@@ -1463,6 +1464,7 @@ function cvIniciarRealTime() {
             grFootprintLiveTrade(d);            // footprint ao vivo do candle em formação
             const precoAntes = _precoAtual;
             _precoAtual = novoPreco;
+            try { scRegChecarPreco(novoPreco); } catch (e) {}
             grPerf('cotação (WebSocket)');
             grFootprintAtualizarLinhaPrecoAtual();
             grCotOverlayAgendar();   // linha/etiqueta da cotação a cada trade, sem redesenhar o gráfico
@@ -2364,6 +2366,7 @@ function grAoVoltarDoSegundoPlano() {
     } catch (err) {}
     grReconciliarUltimosCandles();
     if (_grFootprintAtivo) { grFootprintAtualizarSeAtivo(); grFootprintLivePreencherBuraco(); }
+    try { scRegAtualizar(); } catch (e) {}   // o que aconteceu com as caixas do motor enquanto o app estava fechado
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') grAoVoltarDoSegundoPlano(); });
 setInterval(() => {
@@ -3246,7 +3249,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v437';
+const APP_VERSAO = 'v439';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -11655,6 +11658,7 @@ function grAmbienteColetar() {
         ambExpandido: _grAmbExpandido,
         hLinhas: _grHLinhasMapa,
         posicoes: cvPosParaSalvar(),
+        scRegistro: Array.isArray(window._scRegistro) ? window._scRegistro : [],
         alertas: _grAlertasJson,
         footprint: raiz.footprint,
         reguaLockS: _grReguaLock.S,
@@ -11741,6 +11745,7 @@ async function grAmbienteCarregar() {
     grAmbAtivoAplicar(fatiaIni); // define _grTf direto: os candles ainda não foram buscados (o cvAbrir busca já no TF certo)
     if (ambiente.alertas && typeof ambiente.alertas === 'object') { _grAlertasJson = ambiente.alertas; try { localStorage.setItem('gr_alertas_json', JSON.stringify(_grAlertasJson)); } catch (e) {} grAlertasJsonAplicar(); try { grDrawChart(); } catch (e) {} }
     if (ambiente.posicoes && typeof ambiente.posicoes === 'object') { _grPosMapa = ambiente.posicoes; try { grDrawChart(); } catch (e) {} }
+    if (Array.isArray(ambiente.scRegistro)) window._scRegistro = ambiente.scRegistro;
     if (ambiente.hLinhas && typeof ambiente.hLinhas === 'object') { _grHLinhasMapa = ambiente.hLinhas; try { localStorage.setItem('gr_hlinhas', JSON.stringify(_grHLinhasMapa)); } catch (e) {} }
     if (typeof ambiente.ambExpandido === 'boolean') { _grAmbExpandido = ambiente.ambExpandido; try { localStorage.setItem('gr_amb_expandido', _grAmbExpandido ? '1' : '0'); } catch (e) {} }
     if (fatiaIni.footprint === true && grAtivoTemFluxo() && !_grFootprintAtivo) grFootprintAtivar(); // roda em 2º plano; ver "libera a trava" abaixo
@@ -17230,7 +17235,8 @@ async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fecha
         pz.rotulo = 'Setup ' + dMa.rot + ' × ' + dMi.rot + (fraco ? ' · fraco' : ''); pz.score = scScoreDe(conf);
         if (tfSug && tfSug.rot) pz.tfAcomp = { chave: tfSug.chave, rot: tfSug.rot };
         if (opts.scalp) pz.scalp = true;
-        if (!dup) { lista.push(pz); grPosSalvar(); }
+        pz.motorV = SC_MOTOR_VERSAO;
+        if (!dup) { lista.push(pz); grPosSalvar(); scRegistrar({ id: pz.id, mv: SC_MOTOR_VERSAO, modo: opts.modo || (opts.scalp ? 'play' : 'trader'), lado, nota: pz.score ? pz.score.n : null, ent: entrada, stp: stop, alvo, alvoTipo: esc.alvoTipo || (am ? 'macro' : '2R'), mi: dMi.rot, ma: dMa.rot, tfA: tfSug && tfSug.rot ? tfSug.rot : null, val: dMa.blocoMs, sym: grBinSymbolAtual() }); }
         const f = x => Math.round(x).toLocaleString('pt-BR');
         _scUltimo = { lado, hora: new Date(), txt: (lado === 'short' ? 'Short' : 'Long') + ' · entrada ' + f(entrada) + ' · stop ' + f(stop) + ' · alvo ' + f(alvo) + (esc.alvoTipo === 'pico' ? ' (pico do sino)' : am ? ' (nó macro)' : ' (2R)') + (' · ' + conf.n + ' de ' + SC_CONF_TOTAL + ' confirmações') + (fraco ? ' · FRACO' : '') + (tfSug && tfSug.rot ? ' · acompanhe no ' + tfSug.rot : '') + avisoCob };
         // Relatório curto
@@ -17276,6 +17282,113 @@ async function scTfAcompanhar(h) {
     }
     return melhor || (menor ? { rot: null, menor: menor.menor, med: menor.med, h } : null);
 }
+// ══ VERSÃO DO MOTOR + REGISTRO das caixas que ele cria (gravado junto com as caixas, nas preferências, ao tocar em Sair) ══
+const SC_MOTOR_VERSAO = 'M1';
+function scRegLista() { if (!Array.isArray(window._scRegistro)) window._scRegistro = []; return window._scRegistro; }
+function scRegistrar(o) {
+    const L = scRegLista();
+    L.push(Object.assign({ t0: Date.now(), st: 'aguardando', tEnt: null, tFim: null }, o));
+    if (L.length > 300) L.splice(0, L.length - 300);
+    scRegGravarServidor();
+}
+// Grava SÓ o registro no servidor, na hora: relê o JSON salvo (id=1), troca só o scRegistro e regrava. O resto do ambiente
+// (mudanças ainda não salvas por você) não é tocado — continua só no Sair.
+let _scRegGravando = false, _scRegDeNovo = false;
+async function scRegGravarServidor() {
+    if (window._grServidorFalhou || typeof db === 'undefined') return false;
+    if (_scRegGravando) { _scRegDeNovo = true; return false; }
+    _scRegGravando = true; let ok = false;
+    try {
+        const q = await db.from('preferencias').select('indicadores').eq('id', 1).single();
+        if (!q.error && q.data) {
+            const ind = q.data.indicadores || {}; ind.scRegistro = scRegLista();
+            const r = await db.from('preferencias').upsert({ id: 1, indicadores: ind, updated_at: new Date().toISOString() });
+            ok = !(r && r.error);
+        }
+    } catch (e) {}
+    _scRegGravando = false;
+    if (_scRegDeNovo) { _scRegDeNovo = false; return scRegGravarServidor(); }
+    return ok;
+}
+// A cada cotação (no máx. 1 vez por segundo): marca entrou / alvo / stop / entrada perdida / expirou das caixas abertas deste ativo e grava na hora.
+let _scRegChecTs = 0;
+function scRegChecarPreco(px) {
+    if (!(px > 0) || Date.now() - _scRegChecTs < 1000) return;
+    _scRegChecTs = Date.now();
+    const L = window._scRegistro; if (!Array.isArray(L) || !L.length) return;
+    const sym = grBinSymbolAtual(), agora = Date.now(); let mudou = false;
+    L.forEach(r => {
+        if ((r.st !== 'aguardando' && r.st !== 'entrou') || (r.sym && r.sym !== sym)) return;
+        const lg = r.lado === 'long', toca = lg ? px <= r.ent : px >= r.ent, bStop = lg ? px <= r.stp : px >= r.stp, bAlvo = lg ? px >= r.alvo : px <= r.alvo;
+        const ant = r.st;
+        if (r.st === 'aguardando') {
+            if (toca) { r.st = 'entrou'; r.tEnt = agora; if (bStop) { r.st = 'stop'; r.tFim = agora; } }
+            else if (bAlvo) { r.st = 'perdida'; r.tFim = agora; }
+            else if (r.val > 0 && agora > r.t0 + r.val) { r.st = 'expirou'; r.tFim = agora; }
+        } else if (bStop) { r.st = 'stop'; r.tFim = agora; }
+        else if (bAlvo) { r.st = 'alvo'; r.tFim = agora; }
+        if (r.st !== ant) {
+            mudou = true;
+            if (r.st !== 'entrou') { try { grAreaToast('Motor ' + (r.mv || '') + ': ' + (lg ? 'Long' : 'Short') + ' → ' + SC_REG_ROT[r.st], r.st === 'alvo' ? '#16A34A' : r.st === 'stop' ? '#EF5350' : '#8E8E93'); } catch (e) {} }
+        }
+    });
+    if (mudou) scRegGravarServidor();
+}
+// Relê os candles desde a criação e marca: entrou (tocou a entrada) → alvo / stop; sem entrar → entrada perdida (foi ao alvo) ou expirou (passou 1 candle do macro).
+// Candles de 5 min (até ~3 dias) ou de 1 h (até ~41 dias); só candles que COMEÇAM depois da criação; no candle em que entrou, só o stop conta (conservador).
+async function scRegAtualizar() {
+    const abertos = scRegLista().filter(r => r.st === 'aguardando' || r.st === 'entrou'); if (!abertos.length) return false;
+    let mudou = false;
+    const cache = {}, pega = async (sym, iv) => { const k = sym + '|' + iv; if (!cache[k]) { try { cache[k] = (await grBuscarKlines(sym, iv, 1000, null)).map(grMapearKline); } catch (e) { cache[k] = []; } } return cache[k]; };
+    for (const r of abertos) {
+        const st0 = r.st;
+        const novo5 = Date.now() - r.t0 < 3.3 * 86400000, cs = await pega(r.sym || grBinSymbolAtual(), novo5 ? '5m' : '1h');
+        const lg = r.lado === 'long';
+        for (const c of cs) {
+            if (c.t < r.t0) continue;
+            if (r.st === 'entrou' && r.tEnt != null && c.t <= r.tEnt) continue;
+            const toca = lg ? c.l <= r.ent : c.h >= r.ent, bStop = lg ? c.l <= r.stp : c.h >= r.stp, bAlvo = lg ? c.h >= r.alvo : c.l <= r.alvo;
+            if (r.st === 'aguardando') {
+                if (toca) { r.st = 'entrou'; r.tEnt = c.t; if (bStop) { r.st = 'stop'; r.tFim = c.t; break; } continue; }
+                if (bAlvo) { r.st = 'perdida'; r.tFim = c.t; break; }
+                if (r.val > 0 && c.t > r.t0 + r.val) { r.st = 'expirou'; r.tFim = c.t; break; }
+            } else {
+                if (bStop) { r.st = 'stop'; r.tFim = c.t; break; }
+                if (bAlvo) { r.st = 'alvo'; r.tFim = c.t; break; }
+            }
+        }
+        if (r.st !== st0) mudou = true;
+    }
+    if (mudou) scRegGravarServidor();
+    return mudou;
+}
+const SC_REG_ROT = { aguardando: 'aguardando', entrou: 'entrou', alvo: 'ALVO', stop: 'STOP', perdida: 'entrada perdida', expirou: 'expirou' };
+async function scHistoricoMostrar() {
+    try { cvFecharMenuFpCfg(); } catch (e) {}
+    try { grAreaToast('Atualizando o histórico…', '#8E8E93'); } catch (e) {}
+    await scRegAtualizar();
+    const L = scRegLista(), f = x => Math.round(x).toLocaleString('pt-BR'), dh = t => new Date(t).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const cont = {}; L.forEach(r => { cont[r.st] = (cont[r.st] || 0) + 1; });
+    const linhas = ['HISTÓRICO DO MOTOR · ' + L.length + ' caixa' + (L.length === 1 ? '' : 's'),
+        L.length ? ['alvo', 'stop', 'perdida', 'expirou', 'entrou', 'aguardando'].filter(k => cont[k]).map(k => SC_REG_ROT[k] + ' ' + cont[k]).join(' · ') : 'Nenhuma caixa do motor registrada ainda.'];
+    L.slice().reverse().forEach(r => linhas.push(r.mv + ' · ' + dh(r.t0) + ' · ' + r.modo + ' · ' + (r.lado === 'long' ? 'Long' : 'Short') + ' · nota ' + (r.nota == null ? '?' : r.nota)
+        + ' · E ' + f(r.ent) + ' S ' + f(r.stp) + ' A ' + f(r.alvo) + ' (' + (r.alvoTipo === 'pico' ? 'pico' : r.alvoTipo) + ') · ' + r.ma + '×' + r.mi
+        + ' · ' + SC_REG_ROT[r.st] + (r.tFim ? ' ' + dh(r.tFim) : (r.tEnt ? ' ' + dh(r.tEnt) : ''))));
+    scRelatorioMostrar({ lado: null, linhas });
+}
+function scSobreMostrar() {
+    try { cvFecharMenuFpCfg(); } catch (e) {}
+    scRelatorioMostrar({ lado: null, linhas: ['MOTOR ' + SC_MOTOR_VERSAO, 'Como ele decide, em resumo',
+        'Onde procura: só na zona quente, o quarto mais negociado do perfil de volume, colado ao pico. Fonte: o VP ancorado; sem ele, a Value Area ancorada; sem âncora, a janela de dias. A POC da Value Area sempre conta.',
+        'Entrada e stop: num nível com volume dentro da zona quente; o stop fica logo atrás do nível, com uma folga pequena. Se nem um candle típico de 5 min cabe entre a entrada e o stop, recusa.',
+        'Alvo: o mais perto entre o pico do sino e o nó de volume do macro, com ganho pelo menos igual ao risco. Sem nenhum dos dois, 2 vezes o risco.',
+        'Nota (0 a 7): Absorção, Ordem grande, Traders presos, Agressores e Virada de delta (só toques recentes, dentro de um candle do macro), RSI e Fibonacci.',
+        'Descontos (−1 cada): suporte/resistência contra, o seu lado no prejuízo, faca caindo / foguete subindo.',
+        'Não cria: se a ignição já passou (o que falta até o alvo é menor que o risco) ou se a mesma zona deu stop há pouco.',
+        'Botão Motor: compara Long × Short e fica com a maior nota. Empate ou nota abaixo de 3: nada criado. Botão Trader: você escolhe o lado; nota baixa só é avisada.',
+        'Acompanhar: no maior timeframe em que um candle típico cabe na zona de captura.',
+        'Histórico: toda caixa do motor é registrada com a versão (' + SC_MOTOR_VERSAO + '), a nota e o desfecho (alvo, stop, entrada perdida ou expirou). Grava sozinho no servidor a cada mudança.'] });
+}
 // MOTOR: mede os dois lados e desenha só o de maior nota (confirmações menos descontos). Empate ou nenhum lado com entrada: não desenha.
 let _scMotorOn = false, _scTraderAberto = false;
 async function scMotor() {
@@ -17303,7 +17416,7 @@ async function scMotor() {
         if (ns != null && nl != null && ns === nl) { fim('Motor: sem lado claro (short ' + ns + ' × long ' + nl + '). Nada criado.', '#F59E0B', true); return; }
         const lado = nl == null || (ns != null && ns > nl) ? 'short' : 'long', nv = lado === 'short' ? ns : nl;
         if (nv < 3) { fim('Motor: o melhor lado é ' + (lado === 'short' ? 'Short' : 'Long') + ' com nota ' + nv + ' (fraco, menos de 3). Nada criado.', '#F59E0B', true); return; }
-        await scRodar(lado, {});
+        await scRodar(lado, { modo: 'motor' });
         const rot = 'Motor → ' + (lado === 'short' ? 'Short' : 'Long') + ' (short ' + (ns == null ? 'sem entrada' : ns) + ' × long ' + (nl == null ? 'sem entrada' : nl) + ')';
         if (_scUltimo && !_scUltimo.erro && _scUltimo.linhas) { _scUltimo.txt = rot + ' · ' + _scUltimo.txt; _scUltimo.linhas.splice(2, 0, rot); }
     } finally { _scMotorOn = false; try { cvRenderMenuFpCfg(); } catch (e) {} }
@@ -17436,6 +17549,8 @@ function scRenderPopup(menu) {
               + (_scTraderAberto ? '<div style="display:flex;gap:8px;margin-top:8px;"><button type="button" onclick="scRodar(\'short\')" style="flex:1;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:800;background:#FDECEC;color:#DC2626;">Short</button>'
               + '<button type="button" onclick="scRodar(\'long\')" style="flex:1;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:800;background:#E8F7EC;color:#16A34A;">Long</button></div>' : ''))
         + (_scUltimo && _scUltimo.linhas ? '<button type="button" onclick="scRelatorioMostrar()" style="width:100%;margin-top:8px;border:none;border-radius:10px;padding:10px;font-size:13px;font-weight:800;background:#1C1C1E;color:#FFFFFF;">Ver Relatório</button>' : '')
+        + '<div style="display:flex;gap:8px;margin-top:8px;"><button type="button" onclick="scSobreMostrar()" style="flex:1;border:none;border-radius:10px;padding:9px;font-size:13px;font-weight:700;background:#F2F2F7;color:#1C1C1E;">Sobre (' + SC_MOTOR_VERSAO + ')</button>'
+        + '<button type="button" onclick="scHistoricoMostrar()" style="flex:1;border:none;border-radius:10px;padding:9px;font-size:13px;font-weight:700;background:#F2F2F7;color:#1C1C1E;">Histórico (' + scRegLista().length + ')</button></div>'
         + '<div style="margin-top:12px;padding-top:12px;border-top:1px solid #F2F2F7;">'
         + (_scHistRodando ? '<div style="font-size:12.5px;color:#8E8E93;padding:6px 0;">' + _scHistProg + '</div><button type="button" onclick="_scHistParar = true" style="width:100%;border:none;border-radius:10px;padding:9px;font-size:13px;font-weight:700;background:#FDECEC;color:#DC2626;">Parar</button>'
             : '<button type="button" onclick="scHistorico()" style="width:100%;border:none;border-radius:10px;padding:10px;font-size:13px;font-weight:800;background:#F2F2F7;color:#1C1C1E;">Testar histórico</button>'
