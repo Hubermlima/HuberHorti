@@ -458,7 +458,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <button class="cv-ind-btn cvdpa" id="cv-ind-cvdPA" onclick="cvToggleInd('cvdPA')">
 <span class="btn-sigla">CVD</span><span class="btn-nome">CVD</span></button>
       <button class="cv-ind-btn" id="cv-ind-deltaAtr" onclick="cvToggleInd('deltaAtr')"><span class="btn-sigla">DA</span><span class="btn-nome">Delta ATR</span></button>
-      <button class="cv-ind-btn" id="cv-ind-setupCx" onclick="scToggle()"><span class="btn-sigla">SC</span><span class="btn-nome">Setup Caixas</span></button>
+      <button class="cv-ind-btn" id="cv-ind-setupCx" onclick="scToggle()"><span class="btn-sigla">SC</span><span class="btn-nome">Trades</span></button>
       <button class="cv-ind-btn" id="cv-ind-oiPA" onclick="cvToggleInd('oiPA')"><span class="btn-sigla">OI</span><span class="btn-nome">Open Interest</span></button>
       <button class="cv-ind-btn absorcao" id="cv-ind-absorcao" onclick="cvToggleSubInd('absorcao')"><span class="btn-sigla">Abs</span><span class="btn-nome">Absorção</span></button>
       <button class="cv-ind-btn" id="cv-ind-eficiencia" onclick="cvToggleInd('eficiencia')"><span class="btn-sigla">Ef</span><span class="btn-nome">Eficiência</span></button>
@@ -3225,7 +3225,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v424';
+const APP_VERSAO = 'v425';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -6344,7 +6344,7 @@ if (_grTipoGrafico === 'linha') {
             if (_grAlertas && _grAlertas.length) grBarraChip('Alertas', '#000000', (cx, cy) => cvToggleAlerta(cx, cy));
             if (_grFootprintAtivo) window._grFpItens.push({ rot: 'Fluxo', abrir: (cx, cy) => cvAbrirMenuFpCfg('fluxo', cx, cy) });
             if (_indState.deltaAtr) window._grFpItens.push({ rot: 'Delta ATR', abrir: (cx, cy) => cvAbrirMenuFpCfg('deltaatr', cx, cy) });
-            if (_indState.setupCx) window._grFpItens.push({ rot: 'Setup Caixas', abrir: (cx, cy) => cvAbrirMenuFpCfg('setupcx', cx, cy) });
+            if (_indState.setupCx) window._grFpItens.push({ rot: 'Trades', abrir: (cx, cy) => cvAbrirMenuFpCfg('setupcx', cx, cy) });
             // Sem modal — tocar desliga direto.
             if (_grAreaArmada)     grBarraChip('Área', '#000000', () => cvToggleArea());
             // Vwap e Value Area: mesmo comportamento dos outros indicadores do Footprint — chip só aparece
@@ -17047,20 +17047,47 @@ function scAvaliarCore(lado, def, tk, cs, dias, dMa, rM, uMa, preco) {
     if (r0.erro) return { def, erro: r0.erro, esc: null, comparadas: 0 };
     const ks = r0.niv.filter(n => n.rank > 0).sort((x, y) => y.rank - x.rank).map(n => n.k);
     let comparadas = 0;
+    const quentes = scZonasQuentes(rM, uMa.tick), cands = [];
     for (const k of ks) {
-        if (comparadas >= 6) break;
+        if (comparadas >= 6 || cands.length >= 3) break;
         const r = k === r0.K.k ? r0 : scCalcular(lado, u, cs, preco, k);
         if (r.erro) continue;
         if (k !== r0.K.k && ks.slice(0, ks.indexOf(k)).some(k2 => Math.abs(k2 - k) < 3)) continue;   // colada numa zona já avaliada
         comparadas++;
-        const zonaMa = (rM.niv || []).filter(n => n.gate && n.disp && n.hi > r.lo && n.lo < r.hi);
+        const zonaMa = quentes.filter(n => n.hi > r.lo && n.lo < r.hi);   // só vale entrada em cima de zona muito negociada (delta de qualquer sinal: a absorção é lida nas confirmações)
         if (!zonaMa.length) continue;
         const risco = Math.abs(r.stop - r.entrada); if (!(risco > 0)) continue;
         const am = scAlvoMacro(rM, s, r.entrada, risco, uMa.atr), alvo = am ? am.alvo : r.entrada - s * 2 * risco;
         if (!(s * (r.stop - r.entrada) > 0) || !(s * (r.entrada - alvo) > 0)) continue;
-        return { def, esc: { r, zonaMa, am, alvo, risco, def, u, cs, uMa }, comparadas };
+        cands.push({ def, esc: { r, zonaMa, am, alvo, risco, def, u, cs, uMa }, comparadas });
     }
-    return { def, esc: null, comparadas };
+    if (!cands.length) return { def, esc: null, comparadas };
+    if (cands.length > 1) {   // entre as zonas quentes, fica a de maior nota (confirmações menos descontos); empate: a de melhor posição no ranking do motor
+        cands.forEach(c => { try { c.nota = scScoreDe(scConfirmacoes(lado, c.esc.r, u, cs, def)).n; } catch (e) { c.nota = -1; } });
+        let b = cands[0]; cands.forEach(c => { if (c.nota > b.nota) b = c; }); return b;
+    }
+    return cands[0];
+}
+// ZONAS QUENTES (zona de conflagração): níveis do macro com volume ACIMA DA MÉDIA da régua (onde mais se negociou: o sino do VP) + a POC da Value Area e o maior nível do VP, se ancorados.
+// Só do lado certo do preço (long abaixo, short acima). Sem número fixo: a média vem da própria régua.
+function scZonasQuentes(rM, tick) {
+    const niv = (rM && rM.niv) || [], out = [];
+    if (!niv.length) return out;
+    const med = niv.reduce((q, n) => q + n.v, 0) / niv.length;
+    niv.forEach(n => { if (n.lado && n.v > med) out.push(n); });
+    try {
+        const px = (typeof _precoAtual === 'number' && _precoAtual > 0) ? _precoAtual : rM.preco, s = rM.s;
+        const refs = [];
+        if (_grFootprintAtivo) {
+            if (_grValueAreaAncoraTs != null && !_grVaOculta) { const va = grFootprintCalcularValueArea(); if (va && va.poc) refs.push(va.poc); }
+            if (_grVpAncoraTs != null && !_grVpOculta) {
+                const d = grVpObterMapa();
+                if (d && d.mapa.size) { const g = new Map(); d.mapa.forEach((v, pr) => { const k = Math.round(pr / tick); g.set(k, (g.get(k) || 0) + v.c + v.v); }); let mk = null, mv = 0; g.forEach((v, k) => { if (v > mv) { mv = v; mk = k; } }); if (mk != null) refs.push(mk * tick); }
+            }
+        }
+        refs.forEach(v => { if (s > 0 ? v > px : v < px) out.push({ k: Math.round(v / tick), lo: v - tick / 2, hi: v + tick / 2, c: v, v: 0, ref: true }); });
+    } catch (e) {}
+    return out;
 }
 async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fechar o menu, sem selecionar a caixa (usado pelo Play) · opts.scalp: caixa de scalp (só contorno), à direita, sem duplicar
     opts = opts || {}; const sil = !!opts.silencioso;
@@ -17068,7 +17095,7 @@ async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fecha
     if (!sil && _scPlay.on) _scPlay.prox = scPlayProxima();   // análise manual reinicia a contagem do Play
     if (!_grFootprintAtivo || !_grFootprintCandlesRaw) { if (!sil) alert('Ligue o Fluxo (FX) e aguarde os dados carregarem.'); return { erro: true, msg: 'Fluxo desligado ou sem dados.' }; }
     _scCalculando = true; cvRenderMenuFpCfg();
-    let msg = null, cor = '#8E8E93', dup = false;
+    let msg = null, cor = '#8E8E93', dup = false, aval = null;
     try {
         const dMa = scDefTf(_scCfg.macro), dias = _scCfg.dias, s = lado === 'short' ? 1 : -1;
         const [tkMa, csMa] = await Promise.all([scTick(dMa), scCandles(dMa, dias)]);
@@ -17087,8 +17114,9 @@ async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fecha
             tent.push({ rot: ev.def.rot, ok: !!ev.esc, comp: ev.comparadas });
             if (ev.esc) { esc = ev.esc; break; }
         }
-        if (!esc) throw new Error('Micro: ' + (primeiroErro || 'nenhuma zona de entrada cai numa zona favorável do macro ' + dMa.rot) + '. Caixa não criada.' + avisoCob);
+        if (!esc) throw new Error('Micro: ' + (primeiroErro || 'nenhuma entrada cai numa zona muito negociada do macro ' + dMa.rot) + '. Caixa não criada.' + avisoCob);
         const rm = esc.r, entrada = rm.entrada, stop = rm.stop, risco = esc.risco, alvo = esc.alvo, am = esc.am, zonaMa = esc.zonaMa, dMi = esc.def, conf = scConfirmacoes(lado, rm, esc.u, esc.cs, esc.def), fraco = conf.n < 3;
+        if (opts.soAvaliar) throw { soAval: true, aval: { nota: scScoreDe(conf).n, fraco } };   // usado pelo Motor: só mede o lado, não desenha
         // posição: logo à direita da última caixa existente (nada é apagado)
         const lista = grPosicoes(), n = _grAllCandles.length, cs0 = _grAllCandles;
         const candleMs = n > 1 ? Math.max(60000, cs0[n - 1].t - cs0[n - 2].t) : 86400000;
@@ -17119,7 +17147,7 @@ async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fecha
                 (lado === 'short' ? 'SHORT' : 'LONG') + ' · ' + dias + ' dias · ' + dMa.rot + ' × ' + dMi.rot + ' · ' + conf.n + ' de ' + SC_CONF_TOTAL + ' confirmações',
                 'Entrada ' + f(entrada) + ' · Stop ' + f(stop) + ' (' + pc((stop - entrada) / entrada) + ') · Alvo ' + f(alvo) + ' (' + pc((alvo - entrada) / entrada) + ')',
                 'Stop: borda de trás do nó de entrada · ' + Math.round(risco / rm.tick) + (Math.round(risco / rm.tick) === 1 ? ' nível' : ' níveis') + ' de ' + f(rm.tick),
-                'Macro: entrada dentro de ' + rng(zonaMa.map(x => x.num)) + ' (' + f(Math.min.apply(null, zonaMa.map(x => x.lo))) + '–' + f(Math.max.apply(null, zonaMa.map(x => x.hi))) + ')',
+                'Zona quente (mais negociada): entrada dentro de ' + rng(zonaMa.map(x => x.num)) + ' (' + f(Math.min.apply(null, zonaMa.map(x => x.lo))) + '–' + f(Math.max.apply(null, zonaMa.map(x => x.hi))) + ')',
                 'Alvo: ' + (am ? 'nó macro, ' + rng(am.nums) + ', borda ' + f(am.alvo) : 'sem nó macro útil, 2R')
             ];
             const dh = t => new Date(t).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }), E = conf.ev;
@@ -17128,7 +17156,7 @@ async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fecha
             L.push('Confirmações: ' + (ok.length ? ok.join(', ') : 'nenhuma') + (nao.length ? ' · faltaram ' + nao.join(', ') : '') + (conf.toques ? '' : ' · nenhum candle ' + dMi.rot + ' tocou a zona com footprint'));
             nomes.filter(x => !E[x[0]] && conf.falta && conf.falta[x[0]]).forEach(x => { const f = conf.falta[x[0]]; L.push('Faltou ' + x[1] + (f.t ? ' (melhor: ' + dh(f.t) + ')' : '') + ': ' + f.falhas.join(' · ')); });
             L.push(scAmbTxt(lado, scAmbiente(lado, esc)));
-            if (tent.length > 1) L.push('Micro: ' + tent.map(t => t.rot + (t.ok ? ' ok' : ' sem zona no macro')).join(' → '));
+            if (tent.length > 1) L.push('Micro: ' + tent.map(t => t.rot + (t.ok ? ' ok' : ' sem zona quente')).join(' → '));
             if (fraco) L.push('Atenção: menos de 3 confirmações, caixa marcada como fraca.');
             if (avisoCob) L.push('Atenção: Fluxo' + avisoCob.replace(/^ \(Fluxo/, ' (').replace(/^ /, ''));
             _scUltimo.linhas = L;
@@ -17136,11 +17164,29 @@ async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fecha
         msg = 'Setup ' + _scUltimo.txt; cor = fraco ? '#F59E0B' : '#16A34A';
         if (!sil) { cvFecharMenuFpCfg(); try { cvEdicaoIniciar('ps', lista.length - 1); } catch (e) {} }
         grDrawChart();
-    } catch (e) { msg = e.message || String(e); cor = '#EF5350'; _scUltimo = { lado, hora: new Date(), txt: msg, erro: true }; }
+    } catch (e) { if (e && e.soAval) aval = e.aval; else { msg = e.message || String(e); cor = '#EF5350'; _scUltimo = { lado, hora: new Date(), txt: msg, erro: true }; } }
     _scCalculando = false;
     try { cvRenderMenuFpCfg(); } catch (e) {}
     if (!sil) { try { grAreaToast(msg, cor); } catch (e) {} }
-    return { msg, erro: cor === '#EF5350', dup };
+    return { msg, erro: cor === '#EF5350', dup, aval };
+}
+// MOTOR: mede os dois lados e desenha só o de maior nota (confirmações menos descontos). Empate ou nenhum lado com entrada: não desenha.
+let _scMotorOn = false, _scTraderAberto = false;
+async function scMotor() {
+    if (_scMotorOn || _scCalculando) return;
+    if (!_grFootprintAtivo || !_grFootprintCandlesRaw) { alert('Ligue o Fluxo (FX) e aguarde os dados carregarem.'); return; }
+    _scMotorOn = true;
+    const fim = (txt, cor, erro) => { _scUltimo = { lado: null, hora: new Date(), txt, erro: !!erro }; try { grAreaToast(txt, cor); } catch (e) {} try { cvRenderMenuFpCfg(); } catch (e) {} };
+    try {
+        const a = await scRodar('short', { silencioso: true, soAvaliar: true }), b = await scRodar('long', { silencioso: true, soAvaliar: true });
+        const ns = a && a.aval ? a.aval.nota : null, nl = b && b.aval ? b.aval.nota : null;
+        if (ns == null && nl == null) { fim('Motor: nenhum lado tem entrada numa zona muito negociada. Nada criado.', '#EF5350', true); return; }
+        if (ns != null && nl != null && ns === nl) { fim('Motor: sem lado claro (short ' + ns + ' × long ' + nl + '). Nada criado.', '#F59E0B', true); return; }
+        const lado = nl == null || (ns != null && ns > nl) ? 'short' : 'long';
+        await scRodar(lado, {});
+        const rot = 'Motor → ' + (lado === 'short' ? 'Short' : 'Long') + ' (short ' + (ns == null ? 'sem entrada' : ns) + ' × long ' + (nl == null ? 'sem entrada' : nl) + ')';
+        if (_scUltimo && !_scUltimo.erro && _scUltimo.linhas) { _scUltimo.txt = rot + ' · ' + _scUltimo.txt; _scUltimo.linhas.splice(2, 0, rot); }
+    } finally { _scMotorOn = false; try { cvRenderMenuFpCfg(); } catch (e) {} }
 }
 // ── PLAY / PAUSE: a cada fechamento de candle do TF micro, roda o motor (short e long) e cria as caixas de scalp. Só funciona com o app aberto; ao voltar de segundo plano roda na hora se passou do horário. ──
 const _scPlay = { on: false, prox: 0, tmr: null, rodando: false, ultimo: '' };
@@ -17247,7 +17293,7 @@ function scRenderPopup(menu) {
     const ico = { cal: '<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>', rel: '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/>' };
     const tfsDe = atual => { const l = Object.keys(SC_TFS).map(k => [k, SC_TFS[k].rot]); if (!SC_TFS[atual]) l.push([atual, scTfBase(atual).rot]); l.push(['__pers', 'Personalizado…']); return l; };
     const cob = scCobertura(_scCfg.dias);
-    menu.innerHTML = '<div style="font-size:13px;font-weight:700;color:#1C1C1E;margin-bottom:4px;">Setup Caixas</div>'
+    menu.innerHTML = '<div style="font-size:13px;font-weight:700;color:#1C1C1E;margin-bottom:4px;">Trades</div>'
         + grConfigCombo(ico.cal, 'Janela de dias', 'Dias somados nas duas réguas', 'cv-cfg-sc-dias', SC_DIAS.map(d => [d, d + ' dias']), _scCfg.dias, 'scDefinirDias')
         + grConfigCombo(ico.rel, 'Timeframe macro', 'Zona favorável e alvo', 'cv-cfg-sc-macro', tfsDe(_scCfg.macro), _scCfg.macro, 'scDefinirMacro')
         + grConfigCombo(ico.rel, 'Timeframe micro', 'Entrada e stop', 'cv-cfg-sc-micro', tfsDe(_scCfg.micro), _scCfg.micro, 'scDefinirMicro')
@@ -17256,8 +17302,10 @@ function scRenderPopup(menu) {
         + '<div style="margin-top:12px;padding-top:12px;border-top:1px solid #F2F2F7;">'
         + '<button type="button" onclick="scPlayToggle()" style="width:100%;margin-bottom:8px;border:none;border-radius:10px;padding:10px;font-size:13px;font-weight:800;background:' + (_scPlay.on ? '#FDECEC' : '#1C1C1E') + ';color:' + (_scPlay.on ? '#DC2626' : '#FFFFFF') + ';">' + (_scPlay.on ? '⏸ Pause' : '▶ Play · analisa a cada ' + scIntervaloRot(_scCfg.intervalo)) + '</button>'
         + (_scCalculando ? '<div style="font-size:12.5px;color:#8E8E93;padding:10px 0;">Calculando macro e micro…</div>'
-            : '<div style="display:flex;gap:8px;"><button type="button" onclick="scRodar(\'short\')" style="flex:1;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:800;background:#FDECEC;color:#DC2626;">Short</button>'
-              + '<button type="button" onclick="scRodar(\'long\')" style="flex:1;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:800;background:#E8F7EC;color:#16A34A;">Long</button></div>')
+            : '<div style="display:flex;gap:8px;"><button type="button" onclick="_scTraderAberto = !_scTraderAberto; cvRenderMenuFpCfg()" style="flex:1;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:800;background:' + (_scTraderAberto ? '#1C1C1E' : '#F2F2F7') + ';color:' + (_scTraderAberto ? '#FFFFFF' : '#1C1C1E') + ';">Trader</button>'
+              + '<button type="button" onclick="scMotor()" style="flex:1;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:800;background:#F2F2F7;color:#1C1C1E;">Motor</button></div>'
+              + (_scTraderAberto ? '<div style="display:flex;gap:8px;margin-top:8px;"><button type="button" onclick="scRodar(\'short\')" style="flex:1;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:800;background:#FDECEC;color:#DC2626;">Short</button>'
+              + '<button type="button" onclick="scRodar(\'long\')" style="flex:1;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:800;background:#E8F7EC;color:#16A34A;">Long</button></div>' : ''))
         + (_scUltimo && _scUltimo.linhas ? '<button type="button" onclick="scRelatorioMostrar()" style="width:100%;margin-top:8px;border:none;border-radius:10px;padding:10px;font-size:13px;font-weight:800;background:#1C1C1E;color:#FFFFFF;">Ver Relatório</button>' : '')
         + '<div style="margin-top:12px;padding-top:12px;border-top:1px solid #F2F2F7;">'
         + (_scHistRodando ? '<div style="font-size:12.5px;color:#8E8E93;padding:6px 0;">' + _scHistProg + '</div><button type="button" onclick="_scHistParar = true" style="width:100%;border:none;border-radius:10px;padding:9px;font-size:13px;font-weight:700;background:#FDECEC;color:#DC2626;">Parar</button>'
