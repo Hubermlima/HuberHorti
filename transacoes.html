@@ -3225,7 +3225,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v426';
+const APP_VERSAO = 'v428';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -17058,6 +17058,9 @@ function scAvaliarCore(lado, def, tk, cs, dias, dMa, rM, uMa, preco) {
         const risco = Math.abs(r.stop - r.entrada); if (!(risco > 0)) return;
         const am = scAlvoMacro(rM, s, r.entrada, risco, uMa.atr), alvo = am ? am.alvo : r.entrada - s * 2 * risco;
         if (!(s * (r.stop - r.entrada) > 0) || !(s * (r.entrada - alvo) > 0)) return;
+        // a ignição já passou? A partir do PREÇO DE AGORA, o que falta até o alvo tem de ser pelo menos o risco até o stop (mesma régua R/R ≥ 1 dos alvos)
+        const falta = s * (preco - alvo), arrisca = s * (r.stop - preco);
+        if (!(falta > 0) || !(arrisca > 0) || falta / arrisca < 1) return;
         cands.push({ def, esc: { r, zonaMa: banda.niveis, banda, am, alvo, risco, def, u, cs, uMa }, comparadas, ord: i });
     });
     if (!cands.length) return { def, esc: null, comparadas };
@@ -17112,7 +17115,7 @@ async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fecha
             tent.push({ rot: ev.def.rot, ok: !!ev.esc, comp: ev.comparadas });
             if (ev.esc) { esc = ev.esc; break; }
         }
-        if (!esc) throw new Error('Micro: ' + (primeiroErro || 'nenhuma entrada cai numa zona muito negociada do macro ' + dMa.rot) + '. Caixa não criada.' + avisoCob);
+        if (!esc) throw new Error('Micro: ' + (primeiroErro || 'nenhuma entrada válida no sino do macro ' + dMa.rot + ' (sem zona, ou a ignição já passou: o que falta até o alvo é menor que o risco)') + '. Caixa não criada.' + avisoCob);
         const rm = esc.r, entrada = rm.entrada, stop = rm.stop, risco = esc.risco, alvo = esc.alvo, am = esc.am, zonaMa = esc.zonaMa, dMi = esc.def, conf = scConfirmacoes(lado, rm, esc.u, esc.cs, esc.def), fraco = conf.n < 3;
         if (opts.soAvaliar) throw { soAval: true, aval: { nota: scScoreDe(conf).n, fraco } };   // usado pelo Motor: só mede o lado, não desenha
         // posição: logo à direita da última caixa existente (nada é apagado)
@@ -17178,7 +17181,7 @@ async function scMotor() {
     try {
         const a = await scRodar('short', { silencioso: true, soAvaliar: true }), b = await scRodar('long', { silencioso: true, soAvaliar: true });
         const ns = a && a.aval ? a.aval.nota : null, nl = b && b.aval ? b.aval.nota : null;
-        if (ns == null && nl == null) { fim('Motor: nenhum lado tem entrada numa zona muito negociada. Nada criado.', '#EF5350', true); return; }
+        if (ns == null && nl == null) { fim('Motor: nenhum lado tem entrada válida no sino (sem zona, ou a ignição já passou). Nada criado.', '#EF5350', true); return; }
         if (ns != null && nl != null && ns === nl) { fim('Motor: sem lado claro (short ' + ns + ' × long ' + nl + '). Nada criado.', '#F59E0B', true); return; }
         const lado = nl == null || (ns != null && ns > nl) ? 'short' : 'long';
         await scRodar(lado, {});
@@ -17287,6 +17290,14 @@ function scPersAbrir(qual) {
 function scDefinirMacro(v) { if (v === '__pers') { scPersAbrir('macro'); return; } if (scTfBase(v)) _scCfg.macro = v; scSalvar(); cvRenderMenuFpCfg(); }
 function scDefinirIntervalo(v) { const m = parseInt(v); if (SC_PLAY_INTERVALOS.includes(m)) _scCfg.intervalo = m; scSalvar(); if (_scPlay.on) _scPlay.prox = scPlayProxima(); cvRenderMenuFpCfg(); try { scPlayUI(); } catch (e) {} }
 function scDefinirMicro(v) { if (v === '__pers') { scPersAbrir('micro'); return; } if (scTfBase(v)) _scCfg.micro = v; scSalvar(); cvRenderMenuFpCfg(); }
+function scValoresSino() {   // VP (maior nível) e POC da Value Area ancorados, como o painel do gráfico; '—' se não houver âncora
+    const f = v => v ? Math.round(v).toLocaleString('pt-BR') : '—'; let vp = 0, poc = 0;
+    try {
+        if (_grFootprintAtivo && _grVpAncoraTs != null && !_grVpOculta) { const d = grVpObterMapa(); if (d && d.mapa.size) { let mv = 0; d.mapa.forEach((v, pr) => { if (v.c + v.v > mv) { mv = v.c + v.v; vp = pr; } }); } }
+        if (_grFootprintAtivo && _grValueAreaAncoraTs != null && !_grVaOculta) { const va = grFootprintCalcularValueArea(); if (va && va.poc) poc = va.poc; }
+    } catch (e) {}
+    return 'VP ' + f(vp) + ' · POC ' + f(poc);
+}
 function scRenderPopup(menu) {
     const ico = { cal: '<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>', rel: '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/>' };
     const tfsDe = atual => { const l = Object.keys(SC_TFS).map(k => [k, SC_TFS[k].rot]); if (!SC_TFS[atual]) l.push([atual, scTfBase(atual).rot]); l.push(['__pers', 'Personalizado…']); return l; };
@@ -17296,6 +17307,7 @@ function scRenderPopup(menu) {
         + grConfigCombo(ico.rel, 'Timeframe macro', 'Zona favorável e alvo', 'cv-cfg-sc-macro', tfsDe(_scCfg.macro), _scCfg.macro, 'scDefinirMacro')
         + grConfigCombo(ico.rel, 'Timeframe micro', 'Entrada e stop', 'cv-cfg-sc-micro', tfsDe(_scCfg.micro), _scCfg.micro, 'scDefinirMicro')
         + '<div style="font-size:11.5px;color:#8E8E93;margin-top:8px;line-height:1.4;">Fluxo carregado: ' + (cob >= _scCfg.dias - 1 ? 'cobre a janela' : '<b style="color:#DC2626;">só ' + Math.floor(cob) + ' dias</b>') + '. As réguas rodam em memória; a régua da tela não muda.</div>'
+        + '<div style="font-size:12.5px;color:#1C1C1E;margin-top:6px;">' + scValoresSino() + '</div>'
         + grConfigCombo(ico.rel, 'Intervalo do Play', 'Tempo entre análises automáticas', 'cv-cfg-sc-int', SC_PLAY_INTERVALOS.map(m => [m, scIntervaloRot(m)]), _scCfg.intervalo, 'scDefinirIntervalo')
         + '<div style="margin-top:12px;padding-top:12px;border-top:1px solid #F2F2F7;">'
         + '<button type="button" onclick="scPlayToggle()" style="width:100%;margin-bottom:8px;border:none;border-radius:10px;padding:10px;font-size:13px;font-weight:800;background:' + (_scPlay.on ? '#FDECEC' : '#1C1C1E') + ';color:' + (_scPlay.on ? '#DC2626' : '#FFFFFF') + ';">' + (_scPlay.on ? '⏸ Pause' : '▶ Play · analisa a cada ' + scIntervaloRot(_scCfg.intervalo)) + '</button>'
