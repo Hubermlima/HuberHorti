@@ -3225,7 +3225,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v419';
+const APP_VERSAO = 'v421';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -7685,6 +7685,13 @@ function grFmtDataCandle(candle) {
         ? d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: '2-digit', timeZone: 'UTC' })
         : d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }) + ' ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 }
+// Data/hora da pílula do crosshair: dd/mm/aa hh:mm no intradiário; dd/mm/aa nos TFs de dia, semana e mês (candle abre em UTC, sem horário útil).
+function grFmtCrosshairTempo(candle) {
+    const d = new Date(candle.t);
+    const soData = _grTf === '1day' || _grTf === '1week' || _grTf === '1month' || (_grTf === 'custom' && (_grTfCustomUnit === 'dia' || _grTfCustomUnit === 'mes'));
+    if (soData) return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', timeZone: 'UTC' });
+    return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' }) + ' ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+}
 function grDesenharLinhaOhlc(ctx, W, info) {
     window._grOhlcAtual = info || null;
     if (!info || !info.candle) return;
@@ -7722,9 +7729,10 @@ function grDesenharLinhaOhlc(ctx, W, info) {
     const sinal = v => v >= 0 ? '+' : '−';
     const txtVar = sinal(diff) + fmtN(Math.abs(diff)) + ' (' + sinal(pct) + Math.abs(pct).toFixed(2) + '%)';
     ctx.font = fs + 'px -apple-system'; ctx.fillStyle = corData;
-    const txtData = grFmtDataCandle(c);
-    ctx.fillText(txtData, x0, y2);
-    let x2 = x0 + ctx.measureText(txtData).width + fs * 0.8;
+    // Com o crosshair ativo a data/hora aparece na pílula do pé da linha vertical — aqui seria redundante. Sem crosshair, a data continua aqui.
+    const txtData = info.cross ? '' : grFmtDataCandle(c);
+    if (txtData) ctx.fillText(txtData, x0, y2);
+    let x2 = x0 + (txtData ? ctx.measureText(txtData).width + fs * 0.8 : 0);
     ctx.font = 'bold ' + fs + 'px -apple-system'; ctx.fillStyle = cor;
     ctx.fillText(txtVar, x2, y2);
     x2 += ctx.measureText(txtVar).width + fs * 0.9;
@@ -10201,6 +10209,16 @@ function grDrawChartWithCrosshair(yInterno) {
             ctx.fillStyle = _grTemaClaro ? '#FFFFFF' : '#131722';
         ctx.textAlign = 'left';
         ctx.fillText(txt, pX + 5, pY + pH - 4);
+        // Pílula de data/hora no pé da linha vertical (acompanha o crosshair, preso às bordas do gráfico)
+        if (candle) {
+            const tt = grFmtCrosshairTempo(candle), tw2 = ctx.measureText(tt).width, pW2 = tw2 + 12, pH2 = 16;
+            const xMin = grPadL() + pW2 / 2, xMax = W - grPadR() - pW2 / 2, xc = Math.max(xMin, Math.min(xMax, _grCrosshairX));
+            const yb = painelTopoY - pH2 - 3;
+            ctx.fillStyle = _grTemaClaro ? '#4A4A4A' : '#FFFFFF';
+            ctx.beginPath(); ctx.roundRect(xc - pW2 / 2, yb, pW2, pH2, 3); ctx.fill();
+            ctx.fillStyle = _grTemaClaro ? '#FFFFFF' : '#131722'; ctx.textAlign = 'center';
+            ctx.fillText(tt, xc, yb + pH2 - 4); ctx.textAlign = 'left';
+        }
     };
         // Pílula temporal no eixo X (rodapé da linha vertical)
     const total = _grAllCandles.length;
@@ -14216,19 +14234,12 @@ function grFootprintDesenharOverlay() {
     } else {
         aviso('Sem dados do Fluxo desde a âncora');
     }
-    // Marca da âncora: linha vertical fina com a data (só quando a âncora está na tela)
+    // Marca da âncora: linha vertical fina, sem etiqueta de data (só quando a âncora está na tela)
     if (ancoraVisivel) {
         ctx.save();
         ctx.strokeStyle = 'rgba(255,193,7,0.75)'; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
         ctx.beginPath(); ctx.moveTo(Math.round(xBase) + 0.5, chartTop); ctx.lineTo(Math.round(xBase) + 0.5, chartBottom); ctx.stroke();
         ctx.setLineDash([]);
-        const txt = grVpRotuloData(_grVpAncoraTs);
-        ctx.font = 'bold 9px -apple-system'; ctx.textAlign = 'center';
-        const w = ctx.measureText(txt).width + 8;
-        const xLab = Math.max(padLeft + w / 2, Math.min(rightEdge - w / 2, xBase));
-        ctx.fillStyle = 'rgba(30,30,35,0.85)';
-        ctx.beginPath(); ctx.roundRect(xLab - w / 2, chartBottom - 16, w, 13, 3); ctx.fill();
-        ctx.fillStyle = '#FFC107'; ctx.fillText(txt, xLab, chartBottom - 6);
         ctx.restore();
         if (grAncSelEh('vp', _grVpAncoraTs)) {   // selecionado: bolinhas no alto e no pé da linha da âncora
             bolinhasVp.push({ x: Math.round(xBase) + 0.5, y: chartTop + 24 }, { x: Math.round(xBase) + 0.5, y: chartBottom - 30 });
