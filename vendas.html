@@ -382,6 +382,7 @@ border-radius:10px;padding:2px 6px;}
 .numpad-grid{display:grid;grid-template-columns:repeat(3,1fr) 44px;gap:1px;background:#F0F0F5;padding:1px;}
 .numpad-nav{background:#F2F2F7;border:none;display:flex;align-items:center;justify-content:center;cursor:pointer;-webkit-tap-highlight-color:transparent;}
 .numpad-nav:active{background:#E5E5EA;}
+.numpad-nav.numpad-prod{grid-column:span 2;height:40px;}
 .numpad-nav svg{width:16px;height:16px;stroke:#1C1C1E;stroke-width:2.5;fill:none;}
 
 .numpad-key{height:52px;background:#FFF;border:none;font-family:'Inter',sans-serif;font-size:20px;font-weight:500;color:#1C1C1E;cursor:pointer;display:flex;align-items:center;justify-content:center;-webkit-tap-highlight-color:transparent;}
@@ -1454,6 +1455,7 @@ function abrirTagForm(prodId, prodNome, custo, tagEl, soLeitura) {
   });
   tfExpandirDetalhes();
   tagFormMenuFechar();
+  document.getElementById('tf-sugestoes').classList.remove('open');
   const form = document.getElementById('tag-form');
  form.style.left = '50%';
 form.style.top = '120px';
@@ -1537,17 +1539,21 @@ function tagFormCompletarEConfirmar() {
 }
 
 
+// Setas de produto (cabeçalho do modal e teclado numérico): grava o que foi digitado no produto atual e abre o anterior/próximo
 function navegarTag(dir) {
-  tagFormCompletarEConfirmar();
+  if (!_tagFormProduto) return;
+  const soLeitura = _tagFormSoLeitura;
+  const mexeu = _tagFormGravar();
+  if (mexeu) { montarNuvemTags(); atualizarSumarioSheet(); setEstado('editando'); }
   const ordemAlfa = [..._nuvemOrdem].sort((a, b) => a.localeCompare(b, 'pt-BR'));
-  const idx = ordemAlfa.indexOf(_tagFormProduto ? _tagFormProduto.nome : '');
+  const idx = ordemAlfa.indexOf(_tagFormProduto.nome);
   let proximo = idx + dir;
   if (proximo < 0) proximo = ordemAlfa.length - 1;
   if (proximo >= ordemAlfa.length) proximo = 0;
   const nome = ordemAlfa[proximo];
   const prod = _todosProdutos.find(p => p.nome === nome);
   if (!prod) return;
-  abrirTagForm(prod.id, prod.nome, prod.preco_medio_compra || 0, null, false);
+  abrirTagForm(prod.id, prod.nome, prod.preco_medio_compra || 0, null, soLeitura);
 }
 
 const MARGENS_FIXAS = [20, 30, 40];
@@ -1600,36 +1606,38 @@ function tagFormDeletar() {
 
 
 
-function tagFormConfirmar() {
-  if (!_tagFormProduto || _tagFormSoLeitura) return;
+// Grava no pedido (em memória) o que está digitado no modal, sem fechar. Retorna true se mexeu no pedido.
+function _tagFormGravar() {
+  if (!_tagFormProduto || _tagFormSoLeitura) return false;
   const q = parseNum(document.getElementById('tf-quant').value);
   const u = parseNum(document.getElementById('tf-unit').value);
   const t = parseNum(document.getElementById('tf-total').value);
   if (q <= 0) {
-    // quantidade zerada = remover o item do pedido (antes isso era feito na hora pelo teclado; agora só ao salvar)
+    // quantidade zerada = remover o item do pedido (só acontece ao salvar)
     const existia = !!_itensPedidoAtual[_tagFormProduto.id];
     delete _itensPedidoAtual[_tagFormProduto.id];
-    fecharTagForm();
-    if (existia) { montarNuvemTags(); atualizarSumarioSheet(); setEstado('editando'); }
-    return;
+    return existia;
   }
   const prUnit = u > 0 ? u : (t > 0 ? t / q : 0);
   const prTotal = t > 0 ? t : q * prUnit;
   const custo = _tagFormProduto.preco_medio_compra || 0;
   const lucro = prTotal - (custo * q);
-    const unidAlt = document.getElementById('tf-unid-alt').value;
+  const unidAlt = document.getElementById('tf-unid-alt').value;
   const prod = _todosProdutos.find(p => p.id === _tagFormProduto.id);
   const unidOficial = prod ? (prod.unid_venda || '') : '';
-  const quantDespacho = q;
-  const unidDespacho = unidAlt || unidOficial;
   _itensPedidoAtual[_tagFormProduto.id] = {
     produto_id: _tagFormProduto.id, quantidade: q, preco_unit: prUnit, custo_unit: custo,
     total_venda: prTotal, total_custo: custo * q, lucro,
-    quant_despacho: quantDespacho, unid_despacho: unidDespacho, unid_despacho_alt: unidAlt
+    quant_despacho: q, unid_despacho: unidAlt || unidOficial, unid_despacho_alt: unidAlt
   };
+  return true;
+}
 
-    fecharTagForm(); montarNuvemTags(); atualizarSumarioSheet();
-  setEstado('editando');
+function tagFormConfirmar() {
+  if (!_tagFormProduto || _tagFormSoLeitura) return;
+  const mexeu = _tagFormGravar();
+  fecharTagForm();
+  if (mexeu) { montarNuvemTags(); atualizarSumarioSheet(); setEstado('editando'); }
 }
 
 
@@ -3090,6 +3098,12 @@ document.getElementById('del-tag-modal-confirmar').addEventListener('click', () 
     <button class="numpad-key del" onmousedown="event.preventDefault()" onclick="numpadDel()">
       <svg viewBox="0 0 24 24"><path d="M21 4H8l-7 8 7 8h13a2 2 0 002-2V6a2 2 0 00-2-2z"/><line x1="18" y1="9" x2="12" y2="15"/><line x1="12" y1="9" x2="18" y2="15"/></svg>
     </button>
+    <button class="numpad-nav numpad-prod" onmousedown="event.preventDefault()" onclick="navegarTag(-1)" aria-label="Produto anterior">
+      <svg viewBox="0 0 24 24"><path d="M15.75 19.5L8.25 12l7.5-7.5"/></svg>
+    </button>
+    <button class="numpad-nav numpad-prod" onmousedown="event.preventDefault()" onclick="navegarTag(1)" aria-label="Próximo produto">
+      <svg viewBox="0 0 24 24"><path d="M8.25 4.5l7.5 7.5-7.5 7.5"/></svg>
+    </button>
 </div>
 
 </div>
@@ -3111,7 +3125,7 @@ function numpadAbrir(inputId) {
     if (left < 8) left = 8;
     // Posiciona abaixo do tag-form, ou acima se não couber
     let top = rect.bottom + 8;
-    if (top + 280 > window.innerHeight - 8) top = window.innerHeight - 280 - 8;
+    if (top + 330 > window.innerHeight - 8) top = window.innerHeight - 330 - 8;
     card.style.top = top + 'px';
     card.style.left = left + 'px';
   }
@@ -3202,7 +3216,7 @@ let _numpadLimparProxima = false;
     let newTop = origTop + dy;
     newLeft = Math.max(8, Math.min(window.innerWidth - 228, newLeft));
     
-    newTop = Math.max(8, Math.min(window.innerHeight - 250, newTop));
+    newTop = Math.max(8, Math.min(window.innerHeight - 290, newTop));
     card.style.left = newLeft + 'px';
     card.style.top = newTop + 'px';
   }, {passive: true});
