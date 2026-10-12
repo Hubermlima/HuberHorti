@@ -3297,7 +3297,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v506';
+const APP_VERSAO = 'v507';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -16937,10 +16937,18 @@ async function scStatusCalcular(pz) {
     return { t: Date.now(), nivel: Math.max.apply(null, itens.map(x => x.n)), itens, R };
 }
 function scScoreElegivel(pz) { return !!pz && (!!pz.score || pz.origem === 'melhor' || pz.origem === 'setup' || !!pz.teste); }
+// M17 — JANELA DO MOTOR = A SUA ÂNCORA DO VP: com VP ancorado, as réguas (macro e micro) somam só desde a âncora, igual ao sino.
+// Sem âncora, vale a "Janela de dias" da configuração.
+function scDiasJanela() {
+    const a = SCX.vpAncoraTs, ag = scAgora();
+    if (a != null && a > 0 && a < ag) return Math.max(1, (ag - a) / 86400000);
+    return SCX.cfg.dias;
+}
+function scDiasRot(d) { return SCX.vpAncoraTs != null ? Math.round(d) + ' dias (desde a âncora do VP)' : Math.round(d) + ' dias'; }
 function scScoreChave(pz) { return [pz.lado, Math.round(pz.entrada), _scCfg.micro, _scCfg.dias].join('|'); }
 async function scScoreCaixa(pz) {
     if (!SCX.fpAtivo || !SCX.fpRaw) throw new Error('Ligue o Fluxo (FX) e aguarde os dados carregarem.');
-    const dias = SCX.cfg.dias, def = scDefTf(SCX.cfg.micro);
+    const dias = scDiasJanela(), def = scDefTf(SCX.cfg.micro);
     const [tk, cs] = await Promise.all([scTick(def), scCandles(def, dias)]);
     if (!cs || !cs.length) throw new Error('Sem candles do micro ' + def.rot + '.');
     const u = scRegua(tk, dias, def.rot), tick = u.tick;
@@ -17161,7 +17169,7 @@ async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fecha
     _scCalculando = true; cvRenderMenuFpCfg();
     let msg = null, cor = '#8E8E93', dup = false, aval = null;
     try {
-        const dMa = scDefTf(_scCfg.macro), dias = _scCfg.dias, s = lado === 'short' ? 1 : -1;
+        const dMa = scDefTf(_scCfg.macro), dias = scDiasJanela(), s = lado === 'short' ? 1 : -1;
         const [tkMa, csMa] = await Promise.all([scTick(dMa), scCandles(dMa, dias)]);
         const csM0 = await scCandles(scDefTf(_scCfg.micro), dias);
         const preco = _grAllCandles.length ? Number(_grAllCandles[_grAllCandles.length - 1].c) : Number(csM0[csM0.length - 1].c);
@@ -17170,7 +17178,7 @@ async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fecha
         try { window._scMedMin = await scMedRangeTf(SC_ORDEM[0]); } catch (e) { window._scMedMin = 0; }
         try { window._scPavio = await scPavioTf(SC_ORDEM[0]); } catch (e) { window._scPavio = null; }
         try { window._scEma = await scEmaInfo(); } catch (e) { window._scEma = null; }
-        const cob = scCobertura(dias), avisoCob = cob < dias - 1 ? ' (Fluxo só tem ' + Math.floor(cob) + ' de ' + dias + ' dias)' : '';
+        const cob = scCobertura(dias), avisoCob = cob < dias - 1 ? ' (Fluxo só tem ' + Math.floor(cob) + ' de ' + Math.round(dias) + ' dias)' : '';
         // desce de TF só se nenhuma zona do micro cair numa zona favorável do macro (piso: 1h)
         const bMi = scDefTf(_scCfg.micro).blocoMs, pisoMs = bMi >= 3600000 ? 3600000 : 0;   // desce do micro até 1h (micro de 1h ou mais) ou até o menor TF (micro de minutos)
         const cadeia = [_scCfg.micro].concat(SC_ORDEM.filter(k => { const b = scDefTf(k).blocoMs; return b < bMi && b >= pisoMs; }).reverse());
@@ -17219,7 +17227,7 @@ async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fecha
             const pc = x => (x >= 0 ? '+' : '−') + (Math.abs(x) * 100).toFixed(1).replace('.', ',') + '%', rng = ns => { ns = ns.filter(Boolean).sort((x, y) => x - y); return !ns.length ? 'fora da tela' : (ns.length === 1 ? 'nível ' + ns[0] : 'níveis ' + ns[0] + ' a ' + ns[ns.length - 1]); };
             const porPavio = rm.wick != null && Math.abs(stop - (s > 0 ? rm.wick + rm.tick : rm.wick - rm.tick)) < 1;
             const L = [
-                (lado === 'short' ? 'SHORT' : 'LONG') + ' · ' + dias + ' dias · ' + dMa.rot + ' × ' + dMi.rot + ' · ' + conf.n + ' de ' + SC_CONF_TOTAL + ' confirmações',
+                (lado === 'short' ? 'SHORT' : 'LONG') + ' · ' + scDiasRot(dias) + ' · ' + dMa.rot + ' × ' + dMi.rot + ' · ' + conf.n + ' de ' + SC_CONF_TOTAL + ' confirmações',
                 'Entrada ' + f(entrada) + ' · Stop ' + f(stop) + ' (' + pc((stop - entrada) / entrada) + ') · Alvo ' + f(alvo) + ' (' + pc((alvo - entrada) / entrada) + ')',
                 'Entrada com gatilho: só vale quando um candle de ' + (tfSug && tfSug.rot ? tfSug.rot : '5 Minutos') + ' tocar a zona e fechar a favor, com delta a favor (entra no fechamento dele)',
                 'Stop: ' + (((rm.stopTipo || '').replace('+varrida', '')) === 'defesa' ? 'atrás da defesa do footprint em ' + f(rm.defesa.p) + ' (onde ' + (lado === 'long' ? 'os vendedores mais bateram' : 'os compradores mais bateram') + ' nas últimas 24 h e o preço segurou) + pavio' : ((rm.stopTipo || '').replace('+varrida', '')) === 'borda' ? 'limitado pela borda do sino (a defesa ficava fora dela)' : rm.stopTipo === 'ruido' ? 'mínimo de 2 candles típicos de 5 min (a defesa ficava perto demais)' : 'borda de trás do nó de entrada + pavio (sem dado de footprint)') + (/varrida/.test(rm.stopTipo || '') ? '; empurrado 2 pavios além da borda do nível da régua (fora da varrida)' : '') + ' · risco ' + f(risco),
@@ -17259,7 +17267,7 @@ async function scTfAcompanhar(h) {
     return melhor || (menor ? { rot: null, menor: menor.menor, med: menor.med, h } : null);
 }
 // ══ VERSÃO DO MOTOR + REGISTRO das caixas que ele cria (gravado junto com as caixas, nas preferências, ao tocar em Sair) ══
-const SC_MOTOR_VERSAO = 'M16';
+const SC_MOTOR_VERSAO = 'M17';
 function scRegLista() { if (!Array.isArray(window._scRegistro)) window._scRegistro = []; return window._scRegistro; }
 function scRegistrar(o) {
     const L = scRegLista();
@@ -17503,6 +17511,7 @@ function scSobreMostrar() {
         'Motor automático (botão "Auto" na barra superior do gráfico; tocar pausa ou liga): liga sozinho ao abrir o app, a não ser que você tenha deixado em pausa. Com alguma caixa EM TRADE neste ativo, o automático pausa tudo (não revisa nem arma) até ela terminar. Fora isso, a cada fechamento de candle de 5 min, revisa as caixas armadas e, em cada lado sem caixa armada ou em trade, arma uma nova com as condições de agora. Caixa armada não é redesenhada: se a tese cai, ela fica listrada e outra nasce ao lado. Legenda da pílula: ✓ armou · = já tinha · – sem entrada.',
         'Revisão da tese (caixas armadas): a cada rodada do automático, o motor refaz a análise. Se o lado perdeu a entrada, se a entrada saiu do sino ou se a nota caiu para 0, a caixa vira Tese Inválida e não entra mais. O histórico segue o que teria acontecido sem cancelar.',
         'Fora do sino (M16, no automático e no botão Motor): com o preço fora do sino, 3+ absorções a favor (AC no fundo para Long, AV no topo para Short) no mesmo lugar em 2 h armam uma caixa: entrada no topo da área defendida, stop além dela + 2 pavios, alvo na borda do sino, gatilho no 5 min, validade 2 h. Placar separado no histórico (FORA DO SINO).',
+        'Janela (M17): com VP ancorado, as duas réguas (macro e micro) somam só desde a âncora, o mesmo período do sino. Sem âncora, vale a Janela de dias.',
         'Duas caixas: quando os dois lados têm entrada válida, o motor arma Long E Short; o gatilho decide qual entra. Sem entrada num lado, sai só a outra.',
         'Saída-sombra (só no histórico, não muda o placar): em trade, o 1º candle de 5 min com absorção CONTRA (AV no Long, AC no Short) encostando na zona marca "teria saído aqui", para ver se compensa sair antes do stop.',
         'Volta ao valor: com o preço dentro do sino, só vale o lado que vai em direção ao pico (Long abaixo dele, Short acima). Fora do sino, os dois lados valem.',
@@ -17909,7 +17918,7 @@ function scRenderPopup(menu) {
     const tfsDe = atual => { const l = Object.keys(SC_TFS).map(k => [k, SC_TFS[k].rot]); if (!SC_TFS[atual]) l.push([atual, scTfBase(atual).rot]); l.push(['__pers', 'Personalizado…']); return l; };
     const cob = scCobertura(_scCfg.dias);
     menu.innerHTML = '<div style="font-size:13px;font-weight:700;color:#1C1C1E;margin-bottom:4px;">Trades</div>'
-        + grConfigCombo(ico.cal, 'Janela de dias', 'Dias somados nas duas réguas', 'cv-cfg-sc-dias', SC_DIAS.map(d => [d, d + ' dias']), _scCfg.dias, 'scDefinirDias')
+        + grConfigCombo(ico.cal, 'Janela de dias', SCX.vpAncoraTs != null ? 'Ignorada: com VP ancorado, as réguas usam a âncora (' + Math.round(scDiasJanela()) + ' dias)' : 'Dias somados nas duas réguas', 'cv-cfg-sc-dias', SC_DIAS.map(d => [d, d + ' dias']), _scCfg.dias, 'scDefinirDias')
         + grConfigCombo(ico.rel, 'Timeframe macro', 'Zona favorável e alvo', 'cv-cfg-sc-macro', tfsDe(_scCfg.macro), _scCfg.macro, 'scDefinirMacro')
         + grConfigCombo(ico.rel, 'Timeframe micro', 'Entrada e stop', 'cv-cfg-sc-micro', tfsDe(_scCfg.micro), _scCfg.micro, 'scDefinirMicro')
         + '<div style="font-size:11.5px;color:#8E8E93;margin-top:8px;line-height:1.4;">Fluxo carregado: ' + (cob >= _scCfg.dias - 1 ? 'cobre a janela' : '<b style="color:#DC2626;">só ' + Math.floor(cob) + ' dias</b>') + '. As réguas rodam em memória; a régua da tela não muda.</div>'
