@@ -3242,7 +3242,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v461';
+const APP_VERSAO = 'v463';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -7054,6 +7054,7 @@ if (fibsParaDesenhar.length > 0) {
             }
         }
         try { grNfDesenhar(ctx, t => toXIdx2(grTimeToIndex(t)), p => toY(p), PAD, W, chartH); } catch (eNf) {}
+        try { grGatilhosDesenhar(ctx, t => toXIdx2(grTimeToIndex(t)), p => toY(p)); } catch (eGt) {}
         try { grMedidasDesenhar(ctx, t => toXIdx2(grTimeToIndex(t)), p => toY(p), i => toXIdx2(i), PAD, W, H); } catch (eMd) {}
         grEdAlcasDesenhar(ctx, t => toXIdx2(grTimeToIndex(t)), p => toY(p));
         grAncBolinhas(ctx, window._grAncDotsMain);   // bolinhas do objeto selecionado (VWAP, EMA, Bollinger, RSI, ZII, Área, Fibonacci, Alerta) por cima de tudo
@@ -7819,7 +7820,8 @@ async function cvPosCopiarTudo(i) {
     if (pz.tfAcomp) L.push('Acompanhar no ' + pz.tfAcomp.rot);
     if (pz.score) { L.push('SCORE ' + pz.score.n + '/' + pz.score.total + (pz.origem === 'setup' ? ' (na criação)' : '')); pz.score.itens.forEach(it => L.push((it.ok ? '✓ ' : '✗ ') + it.nome + (it.det ? ': ' + it.det : '') + ' [' + it.pts + ']')); }
     const x = pz._stat;
-    if (x && x.encerrada) L.push('STATUS Encerrada · ' + scStatusEncTxt(x));
+    if (x && x.armada) L.push('STATUS Armada · aguardando gatilho');
+    else if (x && x.encerrada) L.push('STATUS Encerrada · ' + scStatusEncTxt(x));
     else if (x) { L.push('STATUS ' + SC_STATUS_ROT[x.nivel] + (x.R != null ? ' · resultado agora ' + (x.R >= 0 ? '+' : '−') + Math.abs(x.R).toFixed(1).replace('.', ',') + 'R' : '')); x.itens.forEach(it => L.push('• ' + ['ok', 'atenção', 'perigo'][it.n] + ': ' + it.txt)); }
     try { await navigator.clipboard.writeText(L.join('\n')); grAreaToast('Copiado: cole na conversa', '#16A34A'); } catch (e) { try { scRelatorioMostrar({ lado: null, linhas: L }); } catch (e2) {} }   // iPhone recusou copiar direto: mostra o texto com o botão Copiar
 }
@@ -7830,6 +7832,9 @@ function cvPosStatusPainel(i, m) {   // painel Status: o geral (Saudável / Aten
     if (!d) { d = document.createElement('div'); d.id = 'cv-pos-status'; d.style.cssText = 'position:fixed;z-index:9691;background:#FFFFFF;border-radius:9px;padding:7px 9px;box-shadow:0 1px 8px rgba(0,0,0,0.25);font-family:-apple-system,sans-serif;font-size:11px;color:#3A3A3C;min-width:170px;max-width:290px;'; d.addEventListener('touchstart', ev => ev.stopPropagation(), { passive: true }); document.body.appendChild(d); }
     const x = pz._stat;
     if (!x) d.innerHTML = '<div style="font-weight:800;color:#1C1C1E;margin-bottom:3px;">Status</div><div style="color:' + (pz._statErro ? '#DC2626' : '#6B6B70') + ';line-height:1.35;">' + (pz._statErro ? pz._statErro : 'Calculando…') + '</div>';
+    else if (x.armada) d.innerHTML = '<div style="font-weight:800;color:#2962FF;margin-bottom:3px;">' + (pz.lado === 'long' ? 'Long' : 'Short') + ' · Armada</div>'
+        + '<div style="line-height:1.35;">Aguardando gatilho: um candle de ' + x.armada.tf + ' que toque a zona e feche a favor, com delta a favor.</div>'
+        + '<button type="button" onclick="scRelatorioCaixa(grPosicoes()[' + i + '])" style="width:100%;margin-top:6px;border:none;border-radius:7px;padding:6px;font-size:11.5px;font-weight:700;background:#F2F2F7;color:#1C1C1E;">Relatório completo</button>';
     else if (x.encerrada) d.innerHTML = '<div style="font-weight:800;color:' + scStatusCor(x) + ';margin-bottom:3px;">' + (pz.lado === 'long' ? 'Long' : 'Short') + ' · Encerrada</div>'
         + '<div style="line-height:1.35;">' + scStatusEncTxt(x) + '</div>'
         + '<button type="button" onclick="scRelatorioCaixa(grPosicoes()[' + i + '])" style="width:100%;margin-top:6px;border:none;border-radius:7px;padding:6px;font-size:11.5px;font-weight:700;background:#F2F2F7;color:#1C1C1E;">Relatório completo</button>';
@@ -10727,6 +10732,18 @@ let _medidas = [];
 function _medidasKey() { return 'cv_medidas_' + (_ativoId || 'default'); }
 function cvCarregarMedidas() { try { const r = localStorage.getItem(_medidasKey()); _medidas = r ? JSON.parse(r) : []; } catch (e) { _medidas = []; } }
 function cvSalvarMedidas() { try { localStorage.setItem(_medidasKey(), JSON.stringify(_medidas)); } catch (e) {} }
+function grGatilhosDesenhar(ctx, fxT, fy) {   // ▲ (long) / ▼ (short) azul no candle do gatilho, na entrada real
+    const L = window._scRegistro; if (!Array.isArray(L)) return;
+    const ids = new Set(grPosicoes().filter(z => z.gat && !z.oculta).map(z => z.id));
+    L.forEach(r => {
+        if (!r.gat || r.tGat == null || !r.entReal || !ids.has(r.id)) return;
+        const x = fxT(r.tGat), y = fy(r.entReal); if (!isFinite(x) || !isFinite(y)) return;
+        const lg = r.lado === 'long', a = 7, yy = y + (lg ? 10 : -10);
+        ctx.save(); ctx.fillStyle = '#2962FF'; ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 1.5;
+        ctx.beginPath(); if (lg) { ctx.moveTo(x, yy - a); ctx.lineTo(x - a, yy + a); ctx.lineTo(x + a, yy + a); } else { ctx.moveTo(x, yy + a); ctx.lineTo(x - a, yy - a); ctx.lineTo(x + a, yy - a); }
+        ctx.closePath(); ctx.fill(); ctx.stroke(); ctx.restore();
+    });
+}
 function grMedidaTempo(ms) {
     ms = Math.abs(ms); const m = Math.round(ms / 60000), d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60), mi = m % 60;
     return d ? d + 'd' + (h ? ' ' + h + 'h' : '') : h ? h + 'h' + (mi ? ' ' + mi + 'm' : '') : mi + 'm';
@@ -16698,9 +16715,11 @@ function scStatusElegivel(pz) { return !!pz && pz.stop > 0 && (pz.pm > 0 || pz.e
 function scDesfechoCaixa(pz) {
     if (!pz || pz.tradeId || pz.pm > 0) return null;   // posição real: quem encerra é você
     const s = pz.lado === 'short' ? 1 : -1, ent = pz.entrada, risco = Math.abs(pz.stop - ent);
-    const R = st => st === 'alvo' && risco > 0 ? s * (ent - pz.alvo) / risco : st === 'stop' ? -1 : null;
     const reg = (window._scRegistro || []).find(r => r.id === pz.id);
-    if (reg && ['alvo', 'stop', 'perdida', 'expirou'].indexOf(reg.st) >= 0) return { st: reg.st, tFim: reg.tFim, R: R(reg.st) };
+    const eR = reg && reg.entReal ? reg.entReal : ent, rR = Math.abs(pz.stop - eR);   // com gatilho: o R é medido da entrada real
+    const R = st => st === 'alvo' && rR > 0 ? s * (eR - pz.alvo) / rR : st === 'stop' ? -1 : null;
+    if (reg && ['alvo', 'stop', 'perdida', 'expirou', 'semGatilho'].indexOf(reg.st) >= 0) return { st: reg.st, tFim: reg.tFim, R: R(reg.st) };
+    if (pz.gat) return null;   // com gatilho, o desfecho vem só do registro (tocar a zona não é entrar)
     if (!(pz.alvo > 0) || !(pz.stop > 0) || !(ent > 0)) return null;
     const arr = _grAllCandles || [], t0 = Math.min(pz.t1 || 0, pz.t2 || 0), lg = pz.lado === 'long'; let dentro = false;
     for (const c of arr) {
@@ -16715,10 +16734,14 @@ function scStatusEncTxt(x) {   // "ALVO 11/10 21:01 · +2,8R"
     const e = x.encerrada, dh = t => new Date(t).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
     return SC_REG_ROT[e.st] + (e.tFim ? ' ' + dh(e.tFim) : '') + (e.R != null ? ' · ' + (e.R >= 0 ? '+' : '−') + Math.abs(e.R).toFixed(1).replace('.', ',') + 'R' : '');
 }
-function scStatusCor(x) { return x.encerrada ? (x.encerrada.st === 'alvo' ? '#16A34A' : x.encerrada.st === 'stop' ? '#DC2626' : '#8E8E93') : SC_STATUS_COR[x.nivel]; }
+function scStatusCor(x) { return x.armada ? '#2962FF' : x.encerrada ? (x.encerrada.st === 'alvo' ? '#16A34A' : x.encerrada.st === 'stop' ? '#DC2626' : '#8E8E93') : SC_STATUS_COR[x.nivel]; }
 async function scStatusCalcular(pz) {
     if (Date.now() - (window._scRegAtTs || 0) > 60000) { window._scRegAtTs = Date.now(); try { await scRegAtualizar(); } catch (e) {} }
     { const fimCx = scDesfechoCaixa(pz); if (fimCx) return { t: Date.now(), nivel: fimCx.st === 'stop' ? 2 : 0, itens: [], R: fimCx.R, encerrada: fimCx }; }   // já terminou: só o resultado final
+    if (pz.gat) {   // armada: ainda esperando o gatilho
+        const reg = (window._scRegistro || []).find(r => r.id === pz.id);
+        if (!reg || reg.st === 'aguardando') return { t: Date.now(), nivel: 0, itens: [], R: null, armada: { tf: (reg && reg.tfA) || (pz.tfAcomp && pz.tfAcomp.rot) || '5 Minutos' } };
+    }
     const s = pz.lado === 'short' ? 1 : -1, ent = pz.pm > 0 ? pz.pm : pz.entrada, stop = pz.stop > 0 ? pz.stop : null;
     const base = { lado: pz.lado, entrada: ent };
     const sc = await scScoreCaixa(base), conf = base._scConf;
@@ -16860,6 +16883,8 @@ function scAvaliarCore(lado, def, tk, cs, dias, dMa, rM, uMa, preco) {
         let alvo, alvoTipo;
         if (pk != null && (!am || Math.abs(r.entrada - pk) < Math.abs(r.entrada - am.alvo))) { alvo = pk; alvoTipo = 'pico'; }
         else if (am) { alvo = am.alvo; alvoTipo = 'macro'; } else { alvo = r.entrada - s * 2 * risco; alvoTipo = '2R'; }
+        // M8: dentro do sino, alvo de 2R = não há estrutura nem espaço até o pico (o preço já está no valor): não cria
+        if (alvoTipo === '2R' && preco >= banda.faixas[0].lo && preco <= banda.faixas[0].hi) return nega('dentro do sino sem alvo de estrutura (só sobrava 2R): o preço já está no valor, sem espaço até o pico');
         if (!(s * (r.stop - r.entrada) > 0) || !(s * (r.entrada - alvo) > 0)) return nega('alvo do lado errado');
         // a ignição já passou? A partir do PREÇO DE AGORA, o que falta até o alvo tem de ser pelo menos o risco até o stop (mesma régua R/R ≥ 1 dos alvos)
         const falta = s * (preco - alvo), arrisca = s * (r.stop - preco);
@@ -16991,8 +17016,8 @@ async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fecha
         pz.rotulo = 'Setup ' + dMa.rot + ' × ' + dMi.rot + (fraco ? ' · fraco' : ''); pz.score = scScoreDe(conf);
         if (tfSug && tfSug.rot) pz.tfAcomp = { chave: tfSug.chave, rot: tfSug.rot };
         if (opts.scalp) pz.scalp = true;
-        pz.motorV = SC_MOTOR_VERSAO;
-        if (!dup) { lista.push(pz); grPosSalvar(); scRegistrar({ id: pz.id, mv: SC_MOTOR_VERSAO, modo: opts.modo || (opts.scalp ? 'play' : 'trader'), lado, nota: pz.score ? pz.score.n : null, ent: entrada, stp: stop, alvo, alvoTipo: esc.alvoTipo || (am ? 'macro' : '2R'), mi: dMi.rot, ma: dMa.rot, tfA: tfSug && tfSug.rot ? tfSug.rot : null, val: dMa.blocoMs, sym: grBinSymbolAtual() }); }
+        pz.motorV = SC_MOTOR_VERSAO; pz.gat = true;   // M7: a entrada só vale com GATILHO no TF de acompanhamento
+        if (!dup) { lista.push(pz); grPosSalvar(); scRegistrar({ id: pz.id, mv: SC_MOTOR_VERSAO, modo: opts.modo || (opts.scalp ? 'play' : 'trader'), lado, nota: pz.score ? pz.score.n : null, ent: entrada, stp: stop, alvo, alvoTipo: esc.alvoTipo || (am ? 'macro' : '2R'), mi: dMi.rot, ma: dMa.rot, tfA: tfSug && tfSug.rot ? tfSug.rot : null, tfAk: tfSug && tfSug.chave ? tfSug.chave : '5m', gat: true, val: dMa.blocoMs, sym: grBinSymbolAtual() }); }
         const f = x => Math.round(x).toLocaleString('pt-BR');
         _scUltimo = { pzId: pz.id, lado, hora: new Date(), txt: (lado === 'short' ? 'Short' : 'Long') + ' · entrada ' + f(entrada) + ' · stop ' + f(stop) + ' · alvo ' + f(alvo) + (esc.alvoTipo === 'pico' ? ' (pico do sino)' : am ? ' (nó macro)' : ' (2R)') + (' · ' + conf.n + ' de ' + SC_CONF_TOTAL + ' confirmações') + (fraco ? ' · FRACO' : '') + (tfSug && tfSug.rot ? ' · acompanhe no ' + tfSug.rot : '') + avisoCob };
         // Relatório curto
@@ -17002,6 +17027,7 @@ async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fecha
             const L = [
                 (lado === 'short' ? 'SHORT' : 'LONG') + ' · ' + dias + ' dias · ' + dMa.rot + ' × ' + dMi.rot + ' · ' + conf.n + ' de ' + SC_CONF_TOTAL + ' confirmações',
                 'Entrada ' + f(entrada) + ' · Stop ' + f(stop) + ' (' + pc((stop - entrada) / entrada) + ') · Alvo ' + f(alvo) + ' (' + pc((alvo - entrada) / entrada) + ')',
+                'Entrada com gatilho: só vale quando um candle de ' + (tfSug && tfSug.rot ? tfSug.rot : '5 Minutos') + ' tocar a zona e fechar a favor, com delta a favor (entra no fechamento dele)',
                 'Stop: borda de trás do nó de entrada + folga de ' + f(rm.folga || 0) + ' (o maior entre 15% da zona e o pavio típico de 5 min) · risco ' + f(risco),
                 'Zona quente (sino do ' + esc.banda.fonte + '): ' + esc.banda.faixas.map(fx => f(fx.lo) + '–' + f(fx.hi) + (fx.poc ? ' (POC da VA)' : '')).join(' + '),
                 'Alvo: ' + (esc.alvoTipo === 'pico' ? 'pico do sino (' + f(alvo) + '), a volta ao valor' : am ? 'nó macro, ' + rng(am.nums) + ', borda ' + f(am.alvo) : 'sem nó macro nem pico útil, 2R')
@@ -17039,7 +17065,7 @@ async function scTfAcompanhar(h) {
     return melhor || (menor ? { rot: null, menor: menor.menor, med: menor.med, h } : null);
 }
 // ══ VERSÃO DO MOTOR + REGISTRO das caixas que ele cria (gravado junto com as caixas, nas preferências, ao tocar em Sair) ══
-const SC_MOTOR_VERSAO = 'M6';
+const SC_MOTOR_VERSAO = 'M8';
 function scRegLista() { if (!Array.isArray(window._scRegistro)) window._scRegistro = []; return window._scRegistro; }
 function scRegistrar(o) {
     const L = scRegLista();
@@ -17080,6 +17106,7 @@ function scRegChecarPreco(px) {
     const sym = grBinSymbolAtual(), agora = Date.now(); let mudou = false;
     L.forEach(r => {
         if ((r.st !== 'aguardando' && r.st !== 'entrou') || (r.sym && r.sym !== sym)) return;
+        if (r.gat && r.st === 'aguardando') return;   // armada: o gatilho é decidido nos candles fechados (scRegAtualizar, a cada minuto)
         const lg = r.lado === 'long', toca = lg ? px <= r.ent : px >= r.ent, bStop = lg ? px <= r.stp : px >= r.stp, bAlvo = lg ? px >= r.alvo : px <= r.alvo;
         const ant = r.st;
         if (r.st === 'aguardando') {
@@ -17094,15 +17121,54 @@ function scRegChecarPreco(px) {
         }
     });
     if (mudou) scRegGravarServidor();
+    if (L.some(r => r.gat && r.st === 'aguardando') && Date.now() - (window._scRegGatTs || 0) > 60000) {   // procura o gatilho 1x por minuto
+        window._scRegGatTs = Date.now();
+        scRegAtualizar().then(m => { if (m) { try { grDrawChart(); } catch (e) {} L.forEach(r => { if (r.gat && r.st !== 'aguardando' && r.tGat && !r._avisado) { r._avisado = true; try { grAreaToast('Motor ' + (r.mv || '') + ': ' + (r.lado === 'long' ? 'Long' : 'Short') + ' → ' + (r.st === 'entrou' ? 'GATILHO, entrou em ' + Math.round(r.entReal).toLocaleString('pt-BR') : SC_REG_ROT[r.st]), '#2962FF'); } catch (e) {} } }); } }, () => {});
+    }
 }
 // Relê os candles desde a criação e marca: entrou (tocou a entrada) → alvo / stop; sem entrar → entrada perdida (foi ao alvo) ou expirou (passou 1 candle do macro).
 // Candles de 5 min (até ~3 dias) ou de 1 h (até ~41 dias); só candles que COMEÇAM depois da criação; no candle em que entrou, só o stop conta (conservador).
+// Delta (compra − venda do footprint) por bloco de tempo, desde 'ini' (só BTC, com o Fluxo ligado; sem isso: mapa vazio)
+function scDeltaPorBloco(bloco, ini) {
+    const D = new Map(); if (!_grFootprintAtivo || !_grFootprintCandlesRaw) return D;
+    grFootprintParaCadaMinuto(ini, Date.now(), m => { const b = Math.floor(m.ts / bloco) * bloco; let d = 0; (m.niveis || []).forEach(n => { d += n.c - n.v; }); D.set(b, (D.get(b) || 0) + d); });
+    return D;
+}
+// GATILHO (M7): armada → um candle do TF de acompanhamento que TOQUE a zona, FECHE a favor (long: verde; short: vermelho), com DELTA a favor e sem
+// romper o stop → entrou no fechamento dele (entrada real). Antes do gatilho: tocar o stop = "sem gatilho" (a faca passou sem confirmação, não é perda);
+// ir ao alvo = entrada perdida; passar 1 candle do macro = expirou. Depois de entrar: stop / alvo (stop primeiro no mesmo candle).
+function scRegAvaliarGatilho(r, cs, D, bloco) {
+    const lg = r.lado === 'long', s = lg ? 1 : -1;
+    for (const c of cs) {
+        if (c.t < r.t0) continue;
+        if (r.st === 'entrou') {
+            if (r.tGat != null && c.t <= r.tGat) continue;
+            if (lg ? c.l <= r.stp : c.h >= r.stp) { r.st = 'stop'; r.tFim = c.t; return; }
+            if (lg ? c.h >= r.alvo : c.l <= r.alvo) { r.st = 'alvo'; r.tFim = c.t; return; }
+            continue;
+        }
+        const toca = lg ? c.l <= r.ent : c.h >= r.ent, bStop = lg ? c.l <= r.stp : c.h >= r.stp, bAlvo = lg ? c.h >= r.alvo : c.l <= r.alvo;
+        if (bStop) { r.st = 'semGatilho'; r.tFim = c.t; return; }
+        if (toca) {
+            const d = D.get(c.t), cor = s * (c.c - c.o) > 0, dOk = d == null ? true : s * d > 0;   // sem footprint naquele candle: vale só a cor
+            const falta = s * (r.alvo - c.c), arrisca = s * (c.c - r.stp);   // no fechamento do gatilho ainda tem de sobrar ganho ≥ risco (senão a ignição já passou)
+            if (cor && dOk && arrisca > 0 && falta >= arrisca) { r.st = 'entrou'; r.tGat = c.t; r.tEnt = c.t + bloco; r.entReal = c.c; continue; }
+        } else if (bAlvo) { r.st = 'perdida'; r.tFim = c.t; return; }
+        if (r.val > 0 && c.t > r.t0 + r.val) { r.st = 'expirou'; r.tFim = c.t; return; }
+    }
+}
 async function scRegAtualizar() {
     const abertos = scRegLista().filter(r => r.st === 'aguardando' || r.st === 'entrou'); if (!abertos.length) return false;
     let mudou = false;
     const cache = {}, pega = async (sym, iv) => { const k = sym + '|' + iv; if (!cache[k]) { try { cache[k] = (await grBuscarKlines(sym, iv, 1000, null)).map(grMapearKline); } catch (e) { cache[k] = []; } } return cache[k]; };
     for (const r of abertos) {
         const st0 = r.st;
+        if (r.gat) {   // M7: com gatilho
+            const def = scDefTf(r.tfAk || '5m'), cs = await pega(r.sym || grBinSymbolAtual(), def.bin);
+            scRegAvaliarGatilho(r, cs, scDeltaPorBloco(def.blocoMs, r.t0 - def.blocoMs), def.blocoMs);
+            if (r.st !== st0) mudou = true;
+            continue;
+        }
         const novo5 = Date.now() - r.t0 < 3.3 * 86400000, cs = await pega(r.sym || grBinSymbolAtual(), novo5 ? '5m' : '1h');
         const lg = r.lado === 'long';
         for (const c of cs) {
@@ -17123,7 +17189,7 @@ async function scRegAtualizar() {
     if (mudou) scRegGravarServidor();
     return mudou;
 }
-const SC_REG_ROT = { aguardando: 'aguardando', entrou: 'entrou', alvo: 'ALVO', stop: 'STOP', perdida: 'entrada perdida', expirou: 'expirou' };
+const SC_REG_ROT = { semGatilho: 'sem gatilho', aguardando: 'aguardando', entrou: 'entrou', alvo: 'ALVO', stop: 'STOP', perdida: 'entrada perdida', expirou: 'expirou' };
 async function scHistoricoMostrar() {
     try { cvFecharMenuFpCfg(); } catch (e) {}
     try { grAreaToast('Atualizando o histórico…', '#8E8E93'); } catch (e) {}
@@ -17131,9 +17197,9 @@ async function scHistoricoMostrar() {
     const L = scRegLista(), f = x => Math.round(x).toLocaleString('pt-BR'), dh = t => new Date(t).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
     const cont = {}; L.forEach(r => { cont[r.st] = (cont[r.st] || 0) + 1; });
     const linhas = ['HISTÓRICO DO MOTOR · ' + L.length + ' caixa' + (L.length === 1 ? '' : 's'),
-        L.length ? ['alvo', 'stop', 'perdida', 'expirou', 'entrou', 'aguardando'].filter(k => cont[k]).map(k => SC_REG_ROT[k] + ' ' + cont[k]).join(' · ') : 'Nenhuma caixa do motor registrada ainda.'];
+        L.length ? ['alvo', 'stop', 'semGatilho', 'perdida', 'expirou', 'entrou', 'aguardando'].filter(k => cont[k]).map(k => SC_REG_ROT[k] + ' ' + cont[k]).join(' · ') : 'Nenhuma caixa do motor registrada ainda.'];
     L.slice().reverse().forEach(r => linhas.push(r.mv + ' · ' + dh(r.t0) + ' · ' + r.modo + ' · ' + (r.lado === 'long' ? 'Long' : 'Short') + ' · nota ' + (r.nota == null ? '?' : r.nota)
-        + ' · E ' + f(r.ent) + ' S ' + f(r.stp) + ' A ' + f(r.alvo) + ' (' + (r.alvoTipo === 'pico' ? 'pico' : r.alvoTipo) + ') · ' + r.ma + '×' + r.mi
+        + ' · E ' + f(r.ent) + (r.entReal ? ' (real ' + f(r.entReal) + ')' : '') + ' S ' + f(r.stp) + ' A ' + f(r.alvo) + (r.gat ? ' · gatilho' : '') + ' (' + (r.alvoTipo === 'pico' ? 'pico' : r.alvoTipo) + ') · ' + r.ma + '×' + r.mi
         + ' · ' + SC_REG_ROT[r.st] + (r.tFim ? ' ' + dh(r.tFim) : (r.tEnt ? ' ' + dh(r.tEnt) : ''))));
     scRelatorioMostrar({ lado: null, linhas });
 }
@@ -17146,9 +17212,11 @@ function scSobreMostrar() {
         'Nota (0 a 7): Absorção, Ordem grande, Traders presos, Agressores e Virada de delta (só toques recentes, dentro de um candle do macro), RSI e Fibonacci.',
         'Descontos (−1 cada): suporte/resistência contra, o seu lado no prejuízo, faca caindo / foguete subindo.',
         'Volta ao valor: com o preço dentro do sino, só vale o lado que vai em direção ao pico (Long abaixo dele, Short acima). Fora do sino, os dois lados valem.',
+        'Dentro do sino, o alvo tem de ser estrutura (o pico ou um nó do macro); se só sobrar 2R, não cria.',
         'Não cria: se a ignição já passou (o que falta até o alvo é menor que o risco) ou se a mesma zona deu stop há pouco.',
         'Botão Motor: compara Long × Short e fica com a maior nota; empate na nota, vence o lado cujo alvo é o pico do sino (volta ao valor), depois o nó do macro; ainda empatado, o melhor R/R. Não há nota mínima: caixa com nota baixa sai marcada como fraca, e o histórico vai dizer a partir de que nota vale a pena. Botão Trader: você escolhe o lado.',
         'Acompanhar: no maior timeframe em que um candle típico cabe na zona de captura.',
+        'Gatilho: a caixa nasce armada. Só entra quando um candle do TF de acompanhamento toca a zona e fecha a favor, com delta a favor; a entrada real é o fechamento dele. Se o preço for ao stop antes do gatilho, fica "sem gatilho" (não é perda).',
         'Histórico: toda caixa do motor é registrada com a versão (' + SC_MOTOR_VERSAO + '), a nota e o desfecho (alvo, stop, entrada perdida ou expirou). Grava sozinho no servidor a cada mudança.'] });
 }
 // peso do alvo no desempate: pico do sino (volta ao valor) > nó do macro > 2R (número sem estrutura)
@@ -17255,12 +17323,13 @@ async function scRelatorioCaixa(pz) {
     let st = null; try { if (scStatusElegivel(pz)) { st = await scStatusCalcular(pz); pz._stat = st; } } catch (e) {}
     base.push('— AGORA (' + dh(Date.now()) + ') · preço ' + f(_precoAtual) + ' —');
     if (st) {
-        if (st.encerrada) base.push('Status: Encerrada · ' + scStatusEncTxt(st));
+        if (st.armada) base.push('Status: Armada · aguardando gatilho num candle de ' + st.armada.tf);
+        else if (st.encerrada) base.push('Status: Encerrada · ' + scStatusEncTxt(st));
         else base.push('Status: ' + SC_STATUS_ROT[st.nivel] + (st.R != null ? ' · resultado ' + (st.R >= 0 ? '+' : '−') + Math.abs(st.R).toFixed(1).replace('.', ',') + 'R' : ''));
         st.itens.forEach(it => base.push('• ' + ['ok', 'atenção', 'perigo'][it.n] + ': ' + it.txt));
     }
     const reg = scRegLista().find(r => r.id === pz.id);
-    if (reg) base.push('Histórico: ' + SC_REG_ROT[reg.st] + (reg.tFim ? ' ' + dh(reg.tFim) : reg.tEnt ? ' ' + dh(reg.tEnt) : ''));
+    if (reg) base.push('Histórico: ' + SC_REG_ROT[reg.st] + (reg.tFim ? ' ' + dh(reg.tFim) : reg.tEnt ? ' ' + dh(reg.tEnt) : '') + (reg.entReal ? ' · gatilho em ' + f(reg.entReal) : ''));
     scRelatorioMostrar({ lado: pz.lado, linhas: base });
 }
 // Ver Relatório (no Trades): o da última caixa criada; se ela não existe mais, só o texto guardado
