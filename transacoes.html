@@ -3235,7 +3235,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v454';
+const APP_VERSAO = 'v457';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -5957,7 +5957,11 @@ function grDrawCandles(candles, emptyRight) {
         const _pnVwap = [];
         if (_grFootprintAtivo && _grVwapAncoras.length > 0) {
             _grVwapAncoras.forEach(ancora => {
-                if (ancora.oculta) return;
+                if (ancora.oculta) {   // escondida = ativa sem desenho: o valor continua na caixinha
+                    const iO = grVwapIdxPorTs(ancora.ts);
+                    if (iO >= 0) { const vO = grVWAPAncorado(_grAllCandles, iO).filter(x => x != null).pop(); if (vO) _pnVwap.push({ rot: 'VWAP', val: fmtN(vO), cor: ancora.tipo === 'topo' ? '#EF5350' : '#64B5F6' }); }
+                    return;
+                }
                 const idxA = grVwapIdxPorTs(ancora.ts);
                 if (idxA < 0) return; // candle dessa âncora não tá na janela de dados carregada agora
                 const vwapAll = grVWAPAncorado(_grAllCandles, idxA);
@@ -6147,6 +6151,7 @@ function grDrawCandles(candles, emptyRight) {
                 }
             }
         }
+        else if (_grFootprintAtivo && _grValueAreaAncoraTs != null && _grVaOculta) { try { const vaO = grFootprintCalcularValueArea(); if (vaO && vaO.poc) _pnVa = [{ rot: 'POC', val: fmtN(vaO.poc), cor: '#EF5350' }]; } catch (e) {} }   // escondida = ativa sem desenho: a POC continua na caixinha
         grPainelValores('va', _pnVa);
        // ── Alertas: linha contínua + pílula de preço no eixo (igual à linha horizontal) ──
         {
@@ -13933,6 +13938,15 @@ function grFootprintDesenharOverlay() {
     // histograma antigo à direita — e escondia o perfil a cada recarga. Vale só o botão "Barras" (salvo) e ter âncora.)
     window._grVpHits = [];
     grPainelValores('vp', null);
+    if (_grMostrarBarrasPA && _grVpAncoraTs != null && _grVpOculta) {   // escondido = ativo sem desenho: o valor continua na caixinha
+        try {
+            if (typeof _grMinP !== 'undefined' && _grMaxP !== _grMinP && _grChartH) {
+                const dO = grVpObterMapa();
+                if (dO && dO.mapa.size) { const agO = grVpAgrupar(dO, grVpTick(window._grPxDolarLocal || (_grChartH / (_grMaxP - _grMinP)))); if (agO.pocPreco != null) grPainelValores('vp', [{ rot: 'VP', val: fmtN(agO.pocPreco), cor: '#FFB300' }]); }
+            }
+        } catch (e) {}
+        return;
+    }
     if (!_grMostrarBarrasPA || _grVpAncoraTs == null || _grVpOculta) return;
     if (typeof _grMinP === 'undefined' || typeof _grPAD === 'undefined' || !window._grChartW) return;
     if (_grMaxP === _grMinP) return; // gráfico ainda não renderizou escala válida
@@ -16508,7 +16522,9 @@ function scCalcular(lado, u, cs, preco, ibK) {
         if (dentroBloco && defendeu) wick = wick == null ? ext : (s > 0 ? Math.max(wick, ext) : Math.min(wick, ext));
     });
     // SETUP: o pavio NÃO entra no stop (é ruído e quebra a lógica dos footprints): o stop é a borda de trás do nó + folga pequena (15% da altura da zona, mín. ¼ de nível, como no Melhor) pra um toque de 1 tick não stopar.
-    const folgaStop = Math.max(0.15 * (hi - lo), 0.25 * tick);
+    // folga = o maior entre 15% da zona e o PAVIO TÍPICO dos candles de 5 min do lado do stop (long: pavio de baixo; short: de cima) — tirado dos dados, pra um fiapo normal não stopar
+    const pavTip = window._scPavio ? (s > 0 ? window._scPavio.sup : window._scPavio.inf) : 0;
+    const folgaStop = Math.max(0.15 * (hi - lo), 0.25 * tick, pavTip || 0);
     const entrada = s > 0 ? lo : hi, stop = stopV + s * folgaStop, risco = Math.abs(stop - entrada), K = niv[ib];
     // ALVOS = SUPORTE/RESISTÊNCIA do lado oposto: nós com volume acima da mediana E delta favorável (short: delta positivo = compradores defendendo; long: negativo), a ≥ 1 ATR da entrada. O alvo fica na borda de FRENTE do nó (onde o preço encontra o suporte e tende a segurar).
     // Alvos: nós de alto volume do lado oposto, a ≥ 1 ATR da entrada, agrupando níveis colados. Alvo = a borda de trás do nó (a primeira onde o preço tende a segurar fica antes dela).
@@ -16530,7 +16546,7 @@ function scCalcular(lado, u, cs, preco, ibK) {
     const dentro = n => n.hi > lo && n.lo < hi;
     const cands = [];
     niv.filter(n => n.gate && !dentro(n)).sort((x, y) => y.rank - x.rank).forEach(n => { if (cands.length < 3 && cands.every(o => Math.abs(o.k - n.k) >= 2) && !(Math.abs(n.k - niv[a].k) <= 1 || Math.abs(n.k - niv[b].k) <= 1)) cands.push(n); });
-    return { niv, lado, s, preco, lo, hi, entrada, stop, alvo: alvo1, alvo1, alvo2, rr: rr1, rr1, rr2, semNo, atr, tick, K, wick, band: { a: niv[a], b: niv[b] }, numEntrada: niv.slice(a, b + 1).map(n => n.num).filter(Boolean),
+    return { folga: folgaStop, niv, lado, s, preco, lo, hi, entrada, stop, alvo: alvo1, alvo1, alvo2, rr: rr1, rr1, rr2, semNo, atr, tick, K, wick, band: { a: niv[a], b: niv[b] }, numEntrada: niv.slice(a, b + 1).map(n => n.num).filter(Boolean),
         forca: K.pisos >= 3 ? 'Forte' : (K.pisos === 2 ? 'Média' : 'Fraco'), cands, grupos: grupos.slice(0, 3), g1, g2, dias: u.dias, tfRot: u.tfRot, niveis: niv.length };
 }
 
@@ -16635,9 +16651,9 @@ function scConfirmacoes(lado, r, u, cs, def) {
     try {
         const refs = [], px = (typeof _precoAtual === 'number' && _precoAtual > 0) ? _precoAtual : null;
         if (px != null && _grFootprintAtivo) {
-            _grVwapAncoras.forEach(a => { if (a.oculta) return; const i = grVwapIdxPorTs(a.ts); if (i < 0) return; const v = grVWAPAncorado(_grAllCandles, i).filter(x => x != null).pop(); if (v) refs.push(['VWAP', v]); });
-            if (_grValueAreaAncoraTs != null && !_grVaOculta) { const va = grFootprintCalcularValueArea(); if (va && va.poc) refs.push(['POC', va.poc]); }
-            if (_grVpAncoraTs != null && !_grVpOculta) {
+            _grVwapAncoras.forEach(a => { const i = grVwapIdxPorTs(a.ts); if (i < 0) return; const v = grVWAPAncorado(_grAllCandles, i).filter(x => x != null).pop(); if (v) refs.push(['VWAP', v]); });
+            if (_grValueAreaAncoraTs != null ) { const va = grFootprintCalcularValueArea(); if (va && va.poc) refs.push(['POC', va.poc]); }
+            if (_grVpAncoraTs != null ) {
                 const d = grVpObterMapa();
                 if (d && d.mapa.size) { const g = new Map(); d.mapa.forEach((v, pr) => { const k = Math.round(pr / tick); g.set(k, (g.get(k) || 0) + v.c + v.v); }); let mk = null, mv = 0; g.forEach((v, k) => { if (v > mv) { mv = v; mk = k; } }); if (mk != null) refs.push(['VP', mk * tick]); }
             }
@@ -16693,6 +16709,7 @@ function scStatusEncTxt(x) {   // "ALVO 11/10 21:01 · +2,8R"
 }
 function scStatusCor(x) { return x.encerrada ? (x.encerrada.st === 'alvo' ? '#16A34A' : x.encerrada.st === 'stop' ? '#DC2626' : '#8E8E93') : SC_STATUS_COR[x.nivel]; }
 async function scStatusCalcular(pz) {
+    if (Date.now() - (window._scRegAtTs || 0) > 60000) { window._scRegAtTs = Date.now(); try { await scRegAtualizar(); } catch (e) {} }
     { const fimCx = scDesfechoCaixa(pz); if (fimCx) return { t: Date.now(), nivel: fimCx.st === 'stop' ? 2 : 0, itens: [], R: fimCx.R, encerrada: fimCx }; }   // já terminou: só o resultado final
     const s = pz.lado === 'short' ? 1 : -1, ent = pz.pm > 0 ? pz.pm : pz.entrada, stop = pz.stop > 0 ? pz.stop : null;
     const base = { lado: pz.lado, entrada: ent };
@@ -16845,6 +16862,12 @@ function scZonaQueimada(lado, entrada, tick) {
     } catch (e) { return false; }
 }
 // Tamanho típico (mediana de máxima − mínima) dos candles de um TF nos últimos 7 dias
+async function scPavioTf(chave) {   // pavio típico (mediana) dos candles de um TF nos últimos 7 dias: de baixo (inf) e de cima (sup)
+    const cs = await scCandles(scDefTf(chave), 7);
+    const inf = [], sup = [];
+    cs.forEach(c => { const o = Number(c.o), cl = Number(c.c), h = Number(c.h), l = Number(c.l); if (!(h > l)) return; inf.push(Math.min(o, cl) - l); sup.push(h - Math.max(o, cl)); });
+    return inf.length >= 20 ? { inf: scMediana(inf), sup: scMediana(sup) } : null;
+}
 async function scMedRangeTf(chave) {
     const cs = await scCandles(scDefTf(chave), 7);
     const rg = cs.filter(c => Number(c.h) > Number(c.l)).map(c => Number(c.h) - Number(c.l));
@@ -16856,8 +16879,8 @@ function scBandaQuente(rM, tick) {
     let pts = null, fonte = '';
     try {
         const grade = mapa => { const g = new Map(); mapa.forEach((v, pr) => { const k = Math.round(pr / tick); g.set(k, (g.get(k) || 0) + v.c + v.v); }); return Array.from(g.entries()).map(([k, v]) => ({ k, v, lo: k * tick - tick / 2, hi: k * tick + tick / 2 })); };
-        if (_grFootprintAtivo && _grVpAncoraTs != null && !_grVpOculta) { const d = grVpObterMapa(); if (d && d.mapa.size) { pts = grade(d.mapa); fonte = 'VP ancorado'; } }
-        if (!pts && _grFootprintAtivo && _grValueAreaAncoraTs != null && !_grVaOculta) { const m = grFootprintObterMapaBaseValueArea(); if (m && m.size) { pts = grade(m); fonte = 'Value Area ancorada'; } }
+        if (_grFootprintAtivo && _grVpAncoraTs != null ) { const d = grVpObterMapa(); if (d && d.mapa.size) { pts = grade(d.mapa); fonte = 'VP ancorado'; } }
+        if (!pts && _grFootprintAtivo && _grValueAreaAncoraTs != null ) { const m = grFootprintObterMapaBaseValueArea(); if (m && m.size) { pts = grade(m); fonte = 'Value Area ancorada'; } }
     } catch (e) { pts = null; }
     if (!pts) { pts = ((rM && rM.niv) || []).map(n => ({ k: n.k, v: n.v, lo: n.lo, hi: n.hi, num: n.num })); fonte = 'janela de dias'; }
     pts = pts.filter(x => x.v > 0).sort((x, y) => x.k - y.k);
@@ -16872,7 +16895,7 @@ function scBandaQuente(rM, tick) {
     const faixas = [{ lo: niveis[0].lo, hi: niveis[niveis.length - 1].hi }], picos = [(pts[ip].lo + pts[ip].hi) / 2];
     // reforço: a POC da Value Area ancorada sempre conta; se cair fora do sino, o degrau dela vira mais uma zona quente
     try {
-        if (_grFootprintAtivo && _grValueAreaAncoraTs != null && !_grVaOculta) {
+        if (_grFootprintAtivo && _grValueAreaAncoraTs != null ) {
             const va = grFootprintCalcularValueArea();
             if (va && va.poc > 0) {
                 picos.push(va.poc);
@@ -16897,6 +16920,7 @@ async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fecha
         const uMa = scRegua(tkMa, dias, dMa.rot), rM = scCalcular(lado, uMa, csMa, preco);
         if (rM.erro) throw new Error('Macro ' + dMa.rot + ': ' + rM.erro);
         try { window._scMedMin = await scMedRangeTf(SC_ORDEM[0]); } catch (e) { window._scMedMin = 0; }
+        try { window._scPavio = await scPavioTf(SC_ORDEM[0]); } catch (e) { window._scPavio = null; }
         const cob = scCobertura(dias), avisoCob = cob < dias - 1 ? ' (Fluxo só tem ' + Math.floor(cob) + ' de ' + dias + ' dias)' : '';
         // desce de TF só se nenhuma zona do micro cair numa zona favorável do macro (piso: 1h)
         const bMi = scDefTf(_scCfg.micro).blocoMs, pisoMs = bMi >= 3600000 ? 3600000 : 0;   // desce do micro até 1h (micro de 1h ou mais) ou até o menor TF (micro de minutos)
@@ -16947,7 +16971,7 @@ async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fecha
             const L = [
                 (lado === 'short' ? 'SHORT' : 'LONG') + ' · ' + dias + ' dias · ' + dMa.rot + ' × ' + dMi.rot + ' · ' + conf.n + ' de ' + SC_CONF_TOTAL + ' confirmações',
                 'Entrada ' + f(entrada) + ' · Stop ' + f(stop) + ' (' + pc((stop - entrada) / entrada) + ') · Alvo ' + f(alvo) + ' (' + pc((alvo - entrada) / entrada) + ')',
-                'Stop: borda de trás do nó de entrada · ' + Math.round(risco / rm.tick) + (Math.round(risco / rm.tick) === 1 ? ' nível' : ' níveis') + ' de ' + f(rm.tick),
+                'Stop: borda de trás do nó de entrada + folga de ' + f(rm.folga || 0) + ' (o maior entre 15% da zona e o pavio típico de 5 min) · risco ' + f(risco),
                 'Zona quente (sino do ' + esc.banda.fonte + '): ' + esc.banda.faixas.map(fx => f(fx.lo) + '–' + f(fx.hi) + (fx.poc ? ' (POC da VA)' : '')).join(' + '),
                 'Alvo: ' + (esc.alvoTipo === 'pico' ? 'pico do sino (' + f(alvo) + '), a volta ao valor' : am ? 'nó macro, ' + rng(am.nums) + ', borda ' + f(am.alvo) : 'sem nó macro nem pico útil, 2R')
             ];
@@ -16984,7 +17008,7 @@ async function scTfAcompanhar(h) {
     return melhor || (menor ? { rot: null, menor: menor.menor, med: menor.med, h } : null);
 }
 // ══ VERSÃO DO MOTOR + REGISTRO das caixas que ele cria (gravado junto com as caixas, nas preferências, ao tocar em Sair) ══
-const SC_MOTOR_VERSAO = 'M3';
+const SC_MOTOR_VERSAO = 'M5';
 function scRegLista() { if (!Array.isArray(window._scRegistro)) window._scRegistro = []; return window._scRegistro; }
 function scRegistrar(o) {
     const L = scRegLista();
@@ -17086,7 +17110,7 @@ function scSobreMostrar() {
     try { cvFecharMenuFpCfg(); } catch (e) {}
     scRelatorioMostrar({ lado: null, linhas: ['MOTOR ' + SC_MOTOR_VERSAO, 'Como ele decide, em resumo',
         'Onde procura: só na zona quente, o quarto mais negociado do perfil de volume, colado ao pico. Fonte: o VP ancorado; sem ele, a Value Area ancorada; sem âncora, a janela de dias. A POC da Value Area sempre conta.',
-        'Entrada e stop: num nível com volume dentro da zona quente; o stop fica logo atrás do nível, com uma folga pequena. Se nem um candle típico de 5 min cabe entre a entrada e o stop, recusa.',
+        'Entrada e stop: num nível com volume dentro da zona quente; o stop fica logo atrás do nível, com uma folga do tamanho do pavio típico de 5 min (ou 15% da zona, o que for maior). Se nem um candle típico de 5 min cabe entre a entrada e o stop, recusa.',
         'Alvo: o mais perto entre o pico do sino e o nó de volume do macro, com ganho pelo menos igual ao risco. Sem nenhum dos dois, 2 vezes o risco.',
         'Nota (0 a 7): Absorção, Ordem grande, Traders presos, Agressores e Virada de delta (só toques recentes, dentro de um candle do macro), RSI e Fibonacci.',
         'Descontos (−1 cada): suporte/resistência contra, o seu lado no prejuízo, faca caindo / foguete subindo.',
@@ -17195,6 +17219,7 @@ async function scRelatorioCaixa(pz) {
         if (pz.score) { base.push('Score na criação ' + pz.score.n + '/' + pz.score.total); pz.score.itens.forEach(it => base.push((it.ok ? '✓ ' : '✗ ') + it.nome + (it.det ? ': ' + it.det : '') + ' [' + it.pts + ']')); }
     }
     try { grAreaToast('Atualizando Score e Status…', '#8E8E93'); } catch (e) {}
+    try { await scRegAtualizar(); } catch (e) {}   // primeiro o desfecho (relê os candles), depois o Status — senão o Status ainda via a caixa como aberta
     let st = null; try { if (scStatusElegivel(pz)) { st = await scStatusCalcular(pz); pz._stat = st; } } catch (e) {}
     base.push('— AGORA (' + dh(Date.now()) + ') · preço ' + f(_precoAtual) + ' —');
     if (st) {
@@ -17202,7 +17227,6 @@ async function scRelatorioCaixa(pz) {
         else base.push('Status: ' + SC_STATUS_ROT[st.nivel] + (st.R != null ? ' · resultado ' + (st.R >= 0 ? '+' : '−') + Math.abs(st.R).toFixed(1).replace('.', ',') + 'R' : ''));
         st.itens.forEach(it => base.push('• ' + ['ok', 'atenção', 'perigo'][it.n] + ': ' + it.txt));
     }
-    try { await scRegAtualizar(); } catch (e) {}
     const reg = scRegLista().find(r => r.id === pz.id);
     if (reg) base.push('Histórico: ' + SC_REG_ROT[reg.st] + (reg.tFim ? ' ' + dh(reg.tFim) : reg.tEnt ? ' ' + dh(reg.tEnt) : ''));
     scRelatorioMostrar({ lado: pz.lado, linhas: base });
@@ -17277,8 +17301,8 @@ function scDefinirMicro(v) { if (v === '__pers') { scPersAbrir('micro'); return;
 function scValoresSino() {   // VP (maior nível) e POC da Value Area ancorados, como o painel do gráfico; '—' se não houver âncora
     const f = v => v ? Math.round(v).toLocaleString('pt-BR') : '—'; let vp = 0, poc = 0;
     try {
-        if (_grFootprintAtivo && _grVpAncoraTs != null && !_grVpOculta) { const d = grVpObterMapa(); if (d && d.mapa.size) { let mv = 0; d.mapa.forEach((v, pr) => { if (v.c + v.v > mv) { mv = v.c + v.v; vp = pr; } }); } }
-        if (_grFootprintAtivo && _grValueAreaAncoraTs != null && !_grVaOculta) { const va = grFootprintCalcularValueArea(); if (va && va.poc) poc = va.poc; }
+        if (_grFootprintAtivo && _grVpAncoraTs != null ) { const d = grVpObterMapa(); if (d && d.mapa.size) { let mv = 0; d.mapa.forEach((v, pr) => { if (v.c + v.v > mv) { mv = v.c + v.v; vp = pr; } }); } }
+        if (_grFootprintAtivo && _grValueAreaAncoraTs != null ) { const va = grFootprintCalcularValueArea(); if (va && va.poc) poc = va.poc; }
     } catch (e) {}
     return 'VP ' + f(vp) + ' · POC ' + f(poc);
 }
