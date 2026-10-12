@@ -3242,7 +3242,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v460';
+const APP_VERSAO = 'v461';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -16833,7 +16833,7 @@ function scAvaliarCore(lado, def, tk, cs, dias, dMa, rM, uMa, preco) {
     const u = scRegua(tk, dias, def.rot), r0 = scCalcular(lado, u, cs, preco);
     if (r0.erro) return { def, erro: r0.erro, esc: null, comparadas: 0 };
     const banda = scBandaQuente(r0, u.tick);   // o sino na grade do MICRO (a da entrada e do stop); o macro só cuida do alvo
-    if (!banda) return { def, esc: null, comparadas: 0 };
+    if (!banda) return { def, esc: null, comparadas: 0, erro: 'sem dados para montar o sino' };
     // M6 — VOLTA AO VALOR: com o preço DENTRO do sino, o preço tende a girar até o pico. Só vale o lado que vai na direção dele
     // (Long abaixo do pico, Short acima). Fora do sino, os dois lados valem como antes.
     {
@@ -16846,26 +16846,30 @@ function scAvaliarCore(lado, def, tk, cs, dias, dMa, rM, uMa, preco) {
     const dPico = n => Math.min.apply(null, banda.picos.map(pk => Math.abs(n.c - pk)));
     r0.niv.filter(n => n.rank > 0 && banda.faixas.some(fx => n.hi > fx.lo && n.lo < fx.hi)).sort((x, y) => dPico(x) - dPico(y)).forEach(n => { if (ks.length < 3 && ks.every(k2 => Math.abs(k2 - n.k) >= 3)) ks.push(n.k); });
     const cands = []; let comparadas = 0;
+    const mot = {}, nega = m => { mot[m] = (mot[m] || 0) + 1; };   // por que cada candidato foi recusado (vai pro relatório)
     ks.forEach((k, i) => {
         const r = k === r0.K.k ? r0 : scCalcular(lado, u, cs, preco, k);
-        if (r.erro) return;
+        if (r.erro) return nega('nível indisponível');
         comparadas++;
-        const risco = Math.abs(r.stop - r.entrada); if (!(risco > 0)) return;
-        if (window._scMedMin > 0 && risco < window._scMedMin) return;   // stop no ruído: nem um candle típico do menor TF (5 min) cabe na zona de captura
-        if (scZonaQueimada(lado, r.entrada, r.tick)) return;            // esta zona já deu stop há pouco (dentro de um candle do macro): não repete
+        const risco = Math.abs(r.stop - r.entrada); if (!(risco > 0)) return nega('sem risco');
+        if (window._scMedMin > 0 && risco < window._scMedMin) return nega('stop curto demais (zona menor que um candle típico de 5 min)');
+        if (scZonaQueimada(lado, r.entrada, r.tick)) return nega('zona que já deu stop há pouco');
         // ALVO: o mais perto entre o nó macro e o PICO do sino (volta ao valor), desde que dê R/R ≥ 1; sem nenhum dos dois, 2R
         const am = scAlvoMacro(rM, s, r.entrada, risco, uMa.atr);
         const pk = banda.picos.filter(pp => s * (r.entrada - pp) > 0 && Math.abs(r.entrada - pp) / risco >= 1).sort((x, y) => Math.abs(r.entrada - x) - Math.abs(r.entrada - y))[0];
         let alvo, alvoTipo;
         if (pk != null && (!am || Math.abs(r.entrada - pk) < Math.abs(r.entrada - am.alvo))) { alvo = pk; alvoTipo = 'pico'; }
         else if (am) { alvo = am.alvo; alvoTipo = 'macro'; } else { alvo = r.entrada - s * 2 * risco; alvoTipo = '2R'; }
-        if (!(s * (r.stop - r.entrada) > 0) || !(s * (r.entrada - alvo) > 0)) return;
+        if (!(s * (r.stop - r.entrada) > 0) || !(s * (r.entrada - alvo) > 0)) return nega('alvo do lado errado');
         // a ignição já passou? A partir do PREÇO DE AGORA, o que falta até o alvo tem de ser pelo menos o risco até o stop (mesma régua R/R ≥ 1 dos alvos)
         const falta = s * (preco - alvo), arrisca = s * (r.stop - preco);
-        if (!(falta > 0) || !(arrisca > 0) || falta / arrisca < 1) return;
+        if (!(falta > 0) || !(arrisca > 0) || falta / arrisca < 1) return nega('ignição já passou / pouco espaço até o alvo (falta ' + Math.round(Math.max(0, falta)) + ' de ganho contra ' + Math.round(Math.max(0, arrisca)) + ' de risco)');
         cands.push({ def, esc: { r, zonaMa: banda.niveis, banda, am: alvoTipo === 'macro' ? am : null, alvoTipo, alvo, risco, def, u, cs, uMa }, comparadas, ord: i });
     });
-    if (!cands.length) return { def, esc: null, comparadas };
+    if (!cands.length) {
+        const txt = !ks.length ? 'nenhum nível com volume ' + (s < 0 ? 'abaixo' : 'acima') + ' do preço dentro do sino' : Object.keys(mot).map(m => m + (mot[m] > 1 ? ' (' + mot[m] + 'x)' : '')).join(' · ');
+        return { def, esc: null, comparadas, erro: txt };
+    }
     if (cands.length > 1) {   // maior nota (confirmações menos descontos); empate: o mais perto do pico
         cands.forEach(c => { try { c.nota = scScoreDe(scConfirmacoes(lado, c.esc.r, u, cs, def)).n; } catch (e) { c.nota = -1; } });
         let m = cands[0]; cands.forEach(c => { if (c.nota > m.nota) m = c; }); return m;
