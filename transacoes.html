@@ -2400,6 +2400,36 @@ window.addEventListener('online', grAoVoltarDoSegundoPlano);
 // ── Histórico sob demanda: ao rolar pra esquerda perto do começo, busca a página anterior (1.000 candles-base) e re-agrupa.
 // Antes eram só 2 páginas (2.000 candles) e o histórico simplesmente parava. Teto de GR_HIST_MAX_CANDLES pra não pesar.
 const GR_HIST_MAX_CANDLES = 20000;
+// ── PULO RÁPIDO na rolagem: 3 arrastos fortes seguidos na mesma direção (em 4 s) mostram um botão no canto de baixo daquele lado
+// (« ou ») que pula 2 telas por toque; indo para o passado, aparece também o "⇥" no canto direito, que volta direto para o candle atual.
+// Somem sozinhos depois de 4 s sem uso.
+document.addEventListener('touchend', () => {
+    const g = window._grPanGesto || 0; window._grPanGesto = 0;
+    if (!(Math.abs(g) >= Math.max(3, (_grZoom || 15) * 0.4))) return;   // arrasto fraco não conta
+    const agora = Date.now(), H = window._grPanHist = (window._grPanHist || []).filter(x => agora - x.t < 4000);
+    H.push({ t: agora, d: g < 0 ? -1 : 1 });
+    const mesmos = H.filter(x => x.d === H[H.length - 1].d);
+    if (mesmos.length >= 3) grPuloMostrar(H[H.length - 1].d);
+}, { passive: true });
+function grPuloEsconder() { ['gr-pulo-a', 'gr-pulo-b'].forEach(id => { const e = document.getElementById(id); if (e) e.remove(); }); }
+function grPuloMostrar(dir) {
+    const cv = document.getElementById('gr-chart-canvas'); if (!cv) return;
+    const rc = cv.getBoundingClientRect(), base = 'position:fixed;z-index:9600;width:40px;height:40px;border-radius:20px;border:none;background:rgba(28,28,30,0.82);color:#FFFFFF;font-size:18px;font-weight:800;font-family:-apple-system,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
+    const fundo = Math.min(window.innerHeight - 56, rc.bottom - 56);
+    const mk = (id, txt, ladoEsq, acao) => {
+        let b = document.getElementById(id);
+        if (!b) { b = document.createElement('button'); b.id = id; b.type = 'button'; document.body.appendChild(b); }
+        b.textContent = txt; b.style.cssText = base + 'top:' + fundo + 'px;' + (ladoEsq ? 'left:' + (rc.left + 10) + 'px;' : 'left:' + (rc.right - 50) + 'px;');
+        b.onclick = ev => { ev.stopPropagation(); acao(); grPuloTimer(); };
+        b.ontouchstart = ev => ev.stopPropagation();
+    };
+    const pula = d => { const z = _grZoom || 15, maxOff = _grAllCandles.length + Math.floor(z * 0.5); if (_grOffset === 999999) _grOffset = maxOff; _grOffset = Math.max(0, Math.min(maxOff, Math.round(_grOffset + d * 2 * z))); window._grStartIdx = _grOffset; grDrawChart(); };
+    grPuloEsconder();
+    if (dir < 0) { mk('gr-pulo-a', '«', true, () => pula(-1)); mk('gr-pulo-b', '⇥', false, () => { _grOffset = 999999; grDrawChart(); grPuloEsconder(); }); }
+    else mk('gr-pulo-a', '»', false, () => pula(1));
+    grPuloTimer();
+}
+function grPuloTimer() { clearTimeout(window._grPuloTm); window._grPuloTm = setTimeout(grPuloEsconder, 4000); }
 async function grCarregarHistoricoAnterior() {
     if (window._grHistFim || !_grAllCandles.length) return;
     if (window._grHistCarregando && Date.now() - (window._grHistCarregandoTs || 0) < 60000) return; // trava expira em 60 s
@@ -3267,7 +3297,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v502';
+const APP_VERSAO = 'v505';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -7699,7 +7729,7 @@ function grEdToqueInicio(x, y) {   // x,y em coordenadas do canvas; devolve true
 function grMagnetRegua(yCanvas, preco) {
     try {
         const u = window._grDaUltima;
-        if (window._grImaOff || !_indState.deltaAtr || !u || !(u.tick > 0) || !(preco > 0)) return preco;   // _grImaOff: ímã desligado no menu Design
+        if (true || window._grImaOff || !_indState.deltaAtr || !u || !(u.tick > 0) || !(preco > 0)) return preco;   // _grImaOff: ímã desligado no menu Design
         const tick = u.tick, j0 = Math.round(preco / tick - 0.5);
         let best = preco, bd = 12;
         for (let j = j0 - 1; j <= j0 + 1; j++) { const e = (j + 0.5) * tick, d = Math.abs(grLineY(e) - yCanvas); if (d < bd) { bd = d; best = e; } }
@@ -8086,7 +8116,7 @@ function cvAbrirMenuDesenhos(clientX, clientY) {
     imaRow.style.cssText = 'border-top:1px solid #F2F2F7;padding:3px 10px;zoom:.8;';
     imaRow.innerHTML = grConfigComboCab(null, 'Ímã nas alças da caixa', null, 'cv-cfg-ima', [['1', 'Ligado'], ['0', 'Desligado']], window._grImaOff ? '0' : '1', 'grDesignDefinirIma');
     imaRow.onclick = ev => ev.stopPropagation();
-    menu.appendChild(imaRow);
+    // (opção do ímã removida: ímã desligado de vez)
     linhas.forEach(l => {
         const row = document.createElement('div');
         row.style.cssText = 'display:flex;align-items:center;gap:4px;padding:0 2px 0 10px;border-top:1px solid #F2F2F7;';
@@ -8785,6 +8815,7 @@ function grInitTouch() {
                     // Limite normal + 30% de espaço vazio à direita
                     const _maxOff = _grAllCandles.length + Math.floor(_grZoom * 0.5);
                     _grOffset = Math.max(0, Math.min(_maxOff, _grOffset - delta));
+                    window._grPanGesto = (window._grPanGesto || 0) - delta;   // rolagem deste arrasto (negativo = para o passado): usada pelo "pulo rápido"
                     touchStartX += delta / candlesPerPx; // consome só o que virou candle; o resto continua acumulando (antes se perdia)
                     window._grManualPanTs = Date.now(); // marca que o usuário arrastou o gráfico principal de verdade
                     grAgendarDesenho();
@@ -11100,7 +11131,7 @@ function grNfSnap(x, y) {   // ímã estilo TradingView: candle na coluna do pon
     const arr = _grAllCandles || [], pLivre = grToPrice(y);
     const i0 = Math.round(grXToIndex(x) - 0.5);
     window._nfSnapPt = null;
-    if (window._grImaOff) return { t: grIndexToTime(i0), p: pLivre };
+    return { t: grIndexToTime(i0), p: pLivre };   // ímã DESLIGADO de vez (atrapalhava marcar zonas e fibos): o ponto fica onde o dedo está
     const c = (i0 >= 0 && i0 < arr.length) ? arr[i0] : null;
     if (!c) return { t: grIndexToTime(i0), p: pLivre };
     let melhor = null;
@@ -17269,7 +17300,7 @@ function scRegRevisar() { if (_scRevisando && window._scRevProm) return window._
 async function scRegRevisar0() {
     if (_scRevisando || _scMotorOn || _scCalculando || !_grFootprintAtivo || !_grFootprintCandlesRaw) return;
     if (scEmTrade()) return;   // com caixa em trade, o automático pausa tudo (nem revisa as armadas)
-    const sym = grBinSymbolAtual(), arm = scRegLista().filter(r => r.gat && r.zero && r.modo !== 'fora' && r.st === 'aguardando' && (!r.sym || r.sym === sym) && grPosicoes().some(z => z.id === r.id));
+    const sym = grBinSymbolAtual(), arm = scRegLista().filter(r => r.gat && r.zero && r.modo !== 'fora' && !r.ref && r.st === 'aguardando' && (!r.sym || r.sym === sym) && grPosicoes().some(z => z.id === r.id));
     if (!arm.length) return;
     _scRevisando = true; let mudou = false; const ult0 = _scUltimo;
     window._scRevOlho = Date.now(); try { grDrawChart(); } catch (e) {}   // olho no lugar da bolinha enquanto revisa
@@ -17295,12 +17326,33 @@ async function scRegRevisar0() {
     const resto = Math.max(0, 4000 - (Date.now() - (window._scRevOlho || 0)));   // o olho fica pelo menos 4 s na tela
     setTimeout(() => { window._scRevOlho = 0; try { grDrawChart(); } catch (e) {} }, resto);
 }
+// CAIXA REFINADA: se você mexe na entrada/stop/alvo de uma caixa do motor, o histórico passa a seguir OS SEUS números (gatilho, stop,
+// alvo e placar), guarda os do motor (entOrig/stpOrig/alvoOrig) e marca 'ref' (motor + Huber). Entrada só muda antes de entrar.
+// A revisão automática da tese NÃO mexe em caixa refinada: quem decide é você.
+function scRegSincCaixas() {
+    const L = window._scRegistro; if (!Array.isArray(L) || !L.length) return false;
+    try { const dd = document.getElementById('cv-pos-dados'); if ((dd && dd.contains(document.activeElement)) || (typeof _edDrag !== 'undefined' && _edDrag)) return false; } catch (e) {}   // ainda digitando/arrastando: espera terminar
+    const mapa = new Map(grPosicoes().map(z => [z.id, z])); let mudou = false;
+    const dif = (a, b) => a > 0 && b > 0 && Math.abs(a - b) > 1e-6;
+    L.forEach(r => {
+        if (r.st !== 'aguardando' && r.st !== 'entrou') return;
+        const z = mapa.get(r.id); if (!z || z.origem !== 'setup') return;
+        const dE = r.st === 'aguardando' && dif(z.entrada, r.ent), dS = dif(z.stop, r.stp), dA = dif(z.alvo, r.alvo);
+        if (!dE && !dS && !dA) return;
+        if (!r.ref) { r.ref = true; r.entOrig = r.ent; r.stpOrig = r.stp; r.alvoOrig = r.alvo; r.tRef = Date.now(); }
+        if (dE) r.ent = z.entrada; if (dS) r.stp = z.stop; if (dA) r.alvo = z.alvo;
+        mudou = true;
+    });
+    if (mudou) scRegGravarServidor();
+    return mudou;
+}
 // A cada cotação (no máx. 1 vez por segundo): marca entrou / alvo / stop / entrada perdida / expirou das caixas abertas deste ativo e grava na hora.
 let _scRegChecTs = 0;
 function scRegChecarPreco(px) {
     if (!(px > 0) || Date.now() - _scRegChecTs < 1000) return;
     _scRegChecTs = Date.now();
     const L = window._scRegistro; if (!Array.isArray(L) || !L.length) return;
+    try { scRegSincCaixas(); } catch (e) {}
     const sym = grBinSymbolAtual(), agora = Date.now(); let mudou = false;
     L.forEach(r => {
         if ((r.st !== 'aguardando' && r.st !== 'entrou') || (r.sym && r.sym !== sym)) return;
@@ -17378,6 +17430,7 @@ function scRegAvaliarGatilho(r, cs, D, bloco) {
     }
 }
 async function scRegAtualizar() {
+    try { scRegSincCaixas(); } catch (e) {}
     const fant = r => r.st === 'desfeita' && r.fant && (r.fant.st === 'aguardando' || r.fant.st === 'entrou');
     const abertos = scRegLista().filter(r => r.st === 'aguardando' || r.st === 'entrou' || fant(r)); if (!abertos.length) return false;
     let mudou = false;
@@ -17427,7 +17480,10 @@ async function scHistoricoMostrar() {
     const cont = {}; L.forEach(r => { cont[r.st] = (cont[r.st] || 0) + 1; });
     const linhas = ['HISTÓRICO DO MOTOR · ' + L.length + ' caixa' + (L.length === 1 ? '' : 's'),
         L.length ? 'IGNIÇÃO ' + L.filter(r => r.ign).length + ' de ' + L.filter(r => r.tEnt).length + ' entradas · ' + ['alvo', 'zero', 'stop', 'desfeita', 'semGatilho', 'perdida', 'expirou', 'entrou', 'aguardando'].filter(k => cont[k]).map(k => SC_REG_ROT[k] + ' ' + cont[k]).join(' · ') : 'Nenhuma caixa do motor registrada ainda.'];
-    L.slice().reverse().forEach(r => linhas.push(r.mv + ' · ' + dh(r.t0) + ' · ' + (r.modo === 'fora' ? 'FORA DO SINO' : r.modo) + ' · ' + (r.lado === 'long' ? 'Long' : 'Short') + ' · nota ' + (r.nota == null ? '?' : r.nota)
+    { const pl = arr => { const c = {}; arr.forEach(r => { c[r.st] = (c[r.st] || 0) + 1; }); return arr.length + ' caixas · ' + ['alvo', 'zero', 'stop', 'desfeita'].filter(k => c[k]).map(k => SC_REG_ROT[k] + ' ' + c[k]).join(' · ') + ' · ignição ' + arr.filter(r => r.ign).length + ' de ' + arr.filter(r => r.tEnt).length; };
+      const ref = L.filter(r => r.ref), pur = L.filter(r => !r.ref);
+      if (ref.length) linhas.splice(2, 0, 'DIREÇÃO AUTOMÁTICA: ' + pl(pur), 'DIREÇÃO ASSISTIDA (refinadas por você): ' + pl(ref)); }
+    L.slice().reverse().forEach(r => linhas.push(r.mv + ' · ' + dh(r.t0) + ' · ' + (r.modo === 'fora' ? 'FORA DO SINO' : r.modo) + (r.ref ? ' · ASSISTIDA (motor: E ' + f(r.entOrig) + ' S ' + f(r.stpOrig) + ')' : '') + ' · ' + (r.lado === 'long' ? 'Long' : 'Short') + ' · nota ' + (r.nota == null ? '?' : r.nota)
         + ' · E ' + f(r.ent) + (r.entReal ? ' (real ' + f(r.entReal) + ')' : '') + ' S ' + f(r.stp) + ' A ' + f(r.alvo) + (r.gat ? ' · gatilho' : '') + ' (' + (r.alvoTipo === 'pico' ? 'pico' : r.alvoTipo) + ') · ' + r.ma + '×' + r.mi
         + ' · ' + SC_REG_ROT[r.st] + (r.tFim ? ' ' + dh(r.tFim) : (r.tEnt ? ' ' + dh(r.tEnt) : '')) + (r.ign ? ' · ignição ✓' : r.tEnt ? ' · sem ignição' : '')
         + (r.st === 'desfeita' && r.fant ? ' · sem cancelar: ' + SC_REG_ROT[r.fant.st] + (r.fant.ign ? ' (ignição ✓)' : '') : '')
@@ -17713,6 +17769,7 @@ async function scRelatorioCaixa(pz) {
         st.itens.forEach(it => base.push('• ' + ['ok', 'atenção', 'perigo'][it.n] + ': ' + it.txt));
     }
     const reg = scRegLista().find(r => r.id === pz.id);
+    if (reg && reg.ref) base.push('DIREÇÃO ASSISTIDA (refinada por você): o histórico segue E ' + f(reg.ent) + ' S ' + f(reg.stp) + ' A ' + f(reg.alvo) + ' (o motor tinha posto E ' + f(reg.entOrig) + ' S ' + f(reg.stpOrig) + ' A ' + f(reg.alvoOrig) + ') · a revisão automática não mexe nela');
     if (reg) base.push('Histórico: ' + SC_REG_ROT[reg.st] + (reg.ign ? ' · IGNIÇÃO ✓ (+1R)' : '') + (reg.tFim ? ' ' + dh(reg.tFim) : reg.tEnt ? ' ' + dh(reg.tEnt) : '') + (reg.entReal ? ' · gatilho em ' + f(reg.entReal) : ''));
     if (reg) { try { (await scRegRaioX(reg)).forEach(l => base.push(l)); } catch (e) {} }
     scRelatorioMostrar({ lado: pz.lado, linhas: base });
