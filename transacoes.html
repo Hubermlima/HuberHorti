@@ -10,6 +10,22 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="supabase.js"></script>
 <script>
+// ── ENTRADA DO MOTOR (SCX): tudo o que o núcleo do motor lê de fora passa por aqui. No app, cada item lê o estado da tela; fora do app
+// (Mac sem tela, Worker), basta trocar por um objeto com os mesmos campos (scUsarEntrada) — o núcleo não toca em mais nada do gráfico.
+const SCX_APP = {
+    get fpRaw() { return _grFootprintCandlesRaw; },          // footprint (minutos com níveis compra/venda)
+    get fpAtivo() { return _grFootprintAtivo; },             // Fluxo ligado?
+    get fpDiasAvulsos() { return _grFootprintDiasAvulsos; }, // dias extras do footprint (âncora do VP antiga)
+    get vaAncoraTs() { return _grValueAreaAncoraTs; },      // âncora da Value Area
+    get vpAncoraTs() { return _grVpAncoraTs; },             // âncora do Volume Profile
+    get vwapAncoras() { return _grVwapAncoras; },           // âncoras de VWAP
+    get emas() { return _grEmaCustom; },                    // EMAs do gráfico (a 1ª define o período da tendência)
+    get candlesTela() { return _grAllCandles; },            // candles do TF da tela (alguns critérios ainda usam)
+    get preco() { return _precoAtual; },                    // cotação atual
+    get cfg() { return _scCfg; }                            // configuração do motor (dias, macro, micro…)
+};
+let SCX = SCX_APP;
+function scUsarEntrada(e) { SCX = e || SCX_APP; }
 /* v92: o servidor (tabela preferencias, id=1) é a ÚNICA fonte. Antes de qualquer código do app rodar, lê o JSON de lá
    e passa a servir localStorage.getItem/setItem das chaves que começam com gr ou cv a partir da memória -- nada fica gravado no aparelho. */
 window._grMem = {}; window._grBootStatus = 'não lido'; window._grServidorFalhou = false;
@@ -2797,7 +2813,7 @@ function grVwapCarregarAncoras() {
 // disso porque a lista de candles pode recarregar (troca de timeframe,
 // scroll de histórico, refresh) e os índices deixam de bater.
 function grVwapIdxPorTs(ts) {
-    const a = _grAllCandles; if (!a || !a.length) return -1;
+    const a = SCX.candlesTela; if (!a || !a.length) return -1;
     const ex = a.findIndex(c => c.t === ts); if (ex >= 0) return ex;
     // Sem candle com esse horário exato (ex.: âncora num candle de 4h às 08:00 e o gráfico agora em 1D/3D): usa o candle que CONTÉM o horário,
     // pra âncora não sumir ao subir de timeframe.
@@ -3251,7 +3267,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v492';
+const APP_VERSAO = 'v494';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4851,7 +4867,7 @@ function grPadraoSimGravar(chave, v) {
 const _grTeseCache = new Map();
 function grTeseInvalida(pz, soPreco) {
     if (!soPreco && pz && (window._scRegistro || []).some(r => r.id === pz.id && r.st === 'desfeita')) return true;   // M14: o motor revisou e a tese da caixa armada se desfez
-    const arr = _grAllCandles;
+    const arr = SCX.candlesTela;
     if (!arr || !arr.length || pz.tradeId || pz.previa || !(pz.entrada > 0) || !(pz.stop > 0) || pz.stop === pz.entrada) return false;
     const t0 = Math.min(pz.t1, pz.t2), u = arr[arr.length - 1];
     const k = [pz.id, t0, pz.entrada, pz.stop, arr.length, u.h, u.l, _grTf].join('|');
@@ -13071,9 +13087,9 @@ function grFootprintIdxMinuto(arr, alvo) {
 // Chama fn(minuto) para cada minuto do Fluxo com ts em [de, ate): o bruto (busca binária) + os dias avulsos (poucos e
 // pequenos). Mesma ordem de antes (bruto, depois avulsos) e sem copiar o array inteiro a cada chamada.
 function grFootprintParaCadaMinuto(de, ate, fn) {
-    const raw = _grFootprintCandlesRaw;
+    const raw = SCX.fpRaw;
     if (raw) for (let i = grFootprintIdxMinuto(raw, de); i < raw.length && raw[i].ts < ate; i++) fn(raw[i]);
-    _grFootprintDiasAvulsos.forEach(dia => { for (let k = 0; k < dia.length; k++) { const m = dia[k]; if (m.ts >= de && m.ts < ate) fn(m); } });
+    SCX.fpDiasAvulsos.forEach(dia => { for (let k = 0; k < dia.length; k++) { const m = dia[k]; if (m.ts >= de && m.ts < ate) fn(m); } });
 }
 // Invalida o que foi derivado dos minutos em [minTs, maxTs] (sem argumentos: tudo). As chaves das listas de candles não
 // enxergam mudança de conteúdo com o mesmo tamanho, por isso as listas são sempre zeradas; os resultados por candle só saem
@@ -13673,19 +13689,19 @@ const GR_VALUE_AREA_PCT = 0.70;
 // quando a âncora é antiga.
 let _grValueAreaAncoradaBins = null; // { mapaBase, anchorTs, minutoCalc }
 function grFootprintObterMapaBaseValueArea() {
-    if (_grValueAreaAncoraTs == null) {
+    if (SCX.vaAncoraTs == null) {
         return _grFootprintBins ? _grFootprintBins.mapaBase : null;
     }
-    if (!_grFootprintCandlesRaw) return null;
+    if (!SCX.fpRaw) return null;
     const minutoAtual = Math.floor(Date.now() / 60000);
     if (_grValueAreaAncoradaBins &&
-        _grValueAreaAncoradaBins.anchorTs === _grValueAreaAncoraTs &&
+        _grValueAreaAncoradaBins.anchorTs === SCX.vaAncoraTs &&
         _grValueAreaAncoradaBins.minutoCalc === minutoAtual) {
         return _grValueAreaAncoradaBins.mapaBase;
     }
     const mapaBase = new Map();
-    const brutosVA = _grFootprintCandlesRaw;
-    for (let iVA = grFootprintIdxMinuto(brutosVA, _grValueAreaAncoraTs); iVA < brutosVA.length; iVA++) {
+    const brutosVA = SCX.fpRaw;
+    for (let iVA = grFootprintIdxMinuto(brutosVA, SCX.vaAncoraTs); iVA < brutosVA.length; iVA++) {
         const c = brutosVA[iVA];
         (c.niveis || []).forEach(n => {
             if (!mapaBase.has(n.p)) mapaBase.set(n.p, { c: 0, v: 0 });
@@ -13693,7 +13709,7 @@ function grFootprintObterMapaBaseValueArea() {
             acc.c += n.c; acc.v += n.v;
         });
     }
-    _grValueAreaAncoradaBins = { mapaBase, anchorTs: _grValueAreaAncoraTs, minutoCalc: minutoAtual };
+    _grValueAreaAncoradaBins = { mapaBase, anchorTs: SCX.vaAncoraTs, minutoCalc: minutoAtual };
     return mapaBase;
 }
 function grFootprintCalcularValueArea() {
@@ -13703,7 +13719,7 @@ function grFootprintCalcularValueArea() {
     // a cada minuto/âncora nova); senão o _grFootprintBins normal (já troca
     // a cada minuto sozinho). Os dois casos nunca se confundem porque são
     // objetos diferentes.
-    const cacheKey = _grValueAreaAncoraTs != null ? _grValueAreaAncoradaBins : _grFootprintBins;
+    const cacheKey = SCX.vaAncoraTs != null ? _grValueAreaAncoradaBins : _grFootprintBins;
     if (_grValueAreaCache.binsRef === cacheKey) return _grValueAreaCache;
     const niveis = Array.from(mapaBase.entries())
         .map(([p, v]) => ({ p, total: v.c + v.v }))
@@ -13729,7 +13745,7 @@ function grFootprintCalcularValueArea() {
         poc: niveis[idxPoc].p,
         vah: niveis[iHi].p,
         val: niveis[iLo].p,
-        ancorado: _grValueAreaAncoraTs != null,
+        ancorado: SCX.vaAncoraTs != null,
     };
     return _grValueAreaCache;
 }
@@ -13883,8 +13899,8 @@ function grVpRotuloData(ts) {
 }
 // Soma por preço ($10) de todos os minutos do Fluxo desde a âncora até agora (inclui dias baixados sob demanda).
 function grVpObterMapa() {
-    if (_grVpAncoraTs == null || !_grFootprintCandlesRaw) return null;
-    const chave = _grVpAncoraTs + '_' + Math.floor(Date.now() / 60000) + '_' + _grFootprintCandlesRaw.length + '_' + _grFootprintDiasAvulsos.size;
+    if (SCX.vpAncoraTs == null || !SCX.fpRaw) return null;
+    const chave = SCX.vpAncoraTs + '_' + Math.floor(Date.now() / 60000) + '_' + SCX.fpRaw.length + '_' + SCX.fpDiasAvulsos.size;
     if (_grVpMapaCache && _grVpMapaCache.chave === chave) return _grVpMapaCache;
     const soma = (mapa, c) => {
         (c.niveis || []).forEach(n => {
@@ -13898,15 +13914,15 @@ function grVpObterMapa() {
     // (Antes o perfil inteiro, desde a âncora, era somado de novo a cada segundo — com âncora antiga e muitos dias, travava.)
     const corte = Math.floor((Date.now() - 3 * 3600000) / 3600000) * 3600000;
     let fixo = _grVpFixo;
-    if (!fixo || fixo.anchor !== _grVpAncoraTs || fixo.corte !== corte || fixo.versao !== _grFpVersaoAntiga) {
+    if (!fixo || fixo.anchor !== SCX.vpAncoraTs || fixo.corte !== corte || fixo.versao !== _grFpVersaoAntiga) {
         const m = new Map(); let mins = 0;
-        if (corte > _grVpAncoraTs) grFootprintParaCadaMinuto(_grVpAncoraTs, corte, c => { mins++; soma(m, c); });
-        fixo = _grVpFixo = { anchor: _grVpAncoraTs, corte, versao: _grFpVersaoAntiga, mapa: m, minutos: mins };
+        if (corte > SCX.vpAncoraTs) grFootprintParaCadaMinuto(SCX.vpAncoraTs, corte, c => { mins++; soma(m, c); });
+        fixo = _grVpFixo = { anchor: SCX.vpAncoraTs, corte, versao: _grFpVersaoAntiga, mapa: m, minutos: mins };
     }
     const mapa = new Map();
     fixo.mapa.forEach((v, p) => mapa.set(p, { c: v.c, v: v.v }));
     let minutos = fixo.minutos;
-    grFootprintParaCadaMinuto(Math.max(_grVpAncoraTs, corte), Infinity, c => { minutos++; soma(mapa, c); });
+    grFootprintParaCadaMinuto(Math.max(SCX.vpAncoraTs, corte), Infinity, c => { minutos++; soma(mapa, c); });
     _grVpMapaCache = { chave, mapa, minutos, agrup: null };
     return _grVpMapaCache;
 }
@@ -16569,7 +16585,7 @@ function scRegua(tick, dias, rot) {
     return reg;
 }
 function scCobertura(dias) {   // quantos dias de Fluxo existem de fato na janela
-    const raw = _grFootprintCandlesRaw; if (!raw || !raw.length) return 0;
+    const raw = SCX.fpRaw; if (!raw || !raw.length) return 0;
     return Math.min(dias, (Date.now() - raw[0].ts) / 86400000);
 }
 function scCalcular(lado, u, cs, preco, ibK) {
@@ -16672,7 +16688,7 @@ function scCalcular(lado, u, cs, preco, ibK) {
 function scMediana(a) { if (!a.length) return 0; const t = a.slice().sort((x, y) => x - y); return t[Math.floor(t.length / 2)]; }
 // M12 — TENDÊNCIA CONTRA: EMA (a mesma do gráfico; sem ela, 200) nos candles de 5 min. 'Caindo' = a EMA de agora abaixo da de 12 candles (1 h) atrás.
 async function scEmaInfo() {
-    const per = (_grEmaCustom && _grEmaCustom[0] && _grEmaCustom[0].periodo > 1) ? _grEmaCustom[0].periodo : 200;
+    const per = (SCX.emas && SCX.emas[0] && SCX.emas[0].periodo > 1) ? SCX.emas[0].periodo : 200;
     const cs = (await grBuscarKlines(grBinSymbolAtual(), '5m', 1000, null)).map(grMapearKline);
     if (cs.length < per + 13) return null;
     const k = 2 / (per + 1); let e = cs.slice(0, per).reduce((a, c) => a + c.c, 0) / per; const ser = [];
@@ -16693,7 +16709,7 @@ function scConfirmacoes(lado, r, u, cs, def) {
     });
     const emJanela = x => x.c.t + def.blocoMs > ini && x.rows.size > 0;
     // evidência RECENTE: só vale toque de candle dentro do último candle do MACRO (3 dias, 1 dia... o que o usuário escolheu); toque mais velho não soma ponto
-    const tRec = fim - scDefTf(_scCfg.macro).blocoMs;
+    const tRec = fim - scDefTf(SCX.cfg.macro).blocoMs;
     const tocou = x => emJanela(x) && x.c.t + def.blocoMs > tRec && Number(x.c.h) >= lo && Number(x.c.l) <= hi;
     const medD = scMediana(cand.filter(emJanela).map(x => Math.abs(x.D)));
     // média, nos candles da janela, da fatia de volume do lado da operação (short: bid; long: ask) no candle inteiro — a régua de comparação da intensidade
@@ -16772,17 +16788,17 @@ function scConfirmacoes(lado, r, u, cs, def) {
     // Desconto automático 3: faca caindo (long) / foguete subindo (short) — o preço chegou na zona acelerando contra a operação (aproximação dos últimos 3 candles no 3º quartil da janela)
     res.faca = { pen: 0 };
     res.tend = { pen: 0 };
-    try { const em = window._scEma, px = r.preco > 0 ? r.preco : _precoAtual; if (em && px > 0 && (lado === 'long' ? (px < em.ema && em.incl < 0) : (px > em.ema && em.incl > 0))) res.tend = { pen: 1, per: em.per, ema: em.ema }; } catch (e) {}
+    try { const em = window._scEma, px = r.preco > 0 ? r.preco : SCX.preco; if (em && px > 0 && (lado === 'long' ? (px < em.ema && em.incl < 0) : (px > em.ema && em.incl > 0))) res.tend = { pen: 1, per: em.per, ema: em.ema }; } catch (e) {}
     try { const am0 = scAmbiente(lado, { r, cs }); if (am0.faca) res.faca = { pen: 1 }; } catch (e) {}
     // Desconto automático (não é um critério a mais): "nunca vender em suporte / comprar em resistência". Cada referência ANCORADA e visível (VWAP, POC da
     // Value Area, maior nível do VP) que cai na zona (±1 nível da grade) e está do lado de baixo do preço (short) / de cima (long) tira 1 ponto. Sem âncora: sem desconto.
     res.sup = { pen: 0, refs: [] };
     try {
-        const refs = [], px = (typeof _precoAtual === 'number' && _precoAtual > 0) ? _precoAtual : null;
-        if (px != null && _grFootprintAtivo) {
-            _grVwapAncoras.forEach(a => { const i = grVwapIdxPorTs(a.ts); if (i < 0) return; const v = grVWAPAncorado(_grAllCandles, i).filter(x => x != null).pop(); if (v) refs.push(['VWAP', v]); });
-            if (_grValueAreaAncoraTs != null ) { const va = grFootprintCalcularValueArea(); if (va && va.poc) refs.push(['POC', va.poc]); }
-            if (_grVpAncoraTs != null ) {
+        const refs = [], px = (typeof SCX.preco === 'number' && SCX.preco > 0) ? SCX.preco : null;
+        if (px != null && SCX.fpAtivo) {
+            SCX.vwapAncoras.forEach(a => { const i = grVwapIdxPorTs(a.ts); if (i < 0) return; const v = grVWAPAncorado(SCX.candlesTela, i).filter(x => x != null).pop(); if (v) refs.push(['VWAP', v]); });
+            if (SCX.vaAncoraTs != null ) { const va = grFootprintCalcularValueArea(); if (va && va.poc) refs.push(['POC', va.poc]); }
+            if (SCX.vpAncoraTs != null ) {
                 const d = grVpObterMapa();
                 if (d && d.mapa.size) { const g = new Map(); d.mapa.forEach((v, pr) => { const k = Math.round(pr / tick); g.set(k, (g.get(k) || 0) + v.c + v.v); }); let mk = null, mv = 0; g.forEach((v, k) => { if (v > mv) { mv = v; mk = k; } }); if (mk != null) refs.push(['VP', mk * tick]); }
             }
@@ -16797,7 +16813,7 @@ function scConfirmacoes(lado, r, u, cs, def) {
     res.ultFech = cs.length ? Number(cs[cs.length - 1].c) : null;
     res.enc = { pen: 0 };
     try {
-        const NJ = 6, px = (typeof _precoAtual === 'number' && _precoAtual > 0) ? _precoAtual : null;
+        const NJ = 6, px = (typeof SCX.preco === 'number' && SCX.preco > 0) ? SCX.preco : null;
         const fatia = (ini, fimIx, ref) => { let tot = 0, pre = 0; for (let i = ini; i <= fimIx; i++) cand[i].rows.forEach((w, k) => { const v = s > 0 ? w.bid : w.ask, pr = k * tick; tot += v; if (s > 0 ? pr < ref : pr > ref) pre += v; }); return tot > 0 ? pre / tot : null; };
         const n = cand.length;
         if (px != null && n >= NJ + 10) {
@@ -16825,7 +16841,7 @@ function scDesfechoCaixa(pz) {
     if (reg && ['alvo', 'stop', 'perdida', 'expirou', 'semGatilho', 'zero', 'desfeita'].indexOf(reg.st) >= 0) return { st: reg.st, tFim: reg.tFim, R: reg.st === 'zero' ? 0 : R(reg.st) };
     if (pz.gat) return null;   // com gatilho, o desfecho vem só do registro (tocar a zona não é entrar)
     if (!(pz.alvo > 0) || !(pz.stop > 0) || !(ent > 0)) return null;
-    const arr = _grAllCandles || [], t0 = Math.min(pz.t1 || 0, pz.t2 || 0), lg = pz.lado === 'long'; let dentro = false;
+    const arr = SCX.candlesTela || [], t0 = Math.min(pz.t1 || 0, pz.t2 || 0), lg = pz.lado === 'long'; let dentro = false;
     for (const c of arr) {
         if (!(c.t >= t0)) continue;
         const toca = lg ? c.l <= ent : c.h >= ent, bStop = lg ? c.l <= pz.stop : c.h >= pz.stop, bAlvo = lg ? c.h >= pz.alvo : c.l <= pz.alvo;
@@ -16849,7 +16865,7 @@ async function scStatusCalcular(pz) {
     const s = pz.lado === 'short' ? 1 : -1, ent = pz.pm > 0 ? pz.pm : pz.entrada, stop = pz.stop > 0 ? pz.stop : null;
     const base = { lado: pz.lado, entrada: ent };
     const sc = await scScoreCaixa(base), conf = base._scConf;
-    const px = (typeof _precoAtual === 'number' && _precoAtual > 0) ? _precoAtual : conf.ultFech, itens = [], pn = x => Math.round(x * 100) + '%', vir = v => v.toFixed(1).replace('.', ',');
+    const px = (typeof SCX.preco === 'number' && SCX.preco > 0) ? SCX.preco : conf.ultFech, itens = [], pn = x => Math.round(x * 100) + '%', vir = v => v.toFixed(1).replace('.', ',');
     let ta = pz.tfAcomp || null;   // TF em que se acompanha a operação (o maior em que um candle típico cabe na zona de captura); sem ele, o micro
     try { if (!ta && stop != null) { const t0 = await scTfAcompanhar(Math.abs(stop - ent)); if (t0 && t0.rot) ta = { chave: t0.chave, rot: t0.rot }; } } catch (e) {}
     if (stop != null && px) {
@@ -16877,8 +16893,8 @@ async function scStatusCalcular(pz) {
 function scScoreElegivel(pz) { return !!pz && (!!pz.score || pz.origem === 'melhor' || pz.origem === 'setup' || !!pz.teste); }
 function scScoreChave(pz) { return [pz.lado, Math.round(pz.entrada), _scCfg.micro, _scCfg.dias].join('|'); }
 async function scScoreCaixa(pz) {
-    if (!_grFootprintAtivo || !_grFootprintCandlesRaw) throw new Error('Ligue o Fluxo (FX) e aguarde os dados carregarem.');
-    const dias = _scCfg.dias, def = scDefTf(_scCfg.micro);
+    if (!SCX.fpAtivo || !SCX.fpRaw) throw new Error('Ligue o Fluxo (FX) e aguarde os dados carregarem.');
+    const dias = SCX.cfg.dias, def = scDefTf(SCX.cfg.micro);
     const [tk, cs] = await Promise.all([scTick(def), scCandles(def, dias)]);
     if (!cs || !cs.length) throw new Error('Sem candles do micro ' + def.rot + '.');
     const u = scRegua(tk, dias, def.rot), tick = u.tick;
@@ -17026,7 +17042,7 @@ function scAvaliarCore(lado, def, tk, cs, dias, dMa, rM, uMa, preco) {
 // Nível de DEFESA no footprint (últimas 24 h, grade do micro) entre 'de' e 'ate': Long = onde a VENDA agressiva foi maior (e o preço segurou acima);
 // Short = onde a COMPRA agressiva foi maior (e o preço segurou abaixo). Sem Fluxo: null.
 function scDefesaNivel(lado, de, ate, tick) {
-    if (!_grFootprintAtivo || !_grFootprintCandlesRaw || !(tick > 0) || !(ate > de)) return null;
+    if (!SCX.fpAtivo || !SCX.fpRaw || !(tick > 0) || !(ate > de)) return null;
     const lg = lado === 'long', g = new Map(), fim = Date.now();
     grFootprintParaCadaMinuto(fim - 86400000, fim, m => (m.niveis || []).forEach(n => { if (n.p < de || n.p > ate) return; const k = Math.round(n.p / tick); g.set(k, (g.get(k) || 0) + (lg ? n.v : n.c)); }));
     let mk = null, mv = 0; g.forEach((v, k) => { if (v > mv) { mv = v; mk = k; } });
@@ -17034,14 +17050,14 @@ function scDefesaNivel(lado, de, ate, tick) {
 }
 function scZonaQueimada(lado, entrada, tick) {
     try {
-        const tLim = Date.now() - scDefTf(_scCfg.micro).blocoMs;   // M9: memória de 1 candle do micro (antes 1 do macro = 3 dias, longo demais pro 5 min)
+        const tLim = Date.now() - scDefTf(SCX.cfg.micro).blocoMs;   // M9: memória de 1 candle do micro (antes 1 do macro = 3 dias, longo demais pro 5 min)
         return grPosicoes().some(z => z.origem === 'setup' && !z.tradeId && !z.teste && z.lado === lado && Math.max(z.t1, z.t2) >= tLim && Math.abs(z.entrada - entrada) <= tick && grTeseInvalida(z, true));
     } catch (e) { return false; }
 }
 // Tamanho típico (mediana de máxima − mínima) dos candles de um TF nos últimos 7 dias
 // Fluxo (delta do footprint) nos candles de um TF: os 3 últimos (o em formação entra) e a mediana de |delta| do último dia
 function scFluxoTf(chave) {
-    if (!_grFootprintAtivo || !_grFootprintCandlesRaw) return null;
+    if (!SCX.fpAtivo || !SCX.fpRaw) return null;
     const bloco = scDefTf(chave).blocoMs, fim = Date.now(), D = new Map();
     grFootprintParaCadaMinuto(fim - 86400000, fim, m => { const b = Math.floor(m.ts / bloco) * bloco; let d = 0; (m.niveis || []).forEach(n => { d += n.c - n.v; }); D.set(b, (D.get(b) || 0) + d); });
     const ks = Array.from(D.keys()).sort((a, b) => a - b); if (ks.length < 20) return null;
@@ -17065,8 +17081,8 @@ function scBandaQuente(rM, tick) {
     let pts = null, fonte = '';
     try {
         const grade = mapa => { const g = new Map(); mapa.forEach((v, pr) => { const k = Math.round(pr / tick); g.set(k, (g.get(k) || 0) + v.c + v.v); }); return Array.from(g.entries()).map(([k, v]) => ({ k, v, lo: k * tick - tick / 2, hi: k * tick + tick / 2 })); };
-        if (_grFootprintAtivo && _grVpAncoraTs != null ) { const d = grVpObterMapa(); if (d && d.mapa.size) { pts = grade(d.mapa); fonte = 'VP ancorado'; } }
-        if (!pts && _grFootprintAtivo && _grValueAreaAncoraTs != null ) { const m = grFootprintObterMapaBaseValueArea(); if (m && m.size) { pts = grade(m); fonte = 'Value Area ancorada'; } }
+        if (SCX.fpAtivo && SCX.vpAncoraTs != null ) { const d = grVpObterMapa(); if (d && d.mapa.size) { pts = grade(d.mapa); fonte = 'VP ancorado'; } }
+        if (!pts && SCX.fpAtivo && SCX.vaAncoraTs != null ) { const m = grFootprintObterMapaBaseValueArea(); if (m && m.size) { pts = grade(m); fonte = 'Value Area ancorada'; } }
     } catch (e) { pts = null; }
     if (!pts) { pts = ((rM && rM.niv) || []).map(n => ({ k: n.k, v: n.v, lo: n.lo, hi: n.hi, num: n.num })); fonte = 'janela de dias'; }
     pts = pts.filter(x => x.v > 0).sort((x, y) => x.k - y.k);
@@ -17081,7 +17097,7 @@ function scBandaQuente(rM, tick) {
     const faixas = [{ lo: niveis[0].lo, hi: niveis[niveis.length - 1].hi }], picos = [(pts[ip].lo + pts[ip].hi) / 2];
     // reforço: a POC da Value Area ancorada sempre conta; se cair fora do sino, o degrau dela vira mais uma zona quente
     try {
-        if (_grFootprintAtivo && _grValueAreaAncoraTs != null ) {
+        if (SCX.fpAtivo && SCX.vaAncoraTs != null ) {
             const va = grFootprintCalcularValueArea();
             if (va && va.poc > 0) {
                 picos.push(va.poc);
@@ -17304,7 +17320,7 @@ function scRegChecarPreco(px) {
 // Candles de 5 min (até ~3 dias) ou de 1 h (até ~41 dias); só candles que COMEÇAM depois da criação; no candle em que entrou, só o stop conta (conservador).
 // Delta (compra − venda do footprint) por bloco de tempo, desde 'ini' (só BTC, com o Fluxo ligado; sem isso: mapa vazio)
 function scDeltaPorBloco(bloco, ini) {
-    const D = new Map(); if (!_grFootprintAtivo || !_grFootprintCandlesRaw) return D;
+    const D = new Map(); if (!SCX.fpAtivo || !SCX.fpRaw) return D;
     grFootprintParaCadaMinuto(ini, Date.now(), m => { const b = Math.floor(m.ts / bloco) * bloco; let d = 0; (m.niveis || []).forEach(n => { d += n.c - n.v; }); D.set(b, (D.get(b) || 0) + d); });
     return D;
 }
@@ -17432,7 +17448,7 @@ let _scMotorOn = false, _scTraderAberto = false;
 async function scMotor() {
     if (_scMotorOn || _scCalculando) return;
     if (!_grFootprintAtivo || !_grFootprintCandlesRaw) { alert('Ligue o Fluxo (FX) e aguarde os dados carregarem.'); return; }
-    _scMotorOn = true;
+    _scMotorOn = true; window._scPerf = {}; const _t0Motor = performance.now();
     let a = null, b = null;
     // relatório também quando nada é criado: o que cada lado achou (ou por que não achou)
     const lados = () => {
@@ -17476,7 +17492,11 @@ async function scMotor() {
             if (_scUltimo && !_scUltimo.erro && _scUltimo.linhas && _scUltimo.pzId !== pz1) { _scUltimo.linhas.splice(2, 0, rot2); const pz2 = grPosicoes().find(z => z.id === _scUltimo.pzId); if (pz2) { pz2.relatorio = _scUltimo.linhas.slice(); try { grPosSalvar(); } catch (e) {} } }
             try { grAreaToast('Motor: armou as duas caixas (Long e Short)', '#2962FF'); } catch (e) {}
         }
-    } finally { _scMotorOn = false; try { cvRenderMenuFpCfg(); } catch (e) {} }
+    } finally {
+        _scMotorOn = false;
+        try { const tx = scPerfTxt(performance.now() - _t0Motor); if (_scUltimo && _scUltimo.linhas) { _scUltimo.linhas.push(tx); const pzP = _scUltimo.pzId != null ? grPosicoes().find(z => z.id === _scUltimo.pzId) : null; if (pzP && Array.isArray(pzP.relatorio)) { pzP.relatorio.push(tx); try { grPosSalvar(); } catch (e) {} } } } catch (e) {}
+        try { cvRenderMenuFpCfg(); } catch (e) {}
+    }
 }
 // ── PLAY / PAUSE: a cada fechamento de candle do TF micro, roda o motor (short e long) e cria as caixas de scalp. Só funciona com o app aberto; ao voltar de segundo plano roda na hora se passou do horário. ──
 const _scPlay = { on: false, prox: 0, tmr: null, rodando: false, ultimo: '' };
@@ -17723,6 +17743,22 @@ function scRenderPopup(menu) {
         + '</div>';
 }
 
+// ── CRONÔMETRO DO MOTOR: soma o tempo gasto em cada parte durante um clique no Motor (vai pro fim do relatório). As partes podem se
+// sobrepor (uma chama a outra), então a soma delas passa do total — o que importa é qual é a maior.
+const SC_MEDIR = [['scCandles', 'candles (internet)'], ['scTick', 'tick/ATR'], ['scRegua', 'régua 30 dias'], ['grVpObterMapa', 'VP ancorado'], ['grFootprintCalcularValueArea', 'Value Area'],
+    ['scBandaQuente', 'sino'], ['scCalcular', 'níveis/stop'], ['scConfirmacoes', 'confirmações'], ['scDefesaNivel', 'defesa 24 h'], ['scAmbiente', 'ambiente'],
+    ['scEmaInfo', 'EMA'], ['scMedRangeTf', 'candle típico'], ['scPavioTf', 'pavio típico']];
+SC_MEDIR.forEach(([nm]) => {
+    const f = window[nm]; if (typeof f !== 'function' || f._medido) return;
+    const acc = t0 => { const P = window._scPerf; if (!P || !_scMotorOn) return; const d = performance.now() - t0; P[nm] = P[nm] || { ms: 0, n: 0 }; P[nm].ms += d; P[nm].n++; };
+    const w = function () { const t0 = performance.now(); let r; try { r = f.apply(this, arguments); } catch (e) { acc(t0); throw e; } if (r && typeof r.then === 'function') return r.finally(() => acc(t0)); acc(t0); return r; };
+    w._medido = true; window[nm] = w;
+});
+function scPerfTxt(totalMs) {
+    const P = window._scPerf || {}, s = ms => (ms / 1000).toFixed(1).replace('.', ',') + ' s';
+    const it = SC_MEDIR.filter(([nm]) => P[nm]).map(([nm, rot]) => [rot, P[nm]]).sort((a, b) => b[1].ms - a[1].ms);
+    return 'Tempo do motor: ' + s(totalMs) + ' no total · ' + it.map(([rot, v]) => rot + ' ' + s(v.ms) + (v.n > 1 ? ' (' + v.n + '×)' : '')).join(' · ');
+}
 // ── TESTE EMA × VWAP (5 min, ~7 dias): em cada TOQUE (o candle encosta na linha vindo de um lado, sem toque nos 3 anteriores), olha os
 // 6 candles seguintes (30 min): SEGUROU = afastou 1 candle típico na direção do repique antes de fechar 1 candle típico do outro lado;
 // ROMPEU = o contrário; o resto = indefinido. CONTROLE = a mesma EMA deslocada 2 candles típicos (uma linha sem significado): a linha boa
