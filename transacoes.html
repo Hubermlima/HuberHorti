@@ -1460,7 +1460,7 @@ function cvIniciarRealTime() {
             const d = JSON.parse(e.data);
             const novoPreco = parseFloat(d.p);
             if (!novoPreco) return;
-            window._cvWsUltimaMsg = Date.now(); // pra detectar buraco (app suspenso no iPhone) e reconciliar o candle
+            window._cvWsUltimaMsg = Date.now(); window._cvVigiaEspera = 15000; // pra detectar buraco (app suspenso no iPhone) e reconciliar o candle
             grFootprintLiveTrade(d);            // footprint ao vivo do candle em formação
             const precoAntes = _precoAtual;
             _precoAtual = novoPreco;
@@ -2364,6 +2364,10 @@ function grAoVoltarDoSegundoPlano() {
         const st = window._cvWs ? window._cvWs.readyState : 3;
         if (st >= 2 || (st === 0 && Date.now() - (window._cvWsCriadoEm || 0) > 10000)) cvIniciarRealTime();
     } catch (err) {}
+    // a recarga pesada (candles + footprint + trades do buraco) roda no máx. 1 vez por minuto: com o WebSocket caindo e voltando a cada ~15 s
+    // (rede móvel), ela rodava a cada reconexão e afogava o app. Entre uma e outra, o candle segue pela cotação REST.
+    if (Date.now() - (window._grVoltouTs || 0) < 60000) return;
+    window._grVoltouTs = Date.now();
     grReconciliarUltimosCandles();
     if (_grFootprintAtivo) { grFootprintAtualizarSeAtivo(); grFootprintLivePreencherBuraco(); }
     try { scRegAtualizar(); } catch (e) {}   // o que aconteceu com as caixas do motor enquanto o app estava fechado
@@ -2377,9 +2381,10 @@ setInterval(() => {
         window._cvPollVigia = Date.now();
         try { cvAtualizarPrecoRealTime(); } catch (err) {}
     }
-    if (Date.now() - ultimo < 15000) return;              // recebeu algo há pouco: saudável
+    if (Date.now() - ultimo < (window._cvVigiaEspera || 15000)) return;   // recebeu algo há pouco (ou ainda dentro da espera): não reinicia
     if (Date.now() - (window._cvWsReiniciadoPeloVigia || 0) < 10000) return; // não reinicia em cima de si mesmo
     window._cvWsReiniciadoPeloVigia = Date.now();
+    window._cvVigiaEspera = Math.min(120000, (window._cvVigiaEspera || 15000) * 2);   // rede ruim: espera cada vez mais antes de tentar de novo
     console.log('[vigia] WebSocket sem mensagens há ' + Math.round((Date.now() - ultimo) / 1000) + ' s — reiniciando o tempo real');
     try { cvIniciarRealTime(); } catch (err) {}
 }, 5000);
@@ -3249,7 +3254,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v445';
+const APP_VERSAO = 'v446';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -13755,7 +13760,7 @@ async function grFootprintAtivar() {
         _grFootprintOverlayInterval = setInterval(grFootprintDesenharOverlay, 200);
         grFootprintDesenharOverlay();
         window._fase = 'Fluxo: carregando o resto do histórico';
-        if (restantes.length > 0) grFootprintCarregarRestante(restantes); // histórico em segundo plano (o perfil busca o que falta quando ele terminar)
+        if (restantes.length > 0) grFootprintCarregarRestante(restantes).then(() => { if (window._fase === 'Fluxo: carregando o resto do histórico') window._fase = 'Fluxo: pronto'; }, () => {}); // histórico em segundo plano (o perfil busca o que falta quando ele terminar)
         else { _grVpDadosChave = null; grVpGarantirDados(); } // âncora do Volume Profile mais antiga que os dias carregados: busca os que faltam
         grFootprintLiveIniciar(); // footprint ao vivo do candle em formação (preenche o buraco desde o último minuto do R2)
         if (restantes.length === 0) grFootprintRecuperarDias(0); // dias que ainda falharam: continua tentando em segundo plano
