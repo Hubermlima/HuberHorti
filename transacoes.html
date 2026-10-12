@@ -3257,7 +3257,7 @@ window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento a
 // Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
 const GR_REGUAS_SA = false;
 const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v447';
+const APP_VERSAO = 'v448';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -7936,7 +7936,14 @@ function grEdToqueInicio(x, y) {   // x,y em coordenadas do canvas; devolve true
         if (x >= xa && x <= xb && y >= ya && y <= yb) { best = { k: 'm', x, y }; }
         else { window._edTapPend = { x, y, sel: _edSel }; return false; }   // longe das alças e fora da caixa: o dedo rola o gráfico normalmente (um toque simples ainda solta a caixa)
     }
-    if (_edSel.tipo === 'ps' && grEdObjeto().trancada) { window._edTapPend = { x, y, sel: _edSel }; return false; }   // trancada: nada a mexer aqui, o dedo rola o gráfico
+    if (_edSel.tipo === 'ps' && grEdObjeto().trancada) { window._edTapPend = { x, y, sel: _edSel }; return false; }
+    if (_edSel.tipo !== 'ps' && bd > 30) {
+        // linha horizontal / alerta: dá pra pegar em qualquer ponto da linha; reta, Fibo, desenho livre: só pelas alças.
+        // Em cima do traço (fora das alças): só um toque (abre/fecha o menu), não arrasta nada.
+        if ((_edSel.tipo === 'hl' || _edSel.tipo === 'al') && Math.abs(y - alcas[0].y) <= 28) best = alcas[0];
+        else if (grEdTocouDentro(x, y)) { _edDrag = { k: 'x', hx: x, hy: y, fx: x, fy: y, moved: false, sel: _edSel, snap: null }; return true; }
+        else { window._edTapPend = { x, y, sel: _edSel }; return false; }
+    }   // trancada: nada a mexer aqui, o dedo rola o gráfico
     _edDrag = { k: best.k, hx: best.x, hy: best.y, fx: x, fy: y, moved: false, sel: _edSel, snap: JSON.parse(JSON.stringify(grEdObjeto())) };
     return true;
 }
@@ -7957,6 +7964,7 @@ function grEdToqueMove(x, y) {
     const d = _edDrag, nx = d.hx + (x - d.fx), ny = d.hy + (y - d.fy);
     if (Math.hypot(x - d.fx, y - d.fy) > (_edSel.tipo === 'nf' ? 14 : 8)) d.moved = true;   // Novo Fibo: tolerância maior pro tremor do dedo num toque
     if (!d.moved) return true;   // ainda é só um toque: não mexe no desenho
+    if (d.k === 'x') return true;   // tocou no traço, fora das alças: não arrasta
     if (d.bloq) return true;
     if (_edSel.tipo === 'ps' && o.trancada) { d.bloq = true; return true; }   // caixa trancada: seleciona e toca normal, mas não deixa mexer nas dimensões
     if (_edSel.tipo === 'ps' && d.k === 's' && o.pm > 0 && _grStopLib !== o.id) { d.bloq = true; grStopConfirmar(o); return true; }   // stop travado
@@ -8001,6 +8009,7 @@ async function grEdToqueFim() {
     if (dd0.sel !== _edSel) return true;   // o toque selecionou OUTRO desenho (pela alça): já abriu o menu dele, não faz mais nada
     if (!moveu && _edSel && GR_ED_CTX_TIPOS.indexOf(_edSel.tipo) >= 0 && grEdTocouDentro(dd0.fx, dd0.fy)) { window._nfCtxAberto = !window._nfCtxAberto; grDrawChart(); return true; }   // tocar de novo nele abre/fecha o menu de contexto (olho/lixeira)
     if (!moveu) { cvEdicaoSair(); return true; }   // toque simples no price action: libera o desenho
+    if (dd0.k === 'x') return true;   // arrastou a partir do traço: nada foi mexido
     const o = grEdObjeto(); if (!o) return true;
     try {
         if (_edSel.tipo === 'tl') await cvSalvarTrendline(o);
@@ -11260,10 +11269,22 @@ function grPlConfirmar() {   // toque simples com uma ferramenta de colocação 
 }
 // ── Menu de contexto do desenho selecionado (olho/lixeira/fechar) e áreas de toque para selecionar pelo handle ──
 const GR_ED_CTX_TIPOS = ['nf', 'tl', 'fh', 'hl'];
+function grDistSeg(px, py, a, b) {   // distância do ponto ao segmento a–b (em px)
+    const dx = b.x - a.x, dy = b.y - a.y, L2 = dx * dx + dy * dy;
+    const t = L2 > 0 ? Math.max(0, Math.min(1, ((px - a.x) * dx + (py - a.y) * dy) / L2)) : 0;
+    return Math.hypot(px - (a.x + t * dx), py - (a.y + t * dy));
+}
 function grEdTocouDentro(px, py) {   // o toque caiu em cima do desenho selecionado (alças/linha, com 28 px de folga)?
     const o = grEdObjeto(); if (!o || !_edSel) return false;
     const fx = t => grIndexToX(grTimeToIndex(t)), M = 28;
     if (_edSel.tipo === 'hl') return Math.abs(py - grLineY(o.p)) <= M;
+    if (_edSel.tipo === 'tl' || _edSel.tipo === 'nf' || _edSel.tipo === 'fh') {   // perto do traço (antes: o retângulo entre as pontas, que numa reta diagonal longa cobria quase o gráfico todo)
+        const pts0 = _edSel.tipo === 'fh' ? (o.pontos || []).map(pt => ({ x: fx(pt.t), y: grLineY(pt.p) })) : grEdAlcas(fx, grLineY);
+        if (!pts0.length) return false;
+        if (pts0.length === 1) return Math.hypot(px - pts0[0].x, py - pts0[0].y) <= M;
+        for (let k = 1; k < pts0.length; k++) if (grDistSeg(px, py, pts0[k - 1], pts0[k]) <= M) return true;
+        return false;
+    }
     const pts = _edSel.tipo === 'fh' ? (o.pontos || []).map(pt => ({ x: fx(pt.t), y: grLineY(pt.p) })) : grEdAlcas(fx, grLineY);
     if (!pts.length) return false;
     let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
