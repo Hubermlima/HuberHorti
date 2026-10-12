@@ -644,6 +644,9 @@ async function fetchFxRate() {
     }
 }
 // ── Consolidado ───────────────────────────────────────────────────
+// Taxa da ABERTURA (boleta: 0,1% da quantidade, em BTC) convertida em $ pelo preço da operação. Se o número for grande demais para ser BTC
+// (mais de 1% da quantidade), foi digitado em $ e vale como está.
+function grTaxaAberturaUsd(taxa, qtd, valor) { if (!(taxa > 0) || !(qtd > 0)) return 0; return taxa > qtd * 0.01 ? taxa : taxa * valor / qtd; }
 function calcularConsolidado(tradeId, lista) {   // só as operações daquele trade (lista opcional: usa essas em vez de _transacoes)
     // Long
     let qtdAberta = 0, custoAberto = 0, pm = 0;
@@ -661,9 +664,10 @@ function calcularConsolidado(tradeId, lista) {   // só as operações daquele t
     const taxa = parseFloat(t.taxa_operacao) || 0;
     const qtd = parseFloat(t.quantidade_ativo) || 0;
     const valor = parseFloat(t.valor_total_usd) || 0;
+    const taxaAbUsd = grTaxaAberturaUsd(taxa, qtd, valor);   // abertura: taxa em BTC → $ pelo preço da compra
     if (t.tipo_operacao === 'LA') {
-        const qtdLiquida = qtd; // futuros (MEXC/Bitget): a taxa é cobrada em USDT e NÃO reduz a quantidade
-        const novoCusto = custoAberto + valor;
+        const qtdLiquida = qtd; // a quantidade fica a mesma; a taxa (convertida em $) entra no CUSTO → o PM sobe
+        const novoCusto = custoAberto + valor + taxaAbUsd;
         const novaQtd = qtdAberta + qtdLiquida;
         pm = novaQtd > 0 ? novoCusto / novaQtd : 0;
         qtdAberta = novaQtd;
@@ -677,7 +681,7 @@ function calcularConsolidado(tradeId, lista) {   // só as operações daquele t
         custoAberto = qtdAberta * pm;
         if (qtdAberta <= 0.000001) { qtdAberta = 0; custoAberto = 0; pm = 0; }
     } else if (t.tipo_operacao === 'SA') {
-        const novoCusto = custoShort + valor;
+        const novoCusto = custoShort + valor - taxaAbUsd;   // short: a taxa de abertura reduz o que se recebeu → PM do short desce
         const novaQtd = qtdShort + qtd;
         pmShort = novaQtd > 0 ? novoCusto / novaQtd : 0;
         qtdShort = novaQtd;
@@ -685,7 +689,7 @@ function calcularConsolidado(tradeId, lista) {   // só as operações daquele t
     } else if (t.tipo_operacao === 'SF') {
         const receitaShort = qtd * pmShort;
         custoShortRealizado += receitaShort;
-        lucroShort += receitaShort - valor;
+        lucroShort += receitaShort - valor - taxa;   // taxa de fechamento em USDT
         qtdShort -= qtd;
         custoShort = qtdShort * pmShort;
         if (qtdShort <= 0.000001) { qtdShort = 0; custoShort = 0; pmShort = 0; }
@@ -3247,7 +3251,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v475';
+const APP_VERSAO = 'v479';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4821,8 +4825,27 @@ async function cvPosCarregarTrades() {
 // Status/cores da caixa: sem tradeId = Em Análise (cinza); trade sem data_fechamento = Ativo (verde/vermelho); com = Encerrado (tom do resultado)
 // Linha central da caixa: com PM (posição aberta) é o PM, travado; a PE vira só informação
 function cvPosPivo(pz) { return pz.pm > 0 ? pz.pm : pz.entrada; }
-const GR_MARGEM_ANALISE = 1000;   // margem simulada (USDT) da caixa Em Análise
-const GR_RISCO_ANALISE_PCT = 50;   // risco usado na alavancagem sugerida da caixa Em Análise (% da margem)
+const GR_MARGEM_ANALISE0 = 1000;   // margem simulada (USDT) da caixa Em Análise (padrão de fábrica)
+const GR_RISCO_ANALISE_PCT0 = 50;  // risco usado na alavancagem sugerida da caixa Em Análise (% da margem, padrão de fábrica)
+// Padrão do Risco % e do Aporte: o último valor digitado no "Dados" vira o padrão das caixas novas (gravado no ambiente)
+const GR_TAXA_PCT0 = 0.1;   // taxa por lado (% da posição), a mesma da boleta: 0,1% na abertura e 0,1% no fechamento
+function grPadraoSim() { try { const o = JSON.parse(localStorage.getItem('grPadraoSim') || '{}'); return { risco: o.risco > 0 ? o.risco : GR_RISCO_ANALISE_PCT0, aporte: o.aporte > 0 ? o.aporte : GR_MARGEM_ANALISE0, taxa: o.taxa > 0 ? o.taxa : GR_TAXA_PCT0 }; } catch (e) { return { risco: GR_RISCO_ANALISE_PCT0, aporte: GR_MARGEM_ANALISE0, taxa: GR_TAXA_PCT0 }; } }
+// Simulação da caixa em análise: alavancagem, posição, taxas (entrada + saída) e resultados LÍQUIDOS no alvo e no stop
+function grSimCaixa(pz) {
+    if (!pz || !(pz.entrada > 0) || !(pz.stop > 0) || pz.stop === pz.entrada) return null;
+    const P = grPadraoSim(), rk = pz.simRisco > 0 ? pz.simRisco : P.risco, mg = pz.simAporte > 0 ? pz.simAporte : P.aporte, tx = (pz.simTaxa > 0 ? pz.simTaxa : P.taxa) / 100;
+    const sgn = pz.stop < pz.entrada ? 1 : -1, dist = Math.abs(pz.entrada - pz.stop) / pz.entrada * 100, al = Math.max(1, Math.floor(rk / dist)), nt = mg * al;
+    const tEnt = nt * tx, tSaiS = nt * pz.stop / pz.entrada * tx, perdaB = nt * (pz.stop - pz.entrada) / pz.entrada * sgn, perda = perdaB - tEnt - tSaiS;
+    let lucro = null, tSaiA = null, lucroB = null;
+    if (pz.alvo > 0) { tSaiA = nt * pz.alvo / pz.entrada * tx; lucroB = nt * (pz.alvo - pz.entrada) / pz.entrada * sgn; lucro = lucroB - tEnt - tSaiA; }
+    return { risco: rk, aporte: mg, taxaPct: tx * 100, al, nt, tEnt, tSaiS, tSaiA, perdaB, perda, lucroB, lucro, rr: lucro != null && perda < 0 ? lucro / -perda : null };
+}
+function grPadraoSimGravar(chave, v) {
+    const p0 = grPadraoSim(), nv = Object.assign({}, p0); nv[chave === 'simRisco' ? 'risco' : chave === 'simTaxa' ? 'taxa' : 'aporte'] = v;
+    if (nv.risco === p0.risco && nv.aporte === p0.aporte && nv.taxa === p0.taxa) return;
+    grPosicoes().forEach(z => { if (!(z.simRisco > 0)) z.simRisco = p0.risco; if (!(z.simAporte > 0)) z.simAporte = p0.aporte; if (!(z.simTaxa > 0)) z.simTaxa = p0.taxa; });   // as caixas que já existem ficam com o valor de antes
+    try { localStorage.setItem('grPadraoSim', JSON.stringify(nv)); } catch (e) {}
+}
 // TESE INVÁLIDA (só da caixa Em Análise; só pinta, não bloqueia nada): o preço entrou na zona de captura (tocou a entrada) e depois chegou ao stop.
 // Conta pavio, só olha candles a partir do começo da caixa e, no mesmo candle que toca entrada e stop, assume que o stop veio depois.
 const _grTeseCache = new Map();
@@ -4975,12 +4998,12 @@ function cvPosFormAbrir(idx) {
                 if (x.qtd > qty * 1.0000001) erro = 'O aporte ' + (i + 1) + ' fecha mais do que a posição tem (' + cvFmt8(qty) + ' ' + cvMoedaBase() + ').';
                 const pm = cost / qty;
                 if (sgn === 1) real += (valor - taxa) - x.qtd * pm;      // LF: taxa em USDT sai do valor
-                else real += x.qtd * pm - valor;                          // SF: como na boleta
+                else real += x.qtd * pm - valor - taxa;                   // SF: taxa em USDT também sai
                 qty -= x.qtd; cost = qty * pm; qb = Math.max(0, qb - x.qtd);
                 if (qty <= 0.000001) { qty = 0; cost = 0; }
             } else {
-                qty += x.qtd;                                            // futuros: a taxa é em USDT e não reduz a quantidade (igual à MEXC/Bitget)
-                cost += valor; qb += x.qtd;
+                qty += x.qtd;                                            // a quantidade fica; a taxa da abertura (BTC → $) entra no custo (long) / sai (short)
+                cost += valor + sgn * grTaxaAberturaUsd(taxa, x.qtd, valor); qb += x.qtd;
             }
         });
         return { qty, cost, pm: qty > 0 ? cost / qty : null, pmBruto: qb > 0 ? cost / qb : null, real, erro };
@@ -6977,9 +7000,10 @@ if (fibsParaDesenhar.length > 0) {
                             const lado = ['entrou', 'alvo', 'stop', 'zero'].indexOf(rg.st) >= 0 ? 1 : -1, rr = 5;
                             const cx = lado > 0 ? xb + rr + 1 : xa - rr - 1, cy = Math.max(PAD.top + rr, Math.min(PAD.top + chartH - rr, yE));
                             // PERIGO: em trade e o preço já andou 70% (ou mais) do caminho da entrada até o stop → bolinha vermelha piscando
+                            // PERIGO = o mesmo do Status da caixa (stop em candles, fluxo, presos, score), recalculado a cada 30 s enquanto está em trade
                             let perigo = null;
-                            if (rg.st === 'entrou' && _precoAtual > 0) { const e0p = rg.entReal || rg.ent, rk = Math.abs(e0p - rg.stp), fr = rk > 0 ? (rg.lado === 'long' ? e0p - _precoAtual : _precoAtual - e0p) / rk : 0; if (fr >= 0.7) perigo = Math.round((1 - Math.min(1, fr)) * 100); }
-                            if (perigo != null) { E = ['PERIGO: a ' + perigo + '% do stop', Math.floor(Date.now() / 500) % 2 ? '#DC2626' : 'rgba(220,38,38,0.25)']; }
+                            if (rg.st === 'entrou' && pz._stat && !pz._stat.encerrada && pz._stat.nivel === 2 && Date.now() - (pz._stat.t || 0) < 120000) perigo = 1;
+                            if (perigo != null) { E = ['PERIGO' + (pz._stat.R != null ? ' · ' + (pz._stat.R >= 0 ? '+' : '−') + Math.abs(pz._stat.R).toFixed(1).replace('.', ',') + 'R' : ''), Math.floor(Date.now() / 500) % 2 ? '#DC2626' : 'rgba(220,38,38,0.25)']; }
                             if (cx > PAD.left && cx < W - PAD.right) { ctx.save(); ctx.fillStyle = E[1]; ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(cx, cy, rr, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); ctx.restore();
                                 const ipS = grPosicoes().indexOf(pz);   // caixa SELECIONADA: o nome do status ao lado da bolinha (por fora da caixa)
                                 if (ipS >= 0 && _edSel && _edSel.tipo === 'ps' && _edSel.idx === ipS) {
@@ -7016,7 +7040,7 @@ if (fibsParaDesenhar.length > 0) {
                     // Em Análise: simulação com margem fixa e a alavancagem sugerida (tudo recalculado a cada desenho)
                     let ana = null;
                     if (cz.st === 'analise' && !teseInv && tS && pz.entrada > 0 && pz.stop !== pz.entrada) {
-                        const rk = pz.simRisco > 0 ? pz.simRisco : GR_RISCO_ANALISE_PCT, mg = pz.simAporte > 0 ? pz.simAporte : GR_MARGEM_ANALISE, dist = Math.abs(pz.entrada - pz.stop) / pz.entrada * 100, al = Math.max(1, Math.floor(rk / dist)), nt = mg * al, sgn = pz.stop < pz.entrada ? 1 : -1;
+                        const rk = pz.simRisco > 0 ? pz.simRisco : grPadraoSim().risco, mg = pz.simAporte > 0 ? pz.simAporte : grPadraoSim().aporte, dist = Math.abs(pz.entrada - pz.stop) / pz.entrada * 100, al = Math.max(1, Math.floor(rk / dist)), nt = mg * al, sgn = pz.stop < pz.entrada ? 1 : -1;
                         ana = { al, nt, lucro: tA ? nt * (pz.alvo - pz.entrada) / pz.entrada * sgn : null, perda: nt * (pz.stop - pz.entrada) / pz.entrada * sgn };
                     }
                     const fu = v => (v >= 0 ? '+' : '−') + Math.abs(Math.round(v)).toLocaleString('pt-BR');
@@ -7742,7 +7766,7 @@ function cvPosDadosPainel(i, m) {   // modalzinho "Dados": Entrada, Stop, Risco 
                 try { inp.setSelectionRange(inp.value.length, inp.value.length); } catch (e) {}
                 const z = grPosicoes()[d._i]; if (!z) return;
                 if (chave === 'entrada' || chave === 'stop') { if (!(v > 0)) return; z[chave] = v; }
-                else if (v > 0) z[chave] = chave === 'simRisco' ? Math.min(v, 100) : v; else delete z[chave];
+                else if (v > 0) { const vv = chave === 'simRisco' ? Math.min(v, 100) : v; grPadraoSimGravar(chave, vv); z[chave] = vv; } else delete z[chave];
                 grDrawChart();
             });
             inp.addEventListener('change', () => { try { grPosSalvar(); } catch (e) {} });
@@ -7752,6 +7776,8 @@ function cvPosDadosPainel(i, m) {   // modalzinho "Dados": Entrada, Stop, Risco 
         campo('cv-pos-dados-stop', 'Stop', 'stop');
         campo('cv-pos-dados-risco', 'Risco %', 'simRisco');
         campo('cv-pos-dados-aporte', 'Aporte', 'simAporte');
+        campo('cv-pos-dados-taxa', 'Taxa % (lado)', 'simTaxa');
+        const res = document.createElement('div'); res.id = 'cv-pos-dados-res'; res.style.cssText = 'grid-column:1 / span 2;border-top:1px solid #E5E5EA;margin-top:2px;padding-top:4px;font-size:11px;line-height:1.5;color:#3A3A3C;'; d.appendChild(res);
         const lb = document.createElement('label'); lb.style.cssText = 'grid-column:1 / span 2;display:flex;align-items:center;gap:6px;margin-top:2px;font-size:12px;';
         const ck = document.createElement('input'); ck.type = 'checkbox'; ck.id = 'cv-pos-dados-travav'; ck.style.cssText = 'width:16px;height:16px;margin:0;';
         ck.addEventListener('change', () => { const z = grPosicoes()[d._i]; if (!z) return; z.travaV = ck.checked; try { grPosSalvar(); } catch (e) {} grDrawChart(); });
@@ -7760,13 +7786,19 @@ function cvPosDadosPainel(i, m) {   // modalzinho "Dados": Entrada, Stop, Risco 
     }
     d._i = i;
     d.querySelector('#cv-pos-dados-travav').checked = cvPosTravaV(pz);
-    ['cv-pos-dados-risco', 'cv-pos-dados-aporte'].forEach(id => { const e = d.querySelector('#' + id); if (e) { e.style.display = pz.tradeId ? 'none' : ''; e.previousSibling.style.display = pz.tradeId ? 'none' : ''; } });   // risco/aporte só valem na caixa em análise
+    ['cv-pos-dados-risco', 'cv-pos-dados-aporte', 'cv-pos-dados-taxa'].forEach(id => { const e = d.querySelector('#' + id); if (e) { e.style.display = pz.tradeId ? 'none' : ''; e.previousSibling.style.display = pz.tradeId ? 'none' : ''; } });   // risco/aporte só valem na caixa em análise
     const fmt = v => String(v).replace('.', ',');
     const set = (id, val, preco) => { const e = d.querySelector('#' + id); if (!e) return; if (document.activeElement !== e) e.value = cvPosMask(Number(val)); };
     set('cv-pos-dados-pe', pz.entrada, true);
     set('cv-pos-dados-stop', pz.stop, true);
-    set('cv-pos-dados-risco', pz.simRisco > 0 ? pz.simRisco : GR_RISCO_ANALISE_PCT);
-    set('cv-pos-dados-aporte', pz.simAporte > 0 ? pz.simAporte : GR_MARGEM_ANALISE);
+    set('cv-pos-dados-risco', pz.simRisco > 0 ? pz.simRisco : grPadraoSim().risco);
+    set('cv-pos-dados-aporte', pz.simAporte > 0 ? pz.simAporte : grPadraoSim().aporte);
+    set('cv-pos-dados-taxa', pz.simTaxa > 0 ? pz.simTaxa : grPadraoSim().taxa);
+    { const res = d.querySelector('#cv-pos-dados-res'), sm = pz.tradeId ? null : grSimCaixa(pz);
+      if (res) { res.style.display = sm ? '' : 'none'; if (sm) { const $ = v => (v < 0 ? '−' : '') + '$' + Math.abs(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        res.innerHTML = 'Alav <b>' + sm.al + 'x</b> · Posição ' + $(sm.nt) + '<br>Taxas ' + $(sm.tEnt + (sm.tSaiA != null ? sm.tSaiA : sm.tSaiS)) + ' (entrada ' + $(sm.tEnt) + ')'
+            + (sm.lucro != null ? '<br><span style="color:#16A34A;">Alvo líquido <b>' + $(sm.lucro) + '</b></span>' : '') + '<br><span style="color:#DC2626;">Stop líquido <b>' + $(sm.perda) + '</b></span>'
+            + (sm.rr != null ? '<br>R/R líquido ' + sm.rr.toFixed(2).replace('.', ',') : ''); } } }
     if (d.contains(document.activeElement)) return cvPosDadosFixar();   // digitando: o modal fica PARADO no topo da parte visível (não segue a caixa nem o teclado)
     const mr = m.getBoundingClientRect(), dw = d.offsetWidth || 170, dh = d.offsetHeight || 110;
     let x = Math.max(4, Math.min(window.innerWidth - dw - 4, mr.left)), y = mr.bottom + 4;
@@ -12536,8 +12568,7 @@ function odCardAtivo(t, o) {
     const txs = _odTxCache.filter(x => x.trade_id === t.id);
     const saidas = txs.filter(x => String(x.tipo_operacao).endsWith('F'));
     const c = odConsolidadoTrade(t);
-    const taxaSaidaShort = lado === 'short' ? saidas.reduce((m, x) => m + (parseFloat(x.taxa_operacao) || 0), 0) : 0;
-    const realizado = saidas.length ? (lado === 'short' ? c.lucroShort - taxaSaidaShort : c.lucroRealizado) : null;
+    const realizado = saidas.length ? (lado === 'short' ? c.lucroShort : c.lucroRealizado) : null;   // as taxas (abertura e fechamento) já estão no consolidado
     const naoReal = preco ? (preco - pm) * qtd * sg : null;
     const falta = p => {
         if (preco === null) return '';
@@ -16615,6 +16646,16 @@ function scCalcular(lado, u, cs, preco, ibK) {
 // 5 confirmações do Dale lidas no footprint dos candles do TF micro que TOCARAM a zona (+ o nível somado da régua pro Big Limit). "Se destaca" = acima da mediana
 // do mesmo tipo de número (nas linhas do próprio candle, ou nos candles da janela); o Big Limit usa outlier (regra do intervalo interquartil). Aggressive Traders mede a intensidade do lado da operação na zona contra a média da janela (sem a razão fixa de 3×). Lado do short; o long é o espelho.
 function scMediana(a) { if (!a.length) return 0; const t = a.slice().sort((x, y) => x - y); return t[Math.floor(t.length / 2)]; }
+// M12 — TENDÊNCIA CONTRA: EMA (a mesma do gráfico; sem ela, 200) nos candles de 5 min. 'Caindo' = a EMA de agora abaixo da de 12 candles (1 h) atrás.
+async function scEmaInfo() {
+    const per = (_grEmaCustom && _grEmaCustom[0] && _grEmaCustom[0].periodo > 1) ? _grEmaCustom[0].periodo : 200;
+    const cs = (await grBuscarKlines(grBinSymbolAtual(), '5m', 1000, null)).map(grMapearKline);
+    if (cs.length < per + 13) return null;
+    const k = 2 / (per + 1); let e = cs.slice(0, per).reduce((a, c) => a + c.c, 0) / per; const ser = [];
+    for (let i = per; i < cs.length; i++) { e = cs[i].c * k + e * (1 - k); ser.push(e); }
+    const agora = ser[ser.length - 1], antes = ser[ser.length - 13];
+    return { per, ema: agora, antes, incl: agora - antes, t: Date.now() };
+}
 function scConfirmacoes(lado, r, u, cs, def) {
     const s = lado === 'short' ? 1 : -1, tick = u.tick, fim = scAgora(), ini = fim - u.dias * 86400000, lo = r.lo, hi = r.hi, RZ = FOOTPRINT_IMBALANCE_RATIO;
     const res = { lado, n: 0, ev: { abs: null, big: null, trap: null, agg: null, chg: null, rsi: null, fibo: null }, toques: 0, falta: {} };
@@ -16706,6 +16747,8 @@ function scConfirmacoes(lado, r, u, cs, def) {
     res.n = Object.keys(res.ev).filter(k => res.ev[k]).length;
     // Desconto automático 3: faca caindo (long) / foguete subindo (short) — o preço chegou na zona acelerando contra a operação (aproximação dos últimos 3 candles no 3º quartil da janela)
     res.faca = { pen: 0 };
+    res.tend = { pen: 0 };
+    try { const em = window._scEma, px = r.preco > 0 ? r.preco : _precoAtual; if (em && px > 0 && (lado === 'long' ? (px < em.ema && em.incl < 0) : (px > em.ema && em.incl > 0))) res.tend = { pen: 1, per: em.per, ema: em.ema }; } catch (e) {}
     try { const am0 = scAmbiente(lado, { r, cs }); if (am0.faca) res.faca = { pen: 1 }; } catch (e) {}
     // Desconto automático (não é um critério a mais): "nunca vender em suporte / comprar em resistência". Cada referência ANCORADA e visível (VWAP, POC da
     // Value Area, maior nível do VP) que cai na zona (±1 nível da grade) e está do lado de baixo do preço (short) / de cima (long) tira 1 ponto. Sem âncora: sem desconto.
@@ -16849,7 +16892,9 @@ function scScoreDe(conf) {
     if (enc) itens.push({ k: 'enc', nome: (conf.lado === 'long' ? 'Compradores' : 'Vendedores') + ' no prejuízo', ok: false, pts: '−1', det: Math.round(enc.pct * 100) + '% de quem ' + (conf.lado === 'long' ? 'comprou' : 'vendeu') + ' está perdendo dinheiro agora (normal: ' + Math.round(enc.med * 100) + '%)' });
     const faca = conf.faca && conf.faca.pen > 0 ? conf.faca : null;
     if (faca) itens.push({ k: 'faca', nome: conf.lado === 'long' ? 'Faca caindo' : 'Foguete subindo', ok: false, pts: '−1', det: 'o preço chegou na zona rápido demais, ' + (conf.lado === 'long' ? 'caindo' : 'subindo') + ' sem frear' });
-    return { n: Math.max(0, conf.n - (sup ? sup.pen : 0) - (enc ? enc.pen : 0) - (faca ? 1 : 0)), total: SC_CONF_TOTAL, itens };
+    const tend = conf.tend && conf.tend.pen > 0 ? conf.tend : null;
+    if (tend) itens.push({ k: 'tend', nome: 'Tendência contra', ok: false, pts: '−1', det: 'o preço está ' + (conf.lado === 'long' ? 'abaixo' : 'acima') + ' da EMA ' + tend.per + ' de 5 min (' + f(tend.ema) + '), que está ' + (conf.lado === 'long' ? 'caindo' : 'subindo') });
+    return { n: Math.max(0, conf.n - (sup ? sup.pen : 0) - (enc ? enc.pen : 0) - (faca ? 1 : 0) - (tend ? 1 : 0)), total: SC_CONF_TOTAL, itens };
 }
 // AMBIENTE (só leitura, não filtra): (1) faca caindo = aproximação dos últimos 3 candles do micro até a entrada, no 3º quartil das aproximações da própria janela;
 // (2) congestão = eficiência dos últimos 6 candles (deslocamento líquido ÷ percurso) igual ou abaixo da mediana da janela; (a leitura de nível/suporte/resistência saiu do ambiente).
@@ -17038,6 +17083,7 @@ async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fecha
         if (rM.erro) throw new Error('Macro ' + dMa.rot + ': ' + rM.erro);
         try { window._scMedMin = await scMedRangeTf(SC_ORDEM[0]); } catch (e) { window._scMedMin = 0; }
         try { window._scPavio = await scPavioTf(SC_ORDEM[0]); } catch (e) { window._scPavio = null; }
+        try { window._scEma = await scEmaInfo(); } catch (e) { window._scEma = null; }
         const cob = scCobertura(dias), avisoCob = cob < dias - 1 ? ' (Fluxo só tem ' + Math.floor(cob) + ' de ' + dias + ' dias)' : '';
         // desce de TF só se nenhuma zona do micro cair numa zona favorável do macro (piso: 1h)
         const bMi = scDefTf(_scCfg.micro).blocoMs, pisoMs = bMi >= 3600000 ? 3600000 : 0;   // desce do micro até 1h (micro de 1h ou mais) ou até o menor TF (micro de minutos)
@@ -17126,7 +17172,7 @@ async function scTfAcompanhar(h) {
     return melhor || (menor ? { rot: null, menor: menor.menor, med: menor.med, h } : null);
 }
 // ══ VERSÃO DO MOTOR + REGISTRO das caixas que ele cria (gravado junto com as caixas, nas preferências, ao tocar em Sair) ══
-const SC_MOTOR_VERSAO = 'M11';
+const SC_MOTOR_VERSAO = 'M12';
 function scRegLista() { if (!Array.isArray(window._scRegistro)) window._scRegistro = []; return window._scRegistro; }
 function scRegistrar(o) {
     const L = scRegLista();
@@ -17184,6 +17230,11 @@ function scRegChecarPreco(px) {
         }
     });
     if (mudou) scRegGravarServidor();
+    if (Date.now() - (window._scPerigoTs || 0) > 30000) {   // Status das caixas EM TRADE a cada 30 s (pra bolinha de perigo)
+        window._scPerigoTs = Date.now();
+        const emTrade = grPosicoes().filter(z => z.origem === 'setup' && L.some(r => r.id === z.id && r.st === 'entrou' && (!r.sym || r.sym === sym)));
+        (async () => { for (const z of emTrade) { try { z._stat = await scStatusCalcular(z); } catch (e) {} } if (emTrade.length) { try { grDrawChart(); } catch (e) {} } })();
+    }
     if (L.some(r => r.gat && r.st === 'aguardando') && Date.now() - (window._scRegGatTs || 0) > 60000) {   // procura o gatilho 1x por minuto
         window._scRegGatTs = Date.now();
         scRegAtualizar().then(m => { if (m) { try { grDrawChart(); } catch (e) {} L.forEach(r => { if (r.gat && r.st !== 'aguardando' && r.tGat && !r._avisado) { r._avisado = true; try { grAreaToast('Motor ' + (r.mv || '') + ': ' + (r.lado === 'long' ? 'Long' : 'Short') + ' → ' + (r.st === 'entrou' ? 'GATILHO, entrou em ' + Math.round(r.entReal).toLocaleString('pt-BR') : SC_REG_ROT[r.st]), '#2962FF'); } catch (e) {} } }); } }, () => {});
@@ -17200,13 +17251,25 @@ function scDeltaPorBloco(bloco, ini) {
 // GATILHO (M7): armada → um candle do TF de acompanhamento que TOQUE a zona, FECHE a favor (long: verde; short: vermelho), com DELTA a favor e sem
 // romper o stop → entrou no fechamento dele (entrada real). Antes do gatilho: tocar o stop = "sem gatilho" (a faca passou sem confirmação, não é perda);
 // ir ao alvo = entrada perdida; passar 1 candle do macro = expirou. Depois de entrar: stop / alvo (stop primeiro no mesmo candle).
+// Absorção CONTRA no candle i (mesma conta do losango do gráfico: volume ÷ amplitude acima da média de 20): Long → AV (caiu com delta +); Short → AC (subiu com delta −)
+function scAbsContra(cs, i, D, lg) {
+    if (i < 20) return null; const c = cs[i], d = D.has(c.t) ? D.get(c.t) : (c.bv != null && c.v > 0 ? 2 * c.bv - c.v : null); if (d == null) return null;
+    if (lg ? !(c.c < c.o && d > 0) : !(c.c > c.o && d < 0)) return null;
+    const vd = x => { const rp = x.o > 0 ? (x.h - x.l) / x.o * 100 : 0; return rp > 0 ? (x.v || 0) / rp / 1000 : 0; };
+    let sm = 0; for (let j = i - 19; j <= i; j++) sm += vd(cs[j]); sm /= 20; const v = vd(c);
+    return sm > 0 && v > sm ? Math.round((v / sm - 1) * 100) : null;
+}
 function scRegAvaliarGatilho(r, cs, D, bloco) {
     const lg = r.lado === 'long', s = lg ? 1 : -1;
-    for (const c of cs) {
+    for (let ic = 0; ic < cs.length; ic++) {
+        const c = cs[ic];
         if (c.t < r.t0) continue;
         if (r.st === 'entrou') {
             if (r.tGat != null && c.t <= r.tGat) continue;
             if (lg ? c.l <= r.stp : c.h >= r.stp) { r.st = 'stop'; r.tFim = c.t; return; }
+            if (r.zero && !r.sombraAbs && (lg ? c.l <= r.ent : c.h >= r.ent)) {   // M12: saída-sombra no 1º candle com absorção contra encostando na zona
+                const pa = scAbsContra(cs, ic, D, lg); if (pa != null) { const e0 = r.entReal || r.ent, rk = Math.abs(e0 - r.stp); r.sombraAbs = { t: c.t, p: c.c, pct: pa, R: rk > 0 ? s * (c.c - e0) / rk : null }; }
+            }
             if (r.ign && r.zero && (lg ? c.l <= (r.entReal || r.ent) : c.h >= (r.entReal || r.ent))) { r.st = 'zero'; r.tFim = c.t; return; }   // M11: depois da ignição o stop sobe pro zero
             if (!r.ign) { const e0 = r.entReal || r.ent, r1 = e0 + s * Math.abs(e0 - r.stp); if (lg ? c.h >= r1 : c.l <= r1) { r.ign = true; r.tIgn = c.t; } }
             if (lg ? c.h >= r.alvo : c.l <= r.alvo) { r.st = 'alvo'; r.tFim = c.t; return; }
@@ -17267,7 +17330,8 @@ async function scHistoricoMostrar() {
         L.length ? 'IGNIÇÃO ' + L.filter(r => r.ign).length + ' de ' + L.filter(r => r.tEnt).length + ' entradas · ' + ['alvo', 'zero', 'stop', 'semGatilho', 'perdida', 'expirou', 'entrou', 'aguardando'].filter(k => cont[k]).map(k => SC_REG_ROT[k] + ' ' + cont[k]).join(' · ') : 'Nenhuma caixa do motor registrada ainda.'];
     L.slice().reverse().forEach(r => linhas.push(r.mv + ' · ' + dh(r.t0) + ' · ' + r.modo + ' · ' + (r.lado === 'long' ? 'Long' : 'Short') + ' · nota ' + (r.nota == null ? '?' : r.nota)
         + ' · E ' + f(r.ent) + (r.entReal ? ' (real ' + f(r.entReal) + ')' : '') + ' S ' + f(r.stp) + ' A ' + f(r.alvo) + (r.gat ? ' · gatilho' : '') + ' (' + (r.alvoTipo === 'pico' ? 'pico' : r.alvoTipo) + ') · ' + r.ma + '×' + r.mi
-        + ' · ' + SC_REG_ROT[r.st] + (r.tFim ? ' ' + dh(r.tFim) : (r.tEnt ? ' ' + dh(r.tEnt) : '')) + (r.ign ? ' · ignição ✓' : r.tEnt ? ' · sem ignição' : '')));
+        + ' · ' + SC_REG_ROT[r.st] + (r.tFim ? ' ' + dh(r.tFim) : (r.tEnt ? ' ' + dh(r.tEnt) : '')) + (r.ign ? ' · ignição ✓' : r.tEnt ? ' · sem ignição' : '')
+        + (r.sombraAbs && r.sombraAbs.R != null ? ' · sombra ' + (r.sombraAbs.R >= 0 ? '+' : '−') + Math.abs(r.sombraAbs.R).toFixed(1).replace('.', ',') + 'R' : '')));
     scRelatorioMostrar({ lado: null, linhas });
 }
 function scSobreMostrar() {
@@ -17279,7 +17343,8 @@ function scSobreMostrar() {
         'Placar da fase de ignição: depois de entrar, o preço andou 1 risco (1R) a favor antes do stop. Depois da ignição o stop sobe pro zero (preço de entrada): se voltar, sai no zero.',
         'Gatilho: só entra se o candle de confirmação fechar a no máximo meio risco além da entrada; mais longe que isso, espera (o rato passou da ratoeira).',
         'Nota (0 a 7): Absorção, Ordem grande, Traders presos, Agressores e Virada de delta (só toques recentes, dentro de um candle do macro), RSI e Fibonacci.',
-        'Descontos (−1 cada): suporte/resistência contra, o seu lado no prejuízo, faca caindo / foguete subindo.',
+        'Descontos (−1 cada): suporte/resistência contra, o seu lado no prejuízo, faca caindo / foguete subindo, tendência contra (Long abaixo da EMA de 5 min caindo; Short acima dela subindo).',
+        'Saída-sombra (só no histórico, não muda o placar): em trade, o 1º candle de 5 min com absorção CONTRA (AV no Long, AC no Short) encostando na zona marca "teria saído aqui", para ver se compensa sair antes do stop.',
         'Volta ao valor: com o preço dentro do sino, só vale o lado que vai em direção ao pico (Long abaixo dele, Short acima). Fora do sino, os dois lados valem.',
         'Dentro do sino, o alvo tem de ser estrutura (o pico ou um nó do macro); se só sobrar 2R, não cria.',
         'Não cria: se a ignição já passou (o que falta até o alvo é menor que o risco) ou se a mesma zona deu stop há pouco.',
@@ -17390,6 +17455,10 @@ async function scRelatorioCaixa(pz) {
     try { grAreaToast('Atualizando Score e Status…', '#8E8E93'); } catch (e) {}
     try { await scRegAtualizar(); } catch (e) {}   // primeiro o desfecho (relê os candles), depois o Status — senão o Status ainda via a caixa como aberta
     let st = null; try { if (scStatusElegivel(pz)) { st = await scStatusCalcular(pz); pz._stat = st; } } catch (e) {}
+    { const sm = pz.tradeId ? null : grSimCaixa(pz); if (sm) { const $ = v => (v < 0 ? '−' : '') + '$' + Math.abs(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        base.push('Simulação: aporte ' + $(sm.aporte) + ' · risco ' + String(sm.risco).replace('.', ',') + '% · alav ' + sm.al + 'x · posição ' + $(sm.nt) + ' · taxa ' + String(sm.taxaPct).replace('.', ',') + '% por lado');
+        base.push('Taxas: entrada ' + $(sm.tEnt) + (sm.tSaiA != null ? ' · saída no alvo ' + $(sm.tSaiA) : '') + ' · saída no stop ' + $(sm.tSaiS));
+        base.push('Líquido: alvo ' + (sm.lucro != null ? $(sm.lucro) : '—') + ' · stop ' + $(sm.perda) + (sm.rr != null ? ' · R/R líquido ' + sm.rr.toFixed(2).replace('.', ',') : '')); } }
     base.push('— AGORA (' + dh(Date.now()) + ') · preço ' + f(_precoAtual) + ' —');
     if (st) {
         if (st.armada) base.push('Status: Armada · aguardando gatilho num candle de ' + st.armada.tf);
@@ -17438,6 +17507,8 @@ async function scRegRaioX(reg) {
             L.push('Depois de sair (' + dur(Date.now() - reg.tFim) + '): foi até ' + (mf >= 0 ? '+' : '−') + f(Math.abs(mf)) + ' da entrada (' + rr(mf) + ')' + (tMf ? ' em ' + dh(tMf) : '') + ' · o pior foi ' + rr(-Math.max(0, mc)) + ' · ' + (tAl ? 'TOCOU O ALVO em ' + dh(tAl) : 'não tocou o alvo'));
         }
     }
+    if (reg.sombraAbs) L.push('Saída-sombra (' + (lg ? 'AV' : 'AC') + ' ' + reg.sombraAbs.pct + '% contra em ' + dh(reg.sombraAbs.t) + '): teria saído em ' + f(reg.sombraAbs.p) + ' (' + rr(reg.sombraAbs.R * risco) + ')');
+    else if (reg.zero && reg.tEnt) L.push('Saída-sombra: nenhuma absorção contra na zona durante o trade');
     // stops alternativos: teria segurado até o alvo (ou até agora)?
     const alt = Object.assign({ usado: reg.stp }, reg.stopAlt || {}), ate2 = ini.filter(c => c.t >= (reg.tGat != null ? reg.tGat + 1 : reg.tEnt));
     let tA = null; for (const c of ate2) { if (lg ? c.h >= reg.alvo : c.l <= reg.alvo) { tA = c.t; break; } }
