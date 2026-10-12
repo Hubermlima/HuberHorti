@@ -3267,7 +3267,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v497';
+const APP_VERSAO = 'v498';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -17526,6 +17526,16 @@ function scPlayToggle() {
     try { cvFecharMenuFpCfg(); } catch (e) {}
 }
 // Toque no "Auto": balão só com as caixas do motor vivas e o TF do gatilho de cada uma (ex.: "Long 5m", "Short 30m") + Pausar/Ligar
+// Registro do automático: o que cada rodada fez e POR QUÊ (últimas 40 rodadas, em memória)
+function scAutoLogAdd(linhas) { const L = window._scAutoLog = window._scAutoLog || []; L.push({ t: Date.now(), linhas: linhas || [] }); if (L.length > 40) L.splice(0, L.length - 40); }
+function scAutoLogMostrar() {
+    scAutoMenuFechar();
+    const L = (window._scAutoLog || []).slice().reverse(), hm = t => new Date(t).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    const out = ['REGISTRO DO AUTOMÁTICO · ' + (_scPlay.on ? 'ligado' : 'em pausa') + (_scPlay.on && _scPlay.prox ? ' · próxima rodada ' + hm(_scPlay.prox) : '') + (_scPlay.rodando ? ' · rodando agora (desde ' + hm(_scPlay.rodT0) + ')' : '')];
+    if (!L.length) out.push('Nenhuma rodada desde que o app abriu.');
+    L.forEach(x => { out.push('— ' + hm(x.t) + ' —'); x.linhas.forEach(l => out.push(l)); });
+    scRelatorioMostrar({ lado: null, linhas: out });
+}
 function scAutoMenuFechar() { ['cv-auto-ov', 'cv-auto-menu'].forEach(id => { const e = document.getElementById(id); if (e) e.remove(); }); }
 function scAutoMenu(cx, cy) {
     scAutoMenuFechar();
@@ -17536,8 +17546,10 @@ function scAutoMenu(cx, cy) {
     const m = document.createElement('div'); m.id = 'cv-auto-menu';
     m.style.cssText = 'position:fixed;z-index:9701;background:#FFFFFF;border-radius:18px;box-shadow:0 8px 28px rgba(0,0,0,0.22);padding:8px 12px;font-family:-apple-system,sans-serif;font-size:14px;color:#1C1C1E;min-width:120px;';
     m.innerHTML = (vivas.length ? vivas.map(r => '<div style="padding:4px 0;font-weight:700;color:' + (r.lado === 'long' ? '#16A34A' : '#DC2626') + ';">' + (r.lado === 'long' ? 'Long' : 'Short') + ' ' + tfC(r) + '</div>').join('') : '<div style="padding:4px 0;color:#8E8E93;">nenhuma caixa</div>')
+        + '<button type="button" id="cv-auto-log" style="display:block;width:100%;margin-top:6px;border:none;border-radius:12px;padding:7px 10px;font-size:13px;font-weight:700;background:#F2F2F7;color:#1C1C1E;">Registro</button>'
         + '<button type="button" id="cv-auto-bt" style="display:block;width:100%;margin-top:6px;border:none;border-radius:12px;padding:7px 10px;font-size:13px;font-weight:800;background:' + (_scPlay.on ? '#F2F2F7' : '#1C1C1E') + ';color:' + (_scPlay.on ? '#1C1C1E' : '#FFFFFF') + ';">' + (_scPlay.on ? 'Pausar' : 'Ligar') + '</button>';
     document.body.appendChild(ov); document.body.appendChild(m);
+    m.querySelector('#cv-auto-log').onclick = e => { e.stopPropagation(); scAutoLogMostrar(); };
     m.querySelector('#cv-auto-bt').onclick = e => { e.stopPropagation(); scAutoMenuFechar(); if (_scPlay.on) scPlayParar(); else scPlayLigar(); try { grDrawChart(); } catch (x) {} };
     requestAnimationFrame(() => { const r = m.getBoundingClientRect(), W = window.innerWidth, H = window.innerHeight; let x = (cx || 0) - r.width / 2, y = (cy || 0) + 12; if (x + r.width > W - 8) x = W - r.width - 8; if (y + r.height > H - 8) y = (cy || 0) - r.height - 12; m.style.left = Math.max(8, x) + 'px'; m.style.top = Math.max(8, y) + 'px'; });
 }
@@ -17552,24 +17564,31 @@ setTimeout(() => { try { if (_scCfg.play && !_scPlay.on) scPlayLigar(); else scP
 async function scPlayTick() {
     if (!_scPlay.on) return;
     if (_scPlay.prox - Date.now() > 0) { scPlayUI(); return; }
-    if (_scPlay.rodando) return;
-    _scPlay.rodando = true; scPlayUI();
-    const partes = []; let ocupado = false;
+    if (_scPlay.rodando) { if (Date.now() - (_scPlay.rodT0 || 0) < 120000) return; _scPlay.rodando = false; scAutoLogAdd(['rodada anterior travou (mais de 2 min sem resposta, provavelmente a internet): destravei']); }   // vigia: uma busca que nunca responde não pode parar o automático pra sempre
+    _scPlay.rodando = true; _scPlay.rodT0 = Date.now(); scPlayUI();
+    const partes = [], log = []; let ocupado = false;
     try {
         // M15 — MOTOR AUTOMÁTICO: 1) revisa as armadas (tese caiu → Tese Inválida); 2) em cada lado SEM caixa armada ou em trade, arma uma NOVA
         // com as condições de agora. Caixa já armada não é redesenhada (cada tese fica com o seu placar); em trade, ninguém mexe.
-        if (scEmTrade()) { partes.push('pausa: caixa em trade'); throw { pausa: true }; }   // um trade de cada vez: com caixa em trade, nada é revisado nem armado
-        try { await scRegRevisar(); } catch (e) {}
+        if (scEmTrade()) { partes.push('pausa: caixa em trade'); log.push('pausado: tem caixa em trade (nada revisado nem armado)'); throw { pausa: true }; }
+        if (!_grFootprintAtivo || !_grFootprintCandlesRaw) { log.push('sem Fluxo ligado/carregado: nada a fazer'); throw { pausa: true }; }   // um trade de cada vez: com caixa em trade, nada é revisado nem armado
+        { const antes = new Set(scRegLista().filter(r => r.st === 'desfeita').map(r => r.id + '|' + r.t0)); try { await scRegRevisar(); } catch (e) {}
+          const caiu = scRegLista().filter(r => r.st === 'desfeita' && !antes.has(r.id + '|' + r.t0));
+          const arm = scRegLista().filter(r => r.st === 'aguardando' && r.zero && grPosicoes().some(z => z.id === r.id)).length;
+          log.push('revisão: ' + (caiu.length ? caiu.map(r => (r.lado === 'long' ? 'Long' : 'Short') + ' → tese inválida (' + (r.motivo || '') + ')').join('; ') : arm ? arm + ' armada(s) conferida(s), tese ok' : 'nenhuma armada')); }
         const sym = grBinSymbolAtual(), ids = new Set(grPosicoes().map(z => z.id));
         for (const lado of ['short', 'long']) {
-            if (scRegLista().some(r => r.lado === lado && (r.st === 'aguardando' || r.st === 'entrou') && (!r.sym || r.sym === sym) && ids.has(r.id))) { partes.push((lado === 'short' ? 'S' : 'L') + '='); continue; }
+            const nm = lado === 'short' ? 'Short' : 'Long', ja = scRegLista().find(r => r.lado === lado && (r.st === 'aguardando' || r.st === 'entrou') && (!r.sym || r.sym === sym) && ids.has(r.id));
+            if (ja) { partes.push((lado === 'short' ? 'S' : 'L') + '='); log.push(nm + ': já tem caixa ' + (ja.st === 'entrou' ? 'em trade' : 'armada') + ' (' + (ja.tfAk || '5m') + ', criada ' + new Date(ja.t0).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) + ')'); continue; }
             const n0 = grPosicoes().length, r = await scRodar(lado, { silencioso: true, modo: 'auto' });
-            if (r && r.ocupado) { ocupado = true; break; }
+            if (r && r.ocupado) { ocupado = true; log.push(nm + ': motor ocupado com outra análise, tenta de novo'); break; }
             const criou = grPosicoes().length > n0;
             partes.push((lado === 'short' ? 'S' : 'L') + (criou ? '✓' : '–'));
-            if (criou) { try { grAreaToast('Motor automático: armou ' + (lado === 'short' ? 'Short' : 'Long'), '#2962FF'); } catch (e) {} }
+            log.push(nm + ': ' + (criou ? 'ARMOU caixa nova' : 'sem entrada · ' + String((r && r.msg) || 'sem motivo').replace(/^Micro: /, '').replace(/\. Caixa não criada\.?/, '')));
+            if (criou) { try { grAreaToast('Motor automático: armou ' + nm, '#2962FF'); } catch (e) {} }
         }
-    } catch (e) { if (!(e && e.pausa)) partes.push('erro'); }
+    } catch (e) { if (!(e && e.pausa)) { partes.push('erro'); log.push('erro: ' + (e && e.message ? e.message : String(e))); } }
+    scAutoLogAdd(log);
     _scPlay.rodando = false;
     if (!ocupado) { _scPlay.prox = scPlayProxima(); _scPlay.ultimo = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) + ' ' + partes.join(' '); }
     scPlayUI(); try { grDrawChart(); } catch (e) {}
