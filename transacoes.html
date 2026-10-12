@@ -3251,7 +3251,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v485';
+const APP_VERSAO = 'v491';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -7543,6 +7543,22 @@ function grDesenharLinhaOhlc(ctx, W, info) {
         ctx.fillText('Sair', xSair + 8, yTopB + 0.5 + hB / 2 + fs * 0.35);
     });
     window._grBarraSuperiorChips.push({ x: xSair - 4, y: yTopB - 6, w: wSair + 8, h: hB + 12, abrir: () => { grSair(); } });
+    // "Auto": motor automático (tocar = pausa / liga). Verde = ligado · laranja = pausado sozinho (caixa em trade) · cinza = pausado por você
+    let xLim = xSair;
+    try {
+        let emT = false; try { emT = scEmTrade(); } catch (e) {}
+        const on = _scPlay.on, vAuto = !on ? 'pausa' : !_grFootprintAtivo ? 'sem Fluxo' : emT ? 'em trade' : _scPlay.rodando ? '…' : 'on';
+        const corA = !on ? '#8E8E93' : emT ? '#F59E0B' : !_grFootprintAtivo ? '#8E8E93' : '#16A34A';
+        ctx.font = fs + 'px -apple-system'; const wR = ctx.measureText('Auto ').width; ctx.font = 'bold ' + fs + 'px -apple-system'; const wV = ctx.measureText(vAuto).width;
+        const wAuto = wR + wV + 16, xAuto = xSair - 8 - wAuto;
+        desenharBadge(xAuto, wAuto, () => {
+            const yTxt = yTopB + 0.5 + hB / 2 + fs * 0.35; ctx.textAlign = 'left';
+            ctx.font = fs + 'px -apple-system'; ctx.fillStyle = corRotulo; ctx.fillText('Auto ', xAuto + 8, yTxt);
+            ctx.font = 'bold ' + fs + 'px -apple-system'; ctx.fillStyle = corA; ctx.fillText(vAuto, xAuto + 8 + wR, yTxt);
+        });
+        window._grBarraSuperiorChips.push({ x: xAuto - 4, y: yTopB - 6, w: wAuto + 8, h: hB + 12, abrir: () => { if (_scPlay.on) scPlayParar(); else scPlayLigar(); grDrawChart(); } });
+        xLim = xAuto;
+    } catch (e) {}
     if (_grAmbExpandido) {
         const itens = [
             { rot: 'TF ', val: grTfSiglaAtual(), abrir: (cx, cy) => cvAbrirMenuTf(cx, cy) },
@@ -7553,7 +7569,7 @@ function grDesenharLinhaOhlc(ctx, W, info) {
             ctx.font = fs + 'px -apple-system'; const wRot = ctx.measureText(it.rot).width;
             ctx.font = 'bold ' + fs + 'px -apple-system'; const wVal = ctx.measureText(it.val).width;
             const wB = wRot + wVal + 16;
-            if (xb + wB > (yRow === yTopB ? xSair - 4 : xMax + 4) && xb > x0 + wChev + 8) { xb = x0; yRow += hB + 6; }  // não coube: quebra para a linha de baixo
+            if (xb + wB > (yRow === yTopB ? xLim - 4 : xMax + 4) && xb > x0 + wChev + 8) { xb = x0; yRow += hB + 6; }  // não coube: quebra para a linha de baixo
             desenharBadge(xb, wB, () => {
                 const yTxt = yRow + 0.5 + hB / 2 + fs * 0.35;
                 ctx.textAlign = 'left';
@@ -16484,7 +16500,7 @@ const SC_PLAY_INTERVALOS = [5, 10, 15, 30, 60, 120, 240];   // minutos entre uma
 let _scCfg = (function () {
     let c = null; try { c = JSON.parse(localStorage.getItem('grSetupCx') || 'null'); } catch (e) {}
     c = c && typeof c === 'object' ? c : {};
-    return { dias: SC_DIAS.includes(c.dias) ? c.dias : 30, macro: scTfBase(c.macro) ? c.macro : '3d', micro: scTfBase(c.micro) ? c.micro : '4h', ligado: c.ligado === true, intervalo: SC_PLAY_INTERVALOS.includes(c.intervalo) ? c.intervalo : 15 };
+    return { dias: SC_DIAS.includes(c.dias) ? c.dias : 30, macro: scTfBase(c.macro) ? c.macro : '3d', micro: scTfBase(c.micro) ? c.micro : '4h', ligado: c.ligado === true, intervalo: SC_PLAY_INTERVALOS.includes(c.intervalo) ? c.intervalo : 5, play: c.play !== false };   // automático ligado por padrão; só fica parado se o usuário pausou
 })();
 let _scCalculando = false, _scUltimo = null;
 _indState.setupCx = _scCfg.ligado;
@@ -17181,7 +17197,7 @@ async function scTfAcompanhar(h) {
     return melhor || (menor ? { rot: null, menor: menor.menor, med: menor.med, h } : null);
 }
 // ══ VERSÃO DO MOTOR + REGISTRO das caixas que ele cria (gravado junto com as caixas, nas preferências, ao tocar em Sair) ══
-const SC_MOTOR_VERSAO = 'M14';
+const SC_MOTOR_VERSAO = 'M15';
 function scRegLista() { if (!Array.isArray(window._scRegistro)) window._scRegistro = []; return window._scRegistro; }
 function scRegistrar(o) {
     const L = scRegLista();
@@ -17217,8 +17233,11 @@ async function scRegGravarServidor() {
 // (1) o lado não tem mais entrada válida (ex.: o preço passou do pico do sino), (2) a entrada da caixa saiu do sino, ou (3) a nota caiu para 0.
 let _scRevisando = false;
 function scRevTxt(r) { if (!r || !r.revT) return ''; return 'tese conferida às ' + new Date(r.revT).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) + ' · ' + (r.st === 'desfeita' ? 'caiu' : 'ok'); }
-async function scRegRevisar() {
+function scEmTrade() { const sym = grBinSymbolAtual(), ids = new Set(grPosicoes().map(z => z.id)); return scRegLista().some(r => r.st === 'entrou' && (!r.sym || r.sym === sym) && ids.has(r.id)); }   // alguma caixa do motor em trade neste ativo?
+function scRegRevisar() { if (_scRevisando && window._scRevProm) return window._scRevProm; window._scRevProm = scRegRevisar0(); return window._scRevProm; }   // quem chamar durante uma revisão espera a mesma
+async function scRegRevisar0() {
     if (_scRevisando || _scMotorOn || _scCalculando || !_grFootprintAtivo || !_grFootprintCandlesRaw) return;
+    if (scEmTrade()) return;   // com caixa em trade, o automático pausa tudo (nem revisa as armadas)
     const sym = grBinSymbolAtual(), arm = scRegLista().filter(r => r.gat && r.zero && r.st === 'aguardando' && (!r.sym || r.sym === sym) && grPosicoes().some(z => z.id === r.id));
     if (!arm.length) return;
     _scRevisando = true; let mudou = false; const ult0 = _scUltimo;
@@ -17271,7 +17290,6 @@ function scRegChecarPreco(px) {
         }
     });
     if (mudou) scRegGravarServidor();
-    { const bl = Math.floor(Date.now() / 300000); if (bl !== window._scRevBloco) { window._scRevBloco = bl; setTimeout(() => { scRegRevisar().catch(() => {}); }, 20000); } }   // revisão da tese: 20 s depois de cada fechamento de 5 min
     if (Date.now() - (window._scPerigoTs || 0) > 30000) {   // Status das caixas EM TRADE a cada 30 s (pra bolinha de perigo)
         window._scPerigoTs = Date.now();
         const emTrade = grPosicoes().filter(z => z.origem === 'setup' && L.some(r => r.id === z.id && r.st === 'entrou' && (!r.sym || r.sym === sym)));
@@ -17395,7 +17413,8 @@ function scSobreMostrar() {
         'Gatilho: só entra se o candle de confirmação fechar a no máximo meio risco além da entrada; mais longe que isso, espera (o rato passou da ratoeira).',
         'Nota (0 a 7): Absorção, Ordem grande, Traders presos, Agressores e Virada de delta (só toques recentes, dentro de um candle do macro), RSI e Fibonacci.',
         'Descontos (−1 cada): suporte/resistência contra, o seu lado no prejuízo, faca caindo / foguete subindo, tendência contra (Long abaixo da EMA de 5 min caindo; Short acima dela subindo).',
-        'Revisão da tese (caixas armadas): a cada candle de 5 min, o motor refaz a análise. Se o lado perdeu a entrada, se a entrada saiu do sino ou se a nota caiu para 0, a caixa vira Tese Inválida e não entra mais. O histórico segue o que teria acontecido sem cancelar.',
+        'Motor automático (botão "Auto" na barra superior do gráfico; tocar pausa ou liga): liga sozinho ao abrir o app, a não ser que você tenha deixado em pausa. Com alguma caixa EM TRADE neste ativo, o automático pausa tudo (não revisa nem arma) até ela terminar. Fora isso, a cada fechamento de candle de 5 min, revisa as caixas armadas e, em cada lado sem caixa armada ou em trade, arma uma nova com as condições de agora. Caixa armada não é redesenhada: se a tese cai, ela fica listrada e outra nasce ao lado. Legenda da pílula: ✓ armou · = já tinha · – sem entrada.',
+        'Revisão da tese (caixas armadas): a cada rodada do automático, o motor refaz a análise. Se o lado perdeu a entrada, se a entrada saiu do sino ou se a nota caiu para 0, a caixa vira Tese Inválida e não entra mais. O histórico segue o que teria acontecido sem cancelar.',
         'Duas caixas: quando os dois lados têm entrada válida, o motor arma Long E Short; o gatilho decide qual entra. Sem entrada num lado, sai só a outra.',
         'Saída-sombra (só no histórico, não muda o placar): em trade, o 1º candle de 5 min com absorção CONTRA (AV no Long, AC no Short) encostando na zona marca "teria saído aqui", para ver se compensa sair antes do stop.',
         'Volta ao valor: com o preço dentro do sino, só vale o lado que vai em direção ao pico (Long abaixo dele, Short acima). Fora do sino, os dois lados valem.',
@@ -17461,18 +17480,24 @@ async function scMotor() {
 }
 // ── PLAY / PAUSE: a cada fechamento de candle do TF micro, roda o motor (short e long) e cria as caixas de scalp. Só funciona com o app aberto; ao voltar de segundo plano roda na hora se passou do horário. ──
 const _scPlay = { on: false, prox: 0, tmr: null, rodando: false, ultimo: '' };
-function scPlayProxima() { return Date.now() + _scCfg.intervalo * 60000; }   // intervalo escolhido pelo usuário, contado a partir de agora (Play ligado, análise automática ou manual)
+function scPlayProxima() { const b = 5 * 60000;   // M15: sempre o candle de 5 min (o TF de acompanhamento)
+    return Math.ceil((Date.now() + 1000) / b) * b + 20000; }   // M15: alinhado ao fechamento do candle (20 s depois, pra o candle fechado já ter chegado)   // intervalo escolhido pelo usuário, contado a partir de agora (Play ligado, análise automática ou manual)
 function scIntervaloRot(m) { return m >= 60 ? (m / 60) + ' h' : m + ' min'; }
 function scPlayFmt(ms) { const t = Math.max(0, Math.ceil(ms / 1000)), h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), q = t % 60, z = v => (v < 10 ? '0' : '') + v; return (h ? h + ':' + z(m) : m) + ':' + z(q); }
 function scPlayToggle() {
     if (_scPlay.on) { scPlayParar(); return; }
     if (!_grFootprintAtivo || !_grFootprintCandlesRaw) { alert('Ligue o Fluxo (FX) e aguarde os dados carregarem.'); return; }
+    scPlayLigar();
+    try { cvFecharMenuFpCfg(); } catch (e) {}
+}
+function scPlayLigar() {
     _scPlay.on = true; _scPlay.prox = scPlayProxima(); _scPlay.ultimo = '';
     clearInterval(_scPlay.tmr); _scPlay.tmr = setInterval(scPlayTick, 1000);
-    try { cvFecharMenuFpCfg(); } catch (e) {}
-    scPlayUI();
+    _scCfg.play = true; scSalvar(); scPlayUI();
 }
-function scPlayParar() { _scPlay.on = false; clearInterval(_scPlay.tmr); _scPlay.tmr = null; scPlayUI(); try { cvRenderMenuFpCfg(); } catch (e) {} }
+function scPlayParar() { _scPlay.on = false; clearInterval(_scPlay.tmr); _scPlay.tmr = null; _scCfg.play = false; scSalvar(); scPlayUI(); try { cvRenderMenuFpCfg(); } catch (e) {} }
+// O Play lembra: se ficou ligado, volta ligado quando o app abre (a 1ª rodada espera o Fluxo carregar: sem ele, o motor só não arma nada)
+setTimeout(() => { try { if (_scCfg.play && !_scPlay.on) scPlayLigar(); else scPlayUI(); } catch (e) {} }, 8000);   // liga sozinho ao abrir, a não ser que o usuário tenha deixado em pausa   // o motor automático é autônomo: liga sozinho ao abrir o app e pausa sozinho com caixa em trade
 async function scPlayTick() {
     if (!_scPlay.on) return;
     if (_scPlay.prox - Date.now() > 0) { scPlayUI(); return; }
@@ -17480,25 +17505,30 @@ async function scPlayTick() {
     _scPlay.rodando = true; scPlayUI();
     const partes = []; let ocupado = false;
     try {
+        // M15 — MOTOR AUTOMÁTICO: 1) revisa as armadas (tese caiu → Tese Inválida); 2) em cada lado SEM caixa armada ou em trade, arma uma NOVA
+        // com as condições de agora. Caixa já armada não é redesenhada (cada tese fica com o seu placar); em trade, ninguém mexe.
+        if (scEmTrade()) { partes.push('pausa: caixa em trade'); throw { pausa: true }; }   // um trade de cada vez: com caixa em trade, nada é revisado nem armado
+        try { await scRegRevisar(); } catch (e) {}
+        const sym = grBinSymbolAtual(), ids = new Set(grPosicoes().map(z => z.id));
         for (const lado of ['short', 'long']) {
-            const r = await scRodar(lado, { silencioso: true, scalp: true });
+            if (scRegLista().some(r => r.lado === lado && (r.st === 'aguardando' || r.st === 'entrou') && (!r.sym || r.sym === sym) && ids.has(r.id))) { partes.push((lado === 'short' ? 'S' : 'L') + '='); continue; }
+            const n0 = grPosicoes().length, r = await scRodar(lado, { silencioso: true, modo: 'auto' });
             if (r && r.ocupado) { ocupado = true; break; }
-            partes.push((lado === 'short' ? 'S' : 'L') + (r && !r.erro ? (r.dup ? '=' : '✓') : '–'));
+            const criou = grPosicoes().length > n0;
+            partes.push((lado === 'short' ? 'S' : 'L') + (criou ? '✓' : '–'));
+            if (criou) { try { grAreaToast('Motor automático: armou ' + (lado === 'short' ? 'Short' : 'Long'), '#2962FF'); } catch (e) {} }
         }
-    } catch (e) { partes.push('erro'); }
+    } catch (e) { if (!(e && e.pausa)) partes.push('erro'); }
     _scPlay.rodando = false;
     if (!ocupado) { _scPlay.prox = scPlayProxima(); _scPlay.ultimo = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) + ' ' + partes.join(' '); }
     scPlayUI(); try { grDrawChart(); } catch (e) {}
 }
 document.addEventListener('visibilitychange', () => { if (!document.hidden && _scPlay.on) scPlayTick(); });
-function scPlayUI() {
-    let el = document.getElementById('cv-sc-play');
-    if (!_scPlay.on) { if (el) el.remove(); return; }
-    const cv = document.getElementById('gr-chart-canvas'); if (!cv) return;
-    if (!el) { el = document.createElement('button'); el.id = 'cv-sc-play'; el.type = 'button'; el.style.cssText = 'position:fixed;z-index:9500;border:none;border-radius:14px;padding:5px 10px;font-size:12px;font-weight:800;font-family:-apple-system,sans-serif;background:#1C1C1E;color:#FFFFFF;box-shadow:0 1px 6px rgba(0,0,0,0.3);'; el.onclick = ev => { ev.stopPropagation(); scPlayParar(); }; document.body.appendChild(el); }
-    const rc = cv.getBoundingClientRect();
-    el.textContent = '⏸ ' + (_scPlay.rodando ? 'analisando…' : 'próx. análise ' + scPlayFmt(_scPlay.prox - Date.now())) + (_scPlay.ultimo ? ' · ' + _scPlay.ultimo : '');
-    el.style.right = Math.max(6, window.innerWidth - rc.right + 8) + 'px'; el.style.top = (rc.top + 52) + 'px';
+function scPlayUI() {   // o controle "Auto" fica na barra superior do gráfico; aqui só redesenha quando o estado muda (barato a cada segundo)
+    const velho = document.getElementById('cv-sc-play'); if (velho) velho.remove();
+    let emT = false; try { emT = scEmTrade(); } catch (e) {}
+    const k = [_scPlay.on, _scPlay.rodando, emT, !!_grFootprintAtivo].join('|');
+    if (k !== window._scPlayUiK) { window._scPlayUiK = k; try { grDrawChart(); } catch (e) {} }
 }
 // Ver Relatório: o relatório da criação + como a caixa está AGORA (preço, Score atual, Status e o desfecho no histórico), tudo num texto só pra copiar
 // Relatório completo de UMA caixa: o da criação (guardado na caixa; nas caixas antigas é refeito com o que a caixa tem) + como está AGORA
@@ -17674,9 +17704,7 @@ function scRenderPopup(menu) {
         + grConfigCombo(ico.rel, 'Timeframe micro', 'Entrada e stop', 'cv-cfg-sc-micro', tfsDe(_scCfg.micro), _scCfg.micro, 'scDefinirMicro')
         + '<div style="font-size:11.5px;color:#8E8E93;margin-top:8px;line-height:1.4;">Fluxo carregado: ' + (cob >= _scCfg.dias - 1 ? 'cobre a janela' : '<b style="color:#DC2626;">só ' + Math.floor(cob) + ' dias</b>') + '. As réguas rodam em memória; a régua da tela não muda.</div>'
         + '<div style="font-size:12.5px;color:#1C1C1E;margin-top:6px;">' + scValoresSino() + '</div>'
-        + grConfigCombo(ico.rel, 'Intervalo do Play', 'Tempo entre análises automáticas', 'cv-cfg-sc-int', SC_PLAY_INTERVALOS.map(m => [m, scIntervaloRot(m)]), _scCfg.intervalo, 'scDefinirIntervalo')
         + '<div style="margin-top:12px;padding-top:12px;border-top:1px solid #F2F2F7;">'
-        + '<button type="button" onclick="scPlayToggle()" style="width:100%;margin-bottom:8px;border:none;border-radius:10px;padding:10px;font-size:13px;font-weight:800;background:' + (_scPlay.on ? '#FDECEC' : '#1C1C1E') + ';color:' + (_scPlay.on ? '#DC2626' : '#FFFFFF') + ';">' + (_scPlay.on ? '⏸ Pause' : '▶ Play · analisa a cada ' + scIntervaloRot(_scCfg.intervalo)) + '</button>'
         + (_scCalculando ? '<div style="font-size:12.5px;color:#8E8E93;padding:10px 0;">Calculando macro e micro…</div>'
             : '<div style="display:flex;gap:8px;"><button type="button" onclick="_scTraderAberto = !_scTraderAberto; cvRenderMenuFpCfg()" style="flex:1;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:800;background:' + (_scTraderAberto ? '#1C1C1E' : '#F2F2F7') + ';color:' + (_scTraderAberto ? '#FFFFFF' : '#1C1C1E') + ';">Trader</button>'
               + '<button type="button" onclick="scMotor()" style="flex:1;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:800;background:#F2F2F7;color:#1C1C1E;">Motor</button></div>'
