@@ -3235,7 +3235,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v457';
+const APP_VERSAO = 'v458';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -16715,18 +16715,21 @@ async function scStatusCalcular(pz) {
     const base = { lado: pz.lado, entrada: ent };
     const sc = await scScoreCaixa(base), conf = base._scConf;
     const px = (typeof _precoAtual === 'number' && _precoAtual > 0) ? _precoAtual : conf.ultFech, itens = [], pn = x => Math.round(x * 100) + '%', vir = v => v.toFixed(1).replace('.', ',');
+    let ta = pz.tfAcomp || null;   // TF em que se acompanha a operação (o maior em que um candle típico cabe na zona de captura); sem ele, o micro
+    try { if (!ta && stop != null) { const t0 = await scTfAcompanhar(Math.abs(stop - ent)); if (t0 && t0.rot) ta = { chave: t0.chave, rot: t0.rot }; } } catch (e) {}
     if (stop != null && px) {
         let med = conf.medRange, tfR = '';
-        try {   // a régua é o TF em que se acompanha a operação (o maior em que um candle típico cabe na zona de captura); sem ele, o micro
-            let ta = pz.tfAcomp; if (!ta) { const t0 = await scTfAcompanhar(Math.abs(stop - ent)); if (t0 && t0.rot) ta = { chave: t0.chave, rot: t0.rot }; }
+        try {
             if (ta) { const m = await scMedRangeTf(ta.chave); if (m > 0) { med = m; tfR = ' de ' + ta.rot; } }
         } catch (e) {}
         const dist = s * (stop - px);
         if (dist <= 0) itens.push({ n: 2, txt: 'o preço já passou do stop' });
         else if (med > 0) { const q = dist / med; itens.push({ n: q < 1 ? 2 : (q < 2 ? 1 : 0), txt: q < 1 ? 'o stop está a menos de 1 candle normal' + tfR + ' de distância' : 'o stop está a ' + vir(q) + ' candles normais' + tfR + ' de distância' }); }
     }
-    const ult = conf.fluxo.ult;
-    if (ult.length) { const nC = ult.filter(d => s * d > 0 && Math.abs(d) >= conf.fluxo.medD).length; itens.push({ n: nC >= 3 ? 2 : (nC === 2 ? 1 : 0), txt: nC === 0 ? 'o fluxo não foi contra você nos últimos ' + ult.length + ' candles' : 'o fluxo foi contra você em ' + nC + ' dos últimos ' + ult.length + ' candles' }); }
+    let fx = conf.fluxo, fxR = '';
+    try { if (ta) { const f2 = scFluxoTf(ta.chave); if (f2) { fx = f2; fxR = ' de ' + ta.rot; } } } catch (e) {}
+    const ult = fx.ult;
+    if (ult.length) { const nC = ult.filter(d => s * d > 0 && Math.abs(d) >= fx.medD).length; itens.push({ n: nC >= 3 ? 2 : (nC === 2 ? 1 : 0), txt: nC === 0 ? 'o fluxo não foi contra você nos últimos ' + ult.length + ' candles' + fxR : 'o fluxo foi contra você em ' + nC + ' dos últimos ' + ult.length + ' candles' + fxR }); }
     if (conf.enc && conf.enc.pen > 0) itens.push({ n: 1, txt: pn(conf.enc.pct) + ' de quem ' + (s > 0 ? 'vendeu' : 'comprou') + ' está perdendo dinheiro agora (normal: ' + pn(conf.enc.med) + ')' });
     else itens.push({ n: 0, txt: 'o seu lado não está no prejuízo' });
     if (conf.sup && conf.sup.pen > 0) itens.push({ n: 1, txt: 'tem ' + (s > 0 ? 'suporte' : 'resistência') + ' na zona: ' + conf.sup.refs.join(' · ') });
@@ -16862,6 +16865,15 @@ function scZonaQueimada(lado, entrada, tick) {
     } catch (e) { return false; }
 }
 // Tamanho típico (mediana de máxima − mínima) dos candles de um TF nos últimos 7 dias
+// Fluxo (delta do footprint) nos candles de um TF: os 3 últimos (o em formação entra) e a mediana de |delta| do último dia
+function scFluxoTf(chave) {
+    if (!_grFootprintAtivo || !_grFootprintCandlesRaw) return null;
+    const bloco = scDefTf(chave).blocoMs, fim = Date.now(), D = new Map();
+    grFootprintParaCadaMinuto(fim - 86400000, fim, m => { const b = Math.floor(m.ts / bloco) * bloco; let d = 0; (m.niveis || []).forEach(n => { d += n.c - n.v; }); D.set(b, (D.get(b) || 0) + d); });
+    const ks = Array.from(D.keys()).sort((a, b) => a - b); if (ks.length < 20) return null;
+    const vals = ks.map(k => D.get(k));
+    return { medD: scMediana(vals.map(Math.abs)), ult: vals.slice(-3) };
+}
 async function scPavioTf(chave) {   // pavio típico (mediana) dos candles de um TF nos últimos 7 dias: de baixo (inf) e de cima (sup)
     const cs = await scCandles(scDefTf(chave), 7);
     const inf = [], sup = [];
