@@ -3251,7 +3251,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v483';
+const APP_VERSAO = 'v484';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4849,7 +4849,8 @@ function grPadraoSimGravar(chave, v) {
 // TESE INVÁLIDA (só da caixa Em Análise; só pinta, não bloqueia nada): o preço entrou na zona de captura (tocou a entrada) e depois chegou ao stop.
 // Conta pavio, só olha candles a partir do começo da caixa e, no mesmo candle que toca entrada e stop, assume que o stop veio depois.
 const _grTeseCache = new Map();
-function grTeseInvalida(pz) {
+function grTeseInvalida(pz, soPreco) {
+    if (!soPreco && pz && (window._scRegistro || []).some(r => r.id === pz.id && r.st === 'desfeita')) return true;   // M14: o motor revisou e a tese da caixa armada se desfez
     const arr = _grAllCandles;
     if (!arr || !arr.length || pz.tradeId || pz.previa || !(pz.entrada > 0) || !(pz.stop > 0) || pz.stop === pz.entrada) return false;
     const t0 = Math.min(pz.t1, pz.t2), u = arr[arr.length - 1];
@@ -6995,7 +6996,7 @@ if (fibsParaDesenhar.length > 0) {
                     const rg = (window._scRegistro || []).find(r => r.id === pz.id);
                     if (rg) {
                         let E = { aguardando: ['ARMADA', '#2962FF'], entrou: rg.ign ? ['IGNIÇÃO ✓', '#16A34A'] : ['EM TRADE', '#F59E0B'], alvo: ['ALVO ✓', '#16A34A'], stop: ['STOP', '#DC2626'], zero: ['ZERO', '#6B6B70'],
-                            semGatilho: ['SEM GATILHO', '#8E8E93'], perdida: ['PERDIDA', '#8E8E93'], expirou: ['EXPIROU', '#8E8E93'] }[rg.st];
+                            semGatilho: ['SEM GATILHO', '#8E8E93'], perdida: ['PERDIDA', '#8E8E93'], expirou: ['EXPIROU', '#8E8E93'], desfeita: ['TESE INVÁLIDA', '#8E8E93'] }[rg.st];
                         if (E) {   // bolinha colada na lateral, no nível do PE: esquerda = fora do trade (armada, sem gatilho, perdida, expirou); direita = trade (em trade, ignição, alvo, stop, zero)
                             const lado = ['entrou', 'alvo', 'stop', 'zero'].indexOf(rg.st) >= 0 ? 1 : -1, rr = 5;
                             const cx = lado > 0 ? xb + rr + 1 : xa - rr - 1, cy = Math.max(PAD.top + rr, Math.min(PAD.top + chartH - rr, yE));
@@ -16799,7 +16800,7 @@ function scDesfechoCaixa(pz) {
     const reg = (window._scRegistro || []).find(r => r.id === pz.id);
     const eR = reg && reg.entReal ? reg.entReal : ent, rR = Math.abs(pz.stop - eR);   // com gatilho: o R é medido da entrada real
     const R = st => st === 'alvo' && rR > 0 ? s * (eR - pz.alvo) / rR : st === 'stop' ? -1 : null;
-    if (reg && ['alvo', 'stop', 'perdida', 'expirou', 'semGatilho', 'zero'].indexOf(reg.st) >= 0) return { st: reg.st, tFim: reg.tFim, R: reg.st === 'zero' ? 0 : R(reg.st) };
+    if (reg && ['alvo', 'stop', 'perdida', 'expirou', 'semGatilho', 'zero', 'desfeita'].indexOf(reg.st) >= 0) return { st: reg.st, tFim: reg.tFim, R: reg.st === 'zero' ? 0 : R(reg.st) };
     if (pz.gat) return null;   // com gatilho, o desfecho vem só do registro (tocar a zona não é entrar)
     if (!(pz.alvo > 0) || !(pz.stop > 0) || !(ent > 0)) return null;
     const arr = _grAllCandles || [], t0 = Math.min(pz.t1 || 0, pz.t2 || 0), lg = pz.lado === 'long'; let dentro = false;
@@ -17012,7 +17013,7 @@ function scDefesaNivel(lado, de, ate, tick) {
 function scZonaQueimada(lado, entrada, tick) {
     try {
         const tLim = Date.now() - scDefTf(_scCfg.micro).blocoMs;   // M9: memória de 1 candle do micro (antes 1 do macro = 3 dias, longo demais pro 5 min)
-        return grPosicoes().some(z => z.origem === 'setup' && !z.tradeId && !z.teste && z.lado === lado && Math.max(z.t1, z.t2) >= tLim && Math.abs(z.entrada - entrada) <= tick && grTeseInvalida(z));
+        return grPosicoes().some(z => z.origem === 'setup' && !z.tradeId && !z.teste && z.lado === lado && Math.max(z.t1, z.t2) >= tLim && Math.abs(z.entrada - entrada) <= tick && grTeseInvalida(z, true));
     } catch (e) { return false; }
 }
 // Tamanho típico (mediana de máxima − mínima) dos candles de um TF nos últimos 7 dias
@@ -17103,6 +17104,7 @@ async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fecha
             throw { soAval: true, aval: { nota: sd.n, fraco, entrada, stop, alvo, alvoTipo: esc.alvoTipo || (am ? 'macro' : '2R'), tf: dMi.rot,
                 ok: sd.itens.filter(x => x.ok).map(x => x.nome), nao: sd.itens.filter(x => !x.ok && !String(x.pts).startsWith('−')).map(x => x.nome),
                 desc: sd.itens.filter(x => String(x.pts).startsWith('−')).map(x => x.nome + ' ' + x.pts),
+                faixas: esc.banda ? esc.banda.faixas.map(fx => ({ lo: fx.lo, hi: fx.hi })) : null, tick: rm.tick,
                 zona: esc.banda ? 'sino do ' + esc.banda.fonte + ': ' + esc.banda.faixas.map(fx => f0(fx.lo) + '–' + f0(fx.hi)).join(' + ') : '' } };
         }   // usado pelo Motor: só mede o lado, não desenha
         // posição: logo à direita da última caixa existente (nada é apagado)
@@ -17173,7 +17175,7 @@ async function scTfAcompanhar(h) {
     return melhor || (menor ? { rot: null, menor: menor.menor, med: menor.med, h } : null);
 }
 // ══ VERSÃO DO MOTOR + REGISTRO das caixas que ele cria (gravado junto com as caixas, nas preferências, ao tocar em Sair) ══
-const SC_MOTOR_VERSAO = 'M13';
+const SC_MOTOR_VERSAO = 'M14';
 function scRegLista() { if (!Array.isArray(window._scRegistro)) window._scRegistro = []; return window._scRegistro; }
 function scRegistrar(o) {
     const L = scRegLista();
@@ -17194,7 +17196,7 @@ async function scRegGravarServidor() {
             const ind = q.data.indicadores || {};
             // MESCLA com o que já está no servidor (outro aparelho/aba pode ter gravado): uma linha por caixa (id + hora de criação), fica a mais avançada
             const nv = { aguardando: 0, entrou: 1 }, chave = r => r.id + '|' + r.t0, m = new Map();
-            (Array.isArray(ind.scRegistro) ? ind.scRegistro : []).concat(scRegLista()).forEach(r => { const k = chave(r), a = m.get(k); if (!a || (nv[r.st] != null ? nv[r.st] : 2) > (nv[a.st] != null ? nv[a.st] : 2)) m.set(k, r); });
+            (Array.isArray(ind.scRegistro) ? ind.scRegistro : []).concat(scRegLista()).forEach(r => { const k = chave(r), a = m.get(k); if (!a || (nv[r.st] != null ? nv[r.st] : 2) >= (nv[a.st] != null ? nv[a.st] : 2)) m.set(k, r); });   // empate: a cópia local (vem depois) é a mais nova
             const junto = Array.from(m.values()).sort((a, b) => a.t0 - b.t0).slice(-300);
             window._scRegistro = junto; ind.scRegistro = junto;
             const r = await db.from('preferencias').upsert({ id: 1, indicadores: ind, updated_at: new Date().toISOString() });
@@ -17204,6 +17206,33 @@ async function scRegGravarServidor() {
     _scRegGravando = false;
     if (_scRegDeNovo) { _scRegDeNovo = false; return scRegGravarServidor(); }
     return ok;
+}
+// M14 — REVISÃO DA TESE das caixas ARMADAS do motor: 1 vez por candle de 5 min fechado, refaz a análise do lado. Tese inválida quando
+// (1) o lado não tem mais entrada válida (ex.: o preço passou do pico do sino), (2) a entrada da caixa saiu do sino, ou (3) a nota caiu para 0.
+let _scRevisando = false;
+async function scRegRevisar() {
+    if (_scRevisando || _scMotorOn || _scCalculando || !_grFootprintAtivo || !_grFootprintCandlesRaw) return;
+    const sym = grBinSymbolAtual(), arm = scRegLista().filter(r => r.gat && r.zero && r.st === 'aguardando' && (!r.sym || r.sym === sym) && grPosicoes().some(z => z.id === r.id));
+    if (!arm.length) return;
+    _scRevisando = true; let mudou = false; const ult0 = _scUltimo;
+    try {
+        const av = {};
+        for (const lado of new Set(arm.map(r => r.lado))) { try { av[lado] = await scRodar(lado, { silencioso: true, soAvaliar: true }); } catch (e) { av[lado] = null; } }
+        _scUltimo = ult0;
+        arm.forEach(r => {
+            const x = av[r.lado]; if (!x || x.ocupado) return;
+            const v = x.aval, tick = v && v.tick > 0 ? v.tick : 0;
+            let mot = null;
+            if (!v) mot = String(x.msg || 'sem entrada válida').replace(/^Micro: [^:]*: /, '').replace(/^Micro: /, '').replace(/\. Caixa não criada\.?.*$/, '');
+            else if (v.faixas && !v.faixas.some(fx => r.ent >= fx.lo - tick && r.ent <= fx.hi + tick)) mot = 'a entrada (' + Math.round(r.ent).toLocaleString('pt-BR') + ') saiu do sino (agora ' + v.faixas.map(fx => Math.round(fx.lo).toLocaleString('pt-BR') + '–' + Math.round(fx.hi).toLocaleString('pt-BR')).join(' + ') + ')';
+            else if (v.nota <= 0) mot = 'a nota caiu para 0' + (v.desc && v.desc.length ? ' (' + v.desc.join(', ') + ')' : '');
+            if (!mot) return;
+            if (r.st !== 'aguardando') return;   // entrou enquanto revisava: vale o trade
+            r.st = 'desfeita'; r.tFim = Date.now(); r.motivo = mot; r.fant = { st: 'aguardando' }; mudou = true;
+            try { grAreaToast('Motor ' + (r.mv || '') + ': ' + (r.lado === 'long' ? 'Long' : 'Short') + ' → TESE INVÁLIDA (' + mot + ')', '#8E8E93'); } catch (e) {}
+        });
+    } finally { _scRevisando = false; _scUltimo = ult0; }
+    if (mudou) { scRegGravarServidor(); try { grDrawChart(); } catch (e) {} }
 }
 // A cada cotação (no máx. 1 vez por segundo): marca entrou / alvo / stop / entrada perdida / expirou das caixas abertas deste ativo e grava na hora.
 let _scRegChecTs = 0;
@@ -17231,6 +17260,7 @@ function scRegChecarPreco(px) {
         }
     });
     if (mudou) scRegGravarServidor();
+    { const bl = Math.floor(Date.now() / 300000); if (bl !== window._scRevBloco) { window._scRevBloco = bl; setTimeout(() => { scRegRevisar().catch(() => {}); }, 20000); } }   // revisão da tese: 20 s depois de cada fechamento de 5 min
     if (Date.now() - (window._scPerigoTs || 0) > 30000) {   // Status das caixas EM TRADE a cada 30 s (pra bolinha de perigo)
         window._scPerigoTs = Date.now();
         const emTrade = grPosicoes().filter(z => z.origem === 'setup' && L.some(r => r.id === z.id && r.st === 'entrou' && (!r.sym || r.sym === sym)));
@@ -17288,11 +17318,19 @@ function scRegAvaliarGatilho(r, cs, D, bloco) {
     }
 }
 async function scRegAtualizar() {
-    const abertos = scRegLista().filter(r => r.st === 'aguardando' || r.st === 'entrou'); if (!abertos.length) return false;
+    const fant = r => r.st === 'desfeita' && r.fant && (r.fant.st === 'aguardando' || r.fant.st === 'entrou');
+    const abertos = scRegLista().filter(r => r.st === 'aguardando' || r.st === 'entrou' || fant(r)); if (!abertos.length) return false;
     let mudou = false;
     const cache = {}, pega = async (sym, iv) => { const k = sym + '|' + iv; if (!cache[k]) { try { cache[k] = (await grBuscarKlines(sym, iv, 1000, null)).map(grMapearKline); } catch (e) { cache[k] = []; } } return cache[k]; };
     for (const r of abertos) {
         const st0 = r.st;
+        if (fant(r)) {   // M14: caixa cancelada (tese inválida) — o histórico segue o que TERIA acontecido, sem mexer no placar
+            const def = scDefTf(r.tfAk || '5m'), cs = await pega(r.sym || grBinSymbolAtual(), def.bin), g = Object.assign({}, r, r.fant), f0 = r.fant.st;
+            scRegAvaliarGatilho(g, cs, scDeltaPorBloco(def.blocoMs, r.t0 - def.blocoMs), def.blocoMs);
+            r.fant = { st: g.st, tFim: g.tFim || null, tGat: g.tGat || null, tEnt: g.tEnt || null, entReal: g.entReal || null, ign: !!g.ign, tIgn: g.tIgn || null };
+            if (r.fant.st !== f0) mudou = true;
+            continue;
+        }
         if (r.gat) {   // M7: com gatilho
             const def = scDefTf(r.tfAk || '5m'), cs = await pega(r.sym || grBinSymbolAtual(), def.bin);
             scRegAvaliarGatilho(r, cs, scDeltaPorBloco(def.blocoMs, r.t0 - def.blocoMs), def.blocoMs);
@@ -17320,7 +17358,7 @@ async function scRegAtualizar() {
     if (mudou) scRegGravarServidor();
     return mudou;
 }
-const SC_REG_ROT = { semGatilho: 'sem gatilho', aguardando: 'aguardando', entrou: 'entrou', alvo: 'ALVO', stop: 'STOP', perdida: 'entrada perdida', expirou: 'expirou', zero: 'saiu no zero' };
+const SC_REG_ROT = { semGatilho: 'sem gatilho', aguardando: 'aguardando', entrou: 'entrou', alvo: 'ALVO', stop: 'STOP', perdida: 'entrada perdida', expirou: 'expirou', zero: 'saiu no zero', desfeita: 'tese inválida' };
 async function scHistoricoMostrar() {
     try { cvFecharMenuFpCfg(); } catch (e) {}
     try { grAreaToast('Atualizando o histórico…', '#8E8E93'); } catch (e) {}
@@ -17328,10 +17366,11 @@ async function scHistoricoMostrar() {
     const L = scRegLista(), f = x => Math.round(x).toLocaleString('pt-BR'), dh = t => new Date(t).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
     const cont = {}; L.forEach(r => { cont[r.st] = (cont[r.st] || 0) + 1; });
     const linhas = ['HISTÓRICO DO MOTOR · ' + L.length + ' caixa' + (L.length === 1 ? '' : 's'),
-        L.length ? 'IGNIÇÃO ' + L.filter(r => r.ign).length + ' de ' + L.filter(r => r.tEnt).length + ' entradas · ' + ['alvo', 'zero', 'stop', 'semGatilho', 'perdida', 'expirou', 'entrou', 'aguardando'].filter(k => cont[k]).map(k => SC_REG_ROT[k] + ' ' + cont[k]).join(' · ') : 'Nenhuma caixa do motor registrada ainda.'];
+        L.length ? 'IGNIÇÃO ' + L.filter(r => r.ign).length + ' de ' + L.filter(r => r.tEnt).length + ' entradas · ' + ['alvo', 'zero', 'stop', 'desfeita', 'semGatilho', 'perdida', 'expirou', 'entrou', 'aguardando'].filter(k => cont[k]).map(k => SC_REG_ROT[k] + ' ' + cont[k]).join(' · ') : 'Nenhuma caixa do motor registrada ainda.'];
     L.slice().reverse().forEach(r => linhas.push(r.mv + ' · ' + dh(r.t0) + ' · ' + r.modo + ' · ' + (r.lado === 'long' ? 'Long' : 'Short') + ' · nota ' + (r.nota == null ? '?' : r.nota)
         + ' · E ' + f(r.ent) + (r.entReal ? ' (real ' + f(r.entReal) + ')' : '') + ' S ' + f(r.stp) + ' A ' + f(r.alvo) + (r.gat ? ' · gatilho' : '') + ' (' + (r.alvoTipo === 'pico' ? 'pico' : r.alvoTipo) + ') · ' + r.ma + '×' + r.mi
         + ' · ' + SC_REG_ROT[r.st] + (r.tFim ? ' ' + dh(r.tFim) : (r.tEnt ? ' ' + dh(r.tEnt) : '')) + (r.ign ? ' · ignição ✓' : r.tEnt ? ' · sem ignição' : '')
+        + (r.st === 'desfeita' && r.fant ? ' · sem cancelar: ' + SC_REG_ROT[r.fant.st] + (r.fant.ign ? ' (ignição ✓)' : '') : '')
         + (r.sombraAbs && r.sombraAbs.R != null ? ' · sombra ' + (r.sombraAbs.R >= 0 ? '+' : '−') + Math.abs(r.sombraAbs.R).toFixed(1).replace('.', ',') + 'R' : '')));
     scRelatorioMostrar({ lado: null, linhas });
 }
@@ -17345,6 +17384,7 @@ function scSobreMostrar() {
         'Gatilho: só entra se o candle de confirmação fechar a no máximo meio risco além da entrada; mais longe que isso, espera (o rato passou da ratoeira).',
         'Nota (0 a 7): Absorção, Ordem grande, Traders presos, Agressores e Virada de delta (só toques recentes, dentro de um candle do macro), RSI e Fibonacci.',
         'Descontos (−1 cada): suporte/resistência contra, o seu lado no prejuízo, faca caindo / foguete subindo, tendência contra (Long abaixo da EMA de 5 min caindo; Short acima dela subindo).',
+        'Revisão da tese (caixas armadas): a cada candle de 5 min, o motor refaz a análise. Se o lado perdeu a entrada, se a entrada saiu do sino ou se a nota caiu para 0, a caixa vira Tese Inválida e não entra mais. O histórico segue o que teria acontecido sem cancelar.',
         'Duas caixas: quando os dois lados têm entrada válida, o motor arma Long E Short; o gatilho decide qual entra. Sem entrada num lado, sai só a outra.',
         'Saída-sombra (só no histórico, não muda o placar): em trade, o 1º candle de 5 min com absorção CONTRA (AV no Long, AC no Short) encostando na zona marca "teria saído aqui", para ver se compensa sair antes do stop.',
         'Volta ao valor: com o preço dentro do sino, só vale o lado que vai em direção ao pico (Long abaixo dele, Short acima). Fora do sino, os dois lados valem.',
@@ -17490,6 +17530,7 @@ async function scRegRaioX(reg) {
     const f = x => Math.round(x).toLocaleString('pt-BR'), pc = (x, b) => (100 * x / b).toFixed(2).replace('.', ',') + '%', dh = t => new Date(t).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
     const rr = x => (x >= 0 ? '+' : '−') + Math.abs(x / risco).toFixed(1).replace('.', ',') + 'R', dur = ms => { const m = Math.round(ms / 60000); return m < 60 ? m + ' min' : Math.floor(m / 60) + ' h ' + (m % 60) + ' min'; };
     const L = ['— RAIO-X (candles de 5 min) —'];
+    if (reg.st === 'desfeita') L.push('Tese inválida em ' + dh(reg.tFim) + ': ' + (reg.motivo || 'a revisão não achou mais a tese') + (reg.fant ? ' · sem cancelar: ' + SC_REG_ROT[reg.fant.st] + (reg.fant.ign ? ' (ignição ✓)' : '') + (reg.fant.tFim ? ' ' + dh(reg.fant.tFim) : '') : ''));
     if (!cs.length || !(risco > 0)) return L.concat(['sem candles para analisar']);
     const ini = cs.filter(c => c.t >= reg.t0);
     if (!ini.length) return L.concat(['ainda sem candle fechado depois da criação']);
