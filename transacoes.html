@@ -3242,7 +3242,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v464';
+const APP_VERSAO = 'v465';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -16875,10 +16875,19 @@ function scAvaliarCore(lado, def, tk, cs, dias, dMa, rM, uMa, preco) {
         if (r.erro) return nega('nível indisponível');
         comparadas++;
         if (!(Math.abs(r.stop - r.entrada) > 0)) return nega('sem risco');
-        // M9 — STOP PELO RUÍDO: a zona de captura tem pelo menos 2 candles típicos de 5 min (o rato entra na ratoeira sem ser stopado por pavio);
-        // se o nó de volume já pede mais, vale o do nó
-        const minR = window._scMedMin > 0 ? 2 * window._scMedMin : 0;
-        if (minR > 0 && Math.abs(r.stop - r.entrada) < minR) r = Object.assign({}, r, { stop: r.entrada + s * minR, stopRuido: true });
+        // M10 — STOP ATRÁS DA DEFESA DO FOOTPRINT: no Long, logo abaixo do nível (entre a borda do sino e a entrada) onde os VENDEDORES mais bateram
+        // nas últimas 24 h e o preço segurou — quem defendia ali desistiu = tese caiu. Short é o espelho. + folga do pavio típico. Limites:
+        // no máximo a borda do sino (fora dela a volta ao valor já caiu) e no mínimo 2 candles típicos de 5 min (ruído).
+        {
+            const minR = window._scMedMin > 0 ? 2 * window._scMedMin : 0, pav = r.folga || 0, fxS = banda.faixas[0], borda = s < 0 ? fxS.lo : fxS.hi;
+            const dfs = scDefesaNivel(lado, s < 0 ? borda : r.entrada, s < 0 ? r.entrada : borda, r.tick);
+            let st = dfs ? (s < 0 ? dfs.p - r.tick / 2 - pav : dfs.p + r.tick / 2 + pav) : r.stop, tipo = dfs ? 'defesa' : 'no';
+            const lim = s < 0 ? borda - pav : borda + pav;
+            if (s < 0 ? st < lim : st > lim) { st = lim; tipo = 'borda'; }                                   // não passa da borda do sino
+            if (minR > 0 && Math.abs(st - r.entrada) < minR) { st = r.entrada + s * minR; tipo = 'ruido'; }   // nem curto demais
+            if (!(s * (st - r.entrada) > 0)) { st = r.entrada + s * Math.max(minR, Math.abs(r.stop - r.entrada)); tipo = 'ruido'; }
+            r = Object.assign({}, r, { stop: st, stopTipo: tipo, defesa: dfs, stopAlt: { estrutura: r.stop, sino: lim, ruido: r.entrada + s * minR } });
+        }
         const risco = Math.abs(r.stop - r.entrada);
         if (scZonaQueimada(lado, r.entrada, r.tick)) return nega('zona que já deu stop há pouco');
         // M9 — ALVO É REFERÊNCIA, não barra a caixa: o mais LONGE com estrutura — a borda oposta do sino; sem ela, o nó do macro; sem nada, 2R
@@ -16905,6 +16914,15 @@ function scAvaliarCore(lado, def, tk, cs, dias, dMa, rM, uMa, preco) {
     return cands[0];
 }
 // Zona queimada: uma caixa do motor no mesmo lado e na mesma entrada (±1 nível) deu Tese Inválida dentro do último candle do macro
+// Nível de DEFESA no footprint (últimas 24 h, grade do micro) entre 'de' e 'ate': Long = onde a VENDA agressiva foi maior (e o preço segurou acima);
+// Short = onde a COMPRA agressiva foi maior (e o preço segurou abaixo). Sem Fluxo: null.
+function scDefesaNivel(lado, de, ate, tick) {
+    if (!_grFootprintAtivo || !_grFootprintCandlesRaw || !(tick > 0) || !(ate > de)) return null;
+    const lg = lado === 'long', g = new Map(), fim = Date.now();
+    grFootprintParaCadaMinuto(fim - 86400000, fim, m => (m.niveis || []).forEach(n => { if (n.p < de || n.p > ate) return; const k = Math.round(n.p / tick); g.set(k, (g.get(k) || 0) + (lg ? n.v : n.c)); }));
+    let mk = null, mv = 0; g.forEach((v, k) => { if (v > mv) { mv = v; mk = k; } });
+    return mk == null ? null : { p: mk * tick, vol: mv };
+}
 function scZonaQueimada(lado, entrada, tick) {
     try {
         const tLim = Date.now() - scDefTf(_scCfg.micro).blocoMs;   // M9: memória de 1 candle do micro (antes 1 do macro = 3 dias, longo demais pro 5 min)
@@ -17020,7 +17038,7 @@ async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fecha
         if (tfSug && tfSug.rot) pz.tfAcomp = { chave: tfSug.chave, rot: tfSug.rot };
         if (opts.scalp) pz.scalp = true;
         pz.motorV = SC_MOTOR_VERSAO; pz.gat = true;   // M7: a entrada só vale com GATILHO no TF de acompanhamento
-        if (!dup) { lista.push(pz); grPosSalvar(); scRegistrar({ id: pz.id, mv: SC_MOTOR_VERSAO, modo: opts.modo || (opts.scalp ? 'play' : 'trader'), lado, nota: pz.score ? pz.score.n : null, ent: entrada, stp: stop, alvo, alvoTipo: esc.alvoTipo || (am ? 'macro' : '2R'), mi: dMi.rot, ma: dMa.rot, tfA: tfSug && tfSug.rot ? tfSug.rot : null, tfAk: tfSug && tfSug.chave ? tfSug.chave : '5m', gat: true, val: dMa.blocoMs, sym: grBinSymbolAtual() }); }
+        if (!dup) { lista.push(pz); grPosSalvar(); scRegistrar({ id: pz.id, mv: SC_MOTOR_VERSAO, modo: opts.modo || (opts.scalp ? 'play' : 'trader'), lado, nota: pz.score ? pz.score.n : null, ent: entrada, stp: stop, alvo, alvoTipo: esc.alvoTipo || (am ? 'macro' : '2R'), mi: dMi.rot, ma: dMa.rot, tfA: tfSug && tfSug.rot ? tfSug.rot : null, tfAk: tfSug && tfSug.chave ? tfSug.chave : '5m', gat: true, stopTipo: rm.stopTipo || null, stopAlt: rm.stopAlt || null, val: dMa.blocoMs, sym: grBinSymbolAtual() }); }
         const f = x => Math.round(x).toLocaleString('pt-BR');
         _scUltimo = { pzId: pz.id, lado, hora: new Date(), txt: (lado === 'short' ? 'Short' : 'Long') + ' · entrada ' + f(entrada) + ' · stop ' + f(stop) + ' · alvo ' + f(alvo) + (esc.alvoTipo === 'borda' ? ' (borda do sino)' : esc.alvoTipo === 'pico' ? ' (pico do sino)' : am ? ' (nó macro)' : ' (2R)') + (' · ' + conf.n + ' de ' + SC_CONF_TOTAL + ' confirmações') + (fraco ? ' · FRACO' : '') + (tfSug && tfSug.rot ? ' · acompanhe no ' + tfSug.rot : '') + avisoCob };
         // Relatório curto
@@ -17031,7 +17049,7 @@ async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fecha
                 (lado === 'short' ? 'SHORT' : 'LONG') + ' · ' + dias + ' dias · ' + dMa.rot + ' × ' + dMi.rot + ' · ' + conf.n + ' de ' + SC_CONF_TOTAL + ' confirmações',
                 'Entrada ' + f(entrada) + ' · Stop ' + f(stop) + ' (' + pc((stop - entrada) / entrada) + ') · Alvo ' + f(alvo) + ' (' + pc((alvo - entrada) / entrada) + ')',
                 'Entrada com gatilho: só vale quando um candle de ' + (tfSug && tfSug.rot ? tfSug.rot : '5 Minutos') + ' tocar a zona e fechar a favor, com delta a favor (entra no fechamento dele)',
-                'Stop: ' + (rm.stopRuido ? 'mínimo de 2 candles típicos de 5 min (o ruído pedia mais que o nó)' : 'borda de trás do nó de entrada + folga de ' + f(rm.folga || 0) + ' (o maior entre 15% da zona e o pavio típico de 5 min)') + ' · risco ' + f(risco),
+                'Stop: ' + (rm.stopTipo === 'defesa' ? 'atrás da defesa do footprint em ' + f(rm.defesa.p) + ' (onde ' + (lado === 'long' ? 'os vendedores mais bateram' : 'os compradores mais bateram') + ' nas últimas 24 h e o preço segurou) + pavio' : rm.stopTipo === 'borda' ? 'limitado pela borda do sino (a defesa ficava fora dela)' : rm.stopTipo === 'ruido' ? 'mínimo de 2 candles típicos de 5 min (a defesa ficava perto demais)' : 'borda de trás do nó de entrada + pavio (sem dado de footprint)') + ' · risco ' + f(risco),
                 'Zona quente (sino do ' + esc.banda.fonte + '): ' + esc.banda.faixas.map(fx => f(fx.lo) + '–' + f(fx.hi) + (fx.poc ? ' (POC da VA)' : '')).join(' + '),
                 'Alvo (referência): ' + (esc.alvoTipo === 'borda' ? 'borda oposta do sino (' + f(alvo) + ')' : esc.alvoTipo === 'pico' ? 'pico do sino (' + f(alvo) + '), a volta ao valor' : am ? 'nó macro, ' + rng(am.nums) + ', borda ' + f(am.alvo) : 'sem nó macro nem pico útil, 2R')
             ];
@@ -17068,7 +17086,7 @@ async function scTfAcompanhar(h) {
     return melhor || (menor ? { rot: null, menor: menor.menor, med: menor.med, h } : null);
 }
 // ══ VERSÃO DO MOTOR + REGISTRO das caixas que ele cria (gravado junto com as caixas, nas preferências, ao tocar em Sair) ══
-const SC_MOTOR_VERSAO = 'M9';
+const SC_MOTOR_VERSAO = 'M10';
 function scRegLista() { if (!Array.isArray(window._scRegistro)) window._scRegistro = []; return window._scRegistro; }
 function scRegistrar(o) {
     const L = scRegLista();
@@ -17213,7 +17231,7 @@ function scSobreMostrar() {
     try { cvFecharMenuFpCfg(); } catch (e) {}
     scRelatorioMostrar({ lado: null, linhas: ['MOTOR ' + SC_MOTOR_VERSAO, 'Como ele decide, em resumo',
         'Onde procura: só na zona quente, o quarto mais negociado do perfil de volume, colado ao pico. Fonte: o VP ancorado; sem ele, a Value Area ancorada; sem âncora, a janela de dias. A POC da Value Area sempre conta.',
-        'Entrada e stop: num nível com volume dentro da zona quente; o stop fica logo atrás do nível, com folga do pavio típico de 5 min, e a zona de captura tem no mínimo 2 candles típicos de 5 min (o rato entra sem ser stopado por pavio). Se nem um candle típico de 5 min cabe entre a entrada e o stop, recusa.',
+        'Entrada e stop: a entrada é um nível com volume dentro da zona quente. O stop fica atrás da DEFESA do footprint (no Long, o nível onde os vendedores mais bateram nas últimas 24 h e o preço segurou), com a folga do pavio; no máximo na borda do sino e no mínimo 2 candles típicos de 5 min. Se nem um candle típico de 5 min cabe entre a entrada e o stop, recusa.',
         'Alvo (só referência, não barra a caixa): a borda oposta do sino; sem ela, o nó do macro; sem nada, 2 vezes o risco.',
         'Placar da fase de ignição: depois de entrar, o preço andou 1 risco (1R) a favor antes do stop.',
         'Nota (0 a 7): Absorção, Ordem grande, Traders presos, Agressores e Virada de delta (só toques recentes, dentro de um candle do macro), RSI e Fibonacci.',
