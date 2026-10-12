@@ -3267,7 +3267,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v494';
+const APP_VERSAO = 'v497';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4740,6 +4740,9 @@ function cvPosApagarCaixa(i) {
         grAreaToast(tr && tr.data_fechamento ? 'Trade encerrado: a caixa fica como histórico.' : 'A caixa tem lançamentos. Apague antes os lançamentos (lixeira dentro do formulário).', '#DC2626');
         return;
     }
+    // caixa do motor ainda ARMADA: some de vez, inclusive do histórico (marcada 'apagada' pra a mescla com o servidor não trazê-la de volta).
+    // Em trade ou encerrada: só sai da tela; o histórico fica (o preço já passou por fases, os dados valem).
+    try { const rg = (window._scRegistro || []).find(r => r.id === pz.id); if (rg && rg.st === 'aguardando') { rg.st = 'apagada'; rg.tFim = Date.now(); scRegGravarServidor(); } } catch (e) {}
     grPosicoes().splice(i, 1); grPosSalvar();
 }
 // Reabrir: aportes vêm das transações do trade (taxa fica como gravada)
@@ -7572,7 +7575,7 @@ function grDesenharLinhaOhlc(ctx, W, info) {
             ctx.font = fs + 'px -apple-system'; ctx.fillStyle = corRotulo; ctx.fillText('Auto ', xAuto + 8, yTxt);
             ctx.font = 'bold ' + fs + 'px -apple-system'; ctx.fillStyle = corA; ctx.fillText(vAuto, xAuto + 8 + wR, yTxt);
         });
-        window._grBarraSuperiorChips.push({ x: xAuto - 4, y: yTopB - 6, w: wAuto + 8, h: hB + 12, abrir: () => { if (_scPlay.on) scPlayParar(); else scPlayLigar(); grDrawChart(); } });
+        window._grBarraSuperiorChips.push({ x: xAuto - 4, y: yTopB - 6, w: wAuto + 8, h: hB + 12, abrir: (cx, cy) => scAutoMenu(cx, cy) });
         xLim = xAuto;
     } catch (e) {}
     if (_grAmbExpandido) {
@@ -16538,12 +16541,24 @@ function scDefTf(chave) {
 }
 window._scCache = window._scCache || {};
 // Candles do TF (janela + folga) já agrupados quando personalizado.
+// Candles da Binance para o MOTOR, com cache único por ativo+intervalo (o cronômetro mostrou: ~65% do tempo do motor era buscar os mesmos
+// candles várias vezes). Busca uma vez o pedaço MAIOR (mín. 1000), guarda por 45 s e serve fatias dele; pedidos simultâneos esperam a mesma busca.
+const _scKl = new Map();
+async function scKlines(sym, bin, n) {
+    const k = sym + '|' + bin, c = _scKl.get(k), agora = Date.now();
+    if (c && c.v && agora - c.ts < 45000 && c.v.length >= n) return c.v.slice(-n);
+    if (c && c.p && c.n >= n) { const v = await c.p; return v.slice(-n); }
+    const nb = Math.min(1500, Math.max(1000, n)), p = grBuscarKlines(sym, bin, nb, null).then(a => a || []);
+    _scKl.set(k, { p, n: nb, ts: agora });
+    try { const v = await p; _scKl.set(k, { v, ts: Date.now(), n: nb }); return v.slice(-n); }
+    catch (e) { _scKl.delete(k); throw e; }
+}
 async function scCandles(def, dias) {
     const sym = grBinSymbolAtual();
     const n = Math.max(5, Math.min(1500, Math.ceil((dias * 86400000 + def.blocoMs) / def.baseMs) + 2));   // 1500 = teto de uma chamada da Binance
     const chave = 'cs|' + sym + '|' + def.chave + '|' + n, c = window._scCache[chave];
     if (c && Date.now() - c.ts < 60000) return c.v;
-    const arr = await grBuscarKlines(sym, def.bin, n);
+    const arr = await scKlines(sym, def.bin, n);
     let cs = (arr || []).map(grMapearKline);
     if (def.custom) cs = grAgruparCandles(cs, def.custom.u, def.custom.a);
     if (!cs.length) throw new Error('Sem candles de ' + def.rot + '.');
@@ -16555,7 +16570,7 @@ async function scTick(def) {
     const sym = grBinSymbolAtual(), periodo = FOOTPRINT_ATR_PERIODO, chave = 'tk|' + sym + '|' + def.chave + '|' + periodo, c = window._scCache[chave];
     if (c && Date.now() - c.ts < 60000) return c.v;
     const nBase = def.custom ? Math.min(1500, Math.ceil((periodo + 4) * def.blocoMs / def.baseMs)) : periodo + 3;
-    const arr = await grBuscarKlines(sym, def.bin, nBase);
+    const arr = await scKlines(sym, def.bin, nBase);
     let k = arr || [];
     if (def.custom) k = grAgruparCandles(k.map(grMapearKline), def.custom.u, def.custom.a).map(x => [x.t, x.o, x.h, x.l, x.c]);
     k = k.slice(0, -1);   // só candles fechados
@@ -16689,7 +16704,7 @@ function scMediana(a) { if (!a.length) return 0; const t = a.slice().sort((x, y)
 // M12 — TENDÊNCIA CONTRA: EMA (a mesma do gráfico; sem ela, 200) nos candles de 5 min. 'Caindo' = a EMA de agora abaixo da de 12 candles (1 h) atrás.
 async function scEmaInfo() {
     const per = (SCX.emas && SCX.emas[0] && SCX.emas[0].periodo > 1) ? SCX.emas[0].periodo : 200;
-    const cs = (await grBuscarKlines(grBinSymbolAtual(), '5m', 1000, null)).map(grMapearKline);
+    const cs = (await scKlines(grBinSymbolAtual(), '5m', 1000)).map(grMapearKline);
     if (cs.length < per + 13) return null;
     const k = 2 / (per + 1); let e = cs.slice(0, per).reduce((a, c) => a + c.c, 0) / per; const ser = [];
     for (let i = per; i < cs.length; i++) { e = cs[i].c * k + e * (1 - k); ser.push(e); }
@@ -17403,12 +17418,12 @@ async function scRegAtualizar() {
     if (mudou) scRegGravarServidor();
     return mudou;
 }
-const SC_REG_ROT = { semGatilho: 'sem gatilho', aguardando: 'aguardando', entrou: 'entrou', alvo: 'ALVO', stop: 'STOP', perdida: 'entrada perdida', expirou: 'expirou', zero: 'saiu no zero', desfeita: 'tese inválida' };
+const SC_REG_ROT = { semGatilho: 'sem gatilho', aguardando: 'aguardando', entrou: 'entrou', alvo: 'ALVO', stop: 'STOP', perdida: 'entrada perdida', expirou: 'expirou', zero: 'saiu no zero', desfeita: 'tese inválida', apagada: 'apagada' };
 async function scHistoricoMostrar() {
     try { cvFecharMenuFpCfg(); } catch (e) {}
     try { grAreaToast('Atualizando o histórico…', '#8E8E93'); } catch (e) {}
     await scRegAtualizar();
-    const L = scRegLista(), f = x => Math.round(x).toLocaleString('pt-BR'), dh = t => new Date(t).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const L = scRegLista().filter(r => r.st !== 'apagada'), f = x => Math.round(x).toLocaleString('pt-BR'), dh = t => new Date(t).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
     const cont = {}; L.forEach(r => { cont[r.st] = (cont[r.st] || 0) + 1; });
     const linhas = ['HISTÓRICO DO MOTOR · ' + L.length + ' caixa' + (L.length === 1 ? '' : 's'),
         L.length ? 'IGNIÇÃO ' + L.filter(r => r.ign).length + ' de ' + L.filter(r => r.tEnt).length + ' entradas · ' + ['alvo', 'zero', 'stop', 'desfeita', 'semGatilho', 'perdida', 'expirou', 'entrou', 'aguardando'].filter(k => cont[k]).map(k => SC_REG_ROT[k] + ' ' + cont[k]).join(' · ') : 'Nenhuma caixa do motor registrada ainda.'];
@@ -17509,6 +17524,22 @@ function scPlayToggle() {
     if (!_grFootprintAtivo || !_grFootprintCandlesRaw) { alert('Ligue o Fluxo (FX) e aguarde os dados carregarem.'); return; }
     scPlayLigar();
     try { cvFecharMenuFpCfg(); } catch (e) {}
+}
+// Toque no "Auto": balão só com as caixas do motor vivas e o TF do gatilho de cada uma (ex.: "Long 5m", "Short 30m") + Pausar/Ligar
+function scAutoMenuFechar() { ['cv-auto-ov', 'cv-auto-menu'].forEach(id => { const e = document.getElementById(id); if (e) e.remove(); }); }
+function scAutoMenu(cx, cy) {
+    scAutoMenuFechar();
+    const sym = grBinSymbolAtual(), ids = new Set(grPosicoes().map(z => z.id));
+    const vivas = scRegLista().filter(r => (r.st === 'aguardando' || r.st === 'entrou') && (!r.sym || r.sym === sym) && ids.has(r.id));
+    const tfC = r => String(r.tfAk || '5m').replace(/^(\d+)([mhdw])$/i, '$1$2');
+    const ov = document.createElement('div'); ov.id = 'cv-auto-ov'; ov.style.cssText = 'position:fixed;inset:0;z-index:9700;background:transparent;'; ov.onclick = scAutoMenuFechar;
+    const m = document.createElement('div'); m.id = 'cv-auto-menu';
+    m.style.cssText = 'position:fixed;z-index:9701;background:#FFFFFF;border-radius:18px;box-shadow:0 8px 28px rgba(0,0,0,0.22);padding:8px 12px;font-family:-apple-system,sans-serif;font-size:14px;color:#1C1C1E;min-width:120px;';
+    m.innerHTML = (vivas.length ? vivas.map(r => '<div style="padding:4px 0;font-weight:700;color:' + (r.lado === 'long' ? '#16A34A' : '#DC2626') + ';">' + (r.lado === 'long' ? 'Long' : 'Short') + ' ' + tfC(r) + '</div>').join('') : '<div style="padding:4px 0;color:#8E8E93;">nenhuma caixa</div>')
+        + '<button type="button" id="cv-auto-bt" style="display:block;width:100%;margin-top:6px;border:none;border-radius:12px;padding:7px 10px;font-size:13px;font-weight:800;background:' + (_scPlay.on ? '#F2F2F7' : '#1C1C1E') + ';color:' + (_scPlay.on ? '#1C1C1E' : '#FFFFFF') + ';">' + (_scPlay.on ? 'Pausar' : 'Ligar') + '</button>';
+    document.body.appendChild(ov); document.body.appendChild(m);
+    m.querySelector('#cv-auto-bt').onclick = e => { e.stopPropagation(); scAutoMenuFechar(); if (_scPlay.on) scPlayParar(); else scPlayLigar(); try { grDrawChart(); } catch (x) {} };
+    requestAnimationFrame(() => { const r = m.getBoundingClientRect(), W = window.innerWidth, H = window.innerHeight; let x = (cx || 0) - r.width / 2, y = (cy || 0) + 12; if (x + r.width > W - 8) x = W - r.width - 8; if (y + r.height > H - 8) y = (cy || 0) - r.height - 12; m.style.left = Math.max(8, x) + 'px'; m.style.top = Math.max(8, y) + 'px'; });
 }
 function scPlayLigar() {
     _scPlay.on = true; _scPlay.prox = scPlayProxima(); _scPlay.ultimo = '';
@@ -17732,7 +17763,7 @@ function scRenderPopup(menu) {
               + '<button type="button" onclick="scRodar(\'long\')" style="flex:1;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:800;background:#E8F7EC;color:#16A34A;">Long</button></div>' : ''))
         + (_scUltimo && _scUltimo.linhas ? '<button type="button" onclick="scRelatorioCompleto()" style="width:100%;margin-top:8px;border:none;border-radius:10px;padding:10px;font-size:13px;font-weight:800;background:#1C1C1E;color:#FFFFFF;">Ver Relatório</button>' : '')
         + '<div style="display:flex;gap:8px;margin-top:8px;"><button type="button" onclick="scSobreMostrar()" style="flex:1;border:none;border-radius:10px;padding:9px;font-size:13px;font-weight:700;background:#F2F2F7;color:#1C1C1E;">Sobre (' + SC_MOTOR_VERSAO + ')</button>'
-        + '<button type="button" onclick="scHistoricoMostrar()" style="flex:1;border:none;border-radius:10px;padding:9px;font-size:13px;font-weight:700;background:#F2F2F7;color:#1C1C1E;">Histórico (' + scRegLista().length + ')</button></div>'
+        + '<button type="button" onclick="scHistoricoMostrar()" style="flex:1;border:none;border-radius:10px;padding:9px;font-size:13px;font-weight:700;background:#F2F2F7;color:#1C1C1E;">Histórico (' + scRegLista().filter(r => r.st !== 'apagada').length + ')</button></div>'
         + '<div style="margin-top:12px;padding-top:12px;border-top:1px solid #F2F2F7;">'
         + (_scHistRodando ? '<div style="font-size:12.5px;color:#8E8E93;padding:6px 0;">' + _scHistProg + '</div><button type="button" onclick="_scHistParar = true" style="width:100%;border:none;border-radius:10px;padding:9px;font-size:13px;font-weight:700;background:#FDECEC;color:#DC2626;">Parar</button>'
             : '<button type="button" onclick="scHistorico()" style="width:100%;border:none;border-radius:10px;padding:10px;font-size:13px;font-weight:800;background:#F2F2F7;color:#1C1C1E;">Testar histórico</button>'
