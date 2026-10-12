@@ -3298,7 +3298,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v511';
+const APP_VERSAO = 'v513';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4149,7 +4149,7 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
             if (g.y1 - g.y0 < 8 && !g.pontaCortada) return;   // sem número desenhado: não é tocável
             let hy = g.y0, hh = g.y1 - g.y0;
             if (hh < 14) { hy = (g.y0 + g.y1) / 2 - 7; hh = 14; }
-            window._grFpCelHits.push({ x: xCel, y: hy, w: wCel, h: hh, cel: true, abrir: () => grFpCelAbrirModal(candle.t, i, cl) });
+            window._grFpCelHits.push({ x: xCel, y: hy, w: wCel, h: hh, cel: true, abrir: () => { try { grFpZonaAlternar(candle.t, cl.linhas[i]); } catch (e) {} grFpCelAbrirModal(candle.t, i, cl); } });
         });
     }
     // Contorno ao redor do BLOCO INTEIRO de células (não mais por célula — aquilo criava uma linha divisória entre cada
@@ -5876,6 +5876,13 @@ function grDrawCandles(candles, emptyRight) {
             ctx.restore();
             grAreaDesenharZii(ctx, { PAD, chartW, chartH, toY, xTempoArea }, 'fundo'); // zonas ZII / refinada (por baixo dos candles)
         }
+        // Zonas marcadas tocando numa célula do footprint: de ponta a ponta (por baixo dos candles)
+        { const ZC = (window._grZonasCel || {})[_grZonasCelKey()];
+          if (ZC && ZC.length) { ctx.save(); ctx.beginPath(); ctx.rect(PAD.left, PAD.top, chartW, chartH); ctx.clip();
+            ZC.forEach(z => { const yT = toY(z.hi), yB = toY(z.lo), h = Math.max(1, yB - yT), c = z.neg ? '239,83,80' : '76,175,80';
+                ctx.fillStyle = 'rgba(' + c + ',0.22)'; ctx.fillRect(PAD.left, yT, chartW, h);
+                ctx.strokeStyle = 'rgba(' + c + ',0.8)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(PAD.left, yT + 0.5); ctx.lineTo(PAD.left + chartW, yT + 0.5); ctx.moveTo(PAD.left, yB - 0.5); ctx.lineTo(PAD.left + chartW, yB - 0.5); ctx.stroke(); });
+            ctx.restore(); } }
         // Faixas marcadas na régua Delta ATR: projetadas de ponta a ponta no price action (por baixo dos candles)
         if (_indState.deltaAtr && window._grFaixasDA && window._grFaixasDA.length) {
             ctx.save();
@@ -11529,6 +11536,7 @@ function grAmbienteColetar() {
         zoom: raiz.zoom,
         yFatorMapa: raiz.yFatorMapa,
         areas: _grAreasMapa,
+        zonasCel: window._grZonasCel || {},
         tfCustom: raiz.tfCustom,
         footprintContraste: FOOTPRINT_CONTRASTE,
         ls: grLsColetar(),
@@ -11584,6 +11592,7 @@ async function grAmbienteCarregar() {
     if (!ambiente) { console.log('[ambiente] NADA encontrado -- fica no padrão'); _grAmbienteCarregado = true; if (_grAmbientePendente) { _grAmbientePendente = false; grAmbienteSalvar(); } return; }
     if (ambiente.desenhos && typeof ambiente.desenhos === 'object') window._grDesenhosMapa = ambiente.desenhos;
     window._grImaOff = !!ambiente.imaOff;
+    if (ambiente.zonasCel && typeof ambiente.zonasCel === 'object') window._grZonasCel = ambiente.zonasCel;
     if (ambiente.corCandle && typeof ambiente.corCandle === 'object') window._grCorCandle = { alta: ambiente.corCandle.alta || null, baixa: ambiente.corCandle.baixa || null };
     if (ambiente.areas && typeof ambiente.areas === 'object') {
         _grAreasMapa = ambiente.areas; // servidor é a fonte única 
@@ -14195,6 +14204,19 @@ function grFootprintDesenharOverlay() {
 let _grFootprintNivelAtual = null; // {p, tick, v, total} do último nível aberto — usado pelos botões de série temporal e marcar zona ZII
 // ── Modal de UM nível do footprint dos candles (toque numa célula) ─────────────────────────────────────────────────────────────
 // Mostra só o nível tocado, com números grandes: venda (bid), compra (ask), delta, % do nível, total, peso no candle e desequilíbrio.
+// ZONA DA CÉLULA: tocar numa célula do footprint marca a faixa dela (borda a borda do nível) de ponta a ponta no gráfico;
+// tocar de novo na mesma célula apaga. Vermelha = delta negativo, verde = positivo. Salva por ativo no ambiente (Supabase).
+window._grZonasCel = window._grZonasCel || {};
+function _grZonasCelKey() { return 'zc_' + (_ativoId || 'default'); }
+function grFpZonaAlternar(candleT, ln) {
+    if (!ln) return;
+    const lo = ln.p - ln.meio, hi = ln.p + ln.meio, id = candleT + '_' + Math.round(ln.p * 100), k = _grZonasCelKey();
+    const L = (window._grZonasCel[k] = window._grZonasCel[k] || []), i = L.findIndex(z => z.id === id);
+    if (i >= 0) L.splice(i, 1); else L.push({ id, lo, hi, neg: ((ln.ask || 0) - (ln.bid || 0)) < 0 });
+    if (!L.length) delete window._grZonasCel[k];
+    try { grAmbienteSalvar(); } catch (e) {}
+    try { grDrawChart(); } catch (e) {}
+}
 function grFpCelFechar() { const o = document.getElementById('fp-cel-modal'); if (o) o.remove(); }
 function grFpCelAbrirModal(candleT, idx, cl) {
     const ln = cl && cl.linhas && cl.linhas[idx]; if (!ln) return;
