@@ -3251,7 +3251,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v491';
+const APP_VERSAO = 'v492';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -17716,12 +17716,66 @@ function scRenderPopup(menu) {
         + '<div style="margin-top:12px;padding-top:12px;border-top:1px solid #F2F2F7;">'
         + (_scHistRodando ? '<div style="font-size:12.5px;color:#8E8E93;padding:6px 0;">' + _scHistProg + '</div><button type="button" onclick="_scHistParar = true" style="width:100%;border:none;border-radius:10px;padding:9px;font-size:13px;font-weight:700;background:#FDECEC;color:#DC2626;">Parar</button>'
             : '<button type="button" onclick="scHistorico()" style="width:100%;border:none;border-radius:10px;padding:10px;font-size:13px;font-weight:800;background:#F2F2F7;color:#1C1C1E;">Testar histórico</button>'
+              + '<button type="button" onclick="scTesteLinhas()" style="width:100%;margin-top:8px;border:none;border-radius:10px;padding:10px;font-size:13px;font-weight:800;background:#F2F2F7;color:#1C1C1E;">Testar EMA × VWAP</button>'
               + (_scHist ? '<button type="button" onclick="scRelatorioMostrar(_scHist)" style="width:100%;margin-top:8px;border:none;border-radius:10px;padding:9px;font-size:13px;font-weight:700;background:#F2F2F7;color:#1C1C1E;">Ver teste</button>' : ''))
         + '</div>'
         + (_scUltimo ? '<div style="font-size:11.5px;margin-top:8px;line-height:1.4;color:' + (_scUltimo.erro ? '#DC2626' : '#3A3A3C') + ';">' + _scUltimo.hora.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) + ' · ' + _scUltimo.txt + '</div>' : '')
         + '</div>';
 }
 
+// ── TESTE EMA × VWAP (5 min, ~7 dias): em cada TOQUE (o candle encosta na linha vindo de um lado, sem toque nos 3 anteriores), olha os
+// 6 candles seguintes (30 min): SEGUROU = afastou 1 candle típico na direção do repique antes de fechar 1 candle típico do outro lado;
+// ROMPEU = o contrário; o resto = indefinido. CONTROLE = a mesma EMA deslocada 2 candles típicos (uma linha sem significado): a linha boa
+// tem de segurar bem mais que o controle. Candle típico = mediana da amplitude (tirada dos próprios dados).
+async function scTesteLinhas() {
+    try { cvFecharMenuFpCfg(); } catch (e) {}
+    try { grAreaToast('Testando EMA × VWAP (7 dias de 5 min)…', '#8E8E93'); } catch (e) {}
+    const sym = grBinSymbolAtual(); let cs = [];
+    try {
+        const a = (await grBuscarKlines(sym, '5m', 1000, null)).map(grMapearKline);
+        const b = a.length ? (await grBuscarKlines(sym, '5m', 1000, a[0].t - 1)).map(grMapearKline) : [];
+        cs = b.concat(a).filter((c, i, arr) => i === 0 || c.t > arr[i - 1].t);
+    } catch (e) { scRelatorioMostrar({ lado: null, linhas: ['TESTE EMA × VWAP', 'Não consegui buscar os candles: ' + (e.message || e)] }); return; }
+    const n = cs.length; if (n < 400) { scRelatorioMostrar({ lado: null, linhas: ['TESTE EMA × VWAP', 'Poucos candles (' + n + ').'] }); return; }
+    const per = (_grEmaCustom && _grEmaCustom[0] && _grEmaCustom[0].periodo > 1) ? _grEmaCustom[0].periodo : 200;
+    const amp = cs.map(c => c.h - c.l).sort((x, y) => x - y), tip = amp[Math.floor(amp.length / 2)] || 1;
+    // linhas
+    const ema = new Array(n).fill(null); { const k = 2 / (per + 1); let e = 0; for (let i = 0; i < n; i++) { if (i < per) { e += cs[i].c / per; if (i === per - 1) ema[i] = e; continue; } e = cs[i].c * k + e * (1 - k); ema[i] = e; } }
+    const vwapD = new Array(n).fill(null); { let dia = -1, pv = 0, v = 0; for (let i = 0; i < n; i++) { const d = Math.floor(cs[i].t / 86400000); if (d !== dia) { dia = d; pv = 0; v = 0; } const tp = (cs[i].h + cs[i].l + cs[i].c) / 3; pv += tp * cs[i].v; v += cs[i].v; vwapD[i] = v > 0 ? pv / v : null; } }
+    let vwapA = null, ancTxt = '';
+    try { const anc = (_grVwapAncoras || []).filter(x => !x.oculta && x.ts >= cs[0].t).sort((x, y) => x.ts - y.ts)[0];
+        if (anc) { vwapA = new Array(n).fill(null); let pv = 0, v = 0; for (let i = 0; i < n; i++) { if (cs[i].t < anc.ts) continue; const tp = (cs[i].h + cs[i].l + cs[i].c) / 3; pv += tp * cs[i].v; v += cs[i].v; vwapA[i] = v > 0 ? pv / v : null; } ancTxt = ' (âncora ' + new Date(anc.ts).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) + ')'; } } catch (e) {}
+    const ctrl = ema.map(x => x == null ? null : x + 2 * tip);
+    const medir = (L, ini) => {
+        const r = { toques: 0, seg: 0, romp: 0, ind: 0, sup: { t: 0, s: 0 }, res: { t: 0, s: 0 } };
+        const toca = i => L[i] != null && cs[i].l <= L[i] && cs[i].h >= L[i];
+        for (let i = Math.max(ini, 4); i < n - 6; i++) {
+            if (!toca(i) || toca(i - 1) || toca(i - 2) || toca(i - 3) || L[i - 1] == null) continue;
+            const de = cs[i - 1].c > L[i - 1] ? 1 : -1;   // 1 = veio de cima (teste de suporte); -1 = veio de baixo (resistência)
+            let res = 0;
+            for (let j = i + 1; j <= i + 6 && !res; j++) { const l = L[j] != null ? L[j] : L[i];
+                if (de > 0 ? cs[j].h >= l + tip : cs[j].l <= l - tip) res = 1;
+                if (de > 0 ? cs[j].c <= l - tip : cs[j].c >= l + tip) res = res || -1; }
+            r.toques++; const g = de > 0 ? r.sup : r.res; g.t++;
+            if (res === 1) { r.seg++; g.s++; } else if (res === -1) r.romp++; else r.ind++;
+        }
+        return r;
+    };
+    const pc = (a, b) => b > 0 ? Math.round(100 * a / b) + '%' : '—', f = x => Math.round(x).toLocaleString('pt-BR');
+    const linha = (nome, r) => nome + ': ' + r.toques + ' toques · segurou ' + pc(r.seg, r.toques) + ' · rompeu ' + pc(r.romp, r.toques) + ' · indefinido ' + pc(r.ind, r.toques)
+        + ' (suporte ' + pc(r.sup.s, r.sup.t) + ' de ' + r.sup.t + ' · resistência ' + pc(r.res.s, r.res.t) + ' de ' + r.res.t + ')';
+    const rE = medir(ema, per), rD = medir(vwapD, per), rA = vwapA ? medir(vwapA, per) : null, rC = medir(ctrl, per);
+    const dias = ((cs[n - 1].t - cs[per].t) / 86400000).toFixed(1).replace('.', ',');
+    const L = ['TESTE EMA × VWAP · ' + sym + ' · 5 min · ' + dias + ' dias', 'Candle típico (mediana da amplitude): ' + f(tip) + ' · janela de reação: 6 candles (30 min)',
+        linha('EMA ' + per, rE), linha('VWAP diária (00:00 UTC)', rD)];
+    if (rA) L.push(linha('VWAP ancorada' + ancTxt, rA));
+    L.push(linha('CONTROLE (EMA deslocada, linha sem significado)', rC));
+    const melhor = [['EMA', rE], ['VWAP diária', rD]].concat(rA ? [['VWAP ancorada', rA]] : []).map(([k, r]) => [k, r.toques ? r.seg / r.toques : 0, r.toques]).sort((a, b) => b[1] - a[1]);
+    const ct = rC.toques ? rC.seg / rC.toques : 0;
+    L.push('Leitura: a que mais segurou foi ' + melhor[0][0] + ' (' + Math.round(melhor[0][1] * 100) + '%). O controle segurou ' + Math.round(ct * 100) + '%: '
+        + (melhor[0][1] - ct >= 0.1 ? 'a diferença é clara, a linha tem efeito de verdade.' : 'a diferença é pequena, a linha mal se distingue do acaso.') + (melhor[0][2] < 20 ? ' Poucos toques: leitura fraca.' : ''));
+    scRelatorioMostrar({ lado: null, linhas: L });
+}
 // ── TESTE HISTÓRICO do Setup: roda o motor "como se fosse" cada dia passado (só dados anteriores) e mede se a zona segurou. Não cria caixa. ──
 let _scHist = null, _scHistRodando = false, _scHistParar = false, _scHistProg = '';
 async function scBuscarPeriodo(def, tIni) {
