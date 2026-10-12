@@ -3235,7 +3235,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v451';
+const APP_VERSAO = 'v452';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -7540,6 +7540,7 @@ function grEdAlcas(fx, fy) {
     const o = grEdObjeto(); if (!o) return [];
     const t = _edSel.tipo;
     if (t === 'tl' || t === 'nf' || t === 'md') return [{ k: 'a', x: fx(o.t1), y: fy(o.p1) }, { k: 'b', x: fx(o.t2), y: fy(o.p2) }];
+    if (t === 'fh' && o.seg) { const vs = []; (o.pontos || []).forEach((p, n) => { if (n === o.pontos.length - 1 && n > 0 && p.t === o.pontos[0].t && p.p === o.pontos[0].p) return; vs.push({ k: 'v' + n, x: fx(p.t), y: fy(p.p) }); }); return vs; }   // sequência: um vértice por bolinha (figura fechada: o último é o primeiro)
     if (t === 'fh') { const p = o.pontos[Math.floor(o.pontos.length / 2)]; return p ? [{ k: 'm', x: fx(p.t), y: fy(p.p) }] : []; }
     if (t === 'hl') return [{ k: 'm', x: grPadL() + (window._grChartW || 200) / 2, y: fy(o.p) }];
     if (t === 'al') return [{ k: 'm', x: grPadL() + (window._grChartW || 200) / 2, y: fy(o.preco) }];
@@ -7614,6 +7615,12 @@ function grEdToqueMove(x, y) {
     const tp = _edSel.tipo;
     if (tp === 'tl' || tp === 'md') { if (d.k === 'a') { o.t1 = grIndexToTime(idx); o.p1 = preco; } else { o.t2 = grIndexToTime(idx); o.p2 = preco; } if (o.canal) grCanalAjustar(o); }
     else if (tp === 'nf') { _nfDedo = { x, y }; grNfPonto(x, y); if (!_nfTimer) grNfAutoIniciar(); }
+    else if (tp === 'fh' && /^v\d+$/.test(d.k)) {   // arrasta UM vértice da sequência (figura fechada: o último acompanha o primeiro)
+        const n = parseInt(d.k.slice(1)), sp = d.snap.pontos, dIdx = grXToIndex(nx) - grXToIndex(d.hx), dP = grToPrice(ny) - grToPrice(d.hy);
+        const fechada = sp.length > 2 && sp[sp.length - 1].t === sp[0].t && sp[sp.length - 1].p === sp[0].p;
+        const novo = { t: grIndexToTime(grTimeToIndex(sp[n].t) + dIdx), p: sp[n].p + dP };
+        o.pontos = sp.map((pt, m) => (m === n || (fechada && n === 0 && m === sp.length - 1)) ? novo : pt);
+    }
     else if (tp === 'fh') {
         const dIdx = grXToIndex(nx) - grXToIndex(d.hx), dP = grToPrice(ny) - grToPrice(d.hy);
         o.pontos = d.snap.pontos.map(pt => ({ t: grIndexToTime(grTimeToIndex(pt.t) + dIdx), p: pt.p + dP }));
@@ -8899,8 +8906,8 @@ function grInitTouch() {
         if (_freehandAtual && _freehandAtual.pontos.length >= 2) {
             const novo = {
                 id: null,
-                pontos: _freehandAtual.pontos.map(pt => ({ t: grIndexToTime(pt.i), p: pt.p })),
-                cor: _freehandAtual.cor
+                pontos: grSimplificarTraco(_freehandAtual.pontos).map(pt => ({ t: grIndexToTime(pt.i), p: pt.p })),
+                cor: _freehandAtual.cor, seg: true
             };
             _freehands.push(novo);
             cvSalvarFreehand(novo);
@@ -10736,6 +10743,27 @@ function grMedidasDesenhar(ctx, fxT, fy, fxI, PAD, W, H) {
         ctx.restore();
     });
 }
+// MÃO LIVRE → SEQUÊNCIA: o traço feito à mão vira segmentos retos entre os cantos de verdade (Ramer–Douglas–Peucker, em pixels da tela).
+// Tolerância proporcional ao tamanho do desenho (4% da diagonal, mín. 6 px): o tremor da mão some, as mudanças de direção ficam.
+// Se terminar perto de onde começou, fecha a figura no ponto inicial.
+function grSimplificarTraco(pts) {
+    if (!pts || pts.length < 3) return (pts || []).slice();
+    const sc = pts.map(q => ({ x: grIndexToX(q.i), y: grLineY(q.p) }));
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    sc.forEach(a => { x0 = Math.min(x0, a.x); x1 = Math.max(x1, a.x); y0 = Math.min(y0, a.y); y1 = Math.max(y1, a.y); });
+    const eps = Math.max(6, 0.04 * Math.hypot(x1 - x0, y1 - y0)), manter = new Array(pts.length).fill(false);
+    manter[0] = manter[pts.length - 1] = true;
+    const pilha = [[0, pts.length - 1]];
+    while (pilha.length) {
+        const [a, b] = pilha.pop(); let dm = -1, im = -1;
+        for (let k = a + 1; k < b; k++) { const d = grDistSeg(sc[k].x, sc[k].y, sc[a], sc[b]); if (d > dm) { dm = d; im = k; } }
+        if (dm > eps) { manter[im] = true; pilha.push([a, im], [im, b]); }
+    }
+    const out = pts.filter((q, k) => manter[k]).map(q => ({ i: q.i, p: q.p }));
+    const a = sc[0], z = sc[sc.length - 1];
+    if (out.length >= 3 && Math.hypot(a.x - z.x, a.y - z.y) <= 2 * eps) out[out.length - 1] = { i: out[0].i, p: out[0].p };   // fecha a figura
+    return out;
+}
 function cvSalvarFreehandLocal() {
     try {
         localStorage.setItem(_freehandLSKey(), JSON.stringify(_freehands));
@@ -10872,7 +10900,7 @@ function grPlConfirmar() {   // toque simples com uma ferramenta de colocação 
     if (tool === 'freehand') {
         if (!_freehandAtual) { _freehandAtual = { pontos: [{ i: grXToIndex(_grCrosshairX) - 0.5, p: cur.p }], cor: _freehandColor }; aviso('Traço iniciado. Arraste o crosshair e toque para terminar', '#FFB300'); grDrawChart(); return; }
         if (_freehandAtual.pontos.length < 2) return;   // ainda não andou: toque de novo depois de mover
-        const novo = { id: null, pontos: _freehandAtual.pontos.map(pt => ({ t: grIndexToTime(pt.i), p: pt.p })), cor: _freehandAtual.cor };
+        const novo = { id: null, pontos: grSimplificarTraco(_freehandAtual.pontos).map(pt => ({ t: grIndexToTime(pt.i), p: pt.p })), cor: _freehandAtual.cor, seg: true };   // vira sequência de segmentos
         _freehands.push(novo); try { cvSalvarFreehand(novo); } catch (e) {}
         _freehandAtual = null; fim(); grFerramentaDesligar('freehand', ['cv-ind-freehand']); grDrawChart(); return;
     }
@@ -10918,7 +10946,7 @@ function grEdRegistrarToques(fx, fy) {   // tocar na alça (ponta) do desenho, o
     const R = 22, abrir = (tipo, i) => () => { if (!(_edSel && _edSel.tipo === tipo && _edSel.idx === i)) cvEdicaoIniciar(tipo, i); };
     const alca = (x, y, tipo, i) => { if (isFinite(x) && isFinite(y)) window._grPosRects.push({ x: x - R, y: y - R, w: R * 2, h: R * 2, abrir: abrir(tipo, i) }); };
     _trendlines.forEach((tl, i) => { if (tl.oculta) return; const x1 = fx(tl.t1), y1 = fy(tl.p1), x2 = fx(tl.t2), y2 = fy(tl.p2); alca(x1, y1, 'tl', i); alca(x2, y2, 'tl', i); alca((x1 + x2) / 2, (y1 + y2) / 2, 'tl', i); });
-    _freehands.forEach((f, i) => { const ps = f.pontos || []; if (!ps.length || f.oculta) return; [ps[0], ps[Math.floor(ps.length / 2)], ps[ps.length - 1]].forEach(pt => alca(fx(pt.t), fy(pt.p), 'fh', i)); });
+    _freehands.forEach((f, i) => { const ps = f.pontos || []; if (!ps.length || f.oculta) return; (f.seg ? ps : [ps[0], ps[Math.floor(ps.length / 2)], ps[ps.length - 1]]).forEach(pt => alca(fx(pt.t), fy(pt.p), 'fh', i)); });
     _novosFibos.forEach((f, i) => { if (f.oculta) return; alca(fx(f.t1), fy(f.p1), 'nf', i); alca(fx(f.t2), fy(f.p2), 'nf', i); });
     grHLinhas().forEach((h, i) => { if (h.oculta) return; const y = fy(h.p); if (isFinite(y)) window._grPosRects.push({ x: grPadL(), y: y - 14, w: window._grChartW || 200, h: 28, abrir: abrir('hl', i) }); });
     _medidas.forEach((m, i) => { if (m.oculta) return; const x1 = fx(m.t1), x2 = fx(m.t2), y1 = fy(m.p1), y2 = fy(m.p2); if (![x1, x2, y1, y2].every(isFinite)) return; window._grPosRects.push({ x: Math.min(x1, x2), y: Math.min(y1, y2) - 4, w: Math.max(8, Math.abs(x2 - x1)), h: Math.abs(y2 - y1) + 8, abrir: abrir('md', i) }); });   // tocar dentro da medida a seleciona
