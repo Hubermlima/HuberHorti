@@ -2025,8 +2025,9 @@ function cvAbrirMenuFpCfg(qual, clientX, clientY) {
         document.body.appendChild(overlay);
     }
     menu.style.width = qual === 'fluxo' ? '280px' : ((qual === 'deltaatr' || qual === 'setupcx') ? '260px' : (qual === 'grupo' ? '220px' : ''));
-    menu.style.maxHeight = qual === 'fluxo' ? '70vh' : '';
-    menu.style.overflowY = qual === 'fluxo' ? 'auto' : '';
+    menu.style.maxHeight = qual === 'fluxo' ? '70vh' : (qual === 'setupcx' ? '78vh' : '');
+    menu.style.overflowY = (qual === 'fluxo' || qual === 'setupcx') ? 'auto' : '';
+    menu.style.webkitOverflowScrolling = 'touch';
     menu.style.left = Math.max(8, clientX) + 'px';
     menu.style.top = Math.max(8, clientY + 8) + 'px';
     menu.classList.add('active');
@@ -3297,7 +3298,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v509';
+const APP_VERSAO = 'v511';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -17342,6 +17343,12 @@ function scRegSincCaixas() {
     try { const dd = document.getElementById('cv-pos-dados'); if ((dd && dd.contains(document.activeElement)) || (typeof _edDrag !== 'undefined' && _edDrag)) return false; } catch (e) {}   // ainda digitando/arrastando: espera terminar
     const mapa = new Map(grPosicoes().map(z => [z.id, z])); let mudou = false;
     const dif = (a, b) => a > 0 && b > 0 && Math.abs(a - b) > 1e-6;
+    // caixa ARMADA cujo desenho não existe mais (apagada antes da regra nova): some do histórico também — nada fica rodando escondido.
+    // Só depois que o ambiente carregou e com 20 s de folga (pra não confundir 'ainda carregando' com 'apagada').
+    if (typeof _grAmbienteCarregado !== 'undefined' && _grAmbienteCarregado && performance.now() > 20000) {
+        const sym = grBinSymbolAtual();
+        L.forEach(r => { if (r.st === 'aguardando' && (!r.sym || r.sym === sym) && !mapa.has(r.id)) { r.st = 'apagada'; r.tFim = Date.now(); mudou = true; } });
+    }
     L.forEach(r => {
         if (r.st !== 'aguardando' && r.st !== 'entrou') return;
         const z = mapa.get(r.id); if (!z || z.origem !== 'setup') return;
@@ -17882,15 +17889,49 @@ function scRelatoriosHtml(modal) {
     if (typeof _grAreaMarcada !== 'undefined' && _grAreaMarcada) { h += sec('ÁREA'); h += item('Relatório da área marcada', '', fx + 'grAreaAbrirRelatorio()'); }
     return h;
 }
-function scRelatoriosAbrir() {
+// CENTRAL DE RELATÓRIOS em ABAS: Caixas · Históricos · Registro · Versão · Testes (o conteúdo aparece embaixo, com rolagem própria)
+window._scRelAba = window._scRelAba || 'caixas';
+async function scRelCapturar(fn) {   // roda um relatório "antigo" e pega as linhas dele em vez de abrir outra janela
+    const orig = window.scRelatorioMostrar; let got = null;
+    window.scRelatorioMostrar = o => { got = o; };
+    try { await fn(); } catch (e) { got = { linhas: ['Erro: ' + (e.message || e)] }; } finally { window.scRelatorioMostrar = orig; }
+    return (got && got.linhas) || [];
+}
+function scRelLinhasHtml(L) {
+    return L.map(l => { const s = String(l), tit = /^[A-ZÁÉÍÓÚÂÊÔÃÕÇ0-9 ·—\-\(\)×:%,.]{6,}$/.test(s) && s === s.toUpperCase();
+        return '<div style="font-size:' + (tit ? '12px;font-weight:800;color:#3A3A3C;margin-top:10px' : '13px;color:#1C1C1E') + ';line-height:1.45;padding:2px 0;' + (s.startsWith('—') ? 'font-weight:800;margin-top:8px;' : '') + '">' + s.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</div>'; }).join('');
+}
+async function scRelAbaTroca(k) { window._scRelAba = k; await scRelatoriosAbrir(true); }
+async function scRelatoriosAbrir(manter) {
     try { cvFecharMenuFpCfg(); } catch (e) {}
-    scRelatoriosFechar();
-    const h = '<div style="display:flex;align-items:center;justify-content:space-between;"><div style="font-size:17px;font-weight:800;">Central de Relatórios</div><button type="button" onclick="scRelatoriosFechar()" style="border:none;background:#F2F2F7;border-radius:14px;width:28px;height:28px;font-size:15px;">✕</button></div>' + scRelatoriosHtml(true);
-    const ov = document.createElement('div'); ov.id = 'sc-rel-ov'; ov.style.cssText = 'position:fixed;inset:0;z-index:9790;background:rgba(0,0,0,0.3);'; ov.onclick = scRelatoriosFechar;
-    const fo = document.createElement('div'); fo.id = 'sc-rel-folha';
-    fo.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:9791;background:#FFFFFF;border-radius:16px;box-shadow:0 8px 28px rgba(0,0,0,0.28);padding:14px 14px 8px;width:min(360px,calc(100vw - 32px));max-height:80vh;overflow-y:auto;-webkit-overflow-scrolling:touch;font-family:-apple-system,sans-serif;color:#1C1C1E;';
-    fo.innerHTML = h; fo.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
-    document.body.appendChild(ov); document.body.appendChild(fo);
+    const ABAS = [['caixas', 'Caixas'], ['hist', 'Históricos'], ['reg', 'Registro'], ['ver', 'Versão'], ['testes', 'Testes']];
+    let fo = document.getElementById('sc-rel-folha');
+    if (!fo || !manter) {
+        scRelatoriosFechar();
+        const ov = document.createElement('div'); ov.id = 'sc-rel-ov'; ov.style.cssText = 'position:fixed;inset:0;z-index:9790;background:rgba(0,0,0,0.3);'; ov.onclick = scRelatoriosFechar;
+        fo = document.createElement('div'); fo.id = 'sc-rel-folha';
+        fo.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:9791;background:#FFFFFF;border-radius:16px;box-shadow:0 8px 28px rgba(0,0,0,0.28);width:min(380px,calc(100vw - 24px));height:min(640px,82vh);display:flex;flex-direction:column;font-family:-apple-system,sans-serif;color:#1C1C1E;overflow:hidden;';
+        ['touchstart', 'touchmove'].forEach(ev => fo.addEventListener(ev, e => e.stopPropagation(), { passive: true }));
+        document.body.appendChild(ov); document.body.appendChild(fo);
+    }
+    const ab = window._scRelAba;
+    const cab = '<div style="padding:14px 14px 0;"><div style="display:flex;align-items:center;justify-content:space-between;"><div style="font-size:17px;font-weight:800;">Central de Relatórios</div>'
+        + '<button type="button" onclick="scRelatoriosFechar()" style="border:none;background:#F2F2F7;border-radius:14px;width:28px;height:28px;font-size:15px;">✕</button></div>'
+        + '<div style="display:flex;gap:4px;margin:10px 0 0;padding-bottom:10px;border-bottom:1px solid #F2F2F7;-webkit-overflow-scrolling:touch;">'
+        + ABAS.map(([k, n]) => '<button type="button" onclick="scRelAbaTroca(\'' + k + '\')" style="flex:1 1 auto;min-width:0;border:none;border-radius:16px;padding:7px 6px;font-size:12px;font-weight:800;white-space:nowrap;background:' + (ab === k ? '#1C1C1E' : '#F2F2F7') + ';color:' + (ab === k ? '#FFFFFF' : '#1C1C1E') + ';">' + n + '</button>').join('')
+        + '</div></div>';
+    fo.innerHTML = cab + '<div id="sc-rel-corpo" style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:6px 14px 14px;"><div style="color:#8E8E93;font-size:13px;padding:10px 0;">carregando…</div></div>';
+    const corpo = fo.querySelector('#sc-rel-corpo');
+    let html = '';
+    if (ab === 'caixas') {
+        const L = scRelatoriosHtml(true).split('<div style="font-size:11px;font-weight:800;color:#8E8E93;letter-spacing:.04em;margin:10px 4px 2px;">ROBÔ</div>')[0];
+        html = L + (_scUltimo && _scUltimo.linhas ? '<button type="button" onclick="scRelatoriosFechar();scRelatorioCompleto()" style="display:block;width:100%;margin-top:10px;border:none;border-radius:10px;padding:10px;font-size:13px;font-weight:800;background:#F2F2F7;color:#1C1C1E;">Última análise do Robô (' + _scUltimo.hora.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) + ')</button>' : '');
+    } else if (ab === 'hist') html = scRelLinhasHtml(await scRelCapturar(scHistoricoMostrar));
+    else if (ab === 'reg') html = scRelLinhasHtml(await scRelCapturar(async () => scAutoLogMostrar()));
+    else if (ab === 'ver') html = scRelLinhasHtml(await scRelCapturar(async () => scSobreMostrar()));
+    else if (ab === 'testes') html = '<button type="button" onclick="scRelatoriosFechar();scTesteLinhas()" style="display:block;width:100%;margin-top:8px;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:800;background:#1C1C1E;color:#FFFFFF;">Testar EMA × VWAP</button><div style="font-size:11.5px;color:#8E8E93;margin-top:4px;">7 dias de candles de 5 min · o resultado abre ao terminar</div>'
+        + (typeof _grAreaMarcada !== 'undefined' && _grAreaMarcada ? '<button type="button" onclick="scRelatoriosFechar();grAreaAbrirRelatorio()" style="display:block;width:100%;margin-top:12px;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:800;background:#F2F2F7;color:#1C1C1E;">Relatório da área marcada</button>' : '');
+    if (document.getElementById('sc-rel-folha') === fo && window._scRelAba === ab) corpo.innerHTML = html;
 }
 async function scRelatoriosCaixa(k) {
     const r = (window._scRelLista || [])[k]; scRelatoriosFechar(); if (!r) return;
@@ -18003,7 +18044,8 @@ function scRenderPopup(menu) {
           + '<button type="button" onclick="scMotor()" style="width:100%;margin-top:10px;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:800;background:#1C1C1E;color:#FFFFFF;">Robô</button>'
           + '<div style="font-size:11.5px;color:#8E8E93;margin-top:4px;">O robô escolhe o lado (ou os dois) e posiciona.</div>';
     // 4) Central de Relatórios (inline)
-    const rel = scRelatoriosHtml(false);
+    const rel = '<button type="button" onclick="scRelatoriosAbrir()" style="width:100%;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:800;background:#1C1C1E;color:#FFFFFF;">Abrir a Central</button>'
+        + '<div style="font-size:11.5px;color:#8E8E93;margin-top:4px;">Caixas · Históricos · Registro · Versão · Testes</div>';
     menu.innerHTML = '<div style="font-size:13px;font-weight:700;color:#1C1C1E;margin-bottom:2px;">Robô Trade · ' + SC_MOTOR_VERSAO + '</div>'
         + aba('temp', 'Configuração temporal', 'janela ' + Math.round(scDiasJanela()) + ' dias · macro ' + scDefTf(_scCfg.macro).rot + ' · micro ' + scDefTf(_scCfg.micro).rot, temporal)
         + aba('anc', 'Ancoragens', 'VP ' + dh(SCX.vpAncoraTs) + ' · VA ' + dh(SCX.vaAncoraTs) + ' · VWAP ' + (vw.length || 'nenhuma'), anc)
