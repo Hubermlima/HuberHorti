@@ -441,7 +441,6 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
     <div class="cv-grupo-overlay" id="cv-grupo-overlay" onclick="cvFecharMenuGrupo()"></div>
     <div class="cv-grupo-menu" id="cv-grupo-desenho">
       <div class="cv-grupo-menu-titulo"><span>Desenho</span><button type="button" class="cv-grupo-menu-fechar" onclick="cvFecharMenuGrupo()">✕</button></div>
-      <button class="cv-ind-btn reg" id="cv-ind-reg"><span class="btn-sigla">Reg</span><span class="btn-nome">Régua %</span></button>
       <button class="cv-ind-btn tl" id="cv-ind-tl" onclick="cvToggleTrend()" ontouchstart="cvTrendColorPressStart()" ontouchend="cvTrendColorPressEnd()"><span class="btn-sigla"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="20" x2="20" y2="4"/><circle cx="4" cy="20" r="2" fill="currentColor" stroke="none"/><circle cx="20" cy="4" r="2" fill="currentColor" stroke="none"/></svg></span><span class="btn-nome">Tendência</span></button>
       <button class="cv-ind-btn" id="cv-ind-canal" onclick="cvToggleCanal()"><span class="btn-sigla"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="17" x2="21" y2="7"/><line x1="3" y1="11" x2="21" y2="1" stroke-dasharray="3 2"/><line x1="3" y1="23" x2="21" y2="13" stroke-dasharray="3 2"/></svg></span><span class="btn-nome">Canal Regressão</span></button>
       <button class="cv-ind-btn freehand" id="cv-ind-freehand" onclick="cvToggleFreehand()" ontouchstart="cvFreehandColorPressStart()" ontouchend="cvFreehandColorPressEnd()"><span class="btn-sigla"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17c1.5-3.5 2.5-7 4-8s2.5 2.5 4 3.5 3.5-5.5 5-3-1.5 7-3 8-2.5-3.5-4-2.5-2.5 3.5-6 2z"/></svg></span><span class="btn-nome">Desenho Livre</span></button>
@@ -617,7 +616,7 @@ async function cvRecarregarTransacoes() {
 }
 async function carregarTransacoes() {
     if (!_ativoId) return;
-    if (cvAtivoEhVirtual()) { _transacoes = []; await cvCarregarAlertasGrafico(); await cvCarregarTrendlines(); cvCarregarFreehandLocal(); grDrawChart(); return; }   // modo pesquisa: nada no banco ainda
+    if (cvAtivoEhVirtual()) { _transacoes = []; await cvCarregarAlertasGrafico(); await cvCarregarTrendlines(); cvCarregarFreehandLocal(); cvCarregarMedidas(); grDrawChart(); return; }   // modo pesquisa: nada no banco ainda
     const { data } = await db.from('transacoes')
         .select('*')
         .eq('ativo_id', _ativoId)
@@ -625,7 +624,7 @@ async function carregarTransacoes() {
         _transacoes = data || [];
     await cvCarregarAlertasGrafico();
     await cvCarregarTrendlines();
-    cvCarregarFreehandLocal();
+    cvCarregarFreehandLocal(); cvCarregarMedidas();
     grDrawChart();
 }
 async function fetchFxRate() {
@@ -1404,12 +1403,6 @@ async function cvAtualizarPrecoRealTime() {
         try { scRegChecarPreco(novoPreco); } catch (e) {}
         grPerf('cotação (REST)');
         grFootprintAtualizarLinhaPrecoAtual();
-        if (!_regAtual && _grPm > 0) {
-            _indState.reg = true;
-            _regAtual = { p1: _grPm, p2: _precoAtual * 1.05 };
-            _regJanelaVisivel = false;
-            document.getElementById('cv-ind-reg').classList.add('active');
-        }
         // ── Linha de preço: redesenha só a linha e pílula ──────────
         // Faz overlay rápido sem recalcular indicadores
         cvAtualizarLinhaPreco(novoPreco);
@@ -1480,13 +1473,6 @@ function cvIniciarRealTime() {
                         cvEnviarPushAlerta(alerta.preco, dir);
                     }
                 });
-            }
-            // Atualiza globais reg
-            if (!_regAtual && _grPm > 0) {
-                _indState.reg = true;
-                _regAtual = { p1: _grPm, p2: _precoAtual * 1.05 };
-                _regJanelaVisivel = false;
-                document.getElementById('cv-ind-reg').classList.add('active');
             }
             // Candle atual — se virou o período (nova semana/dia/hora/etc), abre
             // candle novo em vez de ficar mutando o antigo pra sempre.
@@ -1784,9 +1770,6 @@ function grConfigRender() {
         + R('cv-cfg-modallinhas-value', ICO.modal, 'Linhas nos modais', 'Footprint e histograma agregado', 'grModalAlternarLinhasModo()')
         + R('cv-cfg-yfator-value', ICO.escala, 'Escala vertical', null, 'grYFatorResetar()')
         + grConfigVelocidadeBloco(ICO.velocidade)
-        + S('Réguas')
-        + R('cv-cfg-travastop-value', ICO.cadeado, 'Travar Stop', 'Impede mover a linha sem querer', "cvToggleReguaLock('S')")
-        + R('cv-cfg-travaalvo-value', ICO.cadeado, 'Travar Alvo', 'Impede mover a linha sem querer', "cvToggleReguaLock('A')")
         + '</div></div>';
         // Volume Profile e Value Area saíram daqui — as configurações (linhas, comprimento, âncoras) agora
         // ficam no popup do próprio chip na Barra Superior (ver cvAbrirMenuFpCfg), igual ao padrão da EMA.
@@ -1798,8 +1781,6 @@ function grConfigRender() {
 function grConfigAtualizarValores() {
     const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
     { const ec = document.getElementById('cv-cfg-poccontorno-value'); if (ec && ec.tagName !== 'SELECT') set('cv-cfg-poccontorno-value', FOOTPRINT_POC_CONTORNO ? 'Ligado' : 'Desligado'); }
-    set('cv-cfg-travastop-value', _grReguaLock.S ? 'Travado' : 'Destravado');
-    set('cv-cfg-travaalvo-value', _grReguaLock.A ? 'Travado' : 'Destravado');
     grFootprintSkinAtualizarRotulo();
     grAmbienteAtualizarRotulos(); // também chama grFluxoStatusAtualizar()
     grValueAreaAtualizarRotuloMenu();
@@ -3254,10 +3235,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-// Réguas S (stop) e A (alvo) antigas: escondidas da tela (a caixa de Posição as substitui). Os valores _grStop/_regAtual continuam alimentados pelo trade.
-const GR_REGUAS_SA = false;
-const GR_PM_ANTIGO = false;   // linha e badge laranja de PM do trade antigo (boleta) — escondidas do canvas
-const APP_VERSAO = 'v448';
+const APP_VERSAO = 'v451';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -5332,11 +5310,6 @@ let _freehandLongPressFired = false;
 let _grZiiZonas = [];    // zonas ZII marcadas manualmente pelo usuário: [{lo, hi, tipo:'compra'|'venda', total, delta}]
 let _grAlertas = [];     // array de alertas: [{preco, id, habilitado}]
 let _fibDragging = false;
-let _regAtual = null;
-let _regDragging = false;
-let _regJanelaVisivel = false;
-let _regHandleDragged = false;
-let _regTrackingTimer = null;
 window._grFonteCandles = 'Binance'; // exposto pra UI poder mostrar de onde veio o dado
 // Busca candles da Binance Futures (fapi) — fonte única, mesma base do footprint no R2.
 // Devolve o array cru da Binance: [openTime, open, high, low, close, volume, closeTime, ...]
@@ -6679,243 +6652,8 @@ if (_grTipoGrafico === 'linha') {
             window._grBarraSuperiorBottom = chipY + 4; // a linha OHLC é desenhada logo abaixo dos chips
         }
         // Linha Stop — sempre visível, área ancorada no PM
-        if (GR_REGUAS_SA) { // Régua S: sempre visível quando há stop definido/PM ativo
-            const stopPrice = _grStop > 0 ? _grStop : _precoAtual * 0.95;
-            if (!_grStop) _grStop = stopPrice;
-            const dirStopCor = (_grDir || 'LONG').toUpperCase();
-            const stopEmZonaDeLucro = _grPm > 0 && (dirStopCor === 'SHORT' ? stopPrice <= _grPm : stopPrice >= _grPm);
-            const color = stopEmZonaDeLucro ? '#16A34A' : '#E91E8C';
-            const y = toY(stopPrice);
-            // Área colorida entre PM e Stop
-                        if (_grPm > 0) {
-                const yPm = toY(_grPm);
-                const rectY = Math.min(y, yPm);
-                const rectH = Math.abs(y - yPm);
-                                const startIdxStop = Math.max(0, Math.min(_grAllCandles.length - candles.length, _grOffset === 999999 ? _grAllCandles.length - candles.length : _grOffset));
-                const iRecenteAbs = _grAllCandles.length - 1;
-                const iRecente = iRecenteAbs - startIdxStop; // último candle REAL — zona começa logo depois, nunca em cima dele
-                const iInicio = iRecente + 1;
-                const xInicio = PAD.left + (iInicio / totalSlots) * chartW;
-                const xFim = PAD.left + chartW;
-                ctx.fillStyle = 'rgba(233,30,140,0.12)';
-                ctx.fillRect(xInicio, rectY, xFim - xInicio, rectH);
-            }
-            // Linha tracejada
-            ctx.strokeStyle = color;
-            ctx.lineWidth = 1;
-            ctx.setLineDash([4, 3]);
-            ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(W - PAD.right, y); ctx.stroke();
-            ctx.setLineDash([]);
-            // Badge no eixo (direita) — só o preço, sem "S"
-            const bH = 16, bW = PAD.right - 4, bX = W - PAD.right + 1, bY = y - bH / 2;
-            ctx.fillStyle = color;
-            ctx.beginPath(); ctx.roundRect(bX, bY, bW, bH, 3); ctx.fill();
-            ctx.fillStyle = '#FFFFFF';
-            ctx.font = 'bold 10px -apple-system';
-            ctx.textAlign = 'right';
-ctx.fillText(fmtN(stopPrice), bX + bW - 4, bY + bH - 3);
-            // Stop fora da faixa de preço visível: pílula presa na borda (▲/▼); tocar nela centraliza o gráfico no Stop
-            if (y < PAD.top || y > PAD.top + chartH) {
-                const acima = y < PAD.top, yE = acima ? PAD.top + 12 : PAD.top + chartH - 12;
-                const txtE = (acima ? '▲ S ' : '▼ S ') + fmtN(stopPrice);
-                ctx.save();
-                ctx.font = 'bold 11px -apple-system';
-                const wE = Math.max(PAD.right - 4, ctx.measureText(txtE).width + 12), xE = W - PAD.right + 1 - (wE - (PAD.right - 4));
-                ctx.fillStyle = color; ctx.beginPath(); ctx.roundRect(xE, yE - 11, wE, 22, 6); ctx.fill();
-                ctx.fillStyle = '#FFFFFF'; ctx.textAlign = 'center'; ctx.fillText(txtE, xE + wE / 2, yE + 4);
-                ctx.restore();
-                if (!window._grBarraSuperiorChips) window._grBarraSuperiorChips = [];
-                window._grBarraSuperiorChips.push({ x: xE - 6, y: yE - 18, w: wE + 12, h: 36, abrir: () => { _grYAxisCenter = stopPrice; try { grDrawChart(); } catch (e) {} } });
-            }
-            // Handle direito — alinhado no eixo Y, letra S
-            const hW = 18;
-            const hX = W - PAD.right;
-            ctx.fillStyle = color;
-            ctx.beginPath(); ctx.arc(hX - 9, y, 9, 0, Math.PI * 2); ctx.fill();
-            ctx.fillStyle = '#FFFFFF';
-            ctx.font = 'bold 11px -apple-system';
-            ctx.textAlign = 'center';
-            ctx.fillText('S', hX - hW / 2, y + 4);
-            // Janelinha do Stop — mostra ao arrastar (reutiliza _regJanelaVisivel do stop)
-            if (window._stopJanelaVisivel) {
-                const pm = _grPm > 0 ? _grPm : 0;
-                const valorPct = pm > 0 ? Math.abs((pm - stopPrice) / pm * 100) : 0;
-                const valorUSD = pm > 0 ? Math.abs(pm - stopPrice) * _grQtd : 0;
-                const valorBRL = valorUSD * _fxRate;
-                const labelPrincipal = stopEmZonaDeLucro ? 'Lucro garantido:' : 'Perda:';
-                const labelUSD = stopEmZonaDeLucro ? 'Lucro USD:' : 'Perda USD:';
-                const labelBRL = stopEmZonaDeLucro ? 'Lucro BRL:' : 'Perda BRL:';
-                const corValor = stopEmZonaDeLucro ? '#16A34A' : '#EF5350';
-                const sinal = stopEmZonaDeLucro ? '+' : '-';
-                const alvo = _regAtual ? _regAtual.p2 : 0;
-                const rr = pm > 0 && (pm - stopPrice) > 0 && alvo > 0 ? ((alvo - pm) / (pm - stopPrice)) : 0;
-                const jW = 170, jH = rr > 0 ? 132 : 114;
-                const centerX = PAD.left + (W - PAD.left - PAD.right) / 2;
-                const jX = centerX - jW / 2;
-                // Posiciona acima da linha se muito perto do fundo
-                const jY = (y + 12 + jH > H - 20) ? y - jH - 12 : y + 12;
-                ctx.fillStyle = 'rgba(19,23,34,0.92)';
-                ctx.beginPath(); ctx.roundRect(jX, jY, jW, jH, 8); ctx.fill();
-                ctx.strokeStyle = color; ctx.lineWidth = 1.5;
-                ctx.beginPath(); ctx.roundRect(jX, jY, jW, jH, 8); ctx.stroke();
-                const lx = jX + 12, rx = jX + jW - 12;
-                const cotStopPct = _precoAtual > 0 ? ((stopPrice - _precoAtual) / _precoAtual * 100) : 0;
-                const cotStopCor = cotStopPct >= 0 ? '#26A69A' : '#EF5350';
-                ctx.font = 'bold 11px -apple-system';
-                ctx.textAlign = 'left';  ctx.fillStyle = '#FFFFFF'; ctx.fillText(labelPrincipal, lx, jY + 18);
-                ctx.textAlign = 'right'; ctx.fillStyle = corValor; ctx.fillText(sinal + valorPct.toFixed(2) + '%', rx, jY + 18);
-                ctx.textAlign = 'left';  ctx.fillStyle = '#FFFFFF'; ctx.fillText('Stop:', lx, jY + 36);
-                ctx.textAlign = 'right'; ctx.fillStyle = '#FFFFFF'; ctx.fillText(fmtN(stopPrice), rx, jY + 36);
-                ctx.textAlign = 'left';  ctx.fillStyle = '#FFFFFF';
- ctx.fillText('Cotação › Stop:', lx, jY + 54);
-                ctx.textAlign = 'right'; ctx.fillStyle = cotStopCor; ctx.font = 'bold 12px -apple-system';
-                ctx.fillText((cotStopPct >= 0 ? '+' : '') + cotStopPct.toFixed(2) + '%', rx, jY + 54);
-                ctx.font = 'bold 11px -apple-system';
-                ctx.textAlign = 'left';  ctx.fillStyle = '#FFFFFF'; ctx.fillText(labelUSD, lx, jY + 72);
-                ctx.textAlign = 'right'; ctx.fillStyle = corValor; ctx.fillText(sinal + valorUSD.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}), rx, jY + 72);
-                ctx.textAlign = 'left';  ctx.fillStyle = '#FFFFFF'; ctx.fillText(labelBRL, lx, jY + 96);
-                ctx.textAlign = 'right'; ctx.font = 'bold 15px -apple-system'; ctx.fillStyle = corValor;
-                ctx.fillText(sinal + valorBRL.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}), rx, jY + 96);
-                if (rr > 0) {
-                    const rrCor = rr >= 2 ? '#26A69A' : rr >= 1 ? '#F59E0B' : '#EF5350';
-                    ctx.font = 'bold 11px -apple-system';
-                    ctx.textAlign = 'left';  ctx.fillStyle = '#FFFFFF'; ctx.fillText('R/R:', lx, jY + 114);
-                    ctx.textAlign = 'right'; ctx.fillStyle = rrCor; ctx.fillText(rr.toFixed(2), rx, jY + 114);
-                }
-            }
-        }
         // Régua % (Alvo) — respeita o toggle "Visível" de Gerenciar Componentes
-        if (GR_REGUAS_SA && _regAtual && Math.abs(_regAtual.p2 - _regAtual.p1) > 0) {
-            const yR1 = toY(_regAtual.p1);
-            const yR2 = toY(_regAtual.p2);
-            const dirRegua = (_grDir || 'LONG').toUpperCase();
-            const isUp = dirRegua === 'SHORT' ? (_regAtual.p2 < _regAtual.p1) : (_regAtual.p2 > _regAtual.p1);
-            const corReg = isUp ? 'rgba(38,166,154,0.15)' : 'rgba(239,83,80,0.15)';
-            const corBorda = isUp ? '#26A69A' : '#EF5350';
-            const rectY = Math.min(yR1, yR2);
-            const rectH = Math.abs(yR1 - yR2);
-            const startIdxA = Math.max(0, Math.min(_grAllCandles.length - candles.length, _grOffset === 999999 ? _grAllCandles.length - candles.length : _grOffset));
-            const iRecenteAbsA = _grAllCandles.length - 1;
-            const iRecenteA = iRecenteAbsA - startIdxA; // último candle REAL
-            const iInicioA = iRecenteA + 1;
-            const xInicioA = PAD.left + (iInicioA / totalSlots) * chartW;
-            const xFimA = PAD.left + chartW;
-            ctx.fillStyle = corReg;
-            ctx.fillRect(xInicioA, rectY, xFimA - xInicioA, rectH);
-            ctx.strokeStyle = corBorda;
-            ctx.lineWidth = 1;
-            ctx.setLineDash([4, 3]);
-            ctx.beginPath(); ctx.moveTo(PAD.left, yR1); ctx.lineTo(W - PAD.right, yR1); ctx.stroke();
-            ctx.beginPath(); ctx.moveTo(PAD.left, yR2); ctx.lineTo(W - PAD.right, yR2); ctx.stroke();
-            ctx.setLineDash([]);
-            // Cálculos
-            const pct = ((_regAtual.p2 - _regAtual.p1) / _regAtual.p1 * 100);
-            const lucroUSD = (_regAtual.p2 - _regAtual.p1) * _grQtd;
-            const lucroBRL = lucroUSD * _fxRate;
-            // Handle na linha p2 (preço atual) — lado direito
-            const hX = W - PAD.right - 2;
-            const hY = yR2;
-            ctx.fillStyle = corBorda;
-            ctx.beginPath(); ctx.arc(hX - 5, hY, 9, 0, Math.PI * 2); ctx.fill();
-            ctx.fillStyle = '#FFFFFF';
-            ctx.font = 'bold 11px -apple-system';
-            ctx.textAlign = 'center';
-            ctx.fillText('A', hX - 6, hY + 4);
-            window._regHandleY = hY;
-            window._regHandleX = hX - 14;
-            // Janelinha — só aparece se visível
-            if (_regJanelaVisivel) {
-                const centerX = PAD.left + (W - PAD.left - PAD.right) / 2;
-                const centerY = rectY + rectH / 2;
-                const cotAlvoPct = _precoAtual > 0 ? ((_regAtual.p2 - _precoAtual) / _precoAtual * 100) : 0;
-                const rrVal = _grPm > 0 && _grStop > 0 && (_grPm - _grStop) > 0
-                    ? (_regAtual.p2 - _grPm) / (_grPm - _grStop) : 0;
-                const boxW = 180, boxH = 132 + (rrVal > 0 ? 18 : 0);
-                const boxX = centerX - boxW / 2, boxY = centerY - boxH / 2;
-                ctx.fillStyle = 'rgba(19,23,34,0.92)';
-                ctx.beginPath(); ctx.roundRect(boxX, boxY, boxW, boxH, 8); ctx.fill();
-                ctx.strokeStyle = corBorda;
-                ctx.lineWidth = 1.5;
-                ctx.beginPath(); ctx.roundRect(boxX, boxY, boxW, boxH, 8); ctx.stroke();
-                const lx = boxX + 12, rx = boxX + boxW - 12;
-                ctx.font = 'bold 11px -apple-system';
-                ctx.textAlign = 'left';  ctx.fillStyle = '#FFFFFF'; ctx.fillText('Margem:', lx, boxY + 18);
-                ctx.textAlign = 'right'; ctx.fillStyle = corBorda;  ctx.fillText((pct >= 0 ? '+' : '') + pct.toFixed(2) + '%', rx, boxY + 18);
-                ctx.textAlign = 'left';  ctx.fillStyle = '#FFFFFF'; ctx.fillText('Alvo:', lx, boxY + 36);
-                ctx.textAlign = 'right'; ctx.fillStyle = '#FFFFFF'; ctx.fillText(fmtN(_regAtual.p2), rx, boxY + 36);
-                const cotAlvoCor = cotAlvoPct >= 0 ? '#26A69A' : '#EF5350';
-                ctx.textAlign = 'left';  ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.fillText('Cotação › Alvo:', lx, boxY + 54);
-                ctx.textAlign = 'right'; ctx.fillStyle = cotAlvoCor; ctx.font = 'bold 12px -apple-system';
-                ctx.fillText((cotAlvoPct >= 0 ? '+' : '') + cotAlvoPct.toFixed(2) + '%', rx, boxY + 54);
-                ctx.font = 'bold 11px -apple-system';
-                ctx.textAlign = 'left';  ctx.fillStyle = '#FFFFFF'; ctx.fillText('Lucro USD:', lx, boxY + 72);
-                ctx.textAlign = 'right'; ctx.fillStyle = '#FFFFFF'; ctx.fillText(fmtMoney(lucroUSD, ''), rx, boxY + 72);
-                ctx.textAlign = 'left';  ctx.fillStyle = '#FFFFFF'; ctx.fillText('Lucro BRL:', lx, boxY + 96);
-                ctx.textAlign = 'right'; ctx.font = 'bold 15px -apple-system'; ctx.fillStyle = corBorda;
-                ctx.fillText(fmtMoney(lucroBRL, ''), rx, boxY + 96);
-                if (rrVal > 0) {
-                    const rrCor = rrVal >= 2 ? '#26A69A' : rrVal >= 1 ? '#F59E0B' : '#EF5350';
-                    ctx.font = 'bold 11px -apple-system';
-                    ctx.textAlign = 'left';  ctx.fillStyle = '#FFFFFF'; ctx.fillText('R/R:', lx, boxY + 114);
-                    ctx.textAlign = 'right'; ctx.fillStyle = rrCor; ctx.fillText(rrVal.toFixed(2), rx, boxY + 114);
-                }
-            }
-            // Pílula do alvo no eixo Y direito
-            {
-                const aTxt = fmtN(_regAtual.p2);
-                ctx.font = 'bold 10px -apple-system';
-                const aBH = 16, aBW = PAD.right - 4;
-const aBX = W - PAD.right + 1, aBY = yR2 - aBH / 2;
-                ctx.fillStyle = corBorda;
-                ctx.beginPath(); ctx.roundRect(aBX, aBY, aBW, aBH, 3); ctx.fill();
-                ctx.fillStyle = '#131722';
-                ctx.textAlign = 'center';
-                ctx.fillText(aTxt, aBX + aBW / 2, aBY + aBH - 3);
-            }
-        }
                                         // Linha do Preço Médio de Compra
-        if (GR_PM_ANTIGO && _grPm > 0 && _precoAtual > 0) {
-            const yPm = toY(_grPm);
-            const yPreco = toY(_precoAtual);
-            const dirAtual = (_grDir || 'LONG').toUpperCase();
-            const isLoss = dirAtual === 'SHORT' ? (_precoAtual > _grPm) : (_grPm > _precoAtual);
-            const rectCor = isLoss ? 'rgba(239,83,80,0.12)' : 'rgba(38,166,154,0.12)';
-            const rectY = Math.min(yPm, yPreco);
-            const rectH = Math.abs(yPm - yPreco);
-                        // Retângulo entre PM e preço atual
-                        const startIdxPm = Math.max(0, Math.min(_grAllCandles.length - candles.length, _grOffset === 999999 ? _grAllCandles.length - candles.length : _grOffset));
-            const iRecenteAbsPm = _grAllCandles.length - 1;
-            const iRecentePm = iRecenteAbsPm - startIdxPm; // último candle REAL
-            const iInicioPm = iRecentePm + 1;
-            const xInicioPm = PAD.left + (iInicioPm / totalSlots) * chartW;
-            const xFimPm = PAD.left + chartW;
-            // Zona fixa PM ↔ Alvo — sempre verde (lado do lucro, independente do preço atual)
-            const alvoFixo = _regAtual ? _regAtual.p2 : 0;
-            if (alvoFixo > 0) {
-                const yAlvoFixo = toY(alvoFixo);
-                const rectYAlvo = Math.min(yPm, yAlvoFixo);
-                const rectHAlvo = Math.abs(yPm - yAlvoFixo);
-                // (zona clara PM ↔ Alvo removida da tela)
-            }
-            // (zona clara PM ↔ cotação removida da tela)
-            // Label de % no centro do retângulo, lado direito
-            const pct = ((_precoAtual - _grPm) / _grPm * 100);
-            ctx.strokeStyle = '#F5A623';
-            ctx.lineWidth = 1.5;
-            ctx.setLineDash([6, 3]);
-            ctx.beginPath(); ctx.moveTo(PAD.left, yPm); ctx.lineTo(W - PAD.right, yPm); ctx.stroke();
-            ctx.setLineDash([]);
-            const pmTxt = 'PM ' + fmtN(_grPm);
-            ctx.font = 'bold 10px -apple-system';
-            const bH = 16;
-            const bW = Math.max(PAD.right - 4, Math.ceil(ctx.measureText(pmTxt).width) + 10);
-            const bX = W - 3 - bW, bY = yPm - bH / 2;
-            ctx.fillStyle = '#F5A623';
-            ctx.beginPath(); ctx.roundRect(bX, bY, bW, bH, 3); ctx.fill();
-            ctx.fillStyle = '#131722';
-            ctx.textAlign = 'right';
-            ctx.fillText(pmTxt, bX + bW - 4, bY + bH - 3);
-        }
         // ── Ferramenta ÁREA: contorno pontilhado, 1º canto pendente e dica de uso (o Relatório e o Δ ficam no menu ⋮) ──────
         if (areaGeo) {
             ctx.save();
@@ -6957,67 +6695,6 @@ const aBX = W - PAD.right + 1, aBY = yR2 - aBH / 2;
             window._cotHandleY = yPreco;
             // (_cotHandleX/_cotHandleW são definidos em grCotOverlayDesenhar)
             // Janelinha C
-            if (GR_PM_ANTIGO && window._cotJanelaVisivel && _grPm > 0) {
-                const _dirMult  = _grDir === 'SHORT' ? -1 : 1;
-                const margemPct = (_precoAtual - _grPm) / _grPm * 100 * _dirMult;
-                const lucroUSD  = (_precoAtual - _grPm) * _grQtd * _dirMult;
-                const lucroBRL  = lucroUSD * _fxRate;
-                const lucroColor = lucroUSD >= 0 ? '#26A69A' : '#EF5350';
-                const rrC = _grStop > 0 && (_grPm - _grStop) > 0 && _regAtual
-                    ? (_regAtual.p2 - _grPm) / (_grPm - _grStop) : 0;
-                const cJW = 180, cJH = (_grStop > 0 ? 150 : 132) + (rrC > 0 ? 18 : 0);
-                const cCX = PAD.left + (W - PAD.left - PAD.right) / 2;
-                const cJX = cCX - cJW / 2;
-                const cJY = (yPreco + 12 + cJH > H - 20) ? yPreco - cJH - 12 : yPreco + 12;
-                ctx.fillStyle = 'rgba(19,23,34,0.92)';
-                ctx.beginPath(); ctx.roundRect(cJX, cJY, cJW, cJH, 8); ctx.fill();
-                ctx.strokeStyle = precoColor; ctx.lineWidth = 1.5;
-                ctx.beginPath(); ctx.roundRect(cJX, cJY, cJW, cJH, 8); ctx.stroke();
-                const lxC = cJX + 12, rxC = cJX + cJW - 12;
-                ctx.font = 'bold 11px -apple-system';
-                ctx.textAlign = 'left';  ctx.fillStyle = '#FFFFFF'; ctx.fillText('Margem:', lxC, cJY + 18);
-                ctx.textAlign = 'right'; ctx.fillStyle = lucroColor; ctx.fillText((margemPct >= 0 ? '+' : '') + margemPct.toFixed(2) + '%', rxC, cJY + 18);
-                ctx.textAlign = 'left';  ctx.fillStyle = '#FFFFFF'; ctx.fillText('PM:', lxC, cJY + 36);
-                ctx.textAlign = 'right'; ctx.fillStyle = '#FFFFFF'; ctx.fillText(fmtN(_grPm), rxC, cJY + 36);
-                const cotPmCor = margemPct >= 0 ? '#26A69A' : '#EF5350';
-                ctx.textAlign = 'left';  ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.fillText('Cotação › PM:', lxC, cJY + 54);
-                ctx.textAlign = 'right'; ctx.fillStyle = cotPmCor; ctx.font = 'bold 12px -apple-system';
-                ctx.fillText((margemPct >= 0 ? '+' : '') + margemPct.toFixed(2) + '%', rxC, cJY + 54);
-                // Cotação › Stop
-                const cotStopPctC = _grStop > 0 ? ((_precoAtual - _grStop) / _grStop * 100) : null;
-                if (cotStopPctC !== null) {
-                    const cotStopCorC = cotStopPctC >= 0 ? '#26A69A' : '#EF5350';
-                    ctx.font = 'bold 11px -apple-system';
-                    ctx.textAlign = 'left';  ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.fillText('Cotação › Stop:', lxC, cJY + 72);
-                    ctx.textAlign = 'right'; ctx.fillStyle = cotStopCorC; ctx.font = 'bold 12px -apple-system';
-                    ctx.fillText((cotStopPctC >= 0 ? '+' : '') + cotStopPctC.toFixed(2) + '%', rxC, cJY + 72);
-                    ctx.font = 'bold 11px -apple-system';
-                    ctx.textAlign = 'left';  ctx.fillStyle = '#FFFFFF'; ctx.fillText('Lucro USD:', lxC, cJY + 90);
-                    ctx.textAlign = 'right'; ctx.fillStyle = lucroColor; ctx.fillText(fmtMoney(lucroUSD, ''), rxC, cJY + 90);
-                    ctx.textAlign = 'left';  ctx.fillStyle = '#FFFFFF'; ctx.fillText('Lucro BRL:', lxC, cJY + 114);
-                    ctx.textAlign = 'right'; ctx.font = 'bold 15px -apple-system'; ctx.fillStyle = lucroColor;
-                    ctx.fillText(fmtMoney(lucroBRL, ''), rxC, cJY + 114);
-                    if (rrC > 0) {
-                        const rrCor = rrC >= 2 ? '#26A69A' : rrC >= 1 ? '#F59E0B' : '#EF5350';
-                        ctx.font = 'bold 11px -apple-system';
-                        ctx.textAlign = 'left';  ctx.fillStyle = '#FFFFFF'; ctx.fillText('R/R:', lxC, cJY + 132);
-                        ctx.textAlign = 'right'; ctx.fillStyle = rrCor; ctx.fillText(rrC.toFixed(2), rxC, cJY + 132);
-                    }
-                } else {
-                    ctx.font = 'bold 11px -apple-system';
-                    ctx.textAlign = 'left';  ctx.fillStyle = '#FFFFFF'; ctx.fillText('Lucro USD:', lxC, cJY + 72);
-                    ctx.textAlign = 'right'; ctx.fillStyle = lucroColor; ctx.fillText(fmtMoney(lucroUSD, ''), rxC, cJY + 72);
-                    ctx.textAlign = 'left';  ctx.fillStyle = '#FFFFFF'; ctx.fillText('Lucro BRL:', lxC, cJY + 96);
-                    ctx.textAlign = 'right'; ctx.font = 'bold 15px -apple-system'; ctx.fillStyle = lucroColor;
-                    ctx.fillText(fmtMoney(lucroBRL, ''), rxC, cJY + 96);
-                    if (rrC > 0) {
-                        const rrCor = rrC >= 2 ? '#26A69A' : rrC >= 1 ? '#F59E0B' : '#EF5350';
-                        ctx.font = 'bold 11px -apple-system';
-                        ctx.textAlign = 'left';  ctx.fillStyle = '#FFFFFF'; ctx.fillText('R/R:', lxC, cJY + 114);
-                        ctx.textAlign = 'right'; ctx.fillStyle = rrCor; ctx.fillText(rrC.toFixed(2), rxC, cJY + 114);
-                    }
-                }
-            }
         }
         // Período
         if (candles.length > 0) {
@@ -7365,46 +7042,9 @@ if (fibsParaDesenhar.length > 0) {
             }
         }
         try { grNfDesenhar(ctx, t => toXIdx2(grTimeToIndex(t)), p => toY(p), PAD, W, chartH); } catch (eNf) {}
+        try { grMedidasDesenhar(ctx, t => toXIdx2(grTimeToIndex(t)), p => toY(p), i => toXIdx2(i), PAD, W, H); } catch (eMd) {}
         grEdAlcasDesenhar(ctx, t => toXIdx2(grTimeToIndex(t)), p => toY(p));
         grAncBolinhas(ctx, window._grAncDotsMain);   // bolinhas do objeto selecionado (VWAP, EMA, Bollinger, RSI, ZII, Área, Fibonacci, Alerta) por cima de tudo
-        // ── Régua de Medição: descartável, linha + caixa com % e USD ──
-        if (_medidaAtual) {
-            const corMedida = '#8B5CF6';
-            const x1 = toXIdx2(_medidaAtual.i1), y1 = toY(_medidaAtual.p1);
-            const x2 = toXIdx2(_medidaAtual.i2), y2 = toY(_medidaAtual.p2);
-            ctx.save();
-            ctx.strokeStyle = corMedida;
-            ctx.lineWidth = 2;
-            ctx.setLineDash([5, 4]);
-            ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
-            ctx.setLineDash([]);
-            ctx.fillStyle = corMedida;
-            ctx.beginPath(); ctx.arc(x1, y1, 4, 0, Math.PI * 2); ctx.fill();
-            ctx.beginPath(); ctx.arc(x2, y2, 4, 0, Math.PI * 2); ctx.fill();
-            const diffUSD = _medidaAtual.p2 - _medidaAtual.p1;
-            const diffPct = _medidaAtual.p1 > 0 ? (diffUSD / _medidaAtual.p1) * 100 : 0;
-            const corValor = diffUSD >= 0 ? '#26A69A' : '#EF5350';
-            const texto1 = `${diffPct >= 0 ? '+' : ''}${diffPct.toFixed(2)}%`;
-            const texto2 = `${diffUSD >= 0 ? '+' : ''}${fmtN(diffUSD)} USD`;
-            ctx.font = 'bold 13px -apple-system';
-            const boxW = Math.max(ctx.measureText(texto1).width, ctx.measureText(texto2).width) + 24;
-            const boxH = 46;
-            let boxX = (x1 + x2) / 2 - boxW / 2;
-            let boxY = Math.min(y1, y2) - boxH - 10;
-            if (boxY < PAD.top) boxY = Math.max(y1, y2) + 10;
-            boxX = Math.max(PAD.left + 4, Math.min(W - PAD.right - boxW - 4, boxX));
-            ctx.fillStyle = 'rgba(19,23,34,0.92)';
-            ctx.beginPath(); ctx.roundRect(boxX, boxY, boxW, boxH, 8); ctx.fill();
-            ctx.strokeStyle = corMedida; ctx.lineWidth = 1.5;
-            ctx.beginPath(); ctx.roundRect(boxX, boxY, boxW, boxH, 8); ctx.stroke();
-            ctx.textAlign = 'center';
-            ctx.fillStyle = corValor;
-            ctx.font = 'bold 14px -apple-system';
-            ctx.fillText(texto1, boxX + boxW / 2, boxY + 19);
-            ctx.font = 'bold 12px -apple-system';
-            ctx.fillText(texto2, boxX + boxW / 2, boxY + 36);
-            ctx.restore();
-        }
         // Bitstamp source label
         ctx.fillStyle = '#FFFFFF';
         ctx.font = 'bold 9px -apple-system';
@@ -7893,13 +7533,13 @@ let _edSel = null;    // {tipo:'tl'|'nf'|'fh'|'hl'|'ps'|'al', idx}
 let _edDrag = null;   // {k, hx, hy, fx, fy, snap}
 function grEdObjeto(sel) {
     sel = sel || _edSel; if (!sel) return null;
-    return sel.tipo === 'tl' ? _trendlines[sel.idx] : sel.tipo === 'nf' ? _novosFibos[sel.idx] : sel.tipo === 'fh' ? _freehands[sel.idx] : sel.tipo === 'hl' ? grHLinhas()[sel.idx] : sel.tipo === 'al' ? _grAlertas[sel.idx] : sel.tipo === 'ps' ? grPosicoes()[sel.idx] : null;
+    return sel.tipo === 'tl' ? _trendlines[sel.idx] : sel.tipo === 'md' ? _medidas[sel.idx] : sel.tipo === 'nf' ? _novosFibos[sel.idx] : sel.tipo === 'fh' ? _freehands[sel.idx] : sel.tipo === 'hl' ? grHLinhas()[sel.idx] : sel.tipo === 'al' ? _grAlertas[sel.idx] : sel.tipo === 'ps' ? grPosicoes()[sel.idx] : null;
 }
 // fx(t) → x em tela, fy(preço) → y em tela. O desenho e o toque passam funções equivalentes.
 function grEdAlcas(fx, fy) {
     const o = grEdObjeto(); if (!o) return [];
     const t = _edSel.tipo;
-    if (t === 'tl' || t === 'nf') return [{ k: 'a', x: fx(o.t1), y: fy(o.p1) }, { k: 'b', x: fx(o.t2), y: fy(o.p2) }];
+    if (t === 'tl' || t === 'nf' || t === 'md') return [{ k: 'a', x: fx(o.t1), y: fy(o.p1) }, { k: 'b', x: fx(o.t2), y: fy(o.p2) }];
     if (t === 'fh') { const p = o.pontos[Math.floor(o.pontos.length / 2)]; return p ? [{ k: 'm', x: fx(p.t), y: fy(p.p) }] : []; }
     if (t === 'hl') return [{ k: 'm', x: grPadL() + (window._grChartW || 200) / 2, y: fy(o.p) }];
     if (t === 'al') return [{ k: 'm', x: grPadL() + (window._grChartW || 200) / 2, y: fy(o.preco) }];
@@ -7972,7 +7612,7 @@ function grEdToqueMove(x, y) {
     if (_edSel.tipo === 'ps' && (d.k === 'a' || d.k === 's' || d.k === 'e')) preco = grMagnetRegua(ny, preco);   // stop/entrada/alvo grudam nas bordas da régua
     if (!(preco > 0)) return true;
     const tp = _edSel.tipo;
-    if (tp === 'tl') { if (d.k === 'a') { o.t1 = grIndexToTime(idx); o.p1 = preco; } else { o.t2 = grIndexToTime(idx); o.p2 = preco; } if (o.canal) grCanalAjustar(o); }
+    if (tp === 'tl' || tp === 'md') { if (d.k === 'a') { o.t1 = grIndexToTime(idx); o.p1 = preco; } else { o.t2 = grIndexToTime(idx); o.p2 = preco; } if (o.canal) grCanalAjustar(o); }
     else if (tp === 'nf') { _nfDedo = { x, y }; grNfPonto(x, y); if (!_nfTimer) grNfAutoIniciar(); }
     else if (tp === 'fh') {
         const dIdx = grXToIndex(nx) - grXToIndex(d.hx), dP = grToPrice(ny) - grToPrice(d.hy);
@@ -8014,6 +7654,7 @@ async function grEdToqueFim() {
     try {
         if (_edSel.tipo === 'tl') await cvSalvarTrendline(o);
         else if (_edSel.tipo === 'nf') grAmbienteSalvar();
+        else if (_edSel.tipo === 'md') cvSalvarMedidas();
         else if (_edSel.tipo === 'fh') cvSalvarFreehandLocal();
         else if (_edSel.tipo === 'hl') grHLinhasSalvar();
         else if (_edSel.tipo === 'ps') grPosSalvar();
@@ -8021,7 +7662,7 @@ async function grEdToqueFim() {
     } catch (e) {}
     return true;
 }
-const GR_ED_NOMES = { nf: 'Novo Fibo', tl: 'Tendência', fh: 'Desenho livre', hl: 'Linha horizontal', ps: 'Posição' };
+const GR_ED_NOMES = { md: 'Medida', nf: 'Novo Fibo', tl: 'Tendência', fh: 'Desenho livre', hl: 'Linha horizontal', ps: 'Posição' };
 function cvEdicaoIniciar(tipo, idx) {
     cvEdicaoSair(true);
     window._grCtxFechado = false;   // selecionar a caixa de novo traz a barra de volta
@@ -8273,6 +7914,7 @@ function cvAbrirMenuDesenhos(clientX, clientY) {
     grPosicoes().forEach((pz, i) => linhas.push({ cor: pz.lado === 'short' ? '#EF5350' : '#26A69A', nome: 'Posição ' + (pz.lado === 'short' ? 'Short ' : 'Long ') + (i + 1) + (pz.origem === 'melhor' ? ' · Melhor C' + (pz.camada || 1) : (pz.origem === 'setup' ? ' · ' + (pz.rotulo || 'Setup') : '')), det: (pz.pm > 0 ? 'PM ' + fmtN(pz.pm) : 'Entrada ' + fmtN(pz.entrada)) + (pz.alvo > 0 ? ' · Alvo ' + fmtN(pz.alvo) : '') + (pz.stop > 0 ? ' · Stop ' + fmtN(pz.stop) : ''), edit: () => cvEdicaoIniciar('ps', i), cfg: () => cvPosFormAbrir(i), oculta: !!pz.oculta, olho: () => { pz.oculta = !pz.oculta; if (pz.oculta && _edSel && _edSel.tipo === 'ps' && _edSel.idx === i) cvEdicaoSair(true); }, apagar: () => cvPosApagarCaixa(i) }));
     _freehands.forEach((fh, i) => { const p0 = fh.pontos && fh.pontos[0]; linhas.push({ cor: fh.cor, nome: 'Desenho livre ' + (i + 1), det: p0 ? fmtN(p0.p) + ' · ' + fmtD(p0.t) : '', edit: () => cvEdicaoIniciar('fh', i), oculta: !!fh.oculta, olho: () => { fh.oculta = !fh.oculta; if (fh.oculta && _edSel && _edSel.tipo === 'fh' && _edSel.idx === i) cvEdicaoSair(true); cvSalvarFreehandLocal(); }, apagar: () => cvApagarFreehand(i), setCor: c => { fh.cor = c; cvSalvarFreehandLocal(); } }); });
     _novosFibos.forEach((f, i) => linhas.push({ cor: '#2962FF', nome: 'Novo Fibo ' + (i + 1), det: fmtN(f.p1) + ' → ' + fmtN(f.p2) + ' · ' + fmtD(f.t1), edit: () => cvEdicaoIniciar('nf', i), oculta: !!f.oculta, olho: () => { f.oculta = !f.oculta; if (f.oculta && _edSel && _edSel.tipo === 'nf' && _edSel.idx === i) cvEdicaoSair(true); grAmbienteSalvar(); }, apagar: () => { _novosFibos.splice(i, 1); grAmbienteSalvar(); grDrawChart(); } }));
+    _medidas.forEach((m, i) => linhas.push({ cor: m.p2 >= m.p1 ? '#26A69A' : '#EF5350', nome: 'Medida ' + (i + 1), det: fmtN(m.p1) + ' → ' + fmtN(m.p2) + ' · ' + fmtD(Math.min(m.t1, m.t2)), edit: () => cvEdicaoIniciar('md', i), oculta: !!m.oculta, olho: () => { m.oculta = !m.oculta; if (m.oculta && _edSel && _edSel.tipo === 'md' && _edSel.idx === i) cvEdicaoSair(true); cvSalvarMedidas(); }, apagar: () => { _medidas.splice(i, 1); cvSalvarMedidas(); } }));
     _fibs.forEach((f, i) => linhas.push({ cor: FIB_CORES[i % FIB_CORES.length], nome: 'Fibonacci ' + (i + 1), det: '0%: ' + fmtN(f.p1) + ' · 100%: ' + fmtN(f.p2), edit: () => cvFibAbrirEditar(i), apagar: () => cvFibExcluirIdx(i) }));
     const overlay = document.createElement('div');
     overlay.id = 'cv-desenhos-menu-overlay';
@@ -8323,6 +7965,13 @@ function cvAbrirMenuDesenhos(clientX, clientY) {
         if (l.olho) { const ol = document.createElement('button'); ol.type = 'button'; ol.innerHTML = grHeroicon(l.oculta ? 'eye-slash' : 'eye', 17); ol.setAttribute('aria-label', (l.oculta ? 'Mostrar ' : 'Esconder ') + l.nome); ol.style.cssText = 'flex-shrink:0;width:30px;height:32px;background:none;border:none;color:#1C1C1E;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;'; ol.onclick = ev => { ev.stopPropagation(); l.olho(); grDrawChart(); cvAbrirMenuDesenhos(); }; if (l.oculta) txt.style.opacity = '.4'; row.appendChild(ol); }
         menu.appendChild(row);
     });
+    if (_medidas.length) {   // apaga todas as medidas deste ativo de uma vez
+        const ex = document.createElement('button'); ex.type = 'button';
+        ex.textContent = 'Excluir todas as medidas (' + _medidas.length + ')';
+        ex.style.cssText = 'display:block;width:100%;border:none;border-top:1px solid #F2F2F7;background:none;color:#EF5350;font-size:12px;font-weight:600;text-align:left;padding:9px 10px;cursor:pointer;font-family:inherit;';
+        ex.onclick = ev => { ev.stopPropagation(); if (_edSel && _edSel.tipo === 'md') cvEdicaoSair(true); _medidas = []; cvSalvarMedidas(); grDrawChart(); cvAbrirMenuDesenhos(); };
+        menu.appendChild(ex);
+    }
     document.body.appendChild(overlay);
     document.body.appendChild(menu);
     requestAnimationFrame(() => {
@@ -8516,14 +8165,7 @@ function grInitTouch() {
         function grGetDragTarget(yInterno) {
         const HIT = 50;
         const locked = key => key === 'reguaA' ? _grReguaLock.A : key === 'reguaS' ? _grReguaLock.S : false;
-        if (GR_PM_ANTIGO && _grPm > 0 && Math.abs(yInterno - grLineY(_grPm)) <= HIT) return 'pm';
-        if (GR_REGUAS_SA && !locked('reguaA') && _grAlvo    > 0 && Math.abs(yInterno - grLineY(_grAlvo))    <= HIT) return 'alvo';
         if (_grEntrada > 0 && Math.abs(yInterno - grLineY(_grEntrada)) <= HIT) return 'entrada';
-        if (GR_REGUAS_SA) {
-        if (_grStop    > 0 && Math.abs(yInterno - grLineY(_grStop))    <= HIT) return 'stop';
-        const stopPrice = _grStop > 0 ? _grStop : _precoAtual * 0.95;
-        if (Math.abs(yInterno - grLineY(stopPrice)) <= HIT) return 'stop';
-        }
         // Alertas
         if (!locked('alertas')) {
             for (let i = 0; i < _grAlertas.length; i++) {
@@ -8782,32 +8424,6 @@ function grInitTouch() {
             }
             const yInterno = toCanvasY(e.touches[0].clientY);
             const xInterno = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (grLW(canvas) / canvas.getBoundingClientRect().width);
-            // Toque no handle C (cotação)
-            if (window._cotHandleY !== undefined) {
-                const cTocado = Math.abs(yInterno - window._cotHandleY) < 35
-                             && xInterno >= window._cotHandleX
-                             && xInterno <= window._cotHandleX + window._cotHandleW + 10;
-                                if (cTocado) {
-                    window._cotJanelaVisivel = !window._cotJanelaVisivel;
-                    _wsLastDraw = Date.now(); // pausa o throttle por 5s
-                    grDrawChart();
-                    e.preventDefault();
-                    return;
-                }
-            }
-            // Toque no handle da régua
-            if (_regAtual && window._regHandleX !== undefined && window._regHandleY !== undefined && !_grReguaLock.A) {
-                const hTocado = xInterno >= window._regHandleX && xInterno <= window._regHandleX + 14
-                             && Math.abs(yInterno - window._regHandleY) < 20;
-                if (hTocado) {
-                    _regDragging = true;
-                    _longPressTimer = setTimeout(() => {
-                        // segurou: não é drag, é toggle da janelinha
-                    }, 300);
-                    e.preventDefault();
-                    return;
-                }
-            }
             const target = grGetDragTarget(yInterno);
             if (target) {
                 _grDragLineCandidato = target; // decidido só no 1º movimento (ver touchmove) — não trava o scroll na hora
@@ -8816,25 +8432,7 @@ function grInitTouch() {
                 touchStartX = e.touches[0].clientX;
                 touchStartY = e.touches[0].clientY;
                 if (target === 'stop') window._stopHandleDragged = false;
-            } else if (_indState.reg) {
-    // Gráfico livre — handle controla a régua
-    _grDragLine = null; _grDragLineCandidato = null;
-    touchStartX = e.touches[0].clientX;
-    touchStartY = e.touches[0].clientY;
-    isDragging = true;
-    window._longPressY = yInterno;
-    _longPressTimer = setTimeout(() => {
-        if (isDragging) {
-            window._longPressActive = true;
-            window._grCrosshairMaximizada = false; // a janela abre sempre minimizada (só data e ΔV Nível)
-            window._grAreaArrastando = !!(_grAreaArmada && _grAreaP1); // Área: com o 1º canto marcado, soltar aqui fecha o retângulo
-            isDragging = false;
-            _grCrosshairX = _liveTouchX - canvas.getBoundingClientRect().left;
-            window._longPressY = toCanvasYCh(_liveTouchY);
-            grDrawChartWithCrosshair(window._longPressY);
-        }
-    }, 500);
-}
+            }
  else {
     _grDragLine = null; _grDragLineCandidato = null;
     touchStartX = e.touches[0].clientX;
@@ -9023,11 +8621,6 @@ function grInitTouch() {
                 grDrawChart();
             } else if (_fibDragging && _indState.fib) {
     _fibAtual.p2 = grToPrice(toCanvasY(e.touches[0].clientY));
-    grDrawChart();
-} else if (_regDragging && _indState.reg) {
-    _regHandleDragged = true;
-    _regJanelaVisivel = true;
-    _regAtual.p2 = grToPrice(toCanvasY(e.touches[0].clientY));
     grDrawChart();
 } else if (window._longPressActive) {
     // Move crosshair
@@ -9261,9 +8854,8 @@ function grInitTouch() {
     if (_medidaDrawing) {
         _medidaDrawing = false;
         grFerramentaDesligar('medida', ['cv-ind-medida']);
-        grDrawChart(); // mostra o resultado final fixo por um instante
-        clearTimeout(_medidaFlashTimer);
-        _medidaFlashTimer = setTimeout(() => { _medidaAtual = null; grDrawChart(); }, 1200);
+        if (_medidaAtual && (_medidaAtual.i1 !== _medidaAtual.i2 || _medidaAtual.p1 !== _medidaAtual.p2)) { _medidas.push({ id: Date.now(), t1: grIndexToTime(_medidaAtual.i1), p1: _medidaAtual.p1, t2: grIndexToTime(_medidaAtual.i2), p2: _medidaAtual.p2 }); cvSalvarMedidas(); }
+        _medidaAtual = null; grDrawChart();
         return;
     }
     if (_trendDeletePending) {
@@ -9352,18 +8944,6 @@ function grInitTouch() {
             _fibs.push({ ..._fibAtual });
         }
         _fibAtual = null;
-        grDrawChart();
-    } else if (_regDragging) {
-        _regDragging = false;
-        if (_regHandleDragged) {
-            // Soltou após arrastar — fecha janelinha
-            _regJanelaVisivel = false;
-            if (_regTrackingTimer) clearTimeout(_regTrackingTimer);
-        } else {
-            // Toque curto no handle — toggle janelinha
-            _regJanelaVisivel = !_regJanelaVisivel;
-        }
-        _regHandleDragged = false;
         grDrawChart();
     } else if (window._longPressActive && window._grAreaArrastando) {
             // Ferramenta Área: onde soltar é o 2º canto (preço e minuto exatos do ponto solto). Fecha o crosshair e mostra o retângulo.
@@ -10386,7 +9966,6 @@ function grDrawChartWithCrosshair(yInterno) {
     desenharLinhasDoCrosshair();
 }
 let _grDir = 'LONG';
-window._cotJanelaVisivel = false;
 let _wsLastDraw = 0;
 const WS_THROTTLE_MS = 1000; // o candle em formação era redesenhado só a cada 5 s (corpo andava aos saltos)
 // Estado dos indicadores
@@ -10957,12 +10536,6 @@ function cvFecharMenuGrupo() {
     document.getElementById('cv-grupo-desenho').classList.remove('active');
     document.getElementById('cv-grupo-footprint').classList.remove('active');
 }
-function cvToggleReg() {
-    _indState.reg = !_indState.reg;
-    if (!_indState.reg) { _regAtual = null; _regDragging = false; }
-    document.getElementById('cv-ind-reg').classList.toggle('active', _indState.reg);
-    grDrawChart();
-}
 
 // ── Canal de Regressão Linear ────────────────────────────────────────────────────────────
 // Você arrasta do candle inicial ao final (igual à Tendência); o app ajusta a reta de mínimos quadrados sobre o LOG dos
@@ -11125,6 +10698,44 @@ function cvCarregarFreehandLocal() {
         _freehands = [];
     }
 }
+// ── MEDIDA (igual ao TradingView): retângulo do ponto 1 ao ponto 2, verde subindo / vermelho caindo, com diferença em US$ e %, nº de candles e tempo.
+// Permanente, salva por ativo (mesmo esquema do desenho livre: chave cv_ → vai pro servidor no Sair). Tocar seleciona (alças + menu com lixeira).
+let _medidas = [];
+function _medidasKey() { return 'cv_medidas_' + (_ativoId || 'default'); }
+function cvCarregarMedidas() { try { const r = localStorage.getItem(_medidasKey()); _medidas = r ? JSON.parse(r) : []; } catch (e) { _medidas = []; } }
+function cvSalvarMedidas() { try { localStorage.setItem(_medidasKey(), JSON.stringify(_medidas)); } catch (e) {} }
+function grMedidaTempo(ms) {
+    ms = Math.abs(ms); const m = Math.round(ms / 60000), d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60), mi = m % 60;
+    return d ? d + 'd' + (h ? ' ' + h + 'h' : '') : h ? h + 'h' + (mi ? ' ' + mi + 'm' : '') : mi + 'm';
+}
+function grMedidasDesenhar(ctx, fxT, fy, fxI, PAD, W, H) {
+    const lista = _medidas.filter(m => !m.oculta).map(m => ({ x1: fxT(m.t1), x2: fxT(m.t2), p1: m.p1, p2: m.p2, n: grTimeToIndex(m.t2) - grTimeToIndex(m.t1), dt: m.t2 - m.t1 }));
+    if (_medidaAtual) lista.push({ x1: fxI(_medidaAtual.i1), x2: fxI(_medidaAtual.i2), p1: _medidaAtual.p1, p2: _medidaAtual.p2, n: _medidaAtual.i2 - _medidaAtual.i1, dt: grIndexToTime(_medidaAtual.i2) - grIndexToTime(_medidaAtual.i1) });
+    lista.forEach(m => {
+        const y1 = fy(m.p1), y2 = fy(m.p2); if (![m.x1, m.x2, y1, y2].every(isFinite)) return;
+        const sobe = m.p2 >= m.p1, cor = sobe ? '#26A69A' : '#EF5350', xa = Math.min(m.x1, m.x2), xb = Math.max(m.x1, m.x2), ya = Math.min(y1, y2), yb = Math.max(y1, y2);
+        ctx.save();
+        ctx.fillStyle = sobe ? 'rgba(38,166,154,0.18)' : 'rgba(239,83,80,0.18)'; ctx.fillRect(xa, ya, xb - xa, yb - ya);
+        ctx.strokeStyle = cor; ctx.lineWidth = 1; ctx.strokeRect(xa + 0.5, ya + 0.5, Math.max(0, xb - xa - 1), Math.max(0, yb - ya - 1));
+        // setas: vertical (preço) e horizontal (tempo), pelo meio
+        const xm = (xa + xb) / 2, ym = (ya + yb) / 2, ah = 6;
+        ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(xm, y1); ctx.lineTo(xm, y2); ctx.moveTo(m.x1, ym); ctx.lineTo(m.x2, ym); ctx.stroke();
+        const dy = y2 >= y1 ? 1 : -1, dx = m.x2 >= m.x1 ? 1 : -1;
+        ctx.fillStyle = cor; ctx.beginPath(); ctx.moveTo(xm, y2); ctx.lineTo(xm - ah, y2 - dy * ah); ctx.lineTo(xm + ah, y2 - dy * ah); ctx.closePath(); ctx.fill();
+        ctx.beginPath(); ctx.moveTo(m.x2, ym); ctx.lineTo(m.x2 - dx * ah, ym - ah); ctx.lineTo(m.x2 - dx * ah, ym + ah); ctx.closePath(); ctx.fill();
+        // etiqueta (abaixo na queda, acima na subida, como no TradingView)
+        const dif = m.p2 - m.p1, pct = m.p1 > 0 ? dif / m.p1 * 100 : 0, nc = Math.round(Math.abs(m.n));
+        const l1 = (dif >= 0 ? '+' : '−') + fmtN(Math.abs(dif)) + ' (' + (pct >= 0 ? '+' : '−') + Math.abs(pct).toFixed(2).replace('.', ',') + '%)';
+        const l2 = nc + (nc === 1 ? ' candle' : ' candles') + ' · ' + grMedidaTempo(m.dt);
+        ctx.font = 'bold 11px -apple-system'; const bw = Math.max(ctx.measureText(l1).width, ctx.measureText(l2).width) + 14, bh = 32;
+        let bx = Math.max(PAD.left + 2, Math.min(W - PAD.right - bw - 2, xm - bw / 2)), by = sobe ? ya - bh - 6 : yb + 6;
+        if (by < PAD.top) by = yb + 6; if (by + bh > H - PAD.bottom) by = ya - bh - 6;
+        ctx.fillStyle = cor; ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 4); ctx.fill();
+        ctx.fillStyle = '#FFFFFF'; ctx.textAlign = 'center'; ctx.fillText(l1, bx + bw / 2, by + 13);
+        ctx.font = '11px -apple-system'; ctx.fillText(l2, bx + bw / 2, by + 26);
+        ctx.restore();
+    });
+}
 function cvSalvarFreehandLocal() {
     try {
         localStorage.setItem(_freehandLSKey(), JSON.stringify(_freehands));
@@ -11254,9 +10865,8 @@ function grPlConfirmar() {   // toque simples com uma ferramenta de colocação 
     if (tool === 'medida') {
         if (!P1) { _plPts = [{ t: cur.t, p: cur.p }]; aviso('Ponto 1 marcado. Arraste até o destino e toque de novo', '#8B5CF6'); grDrawChart(); return; }
         if (mesmo(P1)) return;
-        _medidaAtual = { i1: grTimeToIndex(P1.t), p1: P1.p, i2: cur.ic, p2: cur.p };
-        fim(); grFerramentaDesligar('medida', ['cv-ind-medida']); grDrawChart();   // resultado fica na tela um tempo (descartável)
-        clearTimeout(_medidaFlashTimer); _medidaFlashTimer = setTimeout(() => { _medidaAtual = null; grDrawChart(); }, 4000);
+        _medidas.push({ id: Date.now(), t1: P1.t, p1: P1.p, t2: cur.t, p2: cur.p }); cvSalvarMedidas();   // permanente
+        _medidaAtual = null; fim(); grFerramentaDesligar('medida', ['cv-ind-medida']); grDrawChart();
         return;
     }
     if (tool === 'freehand') {
@@ -11268,7 +10878,7 @@ function grPlConfirmar() {   // toque simples com uma ferramenta de colocação 
     }
 }
 // ── Menu de contexto do desenho selecionado (olho/lixeira/fechar) e áreas de toque para selecionar pelo handle ──
-const GR_ED_CTX_TIPOS = ['nf', 'tl', 'fh', 'hl'];
+const GR_ED_CTX_TIPOS = ['nf', 'tl', 'fh', 'hl', 'md'];
 function grDistSeg(px, py, a, b) {   // distância do ponto ao segmento a–b (em px)
     const dx = b.x - a.x, dy = b.y - a.y, L2 = dx * dx + dy * dy;
     const t = L2 > 0 ? Math.max(0, Math.min(1, ((px - a.x) * dx + (py - a.y) * dy) / L2)) : 0;
@@ -11299,6 +10909,7 @@ function grEdCtxApagar() {
     else if (tipo === 'tl') { _trendlines.splice(idx, 1); grAmbienteSalvar(); }
     else if (tipo === 'fh') { _freehands.splice(idx, 1); cvSalvarFreehandLocal(); }
     else if (tipo === 'hl') { grHLinhas().splice(idx, 1); grHLinhasSalvar(); }
+    else if (tipo === 'md') { _medidas.splice(idx, 1); cvSalvarMedidas(); }
     grDrawChart();
 }
 function grEdRegistrarToques(fx, fy) {   // tocar na alça (ponta) do desenho, ou na linha horizontal, seleciona e já abre o menu de contexto
@@ -11310,6 +10921,7 @@ function grEdRegistrarToques(fx, fy) {   // tocar na alça (ponta) do desenho, o
     _freehands.forEach((f, i) => { const ps = f.pontos || []; if (!ps.length || f.oculta) return; [ps[0], ps[Math.floor(ps.length / 2)], ps[ps.length - 1]].forEach(pt => alca(fx(pt.t), fy(pt.p), 'fh', i)); });
     _novosFibos.forEach((f, i) => { if (f.oculta) return; alca(fx(f.t1), fy(f.p1), 'nf', i); alca(fx(f.t2), fy(f.p2), 'nf', i); });
     grHLinhas().forEach((h, i) => { if (h.oculta) return; const y = fy(h.p); if (isFinite(y)) window._grPosRects.push({ x: grPadL(), y: y - 14, w: window._grChartW || 200, h: 28, abrir: abrir('hl', i) }); });
+    _medidas.forEach((m, i) => { if (m.oculta) return; const x1 = fx(m.t1), x2 = fx(m.t2), y1 = fy(m.p1), y2 = fy(m.p2); if (![x1, x2, y1, y2].every(isFinite)) return; window._grPosRects.push({ x: Math.min(x1, x2), y: Math.min(y1, y2) - 4, w: Math.max(8, Math.abs(x2 - x1)), h: Math.abs(y2 - y1) + 8, abrir: abrir('md', i) }); });   // tocar dentro da medida a seleciona
 }
 function grNfSnap(x, y) {   // ímã estilo TradingView: candle na coluna do ponto + a ponta dele (O,H,L,C) mais próxima do dedo NA VERTICAL, sem limite de distância. A régua ATR não entra.
     const arr = _grAllCandles || [], pLivre = grToPrice(y);
@@ -11359,7 +10971,7 @@ function grNfAutoTick() {   // dedo perto da borda do gráfico: a tela rola sozi
     }
     _nfTimer = setTimeout(grNfAutoTick, 16);
 }
-function grEdCtxSalvar(tipo) { try { if (tipo === 'fh') cvSalvarFreehandLocal(); else if (tipo === 'hl') grHLinhasSalvar(); else grAmbienteSalvar(); } catch (e) {} }
+function grEdCtxSalvar(tipo) { try { if (tipo === 'md') cvSalvarMedidas(); else if (tipo === 'fh') cvSalvarFreehandLocal(); else if (tipo === 'hl') grHLinhasSalvar(); else grAmbienteSalvar(); } catch (e) {} }
 function grEdCtxFecharEsp() { const d = document.getElementById('cv-esp-menu'); if (d) d.remove(); const o = document.getElementById('cv-esp-overlay'); if (o) o.remove(); }
 function grEdCtxAbrirEsp(btn) {   // seletor de espessura igual ao TradingView: 1px a 4px, o atual em destaque
     grEdCtxFecharEsp();
@@ -11384,7 +10996,7 @@ function cvNfCtxMenu() {   // barra de contexto do desenho selecionado (como no 
     const o = grEdObjeto(), cv = document.getElementById('gr-chart-canvas'); if (!o || !cv || !_edSel || GR_ED_CTX_TIPOS.indexOf(_edSel.tipo) < 0) return cvNfCtxRemover();
     const tipo = _edSel.tipo, rc = cv.getBoundingClientRect(), sx = rc.width / grLW(cv), sy = rc.height / grLH(cv);
     const chave = tipo + (tipo === 'tl' && o.canal ? ':canal' : '');
-    const temCor = tipo !== 'nf', temEsp = tipo !== 'nf';   // Novo Fibo: cada nível tem a sua cor fixa, sem cor/espessura únicas
+    const temCor = tipo !== 'nf' && tipo !== 'md', temEsp = tipo !== 'nf' && tipo !== 'md';   // Medida: só olho, lixeira e fechar   // Novo Fibo: cada nível tem a sua cor fixa, sem cor/espessura únicas
     let m = document.getElementById('cv-nf-ctx');
     if (m && m._chave !== chave) { m.remove(); m = null; }   // os botões mudam conforme o tipo
     if (!m) {
@@ -13063,16 +12675,6 @@ function odSetTab(idx) {
 const fixHeight = () => document.documentElement.style.setProperty('--vh', `${window.innerHeight * 0.01}px`);
 window.addEventListener('resize', fixHeight); fixHeight();
 init();
-// Botão Reg — protege contra swipe acidental
-(function() {
-    let _moved = false;
-    const btn = document.getElementById('cv-ind-reg');
-    if (btn) {
-        btn.addEventListener('touchstart', () => { _moved = false; }, { passive: true });
-        btn.addEventListener('touchmove', () => { _moved = true; }, { passive: true });
-        btn.addEventListener('touchend', () => { if (!_moved) cvToggleReg(); });
-    }
-})();
 </script>
 <!-- Menu Médias — fora da barra para evitar overflow clip. Só EMAs de período livre: digita o
      período, toca "Add", e ela entra na pilha; cada linha mostra seu valor atual e um "✕" pra tirar. -->
