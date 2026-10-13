@@ -3298,7 +3298,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v516';
+const APP_VERSAO = 'v517';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4154,8 +4154,9 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
     }
     // Célula que originou uma zona marcada: bolinha azul no canto de cima à esquerda
     { const ZC = (window._grZonasCel || {})[_grZonasCelKey()];
-      if (ZC && ZC.length) { const ids = new Set(ZC.map(z => z.id));
-        cl.linhas.forEach((ln, i) => { const g = geo[i]; if (!g || !ids.has(candle.t + '_' + Math.round(ln.p * 100))) return;
+      const meus = (ZC || []).filter(z => z.tf === _grTf && z.t === candle.t);
+      if (meus.length) {
+        cl.linhas.forEach((ln, i) => { const g = geo[i]; if (!g || !meus.some(z => { const m = (z.lo + z.hi) / 2; return m >= ln.p - ln.meio && m <= ln.p + ln.meio; })) return;
             const r = Math.max(2.5, Math.min(4, (g.y1 - g.y0) / 3));
             ctx.save(); ctx.fillStyle = '#2962FF'; ctx.beginPath(); ctx.arc(xCel + r + 2, g.y0 + r + 1.5, r, 0, Math.PI * 2); ctx.fill(); ctx.restore(); }); } }
     // Contorno ao redor do BLOCO INTEIRO de células (não mais por célula — aquilo criava uma linha divisória entre cada
@@ -11557,7 +11558,6 @@ function grAmbienteColetar() {
         zoom: raiz.zoom,
         yFatorMapa: raiz.yFatorMapa,
         areas: _grAreasMapa,
-        zonasCel: window._grZonasCel || {},
         tfCustom: raiz.tfCustom,
         footprintContraste: FOOTPRINT_CONTRASTE,
         ls: grLsColetar(),
@@ -11613,7 +11613,6 @@ async function grAmbienteCarregar() {
     if (!ambiente) { console.log('[ambiente] NADA encontrado -- fica no padrão'); _grAmbienteCarregado = true; if (_grAmbientePendente) { _grAmbientePendente = false; grAmbienteSalvar(); } return; }
     if (ambiente.desenhos && typeof ambiente.desenhos === 'object') window._grDesenhosMapa = ambiente.desenhos;
     window._grImaOff = !!ambiente.imaOff;
-    if (ambiente.zonasCel && typeof ambiente.zonasCel === 'object') window._grZonasCel = ambiente.zonasCel;
     if (ambiente.corCandle && typeof ambiente.corCandle === 'object') window._grCorCandle = { alta: ambiente.corCandle.alta || null, baixa: ambiente.corCandle.baixa || null };
     if (ambiente.areas && typeof ambiente.areas === 'object') {
         _grAreasMapa = ambiente.areas; // servidor é a fonte única 
@@ -14226,16 +14225,17 @@ let _grFootprintNivelAtual = null; // {p, tick, v, total} do último nível aber
 // ── Modal de UM nível do footprint dos candles (toque numa célula) ─────────────────────────────────────────────────────────────
 // Mostra só o nível tocado, com números grandes: venda (bid), compra (ask), delta, % do nível, total, peso no candle e desequilíbrio.
 // ZONA DA CÉLULA: tocar numa célula do footprint marca a faixa dela (borda a borda do nível) de ponta a ponta no gráfico;
-// tocar de novo na mesma célula apaga. Vermelha = delta negativo, verde = positivo. Salva por ativo no ambiente (Supabase).
+// tocar de novo na mesma célula apaga. Cor = a da célula. Só vale enquanto o app está aberto (não grava: saiu do app, some).
 window._grZonasCel = window._grZonasCel || {};
 function _grZonasCelKey() { return 'zc_' + (_ativoId || 'default'); }
 function grFpZonaAlternar(candleT, ln, cor) {
     if (!ln) return;
-    const lo = ln.p - ln.meio, hi = ln.p + ln.meio, id = candleT + '_' + Math.round(ln.p * 100), k = _grZonasCelKey();
-    const L = (window._grZonasCel[k] = window._grZonasCel[k] || []), i = L.findIndex(z => z.id === id);
-    if (i >= 0) L.splice(i, 1); else L.push({ id, lo, hi, neg: ((ln.ask || 0) - (ln.bid || 0)) < 0, cor: cor || null });
+    const lo = ln.p - ln.meio, hi = ln.p + ln.meio, tf = _grTf, k = _grZonasCelKey();
+    const L = (window._grZonasCel[k] = window._grZonasCel[k] || []);
+    // mesma célula = mesmo TF, mesmo candle e a célula tocada contém o meio da zona (vale com qualquer zoom/agrupamento)
+    const i = L.findIndex(z => z.tf === tf && z.t === candleT && (z.lo + z.hi) / 2 >= lo && (z.lo + z.hi) / 2 <= hi);
+    if (i >= 0) L.splice(i, 1); else L.push({ tf, t: candleT, lo, hi, neg: ((ln.ask || 0) - (ln.bid || 0)) < 0, cor: cor || null });
     if (!L.length) delete window._grZonasCel[k];
-    try { grAmbienteSalvar(); } catch (e) {}
     try { grDrawChart(); } catch (e) {}
 }
 function grFpCelFechar() { const o = document.getElementById('fp-cel-modal'); if (o) o.remove(); }
