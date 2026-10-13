@@ -3305,7 +3305,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v544';
+const APP_VERSAO = 'v545';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -14016,7 +14016,7 @@ function grVpAncorarTs(ts) {   // ancora o VP num instante exato (Sugerir âncor
 // ══ SUGERIR ÂNCORA DO VP ══════════════════════════════════════════════════════════════════════════════════════
 // No TF MACRO do robô, sem número de dias fixo:
 //  1) PERNAS: cada pivô (2 candles de cada lado) abre uma perna até hoje; ela está VIVA se a origem nunca foi rompida e a correção depois
-//     do extremo não passou de 61,8% (Fibonacci). A perna dominante é a viva de MAIOR amplitude.
+//     do extremo não passou de 61,8% (Fibonacci). A perna atual é a viva mais recente, ou a 'mãe' dela quando ela é só correção (< 61,8%).
 //  2) IGNIÇÃO: dentro da perna, o candle NA DIREÇÃO dela com o maior tamanho × volume, ainda válido (nenhum fechamento depois além da
 //     ponta oposta dele: abaixo da mínima numa alta, acima da máxima numa baixa).
 //  3) REFINO: dentro da ignição, o candle do MICRO do robô de maior volume = instante da âncora.
@@ -14038,8 +14038,13 @@ async function scSugerirAncora() {
         }
     }
     if (!pernas.length) return { erro: 'Nenhuma perna viva no ' + defM.rot + ' (todas corrigiram mais de 61,8% ou tiveram a origem rompida).' };
-    pernas.sort((a, b) => b.amp - a.amp);
-    const P = Object.assign({}, pernas[0], { outra: (pernas.find(q => q.lado !== pernas[0].lado) || {}).lado || '—', ampO: (pernas.find(q => q.lado !== pernas[0].lado) || {}).amp || 0 });
+    // PERNA ATUAL: pega a perna viva MAIS RECENTE (L1) e a "mãe" dela (a viva mais recente anterior, do lado oposto e maior).
+    // Se L1 é só uma correção da mãe (amplitude menor que 61,8% dela), a perna atual é a mãe; senão é L1. Um degrau só
+    // (subir mais levaria a pernas de um ano atrás, de outra escala).
+    pernas.sort((a, b) => b.i0 - a.i0);
+    const L1 = pernas[0], mae = pernas.find(q => q.i0 < L1.i0 && q.lado !== L1.lado && q.amp > L1.amp);
+    const P0 = mae && L1.amp < 0.618 * mae.amp ? mae : L1;
+    const P = Object.assign({}, P0, { outra: P0 === L1 ? '—' : L1.lado, ampO: P0 === L1 ? 0 : L1.amp });
     const alta = P.lado === 'alta';
     let best = -1, bs = -1;
     for (let i = P.i0; i < n - 1; i++) {   // candles fechados da perna
@@ -14058,10 +14063,10 @@ async function scSugerirAncora() {
 async function scSugerirAncoraMostrar() {
     try { grAreaToast('Procurando a ignição…', '#2962FF'); } catch (e) {}
     let r; try { r = await scSugerirAncora(); } catch (e) { r = { erro: e.message || String(e) }; }
-    const f = x => Math.round(x).toLocaleString('pt-BR'), dd = t => new Date(t).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' }), dh = t => new Date(t).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const f = x => Math.round(x).toLocaleString('pt-BR'), dd = t => new Date(t).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' }), dh = t => new Date(t).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' });
     const fk = v => v >= 1000 ? (v / 1000).toFixed(1).replace('.', ',') + 'k' : String(Math.round(v));
     const L = r.erro ? ['SUGERIR ÂNCORA DO VP', r.erro] : ['SUGERIR ÂNCORA DO VP · TF ' + r.tf,
-        'Perna dominante: ' + r.lado.toUpperCase() + ' desde ' + dd(r.origem.t) + ' (' + (r.lado === 'alta' ? 'fundo ' + f(r.origem.l) : 'topo ' + f(r.origem.h)) + ') · amplitude ' + f(r.amp) + ' (correção depois do extremo: ' + Math.round(r.retr * 100) + '%; outra perna viva: ' + r.outra + ' de ' + f(r.ampO) + ')',
+        'Perna dominante: ' + r.lado.toUpperCase() + ' desde ' + dd(r.origem.t) + ' (' + (r.lado === 'alta' ? 'fundo ' + f(r.origem.l) : 'topo ' + f(r.origem.h)) + ') · amplitude ' + f(r.amp) + ' (correção depois do extremo: ' + Math.round(r.retr * 100) + '%' + (r.ampO ? '; a correção atual é a perna de ' + r.outra + ' de ' + f(r.ampO) : '') + ')',
         'Ignição: candle de ' + dd(r.ig.t) + ' · ' + (r.igPct >= 0 ? '+' : '') + r.igPct.toFixed(2).replace('.', ',') + '% · volume ' + fk(r.ig.v) + ' · ainda válida (nenhum fechamento ' + (r.lado === 'alta' ? 'abaixo de ' + f(r.ig.l) : 'acima de ' + f(r.ig.h)) + ')',
         r.refino ? 'Refino no ' + r.refino.rot + ': candle de maior volume dentro da ignição = ' + dh(r.refino.t) : 'Sem refino no micro (âncora no início do candle)',
         'Âncora sugerida: ' + dh(r.tAnc) + (_grVpAncoraTs > 0 ? ' · a atual é ' + dh(_grVpAncoraTs) : '')];
