@@ -2113,7 +2113,10 @@ function cvRenderMenuFpCfg() {
         grFluxoStatusAtualizar();
     } else if (_grFpCfgMenuQual === 'deltaatr') {
         menu.innerHTML = '<div style="font-size:13px;font-weight:700;color:#1C1C1E;margin-bottom:4px;">Delta ATR</div>'
-            + grConfigBlocoSliderDias(ICO_FLUXO.calendario, 'Janela de dias', 'Dias somados na régua (recalcula ao arrastar)', 'cv-cfg-lookback-da', _grFootprintLookbackDias, 1, 180, 'input', 'grFootprintLookbackSlider')
+            + grConfigCombo(ICO_FLUXO.calendario, 'Período', 'De onde a régua começa a somar', 'cv-cfg-daperiodo', [['dias', 'Janela de dias'], ['vp', 'Âncora do VP']], _grDaPeriodo, 'grDaDefinirPeriodo')
+            + (_grDaPeriodo === 'vp'
+                ? '<div style="font-size:11.5px;color:#8E8E93;margin-top:6px;line-height:1.4;">' + (_grVpAncoraTs > 0 ? 'Somando desde a âncora do VP: ' + new Date(_grVpAncoraTs).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) + '.' : '<b style="color:#DC2626;">Sem âncora do VP:</b> usando a Janela de dias (' + _grFootprintLookbackDias + ').') + '</div>'
+                : grConfigBlocoSliderDias(ICO_FLUXO.calendario, 'Janela de dias', 'Dias somados na régua (recalcula ao arrastar)', 'cv-cfg-lookback-da', _grFootprintLookbackDias, 1, 180, 'input', 'grFootprintLookbackSlider'))
             + grConfigCombo('<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/>', 'Timeframe', 'Só os níveis da régua; os candles não mudam', 'cv-cfg-datf', grDaOpcoesTf(), (_grDaTf === 'custom' && _grDaTfCustom) ? 'custom' : (_grDaTf || ''), 'grDaDefinirTf')
             + '<div style="font-size:11.5px;color:#8E8E93;margin-top:8px;line-height:1.4;">A Janela de dias é a mesma do Fluxo: mudar aqui muda lá, e vice-versa.</div>';
     } else if (_grFpCfgMenuQual === 'grupo') {
@@ -3298,7 +3301,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v535';
+const APP_VERSAO = 'v536';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3702,14 +3705,18 @@ function grOiValorEm(dados, ts) {
 // dos clusters (grFootprintTickDaGrade) e mesma "Janela de Dias" do Fluxo (_grFootprintLookbackDias). Sem
 // ancora -- e sempre a janela ROLANTE ate agora, recalcula sozinha. Cacheada por minuto (nao por segundo): nao
 // precisa ser exata ao milissegundo, e evita varrer a janela inteira em todo quadro.
+// Período da régua: 'dias' (Janela de dias do Fluxo) ou 'vp' (desde a âncora do VP; sem âncora, volta pros dias)
+let _grDaPeriodo = (() => { try { return localStorage.getItem('grDaPeriodo') === 'vp' ? 'vp' : 'dias'; } catch (e) { return 'dias'; } })();
+function grDaInicio() { const a = (typeof _grVpAncoraTs !== 'undefined') ? _grVpAncoraTs : null; return _grDaPeriodo === 'vp' && a > 0 ? a : Date.now() - (_grFootprintLookbackDias || 7) * 86400000; }
+function grDaDefinirPeriodo(v) { _grDaPeriodo = v === 'vp' ? 'vp' : 'dias'; try { localStorage.setItem('grDaPeriodo', _grDaPeriodo); } catch (e) {} window._grDeltaAtrCache = {}; try { grAmbienteSalvar(); } catch (e) {} try { cvRenderMenuFpCfg(); } catch (e) {} grDrawChart(); }
 function grDeltaPorFaixaATR(tick) {
     if (!_grFootprintCandlesRaw || !_grFootprintAtivo) return null;
-    const janelaDias = _grFootprintLookbackDias || 7;
-    const chave = tick + '_' + janelaDias + '_' + Math.floor(Date.now() / 60000) + '_' + _grFootprintCandlesRaw.length + '_' + _grFootprintDiasAvulsos.size;
+    const janelaDias = _grFootprintLookbackDias || 7, inicio0 = grDaInicio();
+    const chave = tick + '_' + janelaDias + '_' + _grDaPeriodo + '_' + inicio0 + '_' + Math.floor(Date.now() / 60000) + '_' + _grFootprintCandlesRaw.length + '_' + _grFootprintDiasAvulsos.size;
     window._grDeltaAtrCache = window._grDeltaAtrCache || {};
     const cache = window._grDeltaAtrCache[tick];
     if (cache && cache.chave === chave) return cache.resultado;
-    const inicio = Date.now() - janelaDias * 24 * 60 * 60 * 1000;
+    const inicio = inicio0;
     const mapa = new Map(); // chave: Math.round(preco / tick) -> delta (compra - venda) acumulado na faixa
     const totais = new Map(); // mesma chave -> volume TOTAL (compra + venda) da faixa, mostrado embaixo do delta
     grFootprintParaCadaMinuto(inicio, Date.now(), m => {
@@ -11582,6 +11589,7 @@ function grAmbienteColetar() {
         desenhos: grDesenhosColetar(),
         corCandle: window._grCorCandle,
         imaOff: !!window._grImaOff,
+        daPeriodo: _grDaPeriodo,
         varAncora: _grVarAncoraTs,
     };
 }
@@ -11632,6 +11640,7 @@ async function grAmbienteCarregar() {
     if (!ambiente) { console.log('[ambiente] NADA encontrado -- fica no padrão'); _grAmbienteCarregado = true; if (_grAmbientePendente) { _grAmbientePendente = false; grAmbienteSalvar(); } return; }
     if (ambiente.desenhos && typeof ambiente.desenhos === 'object') window._grDesenhosMapa = ambiente.desenhos;
     window._grImaOff = !!ambiente.imaOff;
+    if (ambiente.daPeriodo === 'vp' || ambiente.daPeriodo === 'dias') { _grDaPeriodo = ambiente.daPeriodo; try { localStorage.setItem('grDaPeriodo', _grDaPeriodo); } catch (e) {} }
     if (typeof ambiente.varAncora === 'number') _grVarAncoraTs = ambiente.varAncora;
     if (ambiente.corCandle && typeof ambiente.corCandle === 'object') window._grCorCandle = { alta: ambiente.corCandle.alta || null, baixa: ambiente.corCandle.baixa || null };
     if (ambiente.areas && typeof ambiente.areas === 'object') {
