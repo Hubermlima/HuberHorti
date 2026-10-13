@@ -3301,7 +3301,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v540';
+const APP_VERSAO = 'v542';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -8037,12 +8037,13 @@ async function cvPosCopiarTudo(i) {
 // (intraday: "3 h 25 min"; a partir de 24 h: "2 dias"). Encerrada: tempo até o fim.
 function cvPosTempoLinha(pz, x) {
     const r = (window._scRegistro || []).find(q => q.id === pz.id), t0b = Math.min(pz.t1 || Infinity, pz.t2 || Infinity);
-    const emTrade = x && !x.armada && !x.encerrada, ini = emTrade ? ((r && r.tEnt) || t0b) : ((r && r.t0) || t0b);
-    if (!(ini > 0) || !isFinite(ini)) return '';
-    const fim = x && x.encerrada && r && r.tFim ? r.tFim : Date.now(), ms = Math.max(0, fim - ini), min = Math.round(ms / 60000);
-    const tempo = ms >= 86400000 ? Math.floor(ms / 86400000) + (ms >= 2 * 86400000 ? ' dias' : ' dia') : (min >= 60 ? Math.floor(min / 60) + ' h ' + (min % 60) + ' min' : min + ' min');
-    const d = new Date(ini), dt = d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' }) + ' ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-    return '<div style="line-height:1.35;color:#6B6B70;margin-top:3px;">' + (emTrade ? 'Em trade desde' : 'Início') + ': <b style="color:#1C1C1E;">' + dt + '</b> · tempo: <b style="color:#1C1C1E;">' + tempo + '</b></div>';
+    const fmtT = ms => { const min = Math.round(Math.max(0, ms) / 60000); return ms >= 86400000 ? Math.floor(ms / 86400000) + (ms >= 2 * 86400000 ? ' dias' : ' dia') : (min >= 60 ? Math.floor(min / 60) + ' h ' + (min % 60) + ' min' : min + ' min'); };
+    const fmtD = t => { const d = new Date(t); return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' }) + ' ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }); };
+    const lin = (rot, t, tempoRot, ms) => '<div style="line-height:1.35;color:#6B6B70;margin-top:3px;">' + rot + ': <b style="color:#1C1C1E;">' + fmtD(t) + '</b> · ' + tempoRot + ': <b style="color:#1C1C1E;">' + fmtT(ms) + '</b></div>';
+    const arm = (r && r.t0) || t0b; if (!(arm > 0) || !isFinite(arm)) return '';
+    const tEnt = r && r.tEnt, fim = x && x.encerrada && r && r.tFim ? r.tFim : Date.now();
+    if (!tEnt) return lin('Armada em', arm, 'tempo', fim - arm);   // ainda armada (ou encerrou sem entrar)
+    return lin('Armada em', arm, 'até entrar', tEnt - arm) + lin(x && x.encerrada ? 'Entrou em' : 'Em trade desde', tEnt, x && x.encerrada ? 'em trade' : 'tempo', fim - tEnt);
 }
 function cvPosStatusPainel(i, m) {   // painel Status: o geral (Saudável / Atenção / Perigo) e cada leitura com o motivo
     let d = document.getElementById('cv-pos-status');
@@ -17612,6 +17613,7 @@ function scRegChecarPreco(px) {
         const lg = r.lado === 'long', toca = lg ? px <= r.ent : px >= r.ent, bStop = lg ? px <= r.stp : px >= r.stp, bAlvo = lg ? px >= r.alvo : px <= r.alvo;
         const ant = r.st;
         if (r.st === 'aguardando') {
+            if (toca && r.gat && !window._scRegBackfillOk) return;   // antes da 1ª leitura dos candles, quem decide a hora da entrada são os candles
             if (toca) { r.st = 'entrou'; r.tEnt = agora; if (r.gat) { const bl = scDefTf(r.tfAk || '5m').blocoMs; r.tGat = Math.floor(agora / bl) * bl; r.entReal = r.ent; r.toque = true; } if (bStop) { r.st = 'stop'; r.tFim = agora; } }
             else if (bAlvo) { r.st = 'perdida'; r.tFim = agora; }
             else if (r.val > 0 && agora > r.t0 + r.val) { r.st = 'expirou'; r.tFim = agora; }
@@ -17660,6 +17662,8 @@ function scRegAvaliarGatilho(r, cs, D, bloco, real) {
         const c = cs[ic];
         if (c.t < r.t0) continue;
         if (r.st === 'entrou') {
+            // entrada no toque marcada ao vivo DEPOIS do toque real (app fechado / versão nova): corrige para o 1º candle que tocou a entrada
+            if (r.toque && !r._tEntFix && r.tGat != null && c.t < r.tGat && (lg ? c.l <= r.ent : c.h >= r.ent)) { r.tGat = c.t; r.tEnt = c.t; r._tEntFix = true; if (lg ? c.l <= r.stp : c.h >= r.stp) { r.st = 'stop'; r.tFim = c.t; return; } continue; }
             if (r.tGat != null && c.t <= r.tGat) continue;
             if (lg ? c.l <= r.stp : c.h >= r.stp) { r.st = 'stop'; r.tFim = c.t; return; }
             if (r.zero && !r.sombraAbs && (lg ? c.l <= r.ent : c.h >= r.ent)) {   // M12: saída-sombra no 1º candle com absorção contra encostando na zona
@@ -17686,7 +17690,7 @@ async function scRegAtualizar() {
     const fant = r => r.st === 'desfeita' && r.fant && (r.fant.st === 'aguardando' || r.fant.st === 'entrou');
     if (!window._scPavio) { try { window._scPavio = await scPavioTf(SC_ORDEM[0]); } catch (e) {} }
     scRegLista().forEach(r => { if (r.st === 'semGatilho' && r.gat && !r.revM18 && r.tFim && Date.now() - r.tFim < 2 * 86400000 && r.tFim < 1791889200000) { r.revM18 = true; r._reav = true; r.st = 'aguardando'; r.tFim = null; } });   // M18: reavalia uma vez as 'sem gatilho' recentes com a regra da varrida
-    const abertos = scRegLista().filter(r => r.st === 'aguardando' || r.st === 'entrou' || fant(r)); if (!abertos.length) return false;
+    const abertos = scRegLista().filter(r => r.st === 'aguardando' || r.st === 'entrou' || fant(r)); if (!abertos.length) { window._scRegBackfillOk = true; return false; }
     let mudou = false;
     const cache = {}, pega = async (sym, iv) => { const k = sym + '|' + iv; if (!cache[k]) { try { cache[k] = (await grBuscarKlines(sym, iv, 1000, null)).map(grMapearKline); } catch (e) { cache[k] = []; } } return cache[k]; };
     for (const r of abertos) {
@@ -17722,6 +17726,7 @@ async function scRegAtualizar() {
         }
         if (r.st !== st0) mudou = true;
     }
+    window._scRegBackfillOk = true;
     if (mudou) scRegGravarServidor();
     return mudou;
 }
