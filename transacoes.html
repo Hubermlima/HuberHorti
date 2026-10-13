@@ -3305,7 +3305,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v545';
+const APP_VERSAO = 'v548';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -13994,6 +13994,7 @@ function grVpCarregarAncora() {
 // outro candle substitui (um perfil só).
 function grVpAncorarNoCandle(idxCandle) {
     if (idxCandle == null || !_grAllCandles[idxCandle]) return;
+    if (typeof _scCfg !== 'undefined' && _scCfg.ancAuto !== false) { _scCfg.ancAuto = false; try { scSalvar(); grAreaToast('Âncora automática desligada (você ancorou na mão)', '#8E8E93'); } catch (e) {} }
     const ts = _grAllCandles[idxCandle].t;
     if (_grVpAncoraTs === ts) { grVpRemover(); return; }
     _grVpAncoraTs = ts; _grVpMapaCache = null; _grVpDadosChave = null;
@@ -14060,6 +14061,37 @@ async function scSugerirAncora() {
         if (cm.length) { const k = cm.reduce((a, b) => (+b.v > +a.v ? b : a)); tAnc = k.t; refino = { rot: dMi.rot, t: k.t, v: +k.v }; } } } catch (e) {}
     return { lado: P.lado, origem: cs[P.i0], amp: P.amp, retr: P.retr, outra: P.outra, ampO: P.ampO, ig, igPct: (ig.c - ig.o) / ig.o * 100, tAnc, refino, tf: defM.rot };
 }
+// Ancora VP, Value Area e VWAP no mesmo instante (a VWAP automática substitui só a anterior automática; as suas ficam).
+function grAncorarTudo(ts, lado) {
+    if (!(ts > 0)) return;
+    // VISIBILIDADE: a âncora automática NÃO mostra nada sozinha. Na 1ª vez os três ficam ocultos (olho fechado); depois
+    // cada reancoragem mantém o olho como você deixou (mostrar/ocultar pelo olho na engrenagem do chip ou do Footprint ▾).
+    const primeira = !_scCfg.ancAutoIni;
+    if (primeira) { _scCfg.ancAutoIni = true; scSalvar(); _grVpOculta = true; _grVaOculta = true; try { grOcultaSalvar(); } catch (e) {} }
+    const vwOcAnt = (_grVwapAncoras.find(a => a.auto) || {}).oculta;
+    grVpAncorarTs(ts);
+    try { _grValueAreaAncoraTs = ts; grValueAreaSalvarAncora(); _grValueAreaCache = { binsRef: null, poc: null, vah: null, val: null }; const b = document.getElementById('cv-ind-valueArea'); if (b) b.classList.add('active'); } catch (e) {}
+    try { _grVwapAncoras = _grVwapAncoras.filter(a => !a.auto); _grVwapAncoras.push({ ts, tipo: lado === 'baixa' ? 'topo' : 'fundo', auto: true, oculta: primeira ? true : !!vwOcAnt }); grVwapSalvarAncoras(); grVwapAtualizarBotaoLimpar(); const b = document.getElementById('cv-ind-vwap'); if (b) b.classList.add('active'); } catch (e) {}
+    try { grAmbienteSalvar(); } catch (e) {}
+    grDrawChart();
+}
+// ÂNCORA AUTOMÁTICA (estilo do Auto Anchored do TradingView): ligada, o app roda o "Sugerir âncora" sozinho ao abrir e a cada 5 min
+// e, se a âncora mudou (perna nova ou ignição invalidada), reancora VP, VA e VWAP sem perguntar. Ancorar o VP na mão desliga.
+let _scAncAutoRodando = false;
+async function scAncoraAutoRodar(forcar) {
+    if (_scCfg.ancAuto === false || _scAncAutoRodando) return;
+    _scAncAutoRodando = true;
+    try {
+        const r = await scSugerirAncora(); if (r.erro) return;
+        if (forcar || _grVpAncoraTs !== r.tAnc) {
+            grAncorarTudo(r.tAnc, r.lado);
+            const dh = t => new Date(t).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' });
+            try { grAreaToast('Âncora automática: ' + dh(r.tAnc) + ' (ignição de ' + r.lado + ')', '#2962FF'); } catch (e) {}
+        }
+    } catch (e) {} finally { _scAncAutoRodando = false; }
+}
+function scAncoraAutoAlternar() { _scCfg.ancAuto = _scCfg.ancAuto === false; scSalvar(); try { cvRenderMenuFpCfg(); } catch (e) {} if (_scCfg.ancAuto) scAncoraAutoRodar(true); }
+setTimeout(() => { scAncoraAutoRodar(); setInterval(() => scAncoraAutoRodar(), 5 * 60000); }, 20000);   // ao abrir e a cada 5 min (junto com o automático)
 async function scSugerirAncoraMostrar() {
     try { grAreaToast('Procurando a ignição…', '#2962FF'); } catch (e) {}
     let r; try { r = await scSugerirAncora(); } catch (e) { r = { erro: e.message || String(e) }; }
@@ -14071,7 +14103,7 @@ async function scSugerirAncoraMostrar() {
         r.refino ? 'Refino no ' + r.refino.rot + ': candle de maior volume dentro da ignição = ' + dh(r.refino.t) : 'Sem refino no micro (âncora no início do candle)',
         'Âncora sugerida: ' + dh(r.tAnc) + (_grVpAncoraTs > 0 ? ' · a atual é ' + dh(_grVpAncoraTs) : '')];
     scRelatorioMostrar({ lado: null, linhas: L });
-    if (!r.erro) setTimeout(() => { try { if (confirm('Ancorar o VP em ' + dh(r.tAnc) + '?')) { grVpAncorarTs(r.tAnc); try { grAreaToast('VP ancorado em ' + dh(r.tAnc), '#16A34A'); } catch (e) {} } } catch (e) {} }, 400);
+    if (!r.erro) setTimeout(() => { try { if (confirm('Ancorar VP, Value Area e VWAP em ' + dh(r.tAnc) + '?')) { grAncorarTudo(r.tAnc, r.lado); try { grAreaToast('VP, VA e VWAP ancorados em ' + dh(r.tAnc), '#16A34A'); } catch (e) {} } } catch (e) {} }, 400);
 }
 function grVpRemover() {
     if (_grVpAncoraTs == null) { alert('O Volume Profile já está sem âncora.'); return; }
@@ -16834,7 +16866,7 @@ const SC_PLAY_INTERVALOS = [5, 10, 15, 30, 60, 120, 240];   // minutos entre uma
 let _scCfg = (function () {
     let c = null; try { c = JSON.parse(localStorage.getItem('grSetupCx') || 'null'); } catch (e) {}
     c = c && typeof c === 'object' ? c : {};
-    return { dias: SC_DIAS.includes(c.dias) ? c.dias : 30, macro: scTfBase(c.macro) ? c.macro : '3d', micro: scTfBase(c.micro) ? c.micro : '4h', ligado: c.ligado === true, intervalo: SC_PLAY_INTERVALOS.includes(c.intervalo) ? c.intervalo : 5, play: c.play !== false, periodo: c.periodo === 'dias' ? 'dias' : 'vp', microAuto: c.microAuto !== false };   // automático ligado por padrão; só fica parado se o usuário pausou
+    return { dias: SC_DIAS.includes(c.dias) ? c.dias : 30, macro: scTfBase(c.macro) ? c.macro : '3d', micro: scTfBase(c.micro) ? c.micro : '4h', ligado: c.ligado === true, intervalo: SC_PLAY_INTERVALOS.includes(c.intervalo) ? c.intervalo : 5, play: c.play !== false, periodo: c.periodo === 'dias' ? 'dias' : 'vp', microAuto: c.microAuto !== false, ancAuto: c.ancAuto !== false, ancAutoIni: c.ancAutoIni === true };   // automático ligado por padrão; só fica parado se o usuário pausou
 })();
 setTimeout(() => { try { scMicroSinc(); } catch (e) {} }, 0);   // micro automático: alinha ao macro ao abrir
 let _scCalculando = false, _scUltimo = null;
@@ -18389,7 +18421,9 @@ function scRenderPopup(menu) {
         + '<div><b>Value Area</b> · âncora ' + dh(SCX.vaAncoraTs) + '</div>'
         + '<div><b>VWAP</b> · ' + (vw.length ? vw.map(a => dh(a.ts)).join(' · ') : 'sem âncora') + '</div>'
         + '<div style="color:#3A3A3C;margin-top:4px;">' + scValoresSino() + '</div>'
-        + '<button type="button" onclick="scSugerirAncoraMostrar()" style="width:100%;margin-top:8px;border:none;border-radius:10px;padding:10px;font-size:13.5px;font-weight:800;background:#1C1C1E;color:#FFFFFF;">Sugerir âncora do VP</button>'
+        + '<button type="button" onclick="scAncoraAutoAlternar()" style="width:100%;margin-top:8px;border:none;border-radius:10px;padding:10px;font-size:13.5px;font-weight:800;background:' + (_scCfg.ancAuto !== false ? '#2962FF' : '#F2F2F7') + ';color:' + (_scCfg.ancAuto !== false ? '#FFFFFF' : '#1C1C1E') + ';">Âncora automática: ' + (_scCfg.ancAuto !== false ? 'ligada' : 'desligada') + '</button>'
+        + '<div style="font-size:11.5px;color:#8E8E93;margin-top:4px;">Ligada: VP, VA e VWAP se ancoram sozinhos na ignição da perna atual (TF macro do robô) e se atualizam quando a perna muda.</div>'
+
         + '<div style="font-size:11.5px;color:#8E8E93;margin-top:4px;">As âncoras se marcam no gráfico (menu do candle). O robô usa a do VP para o sino e para as réguas.</div></div>';
     // 3) Operacional
     const op = _scCalculando ? '<div style="font-size:12.5px;color:#8E8E93;padding:10px 0;">Calculando…</div>'
