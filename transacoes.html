@@ -3298,7 +3298,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v522';
+const APP_VERSAO = 'v523';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -17440,7 +17440,7 @@ async function scTfAcompanhar(h) {
     return melhor || (menor ? { rot: null, menor: menor.menor, med: menor.med, h } : null);
 }
 // ══ VERSÃO DO MOTOR + REGISTRO das caixas que ele cria (gravado junto com as caixas, nas preferências, ao tocar em Sair) ══
-const SC_MOTOR_VERSAO = 'M17';
+const SC_MOTOR_VERSAO = 'M18';
 function scRegLista() { if (!Array.isArray(window._scRegistro)) window._scRegistro = []; return window._scRegistro; }
 function scRegistrar(o) {
     const L = scRegLista();
@@ -17589,7 +17589,7 @@ function scAbsContra(cs, i, D, lg) {
     let sm = 0; for (let j = i - 19; j <= i; j++) sm += vd(cs[j]); sm /= 20; const v = vd(c);
     return sm > 0 && v > sm ? Math.round((v / sm - 1) * 100) : null;
 }
-function scRegAvaliarGatilho(r, cs, D, bloco) {
+function scRegAvaliarGatilho(r, cs, D, bloco, real) {
     const lg = r.lado === 'long', s = lg ? 1 : -1;
     for (let ic = 0; ic < cs.length; ic++) {
         const c = cs[ic];
@@ -17606,7 +17606,21 @@ function scRegAvaliarGatilho(r, cs, D, bloco) {
             continue;
         }
         const toca = lg ? c.l <= r.ent : c.h >= r.ent, bStop = lg ? c.l <= r.stp : c.h >= r.stp, bAlvo = lg ? c.h >= r.alvo : c.l <= r.alvo;
-        if (bStop) { r.st = 'semGatilho'; r.tFim = c.t; return; }
+        if (bStop) {
+            // M18 — VARRIDA: o candle passou do stop mas FECHOU de volta a favor, com delta a favor (pegou os stops e voltou, tipo UTAD/spring).
+            // É gatilho: entra no fechamento e o stop vai para além do pavio desse candle + 2 pavios de 5 min. Sem isso, morre sem gatilho.
+            const d = D.get(c.t), cor = s * (c.c - c.o) > 0, dOk = d != null && s * d > 0, voltou = s * (c.c - r.stp) > 0;
+            if (cor && dOk && voltou) {
+                const pv = window._scPavio, pav = pv ? (lg ? pv.inf : pv.sup) || 0 : 0, novo = (lg ? c.l : c.h) - s * 2 * pav;
+                if (s * (c.c - novo) > 0 && s * (r.alvo - c.c) > 0) {
+                    r.varrida = { t: c.t, ext: lg ? c.l : c.h, stpAntes: r.stp };
+                    r.stp = novo; r.st = 'entrou'; r.tGat = c.t; r.tEnt = c.t + bloco; r.entReal = c.c;
+                    if (real !== false) { try { const z = grPosicoes().find(q => q.id === r.id); if (z) { z.stop = novo; grPosSalvar(); } } catch (e) {} }
+                    continue;
+                }
+            }
+            r.st = 'semGatilho'; r.tFim = c.t; return;
+        }
         if (toca) {
             const d = D.get(c.t), cor = s * (c.c - c.o) > 0, dOk = d == null ? true : s * d > 0;   // sem footprint naquele candle: vale só a cor
             const falta = s * (r.alvo - c.c), arrisca = s * (c.c - r.stp);   // no fechamento do gatilho ainda tem de sobrar ganho ≥ risco (senão a ignição já passou)
@@ -17619,6 +17633,8 @@ function scRegAvaliarGatilho(r, cs, D, bloco) {
 async function scRegAtualizar() {
     try { scRegSincCaixas(); } catch (e) {}
     const fant = r => r.st === 'desfeita' && r.fant && (r.fant.st === 'aguardando' || r.fant.st === 'entrou');
+    if (!window._scPavio) { try { window._scPavio = await scPavioTf(SC_ORDEM[0]); } catch (e) {} }
+    scRegLista().forEach(r => { if (r.st === 'semGatilho' && r.gat && !r.revM18 && r.tFim && Date.now() - r.tFim < 2 * 86400000) { r.revM18 = true; r.st = 'aguardando'; r.tFim = null; } });   // M18: reavalia uma vez as 'sem gatilho' recentes com a regra da varrida
     const abertos = scRegLista().filter(r => r.st === 'aguardando' || r.st === 'entrou' || fant(r)); if (!abertos.length) return false;
     let mudou = false;
     const cache = {}, pega = async (sym, iv) => { const k = sym + '|' + iv; if (!cache[k]) { try { cache[k] = (await grBuscarKlines(sym, iv, 1000, null)).map(grMapearKline); } catch (e) { cache[k] = []; } } return cache[k]; };
@@ -17626,7 +17642,7 @@ async function scRegAtualizar() {
         const st0 = r.st;
         if (fant(r)) {   // M14: caixa cancelada (tese inválida) — o histórico segue o que TERIA acontecido, sem mexer no placar
             const def = scDefTf(r.tfAk || '5m'), cs = await pega(r.sym || grBinSymbolAtual(), def.bin), g = Object.assign({}, r, r.fant), f0 = r.fant.st;
-            scRegAvaliarGatilho(g, cs, scDeltaPorBloco(def.blocoMs, r.t0 - def.blocoMs), def.blocoMs);
+            scRegAvaliarGatilho(g, cs, scDeltaPorBloco(def.blocoMs, r.t0 - def.blocoMs), def.blocoMs, false);
             r.fant = { st: g.st, tFim: g.tFim || null, tGat: g.tGat || null, tEnt: g.tEnt || null, entReal: g.entReal || null, ign: !!g.ign, tIgn: g.tIgn || null };
             if (r.fant.st !== f0) mudou = true;
             continue;
@@ -17678,6 +17694,7 @@ async function scHistoricoMostrar() {
     scRelatorioMostrar({ lado: null, linhas });
 }
 const SC_VERSOES = [
+    ['M18', 'gatilho na VARRIDA: candle que passa do stop mas fecha de volta a favor, com delta a favor, vale como gatilho (stop vai para além do pavio dele + 2 pavios); antes morria sem gatilho'],
     ['M10', 'stop atrás da defesa do footprint (24 h) + pavio, limitado à borda do sino'],
     ['M11', 'stop fora da varrida (2 pavios além da borda do nível) · gatilho só até meio risco da entrada · depois da ignição o stop vai pro zero'],
     ['M12', 'tendência contra (−1 na nota: Long abaixo da EMA de 5 min caindo) · saída-sombra por absorção contra (só no histórico)'],
@@ -17985,12 +18002,13 @@ async function scRegRaioX(reg) {
       if (reg.tFim) pass.push([SC_REG_ROT[reg.st].charAt(0).toUpperCase() + SC_REG_ROT[reg.st].slice(1), reg.tFim]);
       const fimT = reg.tFim || Date.now();
       L.push('Linha do tempo: ' + pass.map((p0, k) => p0[0] + ' ' + hm(p0[1]) + (k ? ' (+' + dur(p0[1] - pass[k - 1][1]) + ')' : '')).join(' → ') + ' · total ' + dur(fimT - reg.t0) + (reg.tFim ? '' : ' (ainda aberta)')); }
+    if (reg.varrida) L.push('Gatilho na VARRIDA (M18): o candle de ' + dh(reg.varrida.t) + ' passou do stop (' + f(reg.varrida.stpAntes) + ') até ' + f(reg.varrida.ext) + ' e fechou de volta a favor · stop novo ' + f(reg.stp) + ' (além do pavio + 2 pavios)');
     if (reg.st === 'desfeita') L.push('Tese inválida em ' + dh(reg.tFim) + ': ' + (reg.motivo || 'a revisão não achou mais a tese') + (reg.fant ? ' · sem cancelar: ' + SC_REG_ROT[reg.fant.st] + (reg.fant.ign ? ' (ignição ✓)' : '') + (reg.fant.tFim ? ' ' + dh(reg.fant.tFim) : '') : ''));
     if (!cs.length || !(risco > 0)) return L.concat(['sem candles para analisar']);
     const ini = cs.filter(c => c.t >= reg.t0);
     if (!ini.length) return L.concat(['ainda sem candle fechado depois da criação']);
     // até a ratoeira
-    const ate = reg.tEnt || reg.tFim || Date.now(), antes = ini.filter(c => c.t < ate);
+    const ate = reg.tEnt || (reg.tFim ? reg.tFim + (reg.gat ? scDefTf(reg.tfAk || '5m').blocoMs : 0) : Date.now()), antes = ini.filter(c => c.t < ate);   // inclui o candle (do TF do gatilho) que encerrou a caixa
     if (antes.length) { const m = antes.reduce((a, c) => lg ? Math.min(a, c.l) : Math.max(a, c.h), lg ? Infinity : -Infinity); L.push('Antes de entrar: ' + dur(ate - reg.t0) + (reg.tEnt ? ' até entrar' : reg.tFim ? ' até encerrar' : ' até agora (ainda armada)') + ' · o preço chegou a ' + f(m) + ' (' + (s * (reg.ent - m) >= 0 ? f(Math.abs(reg.ent - m)) + ' dentro da zona' : 'faltaram ' + f(Math.abs(reg.ent - m)) + ' pra zona') + ')'); }
     if (!reg.tEnt) return L;
     // dentro do trade
