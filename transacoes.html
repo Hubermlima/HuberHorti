@@ -3305,7 +3305,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v550';
+const APP_VERSAO = 'v552';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4563,6 +4563,10 @@ function grFaixaDAAlternar(lo, hi, s, cor) {
     grDrawChart();
 }
 function grPosSalvar() { try { grAmbienteSalvar(); } catch (e) {} }
+// BREAKEVEN de verdade = o preço que paga as taxas de ida e volta (zero no bolso). Long: PE×(1+t)/(1−t) · Short: PE×(1−t)/(1+t).
+// t = taxa por lado da caixa (Taxa % do painel Dados; sem ela, o padrão da simulação). Segue o PE sozinho; o usuário não mexe.
+function grTaxaLado(pz) { let t = pz && pz.simTaxa > 0 ? pz.simTaxa : null; if (t == null) { try { t = grPadraoSim().taxa; } catch (e) {} } return (t > 0 ? t : 0.1) / 100; }
+function grBreakeven(pe, lado, t) { if (!(pe > 0)) return null; return lado === 'short' ? pe * (1 - t) / (1 + t) : pe * (1 + t) / (1 - t); }
 // monta uma posição com medidas padrão (largura 14 candles, stop 2%, alvo 4%) a partir de um ponto
 // Limite de alcance: a rolagem lateral só vai até alguns slots depois do último candle (zoom × 15%). A borda direita da caixa não é desenhada além
 // disso (senão fica fora de alcance quando o zoom é alto). Só afeta o desenho: o t2 salvo continua o mesmo, e ao diminuir o zoom a caixa volta ao tamanho real.
@@ -7073,6 +7077,15 @@ if (fibsParaDesenhar.length > 0) {
                     if (rgbm && niv.length > 1) { let prev = yE; niv.forEach((pr, ix) => { const yy = toY(pr); if (ix > 0) { ctx.fillStyle = 'rgba(' + rgbm[1] + ',' + rgbm[2] + ',' + rgbm[3] + ',' + Math.min(0.32, 0.1 * ix) + ')'; ctx.fillRect(xa, Math.min(prev, yy), xb - xa, Math.abs(yy - prev)); } prev = yy; }); }
                 }
                 if (tS && !pz.scalp) { ctx.fillStyle = cz.fs; ctx.fillRect(xa, Math.min(yE, yS), xb - xa, Math.abs(yS - yE)); }
+                if (pvt > 0 && !inf) {   // BOCA DO BREAKEVEN: faixa clara entre o PE e o BE (PE + taxas de ida e volta), em toda caixa, em toda fase
+                    const be = grBreakeven(pvt, pz.lado, grTaxaLado(pz)), yB = be > 0 ? toY(be) : null;
+                    if (yB != null && Math.abs(yB - yE) >= 0.5) {
+                        ctx.save(); ctx.fillStyle = 'rgba(236,238,242,0.78)'; ctx.fillRect(xa, Math.min(yE, yB), xb - xa, Math.max(1.5, Math.abs(yB - yE)));
+                        ctx.lineWidth = 1; ctx.setLineDash([]); ctx.strokeStyle = '#9A9DA6'; ctx.beginPath(); ctx.moveTo(xa, yB); ctx.lineTo(xb, yB); ctx.stroke();
+                        if (Math.abs(xb - xa) > 40) { ctx.font = 'bold 8px -apple-system'; ctx.fillStyle = '#5A5D66'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillText('BE', xa + 4, (yB + yE) / 2 + 0.5); }
+                        ctx.restore();
+                    }
+                }
                 const teseInv0 = cz.st === 'analise' && !pz.previa && grTeseInvalida(pz);
                 const perdida = !teseInv0 && cz.st === 'analise' && !pz.previa && grEntradaPerdida(pz);
                 const teseInv = teseInv0 || perdida, marcaTxt = teseInv0 ? 'Tese Inválida' : 'Entrada perdida', marcaCor = teseInv0 ? '#C62828' : '#6B6B70';
@@ -8055,7 +8068,7 @@ async function cvPosCopiarTudo(i) {
     const x = pz._stat;
     if (x && x.armada) { const rgS = (window._scRegistro || []).find(r => r.id === pz.id); L.push('STATUS Armada · aguardando gatilho' + (scRevTxt(rgS) ? ' · ' + scRevTxt(rgS) : '')); }
     else if (x && x.encerrada) L.push('STATUS Encerrada · ' + scStatusEncTxt(x));
-    else if (x) { L.push('STATUS ' + SC_STATUS_ROT[x.nivel] + (x.R != null ? ' · resultado agora ' + (x.R >= 0 ? '+' : '−') + Math.abs(x.R).toFixed(1).replace('.', ',') + 'R' : '')); x.itens.forEach(it => L.push('• ' + ['ok', 'atenção', 'perigo'][it.n] + ': ' + it.txt)); }
+    else if (x) { L.push('STATUS ' + SC_STATUS_ROT[x.nivel] + (x.R != null ? ' · resultado agora ' + (x.R >= 0 ? '+' : '−') + Math.abs(x.R).toFixed(1).replace('.', ',') + 'R' : '')); x.itens.forEach(it => L.push('• ' + ['ok', 'atenção', 'perigo'][it.n] + ': ' + it.txt)); if (x.sinal) L.push('SINAL ' + x.sinal.ico + ' ' + x.sinal.rot + ': ' + x.sinal.txt); }
     try { await navigator.clipboard.writeText(L.join('\n')); grAreaToast('Copiado: cole na conversa', '#16A34A'); } catch (e) { try { scRelatorioMostrar({ lado: null, linhas: L }); } catch (e2) {} }   // iPhone recusou copiar direto: mostra o texto com o botão Copiar
 }
 // Linha de TEMPO do Status: data de início (armada: criação · em trade: entrada · encerrada: criação) e quanto tempo passou
@@ -8087,6 +8100,7 @@ function cvPosStatusPainel(i, m) {   // painel Status: o geral (Saudável / Aten
     else d.innerHTML = '<div style="font-weight:800;color:' + SC_STATUS_COR[x.nivel] + ';margin-bottom:3px;">' + (pz.lado === 'long' ? 'Long' : 'Short') + ' · ' + SC_STATUS_ROT[x.nivel] + '</div>'
         + x.itens.map(it => '<div style="display:flex;gap:6px;align-items:baseline;line-height:1.35;"><span style="width:10px;color:' + SC_STATUS_COR[it.n] + ';">&#9679;</span><span style="flex:1;">' + it.txt + '</span></div>').join('')
         + (x.R != null ? '<div style="margin-top:4px;color:#6B6B70;">Resultado agora: <b style="color:#1C1C1E;">' + (x.R >= 0 ? '+' : '−') + Math.abs(x.R).toFixed(1).replace('.', ',') + 'R</b></div>' : '')
+        + (x.sinal ? '<div style="margin-top:5px;padding:5px 7px;border-radius:7px;background:' + ({ verde: '#E8F7EE', amarelo: '#FFF6DB', vermelho: '#FDECEC' })[x.sinal.cor] + ';line-height:1.35;"><b style="color:#1C1C1E;">' + x.sinal.ico + ' ' + x.sinal.rot + '</b><div style="color:#3A3A3C;">' + x.sinal.txt + '</div></div>' : '')
         + cvPosTempoLinha(pz, x);   // (relatório da caixa: na central Relatórios, menu Robô Trade)
     const r = m.getBoundingClientRect(), W = window.innerWidth, H = window.innerHeight, dw = d.offsetWidth, dh = d.offsetHeight;
     let xx = Math.max(4, Math.min(W - dw - 4, r.left)), y = r.bottom + 4; if (y + dh > H - 4) y = Math.max(4, r.top - dh - 4);
@@ -17272,7 +17286,36 @@ async function scStatusCalcular(pz) {
     if (ini != null && sc.n <= ini - 2) itens.push({ n: 1, txt: 'o Score caiu de ' + ini + ' para ' + sc.n });
     else itens.push({ n: 0, txt: 'Score agora ' + sc.n + '/' + sc.total + (ini != null ? ' (na criação ' + ini + ')' : '') });
     const R = stop != null && px && Math.abs(stop - ent) > 0 ? s * (ent - px) / Math.abs(stop - ent) : null;
-    return { t: Date.now(), nivel: Math.max.apply(null, itens.map(x => x.n)), itens, R };
+    let sinal = null;
+    try { const regS = (window._scRegistro || []).find(r => r.id === pz.id); if ((R != null && R >= 1) || (regS && regS.ign)) sinal = await scSinal1R(pz, px, regS, fx); } catch (e) {}
+    return { t: Date.now(), nivel: Math.max.apply(null, itens.map(x => x.n)), itens, R, sinal };
+}
+// SINAL EM +1R (o que fazer com o stop): 🔴 proteger no zero (absorção contra num dos 2 últimos candles de 5 min fechados, ou o último
+// candle fechou com delta forte contra) · 🟡 atenção (obstáculo a menos de 0,5R à frente: EMA ainda não rompida, POC/VAH/VAL do VP, zona marcada)
+// · 🟢 deixar correr. EMA já rompida (ficou para trás) vira apoio, não obstáculo. O 1º sinal visto fica no registro da caixa (para conferir depois).
+async function scSinal1R(pz, px, reg, fx) {
+    const lg = pz.lado === 'long', dir = lg ? 1 : -1, e0 = (reg && reg.entReal) || pz.entrada, stp0 = (reg && reg.stp) || pz.stop;
+    const risco = Math.abs(e0 - stp0); if (!(risco > 0) || !(px > 0)) return null;
+    const fN = x => Math.round(x).toLocaleString('pt-BR');
+    let cor = 'verde', mot = [];
+    // 🔴 absorção contra / delta contra
+    try {
+        const cs = (await scKlines(grBinSymbolAtual(), '5m', 200)).map(grMapearKline), n = cs.length, D = new Map();
+        for (const i of [n - 2, n - 3]) { const pa = i >= 20 ? scAbsContra(cs, i, D, lg) : null; if (pa != null) { cor = 'vermelho'; mot.push('absorção contra (' + (lg ? 'AV' : 'AC') + ' ' + pa + '%) no candle das ' + new Date(cs[i].t).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })); break; } }
+    } catch (e) {}
+    try { const u = fx && fx.ult; if (u && u.length) { const d = u[u.length - 1]; if (-dir * d > 0 && Math.abs(d) >= (fx.medD || Infinity)) { cor = 'vermelho'; mot.push('o último candle fechou com delta forte contra'); } } } catch (e) {}
+    if (cor !== 'vermelho') {
+        const obs = [], perto = lv => { const d = dir * (lv - px); return d > 0 && d < 0.5 * risco && (!(pz.alvo > 0) || dir * (pz.alvo - lv) > 0); };
+        try { const em = await scEmaInfo(); if (em && perto(em.ema)) obs.push('EMA ' + em.per + ' ainda não rompida em ' + fN(em.ema)); } catch (e) {}
+        try { if (SCX.vaAncoraTs != null) { const va = grFootprintCalcularValueArea(); if (va) [['POC', va.poc], ['VAH', va.vah], ['VAL', va.val]].forEach(([k, v]) => { if (v > 0 && perto(v)) obs.push(k + ' em ' + fN(v)); }); } } catch (e) {}
+        try { grZonasCelBlocos().forEach(b => { const lv = lg ? b.lo : b.hi; if (perto(lv)) obs.push('zona marcada em ' + fN(b.lo) + '–' + fN(b.hi)); }); } catch (e) {}
+        if (obs.length) { cor = 'amarelo'; mot = obs; }
+        else mot.push('sem absorção contra, sem delta forte contra e nenhum obstáculo a menos de 0,5R à frente');
+    }
+    const S = { vermelho: ['🔴', 'Proteger no zero'], amarelo: ['🟡', 'Atenção'], verde: ['🟢', 'Deixar correr'] }[cor];
+    const out = { cor, ico: S[0], rot: S[1], txt: mot.join(' · '), t: Date.now() };
+    if (reg && !reg.sinal1R) { reg.sinal1R = { cor, txt: out.txt, t: out.t }; try { scRegGravarServidor(); } catch (e) {} }
+    return out;
 }
 function scScoreElegivel(pz) { return !!pz && (!!pz.score || pz.origem === 'melhor' || pz.origem === 'setup' || !!pz.teste); }
 // M17 — JANELA DO MOTOR = A SUA ÂNCORA DO VP: com VP ancorado, as réguas (macro e micro) somam só desde a âncora, igual ao sino.
@@ -17609,7 +17652,7 @@ async function scTfAcompanhar(h) {
     return melhor || (menor ? { rot: null, menor: menor.menor, med: menor.med, h } : null);
 }
 // ══ VERSÃO DO MOTOR + REGISTRO das caixas que ele cria (gravado junto com as caixas, nas preferências, ao tocar em Sair) ══
-const SC_MOTOR_VERSAO = 'M20';
+const SC_MOTOR_VERSAO = 'M21';
 function scRegLista() { if (!Array.isArray(window._scRegistro)) window._scRegistro = []; return window._scRegistro; }
 function scRegistrar(o) {
     const L = scRegLista();
@@ -17742,7 +17785,7 @@ function scRegChecarPreco(px) {
             else if (bAlvo) { r.st = 'perdida'; r.tFim = agora; }
             else if (r.val > 0 && agora > r.t0 + r.val) { r.st = 'expirou'; r.tFim = agora; }
         } else if (bStop) { r.st = 'stop'; r.tFim = agora; }
-        else if (r.ign && r.zero && (lg ? px <= (r.entReal || r.ent) : px >= (r.entReal || r.ent)) && (!r.tIgn || agora - r.tIgn > 1000)) { r.st = 'zero'; r.tFim = agora; }
+        else if (r.ign && r.zero && (lg ? px <= scRegBE(r) : px >= scRegBE(r)) && (!r.tIgn || agora - r.tIgn > 1000)) { r.st = 'zero'; r.tFim = agora; }
         else if (bAlvo) { r.st = 'alvo'; r.tFim = agora; }
         if (r.st === 'entrou' && !r.ign) { const e0 = r.entReal || r.ent, r1 = e0 + (lg ? 1 : -1) * Math.abs(e0 - r.stp); if (lg ? px >= r1 : px <= r1) { r.ign = true; r.tIgn = agora; mudou = true; try { grAreaToast('Motor ' + (r.mv || '') + ': ' + (lg ? 'Long' : 'Short') + ' → IGNIÇÃO (+1R)', '#16A34A'); } catch (e) {} } }
         if (r.st !== ant) {
@@ -17773,6 +17816,8 @@ function scDeltaPorBloco(bloco, ini) {
 // romper o stop → entrou no fechamento dele (entrada real). Antes do gatilho: tocar o stop = "sem gatilho" (a faca passou sem confirmação, não é perda);
 // ir ao alvo = entrada perdida; passar 1 candle do macro = expirou. Depois de entrar: stop / alvo (stop primeiro no mesmo candle).
 // Absorção CONTRA no candle i (mesma conta do losango do gráfico: volume ÷ amplitude acima da média de 20): Long → AV (caiu com delta +); Short → AC (subiu com delta −)
+// M21: o ZERO é o BREAKEVEN de verdade (entrada + taxas de ida e volta), não o preço de entrada. Taxa = a da caixa (painel Dados) ou o padrão.
+function scRegBE(r) { const e0 = r.entReal || r.ent; let pz = null; try { pz = grPosicoes().find(z => z.id === r.id); } catch (e) {} const be = grBreakeven(e0, r.lado, grTaxaLado(pz)); return be > 0 ? be : e0; }
 function scAbsContra(cs, i, D, lg) {
     if (i < 20) return null; const c = cs[i], d = D.has(c.t) ? D.get(c.t) : (c.bv != null && c.v > 0 ? 2 * c.bv - c.v : null); if (d == null) return null;
     if (lg ? !(c.c < c.o && d > 0) : !(c.c > c.o && d < 0)) return null;
@@ -17793,7 +17838,7 @@ function scRegAvaliarGatilho(r, cs, D, bloco, real) {
             if (r.zero && !r.sombraAbs && (lg ? c.l <= r.ent : c.h >= r.ent)) {   // M12: saída-sombra no 1º candle com absorção contra encostando na zona
                 const pa = scAbsContra(cs, ic, D, lg); if (pa != null) { const e0 = r.entReal || r.ent, rk = Math.abs(e0 - r.stp); r.sombraAbs = { t: c.t, p: c.c, pct: pa, R: rk > 0 ? s * (c.c - e0) / rk : null }; }
             }
-            if (r.ign && r.zero && (lg ? c.l <= (r.entReal || r.ent) : c.h >= (r.entReal || r.ent))) { r.st = 'zero'; r.tFim = c.t; return; }   // M11: depois da ignição o stop sobe pro zero
+            if (r.ign && r.zero && (lg ? c.l <= scRegBE(r) : c.h >= scRegBE(r))) { r.st = 'zero'; r.tFim = c.t; return; }   // M11: depois da ignição o stop sobe pro zero
             if (!r.ign) { const e0 = r.entReal || r.ent, r1 = e0 + s * Math.abs(e0 - r.stp); if (lg ? c.h >= r1 : c.l <= r1) { r.ign = true; r.tIgn = c.t; } }
             if (lg ? c.h >= r.alvo : c.l <= r.alvo) { r.st = 'alvo'; r.tFim = c.t; return; }
             continue;
@@ -17881,6 +17926,7 @@ async function scHistoricoMostrar() {
     scRelatorioMostrar({ lado: null, linhas });
 }
 const SC_VERSOES = [
+    ['M21', 'ZERO = BREAKEVEN de verdade: em +1R o stop vai para a entrada + as taxas de ida e volta (zero no bolso), não mais para o preço de entrada; toda caixa mostra a faixa PE↔BE em cinza claro'],
     ['M20', 'entrada no TOQUE, como na corretora: o pavio encostou na entrada = em trade (antes esperava o fechamento a favor); stop continua no pavio'],
     ['M19', 'contra o ímã do pico: não arma caixa com a entrada dentro do sino e o pico do lado do stop (Short com o pico acima, Long com o pico abaixo)'],
     ['M18', 'gatilho na VARRIDA: candle que passa do stop mas fecha de volta a favor, com delta a favor, vale como gatilho (stop vai para além do pavio dele + 2 pavios); antes morria sem gatilho'],
@@ -18202,6 +18248,7 @@ async function scRegRaioX(reg) {
       if (reg.tIgn) pass.push(['Ignição', reg.tIgn]);
       if (reg.tFim) pass.push([SC_REG_ROT[reg.st].charAt(0).toUpperCase() + SC_REG_ROT[reg.st].slice(1), reg.tFim]);
       const fimT = reg.tFim || Date.now();
+      if (reg.sinal1R) L.push('Sinal em +1R (o 1º visto): ' + ({ verde: '🟢 Deixar correr', amarelo: '🟡 Atenção', vermelho: '🔴 Proteger no zero' })[reg.sinal1R.cor] + ' · ' + reg.sinal1R.txt + (reg.tFim ? ' → terminou ' + SC_REG_ROT[reg.st] : ''));
       L.push('Linha do tempo: ' + pass.map((p0, k) => p0[0] + ' ' + hm(p0[1]) + (k ? ' (+' + dur(p0[1] - pass[k - 1][1]) + ')' : '')).join(' → ') + ' · total ' + dur(fimT - reg.t0) + (reg.tFim ? '' : ' (ainda aberta)')); }
     if (reg.varrida) L.push('Gatilho na VARRIDA (M18): o candle de ' + dh(reg.varrida.t) + ' passou do stop (' + f(reg.varrida.stpAntes) + ') até ' + f(reg.varrida.ext) + ' e fechou de volta a favor · stop novo ' + f(reg.stp) + ' (além do pavio + 2 pavios)');
     if (reg.st === 'desfeita') L.push('Tese inválida em ' + dh(reg.tFim) + ': ' + (reg.motivo || 'a revisão não achou mais a tese') + (reg.fant ? ' · sem cancelar: ' + SC_REG_ROT[reg.fant.st] + (reg.fant.ign ? ' (ignição ✓)' : '') + (reg.fant.tFim ? ' ' + dh(reg.fant.tFim) : '') : ''));
