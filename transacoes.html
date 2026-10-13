@@ -1855,7 +1855,9 @@ function cvSetTf(tf, semAncora) {
 function cvAbrirMenuTf(clientX, clientY, opts) {
     cvFecharMenuTf();
     const itens = [
+        { tf: 'c5',     label: '5 Minutos' },
         { tf: '15m',    label: '15 Minutos' },
+        { tf: 'c30',    label: '30 Minutos' },
         { tf: '1h',     label: '1 Hora' },
         { tf: '4h',     label: '4 Horas' },
         { tf: '1day',   label: 'Diário' },
@@ -1880,7 +1882,7 @@ function cvAbrirMenuTf(clientX, clientY, opts) {
     if (opts && opts.aoEscolher) {
         // Modo "escolher": devolve o TF a quem chamou (ex.: régua Delta ATR) e NÃO troca o timeframe do gráfico.
         if (opts.igual) menu.appendChild(linha('Igual ao gráfico', () => opts.aoEscolher(null), opts.atual == null));
-        itens.forEach(it => menu.appendChild(linha(it.label, () => opts.aoEscolher(it.tf), it.tf === opts.atual)));
+        itens.forEach(it => menu.appendChild(linha(it.label, () => opts.aoEscolher(it.tf === 'c5' ? '5m' : it.tf === 'c30' ? '30m' : it.tf), it.tf === opts.atual || (it.tf === 'c5' && opts.atual === '5m') || (it.tf === 'c30' && opts.atual === '30m'))));
         if (opts.personalizado) {
             const sep2 = document.createElement('div');
             sep2.style.cssText = 'height:1px;background:#F2F2F7;margin:4px 2px;';
@@ -1888,7 +1890,9 @@ function cvAbrirMenuTf(clientX, clientY, opts) {
             menu.appendChild(linha('Personalizado', opts.personalizado, opts.atual === 'custom'));
         }
     } else {
-        itens.forEach(it => menu.appendChild(linha(it.label, () => cvSetTf(it.tf), it.tf === _grTf)));
+        const ehMin = n => _grTf === 'custom' && _grTfCustomUnit === 'min' && Number(_grTfCustomAmount) === n;
+        const setMin = n => { _grTfCustomAmount = n; _grTfCustomUnit = 'min'; try { localStorage.setItem('cvTfCustom', JSON.stringify({ amount: n, unit: 'min' })); } catch (e) {} cvSetTf('custom'); };
+        itens.forEach(it => menu.appendChild(linha(it.label, () => it.tf === 'c5' ? setMin(5) : it.tf === 'c30' ? setMin(30) : cvSetTf(it.tf), it.tf === 'c5' ? ehMin(5) : it.tf === 'c30' ? ehMin(30) : it.tf === _grTf)));
         const sep = document.createElement('div');
         sep.style.cssText = 'height:1px;background:#F2F2F7;margin:4px 2px;';
         menu.appendChild(sep);
@@ -3301,7 +3305,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v542';
+const APP_VERSAO = 'v543';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -16764,8 +16768,9 @@ const SC_PLAY_INTERVALOS = [5, 10, 15, 30, 60, 120, 240];   // minutos entre uma
 let _scCfg = (function () {
     let c = null; try { c = JSON.parse(localStorage.getItem('grSetupCx') || 'null'); } catch (e) {}
     c = c && typeof c === 'object' ? c : {};
-    return { dias: SC_DIAS.includes(c.dias) ? c.dias : 30, macro: scTfBase(c.macro) ? c.macro : '3d', micro: scTfBase(c.micro) ? c.micro : '4h', ligado: c.ligado === true, intervalo: SC_PLAY_INTERVALOS.includes(c.intervalo) ? c.intervalo : 5, play: c.play !== false };   // automático ligado por padrão; só fica parado se o usuário pausou
+    return { dias: SC_DIAS.includes(c.dias) ? c.dias : 30, macro: scTfBase(c.macro) ? c.macro : '3d', micro: scTfBase(c.micro) ? c.micro : '4h', ligado: c.ligado === true, intervalo: SC_PLAY_INTERVALOS.includes(c.intervalo) ? c.intervalo : 5, play: c.play !== false, periodo: c.periodo === 'dias' ? 'dias' : 'vp', microAuto: c.microAuto !== false };   // automático ligado por padrão; só fica parado se o usuário pausou
 })();
+setTimeout(() => { try { scMicroSinc(); } catch (e) {} }, 0);   // micro automático: alinha ao macro ao abrir
 let _scCalculando = false, _scUltimo = null;
 _indState.setupCx = _scCfg.ligado;
 function scSalvar() { try { localStorage.setItem('grSetupCx', JSON.stringify(_scCfg)); } catch (e) {} }
@@ -17154,11 +17159,11 @@ function scScoreElegivel(pz) { return !!pz && (!!pz.score || pz.origem === 'melh
 // M17 — JANELA DO MOTOR = A SUA ÂNCORA DO VP: com VP ancorado, as réguas (macro e micro) somam só desde a âncora, igual ao sino.
 // Sem âncora, vale a "Janela de dias" da configuração.
 function scDiasJanela() {
-    const a = SCX.vpAncoraTs, ag = scAgora();
+    const a = _scCfg.periodo === 'dias' ? null : SCX.vpAncoraTs, ag = scAgora();
     if (a != null && a > 0 && a < ag) return Math.max(1, (ag - a) / 86400000);
     return SCX.cfg.dias;
 }
-function scDiasRot(d) { return SCX.vpAncoraTs != null ? Math.round(d) + ' dias (desde a âncora do VP)' : Math.round(d) + ' dias'; }
+function scDiasRot(d) { return (SCX.vpAncoraTs != null && _scCfg.periodo !== 'dias') ? Math.round(d) + ' dias (desde a âncora do VP)' : Math.round(d) + ' dias'; }
 function scScoreChave(pz) { return [pz.lado, Math.round(pz.entrada), _scCfg.micro, _scCfg.dias].join('|'); }
 async function scScoreCaixa(pz) {
     if (!SCX.fpAtivo || !SCX.fpRaw) throw new Error('Ligue o Fluxo (FX) e aguarde os dados carregarem.');
@@ -18269,9 +18274,16 @@ function scPersAbrir(qual) {
         _scCfg[qual] = 'c:' + st.u + ':' + a; scSalvar(); fechar(); cvRenderMenuFpCfg();
     };
 }
-function scDefinirMacro(v) { if (v === '__pers') { scPersAbrir('macro'); return; } if (scTfBase(v)) _scCfg.macro = v; scSalvar(); cvRenderMenuFpCfg(); }
+function scDefinirMacro(v) { if (v === '__pers') { scPersAbrir('macro'); return; } if (scTfBase(v)) _scCfg.macro = v; scMicroSinc(); scSalvar(); cvRenderMenuFpCfg(); }
 function scDefinirIntervalo(v) { const m = parseInt(v); if (SC_PLAY_INTERVALOS.includes(m)) _scCfg.intervalo = m; scSalvar(); if (_scPlay.on) _scPlay.prox = scPlayProxima(); cvRenderMenuFpCfg(); try { scPlayUI(); } catch (e) {} }
-function scDefinirMicro(v) { if (v === '__pers') { scPersAbrir('micro'); return; } if (scTfBase(v)) _scCfg.micro = v; scSalvar(); cvRenderMenuFpCfg(); }
+function scDefinirMicro(v) { if (v === '__pers') { scPersAbrir('micro'); return; } if (v === '__auto') { _scCfg.microAuto = true; scMicroSinc(); } else if (scTfBase(v)) { _scCfg.micro = v; _scCfg.microAuto = false; } scSalvar(); cvRenderMenuFpCfg(); }
+function scDefinirPeriodo(v) { _scCfg.periodo = v === 'dias' ? 'dias' : 'vp'; scSalvar(); cvRenderMenuFpCfg(); }
+// MICRO AUTOMÁTICO (padrão): um degrau abaixo do macro (escada ~×5): Semanal→Diário · 3 dias→12 h · Diário→4 h · 12 h→2 h · 4 h→1 h · 1 h→15 min · abaixo→5 min.
+function scMicroDoDegrau() {
+    const b = scDefTf(_scCfg.macro).blocoMs, h = 3600000;
+    return b >= 7 * 24 * h ? '1d' : b >= 3 * 24 * h ? 'c:hor:12' : b >= 24 * h ? '4h' : b >= 12 * h ? '2h' : b >= 4 * h ? '1h' : b >= h ? '15m' : '5m';
+}
+function scMicroSinc() { if (_scCfg.microAuto !== false) { const m = scMicroDoDegrau(); if (scTfBase(m)) _scCfg.micro = m; } }
 function scValoresSino() {   // VP (maior nível) e POC da Value Area ancorados, como o painel do gráfico; '—' se não houver âncora
     const f = v => v ? Math.round(v).toLocaleString('pt-BR') : '—'; let vp = 0, poc = 0;
     try {
@@ -18297,9 +18309,12 @@ function scRenderPopup(menu) {
     const dh = x => x != null ? new Date(x).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' }) : '—';
     // 1) Configuração temporal
     const cob = scCobertura(scDiasJanela());
-    const temporal = grConfigCombo(ico.cal, 'Janela de dias', SCX.vpAncoraTs != null ? 'Ignorada: com VP ancorado, as réguas usam a âncora (' + Math.round(scDiasJanela()) + ' dias)' : 'Dias somados nas duas réguas', 'cv-cfg-sc-dias', SC_DIAS.map(d => [d, d + ' dias']), _scCfg.dias, 'scDefinirDias')
+    const porVp = _scCfg.periodo !== 'dias';
+    const temporal = grConfigCombo(ico.cal, 'Período', 'De onde as réguas do robô começam a somar', 'cv-cfg-sc-periodo', [['vp', 'Âncora do VP'], ['dias', 'Janela de dias']], porVp ? 'vp' : 'dias', 'scDefinirPeriodo')
+        + (porVp ? '<div style="font-size:11.5px;color:#8E8E93;margin:6px 0 2px;line-height:1.4;">' + (SCX.vpAncoraTs != null ? 'Desde a âncora do VP: ' + dh(SCX.vpAncoraTs) + ' (' + Math.round(scDiasJanela()) + ' dias).' : '<b style="color:#DC2626;">Sem âncora do VP:</b> usando a janela de ' + _scCfg.dias + ' dias.') + '</div>'
+            : grConfigCombo(ico.cal, 'Janela de dias', 'Dias somados nas duas réguas', 'cv-cfg-sc-dias', SC_DIAS.map(d => [d, d + ' dias']), _scCfg.dias, 'scDefinirDias'))
         + grConfigCombo(ico.rel, 'Timeframe macro', 'Zona favorável e alvo', 'cv-cfg-sc-macro', tfsDe(_scCfg.macro), _scCfg.macro, 'scDefinirMacro')
-        + grConfigCombo(ico.rel, 'Timeframe micro', 'Entrada e stop', 'cv-cfg-sc-micro', tfsDe(_scCfg.micro), _scCfg.micro, 'scDefinirMicro')
+        + grConfigCombo(ico.rel, 'Timeframe micro', 'Entrada e stop', 'cv-cfg-sc-micro', [['__auto', 'Automático (' + scDefTf(scMicroDoDegrau()).rot + ')']].concat(tfsDe(_scCfg.micro)), _scCfg.microAuto !== false ? '__auto' : _scCfg.micro, 'scDefinirMicro')
         + '<div style="font-size:11.5px;color:#8E8E93;margin-top:8px;line-height:1.4;">Fluxo carregado: ' + (cob >= scDiasJanela() - 1 ? 'cobre a janela' : '<b style="color:#DC2626;">só ' + Math.floor(cob) + ' dias</b>') + '.</div>';
     // 2) Ancoragens
     const vw = (SCX.vwapAncoras || []).filter(a => !a.oculta);
