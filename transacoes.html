@@ -2117,7 +2117,7 @@ function cvRenderMenuFpCfg() {
             + (_grDaPeriodo === 'vp'
                 ? '<div style="font-size:11.5px;color:#8E8E93;margin-top:6px;line-height:1.4;">' + (_grVpAncoraTs > 0 ? 'Somando desde a âncora do VP: ' + new Date(_grVpAncoraTs).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) + '.' : '<b style="color:#DC2626;">Sem âncora do VP:</b> usando a Janela de dias (' + _grFootprintLookbackDias + ').') + '</div>'
                 : grConfigBlocoSliderDias(ICO_FLUXO.calendario, 'Janela de dias', 'Dias somados na régua (recalcula ao arrastar)', 'cv-cfg-lookback-da', _grFootprintLookbackDias, 1, 180, 'input', 'grFootprintLookbackSlider'))
-            + grConfigCombo('<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/>', 'Timeframe', 'Só os níveis da régua; os candles não mudam', 'cv-cfg-datf', grDaOpcoesTf(), (_grDaTf === 'custom' && _grDaTfCustom) ? 'custom' : (_grDaTf || ''), 'grDaDefinirTf')
+            + grConfigCombo('<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/>', 'Timeframe', 'Só os níveis da régua; os candles não mudam', 'cv-cfg-datf', grDaOpcoesTf(), _grDaAuto ? 'auto' : ((_grDaTf === 'custom' && _grDaTfCustom) ? 'custom' : (_grDaTf || '')), 'grDaDefinirTf')
             + '<div style="font-size:11.5px;color:#8E8E93;margin-top:8px;line-height:1.4;">A Janela de dias é a mesma do Fluxo: mudar aqui muda lá, e vice-versa.</div>';
     } else if (_grFpCfgMenuQual === 'grupo') {
         const ch = cvAtivoChaveAtual(), g = cvGrupoDe(ch), fav = (window._grFavoritos || []).indexOf(ch) >= 0, nomes = { '': 'Nenhum', trd: 'Trades', ana: 'Análise' };
@@ -2278,7 +2278,7 @@ function cvAplicarTfCustom() {
         return;
     }
     if (_cvTfCustomDestino === 'da') {   // timeframe da RÉGUA: não mexe no gráfico
-        _grDaTf = 'custom'; _grDaTfCustom = { u: unit, a: n };
+        _grDaAuto = false; _grDaTf = 'custom'; _grDaTfCustom = { u: unit, a: n };
         cvFecharModalTfCustom();
         if (typeof grAmbienteSalvar === 'function') grAmbienteSalvar();   // só marca pendente; grava ao clicar em Sair
         window._grDeltaAtrCache = {};
@@ -3301,7 +3301,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v538';
+const APP_VERSAO = 'v540';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3326,12 +3326,23 @@ function grTickAtr() {
 // vir do ATR desse timeframe (mesma conta do tick do gráfico: 0,2 × ATR, múltiplo de 10); candles, footprint e o resto não mudam.
 // Os candles desse TF vêm da Binance (a régua só existe no BTC), cacheados por 1 min; enquanto o 1º download não chega, usa o degrau de sempre.
 let _grDaTf = null;            // null | '15m'...'1month' | 'custom'
+// AUTOMÁTICO (padrão): a régua usa o TF um degrau ACIMA do gráfico (escada ~×5): 1m→5m · 5m→30m · 15m→1h · 30m e 1h→4h · 4h→Diário · Diário→Semanal · acima→Mensal.
+// Escolher outro TF no menu desliga o automático (até você voltar para ele).
+let _grDaAuto = true;
+function grDaTfDoDegrau() {
+    let ms = 0; try { ms = grFootprintMsPorCandle(); } catch (e) {}
+    if (!(ms > 0)) return null;
+    const m = ms / 60000;
+    return m <= 1 ? '5m' : m <= 5 ? '30m' : m <= 15 ? '1h' : m <= 60 ? '4h' : m <= 240 ? '1day' : m <= 1440 ? '1week' : '1month';
+}
+function grDaSincAuto() { if (_grDaAuto) { const t = grDaTfDoDegrau(); if (t && t !== _grDaTf) { _grDaTf = t; window._grDeltaAtrCache = {}; } } }
 let _grDaTfCustom = null;      // { u: 'min'|'hor'|'dia'|'mes', a: n } quando _grDaTf === 'custom'
 const GR_DA_TFS = [
-    { tf: '15m', bin: '15m', label: '15 Minutos' }, { tf: '1h', bin: '1h', label: '1 Hora' }, { tf: '4h', bin: '4h', label: '4 Horas' },
+    { tf: '5m', bin: '5m', label: '5 Minutos' }, { tf: '15m', bin: '15m', label: '15 Minutos' }, { tf: '30m', bin: '30m', label: '30 Minutos' }, { tf: '1h', bin: '1h', label: '1 Hora' }, { tf: '4h', bin: '4h', label: '4 Horas' },
     { tf: '1day', bin: '1d', label: 'Diário' }, { tf: '1week', bin: '1w', label: 'Semanal' }, { tf: '1month', bin: '1M', label: 'Mensal' }
 ];
 function grDaTfRotulo() {
+    grDaSincAuto();
     if (_grDaTf === 'custom' && _grDaTfCustom) return _grDaTfCustom.a + ' ' + (_cvTfCustomNomes[_grDaTfCustom.u] ? _cvTfCustomNomes[_grDaTfCustom.u](_grDaTfCustom.a) : _grDaTfCustom.u);
     const x = GR_DA_TFS.find(t => t.tf === _grDaTf); return x ? x.label : 'Igual ao gráfico';
 }
@@ -3339,6 +3350,7 @@ function grDaTfRotulo() {
 function grDaCustomMs(c) { return c.a * (c.u === 'min' ? 60000 : c.u === 'hor' ? 3600000 : c.u === 'dia' ? 86400000 : 30.4 * 86400000); }
 window._grDaTickCache = window._grDaTickCache || {};
 function grDaTickProprio() {
+    grDaSincAuto();
     if (!_grDaTf) return null;
     const custom = _grDaTf === 'custom' ? _grDaTfCustom : null;
     if (_grDaTf === 'custom' && !custom) return null;
@@ -3388,14 +3400,17 @@ function grTickDaRegua(pxDolar) {
 }
 // Opções do combobox de Timeframe da régua: "Igual ao gráfico", os TFs fixos, o personalizado atual (se houver) e "Personalizado…" (abre o modal).
 function grDaOpcoesTf() {
-    const o = [['', 'Igual ao gráfico']].concat(GR_DA_TFS.map(t => [t.tf, t.label]));
+    grDaSincAuto();
+    const tA = GR_DA_TFS.find(t => t.tf === grDaTfDoDegrau());
+    const o = [['auto', 'Automático (' + (tA ? tA.label : '—') + ')'], ['', 'Igual ao gráfico']].concat(GR_DA_TFS.map(t => [t.tf, t.label]));
     if (_grDaTf === 'custom' && _grDaTfCustom) o.push(['custom', grDaTfRotulo()]);
     o.push(['novo', 'Personalizado…']);
     return o;
 }
 function grDaDefinirTf(v) {
     if (v === 'novo') { cvRenderMenuFpCfg(); cvAbrirModalTfCustom('da'); return; }   // volta o combobox ao valor atual e abre o modal
-    if (v !== 'custom') _grDaTf = v || null;
+    if (v === 'auto') { _grDaAuto = true; _grDaTf = null; grDaSincAuto(); }
+    else { _grDaAuto = false; if (v !== 'custom') _grDaTf = v || null; }
     if (typeof grAmbienteSalvar === 'function') grAmbienteSalvar();
     window._grDeltaAtrCache = {};
     cvRenderMenuFpCfg();
@@ -3408,7 +3423,7 @@ function grDaAbrirMenuTf(ev) {
         igual: true,
         personalizado: () => cvAbrirModalTfCustom('da'),
         aoEscolher: tf => {
-            _grDaTf = tf || null;
+            _grDaAuto = false; _grDaTf = tf || null;
             if (typeof grAmbienteSalvar === 'function') grAmbienteSalvar();   // só marca pendente; grava ao clicar em Sair
             window._grDeltaAtrCache = {};
             cvRenderMenuFpCfg();
@@ -3604,6 +3619,7 @@ function grMelhorCopiar() { try { navigator.clipboard.writeText((_grMeUltimo && 
 // Candles do TF da régua (janela da régua + folga), pra o teste de defesa e o stop pelo pavio não dependerem do TF do gráfico.
 // Devolve null quando a régua é "igual ao gráfico" (usa os candles do gráfico) ou quando a busca falha (cai nos candles do gráfico).
 async function grMelhorCandlesRegua() {
+    grDaSincAuto();
     const u = window._grDaUltima; if (!_grDaTf || !u) return null;
     const custom = _grDaTf === 'custom' ? _grDaTfCustom : null;
     if (_grDaTf === 'custom' && !custom) return null;
@@ -11581,6 +11597,7 @@ function grAmbienteColetar() {
         analiseLista: (window._grAnaliseLista || []).slice(),
         faixasDA: (window._grFaixasDA || []).slice(),
         daTf: _grDaTf,
+        daAuto: _grDaAuto,
         daTfCustom: _grDaTfCustom,
         ambExpandido: _grAmbExpandido,
         hLinhas: _grHLinhasMapa,
@@ -11669,6 +11686,7 @@ async function grAmbienteCarregar() {
     if (Array.isArray(ambiente.faixasDA)) window._grFaixasDA = ambiente.faixasDA.filter(f => f && f.hi > f.lo);
     _grDaTfCustom = (ambiente.daTfCustom && _cvTfCustomLimites[ambiente.daTfCustom.u] && ambiente.daTfCustom.a >= 1) ? { u: ambiente.daTfCustom.u, a: parseInt(ambiente.daTfCustom.a, 10) } : null;
     _grDaTf = (ambiente.daTf === 'custom' && _grDaTfCustom) ? 'custom' : (GR_DA_TFS.some(t => t.tf === ambiente.daTf) ? ambiente.daTf : null);
+    _grDaAuto = ambiente.daAuto !== false;   // padrão: automático (degrau acima do gráfico)
     if (Array.isArray(ambiente.tradesLista)) window._grTradesLista = ambiente.tradesLista.filter(f => typeof f === 'string' && f);
     if (Array.isArray(ambiente.analiseLista)) window._grAnaliseLista = ambiente.analiseLista.filter(f => typeof f === 'string' && f && window._grTradesLista.indexOf(f) < 0);
     if (Array.isArray(ambiente.favoritos)) window._grFavoritos = ambiente.favoritos.filter(f => typeof f === 'string' && f);
@@ -17719,9 +17737,16 @@ async function scHistoricoMostrar() {
     { const pl = arr => { const c = {}; arr.forEach(r => { c[r.st] = (c[r.st] || 0) + 1; }); return arr.length + ' caixas · ' + ['alvo', 'zero', 'stop', 'desfeita'].filter(k => c[k]).map(k => SC_REG_ROT[k] + ' ' + c[k]).join(' · ') + ' · ignição ' + arr.filter(r => r.ign).length + ' de ' + arr.filter(r => r.tEnt).length; };
       const ref = L.filter(r => r.ref), pur = L.filter(r => !r.ref);
       if (ref.length) linhas.splice(2, 0, 'DIREÇÃO AUTOMÁTICA: ' + pl(pur), 'DIREÇÃO ASSISTIDA (refinadas por você): ' + pl(ref)); }
+    // TEMPO: em trade = da entrada até o fim (ou agora); sem entrar = armada até encerrar. Intraday em h/min; 24 h ou mais em dias.
+    const tFmt = ms => { const m = Math.round(Math.max(0, ms) / 60000); return ms >= 86400000 ? Math.floor(ms / 86400000) + (ms >= 2 * 86400000 ? ' dias' : ' dia') : m >= 60 ? Math.floor(m / 60) + ' h ' + (m % 60) + ' min' : m + ' min'; };
+    const tTrade = r => r.tEnt ? (r.tFim || Date.now()) - r.tEnt : null, tArm = r => ((r.tEnt || r.tFim || Date.now()) - r.t0);
+    { const med = arr => { const v = arr.map(tTrade).filter(x => x != null).sort((a, b) => a - b); return v.length ? tFmt(v[Math.floor(v.length / 2)]) + ' (' + v.length + ')' : null; };
+      const ps = [['alvo', 'alvos'], ['stop', 'stops'], ['zero', 'zero']].map(([k, n]) => { const m = med(L.filter(r => r.st === k)); return m ? n + ' ' + m : null; }).filter(Boolean);
+      if (ps.length) linhas.splice(2, 0, 'TEMPO EM TRADE (mediana): ' + ps.join(' · ')); }
     L.slice().reverse().forEach(r => linhas.push(r.mv + ' · ' + dh(r.t0) + ' · ' + (r.modo === 'fora' ? 'FORA DO SINO' : r.modo) + (r.ref ? ' · ASSISTIDA (motor: E ' + f(r.entOrig) + ' S ' + f(r.stpOrig) + ')' : '') + ' · ' + (r.lado === 'long' ? 'Long' : 'Short') + ' · nota ' + (r.nota == null ? '?' : r.nota)
         + ' · E ' + f(r.ent) + (r.entReal ? ' (real ' + f(r.entReal) + ')' : '') + ' S ' + f(r.stp) + ' A ' + f(r.alvo) + (r.gat ? ' · gatilho' : '') + ' (' + (r.alvoTipo === 'pico' ? 'pico' : r.alvoTipo) + ') · ' + r.ma + '×' + r.mi
         + ' · ' + SC_REG_ROT[r.st] + (r.tFim ? ' ' + dh(r.tFim) : (r.tEnt ? ' ' + dh(r.tEnt) : '')) + (r.ign ? ' · ignição ✓' : r.tEnt ? ' · sem ignição' : '')
+        + (r.tEnt ? ' · em trade ' + tFmt(tTrade(r)) + (r.tFim ? '' : ' (aberto)') : ' · armada ' + tFmt(tArm(r)))
         + (r.st === 'desfeita' && r.fant ? ' · sem cancelar: ' + SC_REG_ROT[r.fant.st] + (r.fant.ign ? ' (ignição ✓)' : '') : '')
         + (r.sombraAbs && r.sombraAbs.R != null ? ' · sombra ' + (r.sombraAbs.R >= 0 ? '+' : '−') + Math.abs(r.sombraAbs.R).toFixed(1).replace('.', ',') + 'R' : '')));
     scRelatorioMostrar({ lado: null, linhas });
