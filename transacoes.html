@@ -3298,7 +3298,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v532';
+const APP_VERSAO = 'v535';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -17251,6 +17251,10 @@ function scAvaliarCore(lado, def, tk, cs, dias, dMa, rM, uMa, preco) {
         else if (am) { alvo = am.alvo; alvoTipo = 'macro'; } else { alvo = r.entrada - s * 2 * risco; alvoTipo = '2R'; }
         // M8: dentro do sino, alvo de 2R = não há estrutura nem espaço até o pico (o preço já está no valor): não cria
         if (alvoTipo === '2R' && preco >= banda.faixas[0].lo && preco <= banda.faixas[0].hi) return nega('dentro do sino sem alvo de estrutura (só sobrava 2R): o preço já está no valor, sem espaço até o pico');
+        // M19 — CONTRA O ÍMÃ DO PICO: entrada dentro do sino com o pico do lado do STOP (Short com o pico acima, Long com o pico abaixo).
+        // Dentro do sino o preço tende a ir ao pico, então o stop fica no caminho dele. Duas Shorts seguidas (12/10 23:25 e 13/10 08:23) stopadas assim.
+        if (r.entrada >= banda.faixas[0].lo && r.entrada <= banda.faixas[0].hi && s * (banda.pico - r.entrada) > 0)
+            return nega('contra o ímã do pico: a entrada está dentro do sino e o pico (' + Math.round(banda.pico).toLocaleString('pt-BR') + ') fica do lado do stop, o preço tende a ir até ele');
         if (!(s * (r.stop - r.entrada) > 0) || !(s * (r.entrada - alvo) > 0)) return nega('alvo do lado errado');
         // a ignição já passou? A partir do PREÇO DE AGORA, o que falta até o alvo tem de ser pelo menos o risco até o stop (mesma régua R/R ≥ 1 dos alvos)
         const falta = s * (preco - alvo), arrisca = s * (r.stop - preco);
@@ -17442,7 +17446,7 @@ async function scTfAcompanhar(h) {
     return melhor || (menor ? { rot: null, menor: menor.menor, med: menor.med, h } : null);
 }
 // ══ VERSÃO DO MOTOR + REGISTRO das caixas que ele cria (gravado junto com as caixas, nas preferências, ao tocar em Sair) ══
-const SC_MOTOR_VERSAO = 'M18';
+const SC_MOTOR_VERSAO = 'M19';
 function scRegLista() { if (!Array.isArray(window._scRegistro)) window._scRegistro = []; return window._scRegistro; }
 function scRegistrar(o) {
     const L = scRegLista();
@@ -17548,6 +17552,9 @@ function grLimparDescartadas() {
     const reg = new Map(L.map(r => [r.id, r])), P0 = grPosicoes();
     P0.forEach(z => { const r = reg.get(z.id); if (!r || !['alvo', 'stop', 'zero'].includes(r.st)) return;
         if (P0.some(o => o !== z && reg.has(o.id) && reg.get(o.id).lado === r.lado && (reg.get(o.id).t0 || 0) > (r.t0 || 0))) desc.add(z.id); });
+    // caixa que o GRÁFICO mostra como "Tese Inválida" / "Entrada perdida" (sem trade real) também sai — menos a que o robô ainda acompanha (armada ou em trade)
+    P0.forEach(z => { if (!z || z.tradeId || z.previa) return; const r = reg.get(z.id); if (r && (r.st === 'aguardando' || r.st === 'entrou')) return;
+        let inv = false; try { inv = grTeseInvalida(z) || grEntradaPerdida(z); } catch (e) {} if (inv) desc.add(z.id); });
     if (!desc.size) return;
     const P = grPosicoes(), selId = (typeof _edSel !== 'undefined' && _edSel && _edSel.tipo === 'ps' && P[_edSel.idx]) ? P[_edSel.idx].id : null;
     let tirou = 0;
@@ -17715,6 +17722,7 @@ async function scHistoricoMostrar() {
     scRelatorioMostrar({ lado: null, linhas });
 }
 const SC_VERSOES = [
+    ['M19', 'contra o ímã do pico: não arma caixa com a entrada dentro do sino e o pico do lado do stop (Short com o pico acima, Long com o pico abaixo)'],
     ['M18', 'gatilho na VARRIDA: candle que passa do stop mas fecha de volta a favor, com delta a favor, vale como gatilho (stop vai para além do pavio dele + 2 pavios); antes morria sem gatilho'],
     ['M10', 'stop atrás da defesa do footprint (24 h) + pavio, limitado à borda do sino'],
     ['M11', 'stop fora da varrida (2 pavios além da borda do nível) · gatilho só até meio risco da entrada · depois da ignição o stop vai pro zero'],
@@ -17916,10 +17924,18 @@ function scAutoMenu(cx, cy) {
     const ov = document.createElement('div'); ov.id = 'cv-auto-ov'; ov.style.cssText = 'position:fixed;inset:0;z-index:9700;background:transparent;'; ov.onclick = scAutoMenuFechar;
     const m = document.createElement('div'); m.id = 'cv-auto-menu';
     m.style.cssText = 'position:fixed;z-index:9701;background:#FFFFFF;border-radius:18px;box-shadow:0 8px 28px rgba(0,0,0,0.22);padding:8px 12px;font-family:-apple-system,sans-serif;font-size:14px;color:#1C1C1E;min-width:120px;';
-    m.innerHTML = (vivas.length ? vivas.map(r => '<div style="padding:4px 0;font-weight:700;display:flex;align-items:center;gap:6px;color:' + (r.lado === 'long' ? '#16A34A' : '#DC2626') + ';">'
+    // lado sem caixa viva: mostra o que aconteceu com a última caixa dele (saiu da tela) — a próxima caixa do lado substitui esta linha
+    const hm2 = t => new Date(t).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    const fins = ['long', 'short'].filter(ld => !vivas.some(r => r.lado === ld)).map(ld => scRegLista().filter(r => r.lado === ld && (!r.sym || r.sym === sym) && r.st !== 'aguardando' && r.st !== 'entrou' && r.st !== 'apagada').sort((a, b) => (b.tFim || b.t0) - (a.tFim || a.t0))[0]).filter(Boolean)
+        .filter(r => Date.now() - (r.tFim || r.t0) < 24 * 3600000);
+    const finHtml = fins.map(r => '<div style="padding:4px 0;font-weight:600;display:flex;align-items:center;gap:6px;color:#8E8E93;">'
+        + '<span style="font-size:11px;width:9px;text-align:center;flex-shrink:0;">✕</span>'
+        + '<span><span style="color:' + (r.lado === 'long' ? '#16A34A' : '#DC2626') + ';font-weight:700;">' + (r.lado === 'long' ? 'Long' : 'Short') + '</span> ' + tfC(r) + ' · E ' + Math.round(r.entReal || r.ent).toLocaleString('pt-BR')
+        + ' · ' + (SC_REG_ROT[r.st] || r.st) + (r.tFim ? ' ' + hm2(r.tFim) : '') + (ids.has(r.id) ? '' : ' · saiu da tela') + '</span></div>').join('');
+    m.innerHTML = finHtml + (vivas.length ? vivas.map(r => '<div style="padding:4px 0;font-weight:700;display:flex;align-items:center;gap:6px;color:' + (r.lado === 'long' ? '#16A34A' : '#DC2626') + ';">'
         + '<span style="width:9px;height:9px;border-radius:50%;flex-shrink:0;background:' + (r.st === 'entrou' ? '#F59E0B' : 'transparent') + ';border:1.5px solid ' + (r.st === 'entrou' ? '#F59E0B' : '#C7C7CC') + ';"></span>'
         + (r.lado === 'long' ? 'Long' : 'Short') + ' ' + tfC(r) + ' · E ' + Math.round(r.entReal || r.ent).toLocaleString('pt-BR')
-        + '<span style="font-weight:600;color:' + (r.st === 'entrou' ? '#B45309' : '#8E8E93') + ';">' + (r.st === 'entrou' ? ' · em trade' : ' · armada') + '</span></div>').join('') : '<div style="padding:4px 0;color:#8E8E93;">nenhuma caixa</div>')
+        + '<span style="font-weight:600;color:' + (r.st === 'entrou' ? '#B45309' : '#8E8E93') + ';">' + (r.st === 'entrou' ? ' · em trade' : ' · armada') + '</span></div>').join('') : (fins.length ? '' : '<div style="padding:4px 0;color:#8E8E93;">nenhuma caixa</div>'))
         + '<button type="button" id="cv-auto-bt" style="display:block;width:100%;margin-top:6px;border:none;border-radius:12px;padding:7px 10px;font-size:13px;font-weight:800;background:' + (_scPlay.on ? '#F2F2F7' : '#1C1C1E') + ';color:' + (_scPlay.on ? '#1C1C1E' : '#FFFFFF') + ';">' + (_scPlay.on ? 'Pausar' : 'Ligar') + '</button>';
     document.body.appendChild(ov); document.body.appendChild(m);
     m.querySelector('#cv-auto-bt').onclick = e => { e.stopPropagation(); scAutoMenuFechar(); if (_scPlay.on) scPlayParar(); else scPlayLigar(); try { grDrawChart(); } catch (x) {} };
@@ -18036,7 +18052,12 @@ async function scRegRaioX(reg) {
     if (antes.length) { const m = antes.reduce((a, c) => lg ? Math.min(a, c.l) : Math.max(a, c.h), lg ? Infinity : -Infinity); L.push('Antes de entrar: ' + dur(ate - reg.t0) + (reg.tEnt ? ' até entrar' : reg.tFim ? ' até encerrar' : ' até agora (ainda armada)') + ' · o preço chegou a ' + f(m) + ' (' + (s * (reg.ent - m) >= 0 ? f(Math.abs(reg.ent - m)) + ' dentro da zona' : 'faltaram ' + f(Math.abs(reg.ent - m)) + ' pra zona') + ')'); }
     if (!reg.tEnt) return L;
     // dentro do trade
-    const fim = reg.tFim || Date.now(), dentro = ini.filter(c => c.t >= (reg.tGat != null ? reg.tGat + 1 : reg.tEnt) && c.t <= fim);
+    // o encerramento é marcado no INÍCIO do candle do TF do gatilho: os candles de 5 min vão até o fim desse candle, e param no que rompeu o stop/zero
+    const bG = reg.gat ? scDefTf(reg.tfAk || '5m').blocoMs : 300000, nvX = reg.st === 'zero' ? e0 : reg.stp;
+    const fim = reg.tFim ? reg.tFim + bG : Date.now();
+    let dentro = ini.filter(c => c.t >= (reg.tGat != null ? reg.tGat + 1 : reg.tEnt) && c.t < fim);
+    let cRomp = null;
+    if (reg.tFim && (reg.st === 'stop' || reg.st === 'zero')) { const k = dentro.findIndex(c => c.t >= reg.tFim && (lg ? c.l <= nvX : c.h >= nvX)); if (k >= 0) { cRomp = dentro[k]; dentro = dentro.slice(0, k + 1); } }
     if (dentro.length) {
         let mf = -Infinity, mc = -Infinity, tMf = null;
         dentro.forEach(c => { const fv = s * ((lg ? c.h : c.l) - e0), ct = s * (e0 - (lg ? c.l : c.h)); if (fv > mf) { mf = fv; tMf = c.t; } if (ct > mc) mc = ct; });
@@ -18044,7 +18065,7 @@ async function scRegRaioX(reg) {
     }
     // como saiu
     if (reg.st === 'stop' || reg.st === 'semGatilho' || reg.st === 'zero') {
-        const nv = reg.st === 'zero' ? e0 : reg.stp, cF = ini.find(c => c.t === reg.tFim) || ini.filter(c => c.t <= reg.tFim).pop();
+        const nv = reg.st === 'zero' ? e0 : reg.stp, cF = (typeof cRomp !== 'undefined' && cRomp) || ini.filter(c => c.t >= reg.tFim && c.t < reg.tFim + (reg.gat ? scDefTf(reg.tfAk || '5m').blocoMs : 300000)).find(c => lg ? c.l <= nv : c.h >= nv) || ini.find(c => c.t === reg.tFim) || ini.filter(c => c.t <= reg.tFim).pop();
         if (cF) { const ext = lg ? cF.l : cF.h, pas = s * (nv - ext); L.push((reg.st === 'zero' ? 'Zero rompido' : 'Stop rompido') + ' por ' + f(Math.max(0, pas)) + ' (' + pc(Math.max(0, pas), nv) + ') · o candle foi até ' + f(ext) + ' e fechou em ' + f(cF.c) + (s * (cF.c - nv) > 0 ? ' — fechou de volta do lado certo: foi pavio (varrida)' : ' — fechou além: rompeu de verdade')); }
     }
     // depois de sair
