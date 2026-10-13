@@ -3305,7 +3305,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v543';
+const APP_VERSAO = 'v544';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -14007,6 +14007,67 @@ function grVpAncorarNoCandle(idxCandle) {
     grDrawChart();
     grVpGarantirDados();
 }
+function grVpAncorarTs(ts) {   // ancora o VP num instante exato (Sugerir âncora)
+    if (!(ts > 0)) return;
+    _grVpAncoraTs = ts; _grVpMapaCache = null; _grVpDadosChave = null;
+    if (!_grMostrarBarrasPA) { _grMostrarBarrasPA = true; try { localStorage.setItem('gr_mostrar_barras_pa', '1'); } catch (e) {} const btn = document.getElementById('cv-ind-barras-pa'); if (btn) btn.classList.add('active'); }
+    grVpSalvarAncora(); grDrawChart(); grVpGarantirDados();
+}
+// ══ SUGERIR ÂNCORA DO VP ══════════════════════════════════════════════════════════════════════════════════════
+// No TF MACRO do robô, sem número de dias fixo:
+//  1) PERNAS: cada pivô (2 candles de cada lado) abre uma perna até hoje; ela está VIVA se a origem nunca foi rompida e a correção depois
+//     do extremo não passou de 61,8% (Fibonacci). A perna dominante é a viva de MAIOR amplitude.
+//  2) IGNIÇÃO: dentro da perna, o candle NA DIREÇÃO dela com o maior tamanho × volume, ainda válido (nenhum fechamento depois além da
+//     ponta oposta dele: abaixo da mínima numa alta, acima da máxima numa baixa).
+//  3) REFINO: dentro da ignição, o candle do MICRO do robô de maior volume = instante da âncora.
+async function scSugerirAncora() {
+    const defM = scDefTf(_scCfg.macro), cs0 = await scCandles(defM, 400), cs = cs0.map(c => ({ t: c.t, o: +c.o, h: +c.h, l: +c.l, c: +c.c, v: +c.v || 0 }));
+    const n = cs.length; if (n < 10) return { erro: 'Poucos candles de ' + defM.rot + '.' };
+    // pivôs (mesma regra do robô: extremo com 2 candles de cada lado) e, para cada um, a perna que nasce dele até hoje:
+    // VIVA se a origem nunca foi rompida e a correção depois do extremo da perna não passou de 61,8% (Fibonacci). Fica a perna viva de MAIOR amplitude.
+    const pernas = [];
+    for (let i = 2; i < n - 2; i++) {
+        const c = cs[i], viz = [cs[i - 2], cs[i - 1], cs[i + 1], cs[i + 2]];
+        if (viz.every(v => c.l < v.l)) {   // fundo → perna de alta
+            let rompeu = false, top = -Infinity, iTop = i; for (let j = i + 1; j < n; j++) { if (cs[j].l < c.l) { rompeu = true; break; } if (cs[j].h > top) { top = cs[j].h; iTop = j; } }
+            if (!rompeu && top > c.l) { let mn = Infinity; for (let j = iTop + 1; j < n; j++) mn = Math.min(mn, cs[j].l); const amp = top - c.l, retr = isFinite(mn) ? (top - mn) / amp : 0; if (retr < 0.618) pernas.push({ lado: 'alta', i0: i, amp, retr }); }
+        }
+        if (viz.every(v => c.h > v.h)) {   // topo → perna de baixa
+            let rompeu = false, bot = Infinity, iBot = i; for (let j = i + 1; j < n; j++) { if (cs[j].h > c.h) { rompeu = true; break; } if (cs[j].l < bot) { bot = cs[j].l; iBot = j; } }
+            if (!rompeu && bot < c.h) { let mx = -Infinity; for (let j = iBot + 1; j < n; j++) mx = Math.max(mx, cs[j].h); const amp = c.h - bot, retr = isFinite(mx) ? (mx - bot) / amp : 0; if (retr < 0.618) pernas.push({ lado: 'baixa', i0: i, amp, retr }); }
+        }
+    }
+    if (!pernas.length) return { erro: 'Nenhuma perna viva no ' + defM.rot + ' (todas corrigiram mais de 61,8% ou tiveram a origem rompida).' };
+    pernas.sort((a, b) => b.amp - a.amp);
+    const P = Object.assign({}, pernas[0], { outra: (pernas.find(q => q.lado !== pernas[0].lado) || {}).lado || '—', ampO: (pernas.find(q => q.lado !== pernas[0].lado) || {}).amp || 0 });
+    const alta = P.lado === 'alta';
+    let best = -1, bs = -1;
+    for (let i = P.i0; i < n - 1; i++) {   // candles fechados da perna
+        const c = cs[i]; if (alta ? !(c.c > c.o) : !(c.c < c.o)) continue;
+        let valido = true; for (let j = i + 1; j < n; j++) if (alta ? cs[j].c < c.l : cs[j].c > c.h) { valido = false; break; }
+        if (!valido) continue;
+        const sc = (c.h - c.l) * c.v; if (sc > bs) { bs = sc; best = i; }
+    }
+    if (best < 0) return { erro: 'Nenhuma ignição válida na perna de ' + P.lado + ' (todas já foram invalidadas).' };
+    const ig = cs[best];
+    let tAnc = ig.t, refino = null;
+    try { const dMi = scDefTf(_scCfg.micro); if (dMi.blocoMs < defM.blocoMs) { const cm = (await scCandles(dMi, (Date.now() - ig.t) / 86400000 + 2)).filter(k => k.t >= ig.t && k.t < ig.t + defM.blocoMs);
+        if (cm.length) { const k = cm.reduce((a, b) => (+b.v > +a.v ? b : a)); tAnc = k.t; refino = { rot: dMi.rot, t: k.t, v: +k.v }; } } } catch (e) {}
+    return { lado: P.lado, origem: cs[P.i0], amp: P.amp, retr: P.retr, outra: P.outra, ampO: P.ampO, ig, igPct: (ig.c - ig.o) / ig.o * 100, tAnc, refino, tf: defM.rot };
+}
+async function scSugerirAncoraMostrar() {
+    try { grAreaToast('Procurando a ignição…', '#2962FF'); } catch (e) {}
+    let r; try { r = await scSugerirAncora(); } catch (e) { r = { erro: e.message || String(e) }; }
+    const f = x => Math.round(x).toLocaleString('pt-BR'), dd = t => new Date(t).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' }), dh = t => new Date(t).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const fk = v => v >= 1000 ? (v / 1000).toFixed(1).replace('.', ',') + 'k' : String(Math.round(v));
+    const L = r.erro ? ['SUGERIR ÂNCORA DO VP', r.erro] : ['SUGERIR ÂNCORA DO VP · TF ' + r.tf,
+        'Perna dominante: ' + r.lado.toUpperCase() + ' desde ' + dd(r.origem.t) + ' (' + (r.lado === 'alta' ? 'fundo ' + f(r.origem.l) : 'topo ' + f(r.origem.h)) + ') · amplitude ' + f(r.amp) + ' (correção depois do extremo: ' + Math.round(r.retr * 100) + '%; outra perna viva: ' + r.outra + ' de ' + f(r.ampO) + ')',
+        'Ignição: candle de ' + dd(r.ig.t) + ' · ' + (r.igPct >= 0 ? '+' : '') + r.igPct.toFixed(2).replace('.', ',') + '% · volume ' + fk(r.ig.v) + ' · ainda válida (nenhum fechamento ' + (r.lado === 'alta' ? 'abaixo de ' + f(r.ig.l) : 'acima de ' + f(r.ig.h)) + ')',
+        r.refino ? 'Refino no ' + r.refino.rot + ': candle de maior volume dentro da ignição = ' + dh(r.refino.t) : 'Sem refino no micro (âncora no início do candle)',
+        'Âncora sugerida: ' + dh(r.tAnc) + (_grVpAncoraTs > 0 ? ' · a atual é ' + dh(_grVpAncoraTs) : '')];
+    scRelatorioMostrar({ lado: null, linhas: L });
+    if (!r.erro) setTimeout(() => { try { if (confirm('Ancorar o VP em ' + dh(r.tAnc) + '?')) { grVpAncorarTs(r.tAnc); try { grAreaToast('VP ancorado em ' + dh(r.tAnc), '#16A34A'); } catch (e) {} } } catch (e) {} }, 400);
+}
 function grVpRemover() {
     if (_grVpAncoraTs == null) { alert('O Volume Profile já está sem âncora.'); return; }
     _grVpAncoraTs = null; _grVpMapaCache = null;
@@ -18323,6 +18384,7 @@ function scRenderPopup(menu) {
         + '<div><b>Value Area</b> · âncora ' + dh(SCX.vaAncoraTs) + '</div>'
         + '<div><b>VWAP</b> · ' + (vw.length ? vw.map(a => dh(a.ts)).join(' · ') : 'sem âncora') + '</div>'
         + '<div style="color:#3A3A3C;margin-top:4px;">' + scValoresSino() + '</div>'
+        + '<button type="button" onclick="scSugerirAncoraMostrar()" style="width:100%;margin-top:8px;border:none;border-radius:10px;padding:10px;font-size:13.5px;font-weight:800;background:#1C1C1E;color:#FFFFFF;">Sugerir âncora do VP</button>'
         + '<div style="font-size:11.5px;color:#8E8E93;margin-top:4px;">As âncoras se marcam no gráfico (menu do candle). O robô usa a do VP para o sino e para as réguas.</div></div>';
     // 3) Operacional
     const op = _scCalculando ? '<div style="font-size:12.5px;color:#8E8E93;padding:10px 0;">Calculando…</div>'
