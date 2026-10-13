@@ -578,7 +578,7 @@ function grDecimaisPreco() {
     if (ref >= 0.01) return 6;
     return 8;
 }
-const fmtX   = v => { const n = parseFloat(v || 0); return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 5 }); };   // preço exato em pt-BR: mínimo 2 casas, até 5, sem outros zeros à direita
+const fmtX   = v => { const n = parseFloat(v || 0), d = Math.max(2, grDecimaisPreco()); return n.toLocaleString('pt-BR', { minimumFractionDigits: d, maximumFractionDigits: d }); };   // preço das etiquetas da caixa em pt-BR: casas pela escala do ativo (BTC/ETH: 2; ativos baratos: mais), sempre o mesmo número de casas
 const fmtN   = v => { const d = grDecimaisPreco(); return parseFloat(v||0).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d}); };
 // Quantidade de BTC no padrão brasileiro (vírgula decimal, ponto de milhar), sempre 2 casas —
 // evita a ambiguidade de "44.470" parecendo "44 mil" quando na verdade é 44,47 BTC.
@@ -3298,7 +3298,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v524';
+const APP_VERSAO = 'v526';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -17519,7 +17519,7 @@ function scRegSincCaixas() {
     // Só depois que o ambiente carregou e com 20 s de folga (pra não confundir 'ainda carregando' com 'apagada').
     if (typeof _grAmbienteCarregado !== 'undefined' && _grAmbienteCarregado && performance.now() > 20000) {
         const sym = grBinSymbolAtual();
-        L.forEach(r => { if (r.st === 'aguardando' && (!r.sym || r.sym === sym) && !mapa.has(r.id)) { r.st = 'apagada'; r.tFim = Date.now(); mudou = true; } });
+        L.forEach(r => { if (r.st === 'aguardando' && !r._reav && (!r.sym || r.sym === sym) && !mapa.has(r.id)) { r.st = 'apagada'; r.tFim = Date.now(); mudou = true; } });
     }
     L.forEach(r => {
         if (r.st !== 'aguardando' && r.st !== 'entrou') return;
@@ -17531,7 +17531,20 @@ function scRegSincCaixas() {
         mudou = true;
     });
     if (mudou) scRegGravarServidor();
+    try { grLimparDescartadas(); } catch (e) {}
     return mudou;
+}
+// LIMPEZA DA TELA: caixa do robô que terminou SEM ENTRAR (sem gatilho, entrada perdida, expirou, tese inválida) sai do gráfico sozinha.
+// O histórico dela fica (Central de Relatórios). Caixas armadas, em trade e as que entraram e terminaram continuam na tela.
+const GR_ST_DESCARTE = ['semGatilho', 'perdida', 'expirou', 'desfeita'];
+function grLimparDescartadas() {
+    if (typeof _grAmbienteCarregado === 'undefined' || !_grAmbienteCarregado) return;
+    const L = window._scRegistro; if (!Array.isArray(L) || !L.length) return;
+    const desc = new Set(L.filter(r => GR_ST_DESCARTE.indexOf(r.st) >= 0).map(r => r.id)); if (!desc.size) return;
+    const P = grPosicoes(), selId = (typeof _edSel !== 'undefined' && _edSel && _edSel.tipo === 'ps' && P[_edSel.idx]) ? P[_edSel.idx].id : null;
+    let tirou = 0;
+    for (let k = P.length - 1; k >= 0; k--) { const z = P[k]; if (z && !z.tradeId && desc.has(z.id) && z.id !== selId) { P.splice(k, 1); tirou++; } }
+    if (tirou) { if (selId != null) { const q = P.findIndex(z => z.id === selId); if (q >= 0 && _edSel) _edSel.idx = q; } grPosSalvar(); try { grDrawChart(); } catch (e) {} }
 }
 // A cada cotação (no máx. 1 vez por segundo): marca entrou / alvo / stop / entrada perdida / expirou das caixas abertas deste ativo e grava na hora.
 let _scRegChecTs = 0;
@@ -17634,7 +17647,7 @@ async function scRegAtualizar() {
     try { scRegSincCaixas(); } catch (e) {}
     const fant = r => r.st === 'desfeita' && r.fant && (r.fant.st === 'aguardando' || r.fant.st === 'entrou');
     if (!window._scPavio) { try { window._scPavio = await scPavioTf(SC_ORDEM[0]); } catch (e) {} }
-    scRegLista().forEach(r => { if (r.st === 'semGatilho' && r.gat && !r.revM18 && r.tFim && Date.now() - r.tFim < 2 * 86400000) { r.revM18 = true; r.st = 'aguardando'; r.tFim = null; } });   // M18: reavalia uma vez as 'sem gatilho' recentes com a regra da varrida
+    scRegLista().forEach(r => { if (r.st === 'semGatilho' && r.gat && !r.revM18 && r.tFim && Date.now() - r.tFim < 2 * 86400000 && r.tFim < 1791889200000) { r.revM18 = true; r._reav = true; r.st = 'aguardando'; r.tFim = null; } });   // M18: reavalia uma vez as 'sem gatilho' recentes com a regra da varrida
     const abertos = scRegLista().filter(r => r.st === 'aguardando' || r.st === 'entrou' || fant(r)); if (!abertos.length) return false;
     let mudou = false;
     const cache = {}, pega = async (sym, iv) => { const k = sym + '|' + iv; if (!cache[k]) { try { cache[k] = (await grBuscarKlines(sym, iv, 1000, null)).map(grMapearKline); } catch (e) { cache[k] = []; } } return cache[k]; };
