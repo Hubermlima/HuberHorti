@@ -3305,7 +3305,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v553';
+const APP_VERSAO = 'v554';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -17288,8 +17288,27 @@ async function scStatusCalcular(pz) {
     const R = stop != null && px && Math.abs(stop - ent) > 0 ? s * (ent - px) / Math.abs(stop - ent) : null;
     let sinal = null;
     try { const regS = (window._scRegistro || []).find(r => r.id === pz.id); if ((R != null && R >= 1) || (regS && regS.ign)) sinal = await scSinal1R(pz, px, regS, fx); } catch (e) {}
-    return { t: Date.now(), nivel: Math.max.apply(null, itens.map(x => x.n)), itens, R, sinal };
+    return { t: Date.now(), nivel: Math.max.apply(null, itens.map(x => x.n)), itens, R, sinal, score: sc };
 }
+// FOTOS DO STATUS: a cada 30 min, para cada caixa do robô EM TRADE neste ativo, guarda no registro um resumo do Status (nível, R, Score,
+// sinal e os avisos de atenção/perigo). Aparecem no relatório da caixa. Até 96 fotos (2 dias).
+async function scFotosStatus() {
+    if (window._scFotoRod) return; window._scFotoRod = true;
+    try {
+        const sym = grBinSymbolAtual(), L = scRegLista().filter(r => r.st === 'entrou' && (!r.sym || r.sym === sym)); let mud = false;
+        for (const r of L) {
+            if (!Array.isArray(r.fotos)) r.fotos = [];
+            const ult = r.fotos[r.fotos.length - 1]; if (ult && Date.now() - ult.t < 30 * 60000) continue;
+            const pz = grPosicoes().find(z => z.id === r.id); if (!pz || !scStatusElegivel(pz)) continue;
+            let st = null; try { st = await scStatusCalcular(pz); } catch (e) {} if (!st || st.encerrada || st.armada) continue;
+            r.fotos.push({ t: Date.now(), niv: st.nivel, R: st.R != null ? Math.round(st.R * 10) / 10 : null, sc: st.score ? st.score.n + '/' + st.score.total : null, si: st.sinal ? st.sinal.ico + ' ' + st.sinal.rot : null, at: st.itens.filter(i => i.n > 0).map(i => i.txt) });
+            if (r.fotos.length > 96) r.fotos.splice(0, r.fotos.length - 96);
+            mud = true;
+        }
+        if (mud) { try { scRegGravarServidor(); } catch (e) {} }
+    } catch (e) {} finally { window._scFotoRod = false; }
+}
+if (!window._scFotoTimer) window._scFotoTimer = setInterval(() => { try { scFotosStatus(); } catch (e) {} }, 60000);
 // SINAL EM +1R (o que fazer com o stop): 🔴 proteger no zero (absorção contra num dos 2 últimos candles de 5 min fechados, ou o último
 // candle fechou com delta forte contra) · 🟡 atenção (obstáculo a menos de 0,5R à frente: EMA ainda não rompida, POC/VAH/VAL do VP, zona marcada)
 // · 🟢 deixar correr. EMA já rompida (ficou para trás) vira apoio, não obstáculo. O 1º sinal visto fica no registro da caixa (para conferir depois).
@@ -18227,7 +18246,15 @@ async function scRelatorioCaixa(pz) {
         else if (st.encerrada) base.push('Status: Encerrada · ' + scStatusEncTxt(st));
         else base.push('Status: ' + SC_STATUS_ROT[st.nivel] + (st.R != null ? ' · resultado ' + (st.R >= 0 ? '+' : '−') + Math.abs(st.R).toFixed(1).replace('.', ',') + 'R' : ''));
         st.itens.forEach(it => base.push('• ' + ['ok', 'atenção', 'perigo'][it.n] + ': ' + it.txt));
+        if (st.sinal) base.push('Sinal agora: ' + st.sinal.ico + ' ' + st.sinal.rot + ' · ' + st.sinal.txt);
+        if (st.score && st.score.itens) { base.push('Score agora ' + st.score.n + '/' + st.score.total + (pz.score ? ' (na criação ' + pz.score.n + ')' : '') + ':'); st.score.itens.forEach(it => base.push((it.ok ? '✓ ' : '✗ ') + it.nome + (it.det ? ': ' + it.det : '') + ' [' + it.pts + ']')); }
     }
+    { const tx = cvPosTempoLinha(pz, st).replace(/<[^>]+>/g, '').replace(/Armada em/, '\nArmada em').replace(/(Em trade desde|Entrou em)/, '\n$1').split('\n').map(x => x.trim()).filter(Boolean); tx.forEach(l => base.push('Tempo · ' + l)); }
+    { const rf = scRegLista().find(r => r.id === pz.id);
+      if (rf && Array.isArray(rf.fotos) && rf.fotos.length) {
+          base.push('— FOTOS DO STATUS (a cada 30 min em trade) —');
+          rf.fotos.forEach(ft => base.push(new Date(ft.t).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) + ' · ' + (SC_STATUS_ROT[ft.niv] || '?') + (ft.R != null ? ' · ' + (ft.R >= 0 ? '+' : '−') + Math.abs(ft.R).toFixed(1).replace('.', ',') + 'R' : '') + (ft.sc != null ? ' · Score ' + ft.sc : '') + (ft.si ? ' · ' + ft.si : '') + (ft.at && ft.at.length ? ' · ' + ft.at.join(' · ') : '')));
+      } }
     const reg = scRegLista().find(r => r.id === pz.id);
     if (reg && reg.ref) base.push('DIREÇÃO ASSISTIDA (refinada por você): o histórico segue E ' + f(reg.ent) + ' S ' + f(reg.stp) + ' A ' + f(reg.alvo) + ' (o motor tinha posto E ' + f(reg.entOrig) + ' S ' + f(reg.stpOrig) + ' A ' + f(reg.alvoOrig) + ') · a revisão automática não mexe nela');
     if (reg) base.push('Histórico: ' + SC_REG_ROT[reg.st] + (reg.ign ? ' · IGNIÇÃO ✓ (+1R)' : '') + (reg.tFim ? ' ' + dh(reg.tFim) : reg.tEnt ? ' ' + dh(reg.tEnt) : '') + (reg.entReal ? ' · gatilho em ' + f(reg.entReal) : ''));
