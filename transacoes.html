@@ -3303,7 +3303,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v567';
+const APP_VERSAO = 'v568';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -17326,6 +17326,16 @@ function scScoreDe(conf) {
 }
 // AMBIENTE (só leitura, não filtra): (1) faca caindo = aproximação dos últimos 3 candles do micro até a entrada, no 3º quartil das aproximações da própria janela;
 // (2) congestão = eficiência dos últimos 6 candles (deslocamento líquido ÷ percurso) igual ou abaixo da mediana da janela; (a leitura de nível/suporte/resistência saiu do ambiente).
+// M22 — FACA NO 5 MIN (bloqueio): não arma Long enquanto os 3 últimos candles FECHADOS de 5 min caíram mais rápido que 75% das quedas de
+// 3 candles das últimas ~16 h (200 candles); Short = espelho (foguete subindo). Mesma régua da "Faca caindo", só que no TF do gatilho. Libera sozinha quando freia.
+async function scFaca5m(lado) {
+    try {
+        const cs = (await scKlines(grBinSymbolAtual(), '5m', 200)).map(grMapearKline).slice(0, -1), n = cs.length; if (n < 30) return null;
+        const s = lado === 'short' ? 1 : -1, apr = []; for (let i = 3; i < n; i++) apr.push(s * (cs[i].c - cs[i - 3].c));
+        const pos = apr.filter(v => v > 0).sort((a, b) => a - b), q3 = pos.length >= 4 ? pos[Math.floor(pos.length * 0.75)] : Infinity, ult = apr[apr.length - 1];
+        return { faca: ult > 0 && ult >= q3, ult, q3 };
+    } catch (e) { return null; }
+}
 function scAmbiente(lado, esc) {
     const s = lado === 'short' ? 1 : -1, r = esc.r, cs = esc.cs, n = cs.length, out = { faca: false, cong: false, er: null };
     const C = i => Number(cs[i].c), tr = i => Math.max(Number(cs[i].h) - Number(cs[i].l), Math.abs(Number(cs[i].h) - C(i - 1)), Math.abs(Number(cs[i].l) - C(i - 1)));
@@ -17605,7 +17615,7 @@ async function scTfAcompanhar(h) {
     return melhor || (menor ? { rot: null, menor: menor.menor, med: menor.med, h } : null);
 }
 // ══ VERSÃO DO MOTOR + REGISTRO das caixas que ele cria (gravado junto com as caixas, nas preferências, ao tocar em Sair) ══
-const SC_MOTOR_VERSAO = 'M21';
+const SC_MOTOR_VERSAO = 'M22';
 function scRegLista() { if (!Array.isArray(window._scRegistro)) window._scRegistro = []; return window._scRegistro; }
 function scRegistrar(o) {
     const L = scRegLista();
@@ -17886,6 +17896,7 @@ async function scHistoricoMostrar() {
     scRelatorioMostrar({ lado: null, linhas });
 }
 const SC_VERSOES = [
+    ['M22', 'FACA NO 5 MIN = bloqueio: não arma Long enquanto os 3 últimos candles de 5 min caíram mais rápido que 75% das quedas das últimas ~16 h (Short: foguete subindo); antes a "Faca caindo" só tirava 1 ponto e olhava o 4h'],
     ['M21', 'ZERO = BREAKEVEN de verdade: em +1R o stop vai para a entrada + as taxas de ida e volta (zero no bolso), não mais para o preço de entrada; toda caixa mostra a faixa PE↔BE em cinza claro'],
     ['M20', 'entrada no TOQUE, como na corretora: o pavio encostou na entrada = em trade (antes esperava o fechamento a favor); stop continua no pavio'],
     ['M19', 'contra o ímã do pico: não arma caixa com a entrada dentro do sino e o pico do lado do stop (Short com o pico acima, Long com o pico abaixo)'],
@@ -17949,6 +17960,7 @@ async function scMotor() {
         // lado que JÁ tem caixa do motor armada ou em trade (neste ativo) não é avaliado de novo: o botão não duplica (igual ao automático)
         const ocup = {}; { const sym0 = grBinSymbolAtual(), ids0 = new Set(grPosicoes().map(z => z.id));
             ['short', 'long'].forEach(l => { const r0 = scRegLista().find(r => (r.lado === l || _scCfg.doisTrades !== true) && (r.st === 'aguardando' || r.st === 'entrou') && (!r.sym || r.sym === sym0) && !r.semTela); if (r0) ocup[l] = 'já tem caixa ' + (r0.st === 'entrou' ? 'em trade' : 'armada') + ' (' + (r0.tfAk || '5m') + ', criada ' + new Date(r0.t0).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) + ')'; }); }
+        for (const l of ['short', 'long']) { if (!ocup[l]) { const fk = await scFaca5m(l); if (fk && fk.faca) ocup[l] = 'bloqueado: ' + (l === 'long' ? 'faca caindo' : 'foguete subindo') + ' no 5 min'; } }
         a = ocup.short ? { msg: ocup.short } : await scRodar('short', { silencioso: true, soAvaliar: true });
         b = ocup.long ? { msg: ocup.long } : await scRodar('long', { silencioso: true, soAvaliar: true });
         const ns = a && a.aval ? a.aval.nota : null, nl = b && b.aval ? b.aval.nota : null;
@@ -18138,6 +18150,7 @@ async function scPlayTick() {
         for (const lado of ['short', 'long']) {
             const nm = lado === 'short' ? 'Short' : 'Long', ja = scRegLista().find(r => (r.lado === lado || _scCfg.doisTrades !== true) && (r.st === 'aguardando' || r.st === 'entrou') && (!r.sym || r.sym === sym) && !r.semTela);   // switch desligado: UMA caixa por vez (qualquer lado)
             if (ja) { partes.push((lado === 'short' ? 'S' : 'L') + '='); log.push(nm + ': já tem caixa ' + (ja.st === 'entrou' ? 'em trade' : 'armada') + ' (' + (ja.tfAk || '5m') + ', criada ' + new Date(ja.t0).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) + ')'); continue; }
+            { const fk = await scFaca5m(lado); if (fk && fk.faca) { partes.push((lado === 'short' ? 'S' : 'L') + '×'); log.push(nm + ': bloqueado, ' + (lado === 'long' ? 'faca caindo' : 'foguete subindo') + ' no 5 min (' + Math.round(fk.ult) + ' em 3 candles, limite ' + Math.round(fk.q3) + ')'); continue; } }
             const n0 = grPosicoes().length, ult0 = _scUltimo, r = await scRodar(lado, { silencioso: true, modo: 'auto' });
             if (grPosicoes().length === n0) _scUltimo = ult0;   // sem caixa nova: a "última análise" continua sendo a sua (o motivo fica no Registro)
             if (r && r.ocupado) { ocupado = true; log.push(nm + ': motor ocupado com outra análise, tenta de novo'); break; }
