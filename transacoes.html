@@ -3303,7 +3303,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v570';
+const APP_VERSAO = 'v573';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -5236,7 +5236,7 @@ function cvPosFormAbrir(idx) {
                     if (pos(r) && perda > marg * r / 100 * 1.0001) t += '<br><span style="color:#E08A00;">Acima do risco planejado (' + f(marg * r / 100, 2) + ' USDT).</span>';
                     L.push(t);
                     {
-                        const a = num('pf-alvo'), rw = (a - est.pm) * sgn, rk = (est.pm - st) * sgn;
+                        const a = num('pf-alvo'), beF = grBreakeven(est.pm, sgn > 0 ? 'long' : 'short', grTaxaLado(null)) || est.pm, rw = (a - beF) * sgn, rk = (beF - st) * sgn;
                         if (pos(a) && rw > 0 && rk > 0) L.push('R/R: <b>' + f(rw / rk, 1) + ' para 1</b>');
                     }
                     g('pf-risco-real').value = cvMascaraDeNumero(perda / marg * 100);
@@ -5299,7 +5299,7 @@ function cvPosFormAbrir(idx) {
             gm('am-v').value = q != null && pos(it.preco) ? f2(q * it.preco) : '';
             gm('am-r').value = q != null && pos(it.preco) ? sinal(q * (it.preco - r) * sgn) : '';
             if (tab === 'alvo') {
-                const sf = L.stop[farIdx(L.stop, 'stop')].preco, risco = pos(sf) ? (r - sf) * sgn : 0, ganho = pos(it.preco) ? (it.preco - r) * sgn : 0;
+                const sf = L.stop[farIdx(L.stop, 'stop')].preco, rB = grBreakeven(r, sgn > 0 ? 'long' : 'short', grTaxaLado(null)) || r, risco = pos(sf) ? (rB - sf) * sgn : 0, ganho = pos(it.preco) ? (it.preco - rB) * sgn : 0;   // R/R do BE
                 gm('am-rr').value = risco > 0 && ganho > 0 ? (ganho / risco).toFixed(1).replace('.', ',') : '';
             }
             const tot = L[tab].reduce((a, x) => a + (x.pct || 0), 0);
@@ -7172,19 +7172,21 @@ if (fibsParaDesenhar.length > 0) {
                 }
                 if (!pz.previa) {
                     let rr = '';
-                    { const ref = pz.pm > 0 ? pz.pm : pz.entrada, sg = pz.alvo > pz.stop ? 1 : -1, rw = (pz.alvo - ref) * sg, rk = (ref - pz.stop) * sg; if (tA && tS && rw > 0 && rk > 0) rr = ' · R/R ' + (rw / rk).toFixed(1).replace('.', ','); }
+                    // TUDO MEDIDO PELO BREAKEVEN (PE/PM + taxas de ida e volta): % do alvo/stop, R/R e $ = o que fica no bolso
+                    const beL = (() => { const r0 = pz.pm > 0 ? pz.pm : pz.entrada, b = grBreakeven(r0, pz.lado, grTaxaLado(pz)); return b > 0 ? b : r0; })();
+                    { const ref = beL, sg = pz.alvo > pz.stop ? 1 : -1, rw = (pz.alvo - ref) * sg, rk = (ref - pz.stop) * sg; if (tA && tS && rw > 0 && rk > 0) rr = ' · R/R ' + (rw / rk).toFixed(1).replace('.', ','); }
                     // Em Análise: simulação com margem fixa e a alavancagem sugerida (tudo recalculado a cada desenho)
                     let ana = null;
                     if (cz.st === 'analise' && !teseInv && tS && pz.entrada > 0 && pz.stop !== pz.entrada) {
                         const rk = pz.simRisco > 0 ? pz.simRisco : grPadraoSim().risco, mg = pz.simAporte > 0 ? pz.simAporte : grPadraoSim().aporte, dist = Math.abs(pz.entrada - pz.stop) / pz.entrada * 100, al = Math.max(1, Math.floor(rk / dist)), nt = mg * al, sgn = pz.stop < pz.entrada ? 1 : -1;
-                        ana = { al, nt, lucro: tA ? nt * (pz.alvo - pz.entrada) / pz.entrada * sgn : null, perda: nt * (pz.stop - pz.entrada) / pz.entrada * sgn };
+                        ana = { al, nt, lucro: tA ? nt * (pz.alvo - beL) / pz.entrada * sgn : null, perda: nt * (pz.stop - beL) / pz.entrada * sgn };
                     }
                     const fu = v => (v >= 0 ? '+' : '−') + Math.abs(Math.round(v)).toLocaleString('pt-BR');
                     // dois lucros em $: do preço de entrada (PM, se já ativa) até a COTAÇÃO e até o ALVO. Em análise usa a posição simulada (Pos); ativa usa a quantidade lançada.
                     const qL = (pz.pm > 0 && pz.qty > 0) ? pz.qty : (ana && pz.entrada > 0 ? ana.nt / pz.entrada : null), sgL = pz.lado === 'short' ? -1 : 1;
-                    const lucAlvo = (qL != null && tA) ? qL * (pz.alvo - pvt) * sgL : null, lucCot = (qL != null && _precoAtual > 0 && (pz.pm > 0 || (window._scRegistro || []).some(r => r.id === pz.id && r.st === 'entrou'))) ? qL * (_precoAtual - pvt) * sgL : null;   // resultado na cotação: só com o trade aberto (PM lançado ou o gatilho do motor já entrou)
-                    if (tA && !inf) rot('Alvo ' + fmtX(pz.alvo) + ' (' + pc((pz.alvo - pvt) / pvt) + ')' + rr + (lucAlvo != null ? ' · ' + fu(lucAlvo) : ''), yA, cz.st === 'analise' ? '#26A69A' : cz.ca, yA <= yE);
-                    if (tS && !inf) rot('Stop ' + fmtX(pz.stop) + ' (' + pc((pz.stop - pvt) / pvt) + ')' + (ana ? ' · ' + fu(ana.perda) : ''), yS, cz.st === 'analise' ? '#EF5350' : cz.cs, yS < yE);
+                    const lucAlvo = (qL != null && tA) ? qL * (pz.alvo - beL) * sgL : null, lucCot = (qL != null && _precoAtual > 0 && (pz.pm > 0 || (window._scRegistro || []).some(r => r.id === pz.id && r.st === 'entrou'))) ? qL * (_precoAtual - beL) * sgL : null;   // resultado na cotação: só com o trade aberto (PM lançado ou o gatilho do motor já entrou)
+                    if (tA && !inf) rot('Alvo ' + fmtX(pz.alvo) + ' (' + pc((pz.alvo - beL) / beL) + ')' + rr + (lucAlvo != null ? ' · ' + fu(lucAlvo) : ''), yA, cz.st === 'analise' ? '#26A69A' : cz.ca, yA <= yE);
+                    if (tS && !inf) rot('Stop ' + fmtX(pz.stop) + ' (' + pc((pz.stop - beL) / beL) + ')' + (ana ? ' · ' + fu(ana.perda) : ''), yS, cz.st === 'analise' ? '#EF5350' : cz.cs, yS < yE);
                     const atv = !ana && cz.st !== 'analise' && pz.pm > 0 && pz.qty > 0 && !teseInv;   // caixa ativa: Alv do trade (banco) e Pos = quantidade × PM
                     if ((ana || atv) && !inf) {   // alavancagem e posição: texto preto no meio da zona do alvo (a menos congestionada)
                         const alvA = atv && pz.cfg && pz.cfg.alav > 0 ? parseFloat(pz.cfg.alav) : null;
@@ -12826,7 +12828,7 @@ function odCardAtivo(t, o) {
     }
     if (sls.length && tps.length) {
         const tpL = tps.reduce((m, a) => (Math.abs(a.preco - pm) > Math.abs(m.preco - pm) ? a : m)), slL = sls.reduce((m, a) => (Math.abs(a.preco - pm) > Math.abs(m.preco - pm) ? a : m));
-        const rw = (tpL.preco - pm) * sg, rk = (pm - slL.preco) * sg;
+        const beC = grBreakeven(pm, sg > 0 ? 'long' : 'short', grTaxaLado(null)) || pm, rw = (tpL.preco - beC) * sg, rk = (beC - slL.preco) * sg;
         if (rw > 0 && rk > 0) itens.push(par('R/R', f2(rw / rk, 1) + ' para 1'));
     }
     if (sls.length) {
@@ -12890,7 +12892,7 @@ function odRenderTradeRow(t) {
             const aa = al.filter(a => a.tipo !== 'stop'), ss = al.filter(a => a.tipo === 'stop');
             if (st === 'ativo' && pm > 0 && aa.length && ss.length) {
                 const alvoLonge = aa.reduce((m, a) => (Math.abs(a.preco - pm) > Math.abs(m.preco - pm) ? a : m)), stopLonge = ss.reduce((m, a) => (Math.abs(a.preco - pm) > Math.abs(m.preco - pm) ? a : m));
-                const rw = (alvoLonge.preco - pm) * sg, rk = (pm - stopLonge.preco) * sg;
+                const beC = grBreakeven(pm, sg > 0 ? 'long' : 'short', grTaxaLado(null)) || pm, rw = (alvoLonge.preco - beC) * sg, rk = (beC - stopLonge.preco) * sg;
                 if (rw > 0 && rk > 0) extra += '<div style="font-size:12px;color:#6C6C70;margin-top:4px;">R/R <b>' + f2(rw / rk, 1) + ' para 1</b></div>';
             }
         }
@@ -12915,7 +12917,7 @@ function odRenderAnaliseRow(it) {
     const pz = it.pz;
     const lado = pz.lado === 'short' ? 'short' : 'long', sg = lado === 'short' ? -1 : 1;
     const pc = v => (v >= 0 ? '+' : '') + (v * 100).toFixed(2).replace('.', ',') + '%';
-    const rw = (pz.alvo - pz.entrada) * sg, rk = (pz.entrada - pz.stop) * sg;
+    const beA = grBreakeven(pz.entrada, lado, grTaxaLado(pz)) || pz.entrada, rw = (pz.alvo - beA) * sg, rk = (beA - pz.stop) * sg;   // R/R do BE
     const rr = rw > 0 && rk > 0 ? ' · R/R ' + (rw / rk).toFixed(1).replace('.', ',') : '';
     return '<div class="od-trade-row" style="padding:12px 4px;border-bottom:1px solid #F2F2F7;">' +
         '<div style="display:flex;align-items:center;gap:8px;"><span style="width:10px;height:10px;border-radius:3px;background:#8E8E93;flex-shrink:0;"></span>' +
@@ -17156,8 +17158,8 @@ function scDesfechoCaixa(pz) {
     const s = pz.lado === 'short' ? 1 : -1, ent = pz.entrada, risco = Math.abs(pz.stop - ent);
     const reg = (window._scRegistro || []).find(r => r.id === pz.id);
     const eR = reg && reg.entReal ? reg.entReal : ent, rR = Math.abs(pz.stop - eR);   // com gatilho: o R é medido da entrada real
-    const rB = reg && reg.r0 > 0 ? reg.r0 : rR;   // R medido pelo risco ORIGINAL (stop arrastado para o lucro não vira −1R)
-    const R = st => st === 'alvo' && rB > 0 ? s * (eR - pz.alvo) / rB : st === 'stop' ? (rB > 0 && reg ? s * (eR - reg.stp) / rB : -1) : null;
+    const kb = reg ? scRegRiscoBE(reg) : { be: grBreakeven(eR, pz.lado, grTaxaLado(pz)) || eR, rB: rR + Math.abs((grBreakeven(eR, pz.lado, grTaxaLado(pz)) || eR) - eR) }, beR = kb.be, rB = kb.rB;   // R medido do BE com o risco ORIGINAL + taxas
+    const R = st => st === 'alvo' && rB > 0 ? s * (beR - pz.alvo) / rB : st === 'stop' ? (rB > 0 && reg ? s * (beR - reg.stp) / rB : -1) : null;
     if (reg && ['alvo', 'stop', 'perdida', 'expirou', 'semGatilho', 'zero', 'desfeita', 'saida'].indexOf(reg.st) >= 0) return { st: reg.st, tFim: reg.tFim, R: reg.st === 'zero' ? 0 : reg.st === 'saida' ? (reg.Rsaida != null ? reg.Rsaida : null) : R(reg.st) };
     if (pz.gat) return null;   // com gatilho, o desfecho vem só do registro (tocar a zona não é entrar)
     if (!(pz.alvo > 0) || !(pz.stop > 0) || !(ent > 0)) return null;
@@ -17207,7 +17209,8 @@ async function scStatusCalcular(pz) {
     const ini = pz.score ? pz.score.n : null;
     if (ini != null && sc.n <= ini - 2) itens.push({ n: 1, txt: 'o Score caiu de ' + ini + ' para ' + sc.n });
     else itens.push({ n: 0, txt: 'Score agora ' + sc.n + '/' + sc.total + (ini != null ? ' (na criação ' + ini + ')' : '') });
-    const R = stop != null && px && Math.abs(stop - ent) > 0 ? s * (ent - px) / Math.abs(stop - ent) : null;
+    const R = (() => { if (!(stop != null && px && Math.abs(stop - ent) > 0)) return null; const rg = (window._scRegistro || []).find(q => q.id === pz.id);   // R do BE
+        const be = grBreakeven(ent, pz.lado, grTaxaLado(pz)) || ent, r0 = rg && rg.r0 > 0 ? rg.r0 : Math.abs(stop - ent), rB = r0 + Math.abs(be - ent); return s * (be - px) / rB; })();
     let sinal = null;
     try { const regS = (window._scRegistro || []).find(r => r.id === pz.id); if ((R != null && R >= 1) || (regS && regS.ign)) sinal = await scSinal1R(pz, px, regS, fx); } catch (e) {}
     return { t: Date.now(), nivel: Math.max.apply(null, itens.map(x => x.n)), itens, R, sinal, score: sc };
@@ -17236,7 +17239,7 @@ if (!window._scFotoTimer) window._scFotoTimer = setInterval(() => { try { scFoto
 function scSairManual(pz) {
     const r = pz && scRegLista().find(q => q.id === pz.id); if (!r || r.st !== 'entrou') { try { grAreaToast('Só dá para sair de caixa do robô em trade', '#8E8E93'); } catch (e) {} return; }
     const px = (typeof SCX !== 'undefined' && SCX.preco > 0) ? SCX.preco : _precoAtual; if (!(px > 0)) return;
-    const lg = r.lado === 'long', e0 = r.entReal || r.ent, rk = Math.abs(e0 - r.stp), Rr = rk > 0 ? (lg ? 1 : -1) * (px - e0) / rk : null;
+    const lg = r.lado === 'long', kb = scRegRiscoBE(r), Rr = kb.rB > 0 ? (lg ? 1 : -1) * (px - kb.be) / kb.rB : null;
     if (!confirm('Encerrar o trade em ' + Math.round(px).toLocaleString('pt-BR') + (Rr != null ? ' (' + (Rr >= 0 ? '+' : '−') + Math.abs(Rr).toFixed(2).replace('.', ',') + 'R)' : '') + '?')) return;
     r.st = 'saida'; r.tFim = Date.now(); r.pxSaida = px; r.Rsaida = Rr != null ? Math.round(Rr * 100) / 100 : null;
     try { scRegGravarServidor(); } catch (e) {}
@@ -17615,7 +17618,7 @@ async function scTfAcompanhar(h) {
     return melhor || (menor ? { rot: null, menor: menor.menor, med: menor.med, h } : null);
 }
 // ══ VERSÃO DO MOTOR + REGISTRO das caixas que ele cria (gravado junto com as caixas, nas preferências, ao tocar em Sair) ══
-const SC_MOTOR_VERSAO = 'M22';
+const SC_MOTOR_VERSAO = 'M23';
 function scRegLista() { if (!Array.isArray(window._scRegistro)) window._scRegistro = []; return window._scRegistro; }
 function scRegistrar(o) {
     const L = scRegLista();
@@ -17757,7 +17760,7 @@ function scRegChecarPreco(px) {
         } else if (bStop) { r.st = 'stop'; r.tFim = agora; }
         else if (r.ign && r.zero && !r.beOff && (lg ? px <= scRegBE(r) : px >= scRegBE(r)) && (!r.tIgn || agora - r.tIgn > 1000)) { r.st = 'zero'; r.tFim = agora; }
         else if (bAlvo) { r.st = 'alvo'; r.tFim = agora; }
-        if (r.st === 'entrou' && !r.ign) { const e0 = r.entReal || r.ent, r1 = e0 + (lg ? 1 : -1) * Math.abs(e0 - r.stp); if (lg ? px >= r1 : px <= r1) { r.ign = true; r.tIgn = agora; mudou = true; try { grAreaToast('Motor ' + (r.mv || '') + ': ' + (lg ? 'Long' : 'Short') + ' → IGNIÇÃO (+1R)', '#16A34A'); } catch (e) {} } }
+        if (r.st === 'entrou' && !r.ign) { const kb = scRegRiscoBE(r), r1 = kb.be + (lg ? 1 : -1) * kb.rB; if (lg ? px >= r1 : px <= r1) { r.ign = true; r.tIgn = agora; mudou = true; try { grAreaToast('Motor ' + (r.mv || '') + ': ' + (lg ? 'Long' : 'Short') + ' → IGNIÇÃO (+1R)', '#16A34A'); } catch (e) {} } }
         if (r.st !== ant) {
             mudou = true;
             if (r.st !== 'entrou') { try { grAreaToast('Motor ' + (r.mv || '') + ': ' + (lg ? 'Long' : 'Short') + ' → ' + SC_REG_ROT[r.st], r.st === 'alvo' ? '#16A34A' : r.st === 'stop' ? '#EF5350' : '#8E8E93'); } catch (e) {} }
@@ -17787,6 +17790,8 @@ function scDeltaPorBloco(bloco, ini) {
 // ir ao alvo = entrada perdida; passar 1 candle do macro = expirou. Depois de entrar: stop / alvo (stop primeiro no mesmo candle).
 // Absorção CONTRA no candle i (mesma conta do losango do gráfico: volume ÷ amplitude acima da média de 20): Long → AV (caiu com delta +); Short → AC (subiu com delta −)
 // M21: o ZERO é o BREAKEVEN de verdade (entrada + taxas de ida e volta), não o preço de entrada. Taxa = a da caixa (painel Dados) ou o padrão.
+// risco medido do BE: o risco original (entrada→stop) + as taxas (entrada→BE). Stop original = −1R; BE = 0R.
+function scRegRiscoBE(r) { const e0 = r.entReal || r.ent, be = scRegBE(r), r0 = r.r0 > 0 ? r.r0 : Math.abs(e0 - r.stp); return { e0, be, rB: r0 + Math.abs(be - e0) }; }
 function scRegBE(r) { const e0 = r.entReal || r.ent; let pz = null; try { pz = grPosicoes().find(z => z.id === r.id); } catch (e) {} const be = grBreakeven(e0, r.lado, grTaxaLado(pz)); return be > 0 ? be : e0; }
 function scAbsContra(cs, i, D, lg) {
     if (i < 20) return null; const c = cs[i], d = D.has(c.t) ? D.get(c.t) : (c.bv != null && c.v > 0 ? 2 * c.bv - c.v : null); if (d == null) return null;
@@ -17806,10 +17811,10 @@ function scRegAvaliarGatilho(r, cs, D, bloco, real) {
             if (r.tGat != null && c.t <= r.tGat) continue;
             if (lg ? c.l <= r.stp : c.h >= r.stp) { r.st = 'stop'; r.tFim = c.t; return; }
             if (r.zero && !r.sombraAbs && (lg ? c.l <= r.ent : c.h >= r.ent)) {   // M12: saída-sombra no 1º candle com absorção contra encostando na zona
-                const pa = scAbsContra(cs, ic, D, lg); if (pa != null) { const e0 = r.entReal || r.ent, rk = Math.abs(e0 - r.stp); r.sombraAbs = { t: c.t, p: c.c, pct: pa, R: rk > 0 ? s * (c.c - e0) / rk : null }; }
+                const pa = scAbsContra(cs, ic, D, lg); if (pa != null) { const kb = scRegRiscoBE(r); r.sombraAbs = { t: c.t, p: c.c, pct: pa, R: kb.rB > 0 ? s * (c.c - kb.be) / kb.rB : null }; }
             }
             if (r.ign && r.zero && !r.beOff && (lg ? c.l <= scRegBE(r) : c.h >= scRegBE(r))) { r.st = 'zero'; r.tFim = c.t; return; }   // M11: depois da ignição o stop sobe pro zero
-            if (!r.ign) { const e0 = r.entReal || r.ent, r1 = e0 + s * Math.abs(e0 - r.stp); if (lg ? c.h >= r1 : c.l <= r1) { r.ign = true; r.tIgn = c.t; } }
+            if (!r.ign) { const kb = scRegRiscoBE(r), r1 = kb.be + s * kb.rB; if (lg ? c.h >= r1 : c.l <= r1) { r.ign = true; r.tIgn = c.t; } }
             if (lg ? c.h >= r.alvo : c.l <= r.alvo) { r.st = 'alvo'; r.tFim = c.t; return; }
             continue;
         }
@@ -17859,7 +17864,7 @@ async function scRegAtualizar() {
                 if (r.val > 0 && c.t > r.t0 + r.val) { r.st = 'expirou'; r.tFim = c.t; break; }
             } else {
                 if (bStop) { r.st = 'stop'; r.tFim = c.t; break; }
-                if (!r.ign) { const r1 = r.ent + (lg ? 1 : -1) * Math.abs(r.ent - r.stp); if (lg ? c.h >= r1 : c.l <= r1) { r.ign = true; r.tIgn = c.t; } }
+                if (!r.ign) { const kb = scRegRiscoBE(r), r1 = kb.be + (lg ? 1 : -1) * kb.rB; if (lg ? c.h >= r1 : c.l <= r1) { r.ign = true; r.tIgn = c.t; } }
                 if (bAlvo) { r.st = 'alvo'; r.tFim = c.t; break; }
             }
         }
@@ -17896,6 +17901,7 @@ async function scHistoricoMostrar() {
     scRelatorioMostrar({ lado: null, linhas });
 }
 const SC_VERSOES = [
+    ['M23', 'TUDO MEDIDO DO BREAKEVEN (entrada + taxas): ignição/BE em +1R do BE, R do placar (stop original = −1R, BE = 0R), R/R de desempate e todas as etiquetas'],
     ['M22', 'NÃO OPERA NO FLUSH NEM NO SQUEEZE (5 min): não arma Long no flush, quando os 3 últimos candles de 5 min caíram mais rápido que 75% das quedas das últimas ~16 h; não arma Short no squeeze (subida espelho); antes a "Faca caindo" só tirava 1 ponto e olhava o 4h'],
     ['M21', 'ZERO = BREAKEVEN de verdade: em +1R o stop vai para a entrada + as taxas de ida e volta (zero no bolso), não mais para o preço de entrada; toda caixa mostra a faixa PE↔BE em cinza claro'],
     ['M20', 'entrada no TOQUE, como na corretora: o pavio encostou na entrada = em trade (antes esperava o fechamento a favor); stop continua no pavio'],
@@ -17979,7 +17985,7 @@ async function scMotor() {
         if (ns == null && nl == null) { fim('Motor: nada novo a criar' + (ocup.short || ocup.long ? ' (' + ['short', 'long'].filter(l => ocup[l]).map(l => (l === 'short' ? 'Short ' : 'Long ') + ocup[l]).join(' · ') + ')' : '') + (foraTxt.length ? ' · ' + foraTxt.join(' · ') : '') + '.', '#EF5350', true); return; }
         // Sempre escolhe um lado quando há entrada (sem nota mínima: o histórico é que vai dizer, com dados, a partir de que nota vale a pena).
         // Empate na nota: desempata pelo R/R (ganho até o alvo ÷ risco até o stop); empate também no R/R: nada criado.
-        const rrDe = v => v && Math.abs(v.stop - v.entrada) > 0 ? Math.abs(v.alvo - v.entrada) / Math.abs(v.stop - v.entrada) : 0;
+        const rrDe = v => { if (!(v && Math.abs(v.stop - v.entrada) > 0)) return 0; const ld = v.stop > v.entrada ? 'short' : 'long', be = grBreakeven(v.entrada, ld, grTaxaLado(null)) || v.entrada; return Math.max(0, (ld === 'long' ? v.alvo - be : be - v.alvo)) / Math.abs(v.stop - be); };   // R/R do BE
         let lado, porRR = false;
         if (nl == null) lado = 'short'; else if (ns == null) lado = 'long';
         else if (ns !== nl) lado = ns > nl ? 'short' : 'long';
@@ -18061,7 +18067,8 @@ async function scForaSino(lado) {
     if (Math.abs(entrada - stop) < 2 * tip) stop = entrada - s * 2 * tip;
     const alvo = lg ? fx.lo : fx.hi, risco = Math.abs(entrada - stop);
     if (!(s * (alvo - entrada) > 0)) return { msg: 'a entrada já está no sino' };
-    if (s * (alvo - entrada) < risco) return { msg: 'até o sino (' + f(alvo) + ') o ganho é menor que o risco (' + f(risco) + ')' };
+    { const beF = grBreakeven(entrada, lado, grTaxaLado(null)) || entrada, gF = s * (alvo - beF), rF = Math.abs(beF - stop);   // M23: ganho e risco medidos do BE
+      if (gF < rF) return { msg: 'até o sino (' + f(alvo) + ') o ganho é menor que o risco, medidos do BE (' + f(Math.max(0, gF)) + ' × ' + f(rF) + ')' }; }
     if (lg ? preco >= alvo : preco <= alvo) return { msg: 'o preço já chegou ao sino' };
     // cria a caixa (mesmo formato das do motor: gatilho, registro, status e relatório funcionam igual)
     const lista = grPosicoes(), nC = _grAllCandles.length, cs0 = _grAllCandles, candleMs = nC > 1 ? Math.max(60000, cs0[nC - 1].t - cs0[nC - 2].t) : 300000;
@@ -18225,7 +18232,7 @@ async function scRegRaioX(reg) {
     const cs = (await grBuscarKlines(reg.sym || grBinSymbolAtual(), '5m', 1000, null)).map(grMapearKline);
     const lg = reg.lado === 'long', s = lg ? 1 : -1, e0 = reg.entReal || reg.ent, risco = reg.r0 > 0 ? reg.r0 : Math.abs(e0 - reg.stp);
     const f = x => Math.round(x).toLocaleString('pt-BR'), pc = (x, b) => (100 * x / b).toFixed(2).replace('.', ',') + '%', dh = t => new Date(t).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
-    const rr = x => (x >= 0 ? '+' : '−') + Math.abs(x / risco).toFixed(1).replace('.', ',') + 'R', dur = ms => { const m = Math.round(ms / 60000); return m < 60 ? m + ' min' : Math.floor(m / 60) + ' h ' + (m % 60) + ' min'; };
+    const feeX = Math.abs(scRegRiscoBE(reg).be - e0), rr = x => { const v = (x - feeX) / (risco + feeX); return (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(1).replace('.', ',') + 'R'; }, /* R do BE */ dur = ms => { const m = Math.round(ms / 60000); return m < 60 ? m + ' min' : Math.floor(m / 60) + ' h ' + (m % 60) + ' min'; };
     const L = ['— RAIO-X (candles de 5 min) —'];
     { const hm = x => new Date(x).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }), pass = [['Armada', reg.t0]];
       if (reg.toque && reg.tEnt != null) pass.push(['Entrou no toque', reg.tEnt]);
