@@ -1,16 +1,16 @@
 const VAPID_JWK = {
   kty: 'EC', crv: 'P-256',
-  d: 'IBcTQxA0GcoRK8Kp6BB4D1qAQOySOMWBstyrGuKYlUw',
   x: 'D_THAjYHkyMPyiNw97D6Pr6NnfN09doryo1LcORc0gQ',
   y: 'D7Hia1THsR_1Nb8XcsAg_qIpdr1U72vmt5aInVOB6WE',
   key_ops: ['sign']
 };
 const VAPID_PUBLIC_KEY = 'BA_0xwI2B5MjD8ojcPew-j6-jZ3zdPXaK8qNS3DkXNIED7Hia1THsR_1Nb8XcsAg_qIpdr1U72vmt5aInVOB6WE';
 
+let VAPID_D = '';
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type'
+  'Access-Control-Allow-Headers': 'Content-Type, X-App-Key'
 };
 
 async function bitgetRequest(env, method, path, body = null) {
@@ -30,8 +30,7 @@ async function bitgetRequest(env, method, path, body = null) {
       'ACCESS-TIMESTAMP': timestamp,
       'ACCESS-PASSPHRASE': env.BITGET_PASSPHRASE,
       'Content-Type': 'application/json',
-      'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1
-'
+      'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
     },
     body: body ? bodyStr : undefined
   });
@@ -40,11 +39,20 @@ async function bitgetRequest(env, method, path, body = null) {
 
 export default {
   async fetch(request, env) {
+    VAPID_D = env.VAPID_D || '';
     const url = new URL(request.url);
     const path = url.pathname;
 
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: CORS });
+    }
+
+    // ── SENHA DO APP: as rotas da Bitget só respondem com o cabeçalho X-App-Key igual ao segredo APP_KEY do Worker ──
+    if (path.startsWith('/bitget/')) {
+      const chave = request.headers.get('X-App-Key') || '';
+      if (!env.APP_KEY || chave !== env.APP_KEY) {
+        return Response.json({ error: 'não autorizado' }, { status: 401, headers: CORS });
+      }
     }
 
     if (request.method === 'GET' && path === '/bitget/saldo') {
@@ -336,7 +344,7 @@ async function buildVapidJwt(endpoint, exp) {
   const header = b64url(JSON.stringify({ typ: 'JWT', alg: 'ES256' }));
   const payload = b64url(JSON.stringify({ aud: url.origin, exp, sub: 'mailto:huber.produtos@gmail.com' }));
   const unsigned = header + '.' + payload;
-  const cryptoKey = await crypto.subtle.importKey('jwk', VAPID_JWK, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
+  const cryptoKey = await crypto.subtle.importKey('jwk', { ...VAPID_JWK, d: VAPID_D }, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
   const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, cryptoKey, new TextEncoder().encode(unsigned));
   return unsigned + '.' + b64url2(new Uint8Array(sig));
 }
