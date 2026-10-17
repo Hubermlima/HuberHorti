@@ -521,19 +521,12 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
         <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="#8E8E93" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
       </button>
     </div>
-    <div style="margin-bottom:16px;">
-      <label class="modal-label">Quantidade</label>
-      <input id="cv-tfcustom-n" class="modal-input" type="number" min="1" step="1" inputmode="numeric" placeholder="Ex: 45" style="width:100%;">
-    </div>
     <div style="margin-bottom:8px;">
-      <label class="modal-label">Unidade</label>
+      <label class="modal-label">Timeframe</label>
+      <input id="cv-tfcustom-txt" class="modal-input" type="text" inputmode="text" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="Ex: 45m, 3h, 2d, 1M" style="width:100%;" oninput="cvTfCustomPreview()" onkeydown="if(event.key==='Enter'){event.preventDefault();cvAplicarTfCustom();}">
     </div>
-    <div style="display:flex;gap:6px;margin-bottom:20px;">
-      <button type="button" class="cv-tfcustom-unit-btn" data-unit="min" onclick="cvTfCustomSetUnit('min')" style="flex:1;padding:8px 0;border-radius:8px;border:1px solid rgba(0,0,0,0.1);background:#F5F5F5;color:#1C1C1E;font-weight:600;font-size:13px;cursor:pointer;">Minutos</button>
-      <button type="button" class="cv-tfcustom-unit-btn" data-unit="hor" onclick="cvTfCustomSetUnit('hor')" style="flex:1;padding:8px 0;border-radius:8px;border:1px solid rgba(0,0,0,0.1);background:#F5F5F5;color:#1C1C1E;font-weight:600;font-size:13px;cursor:pointer;">Horas</button>
-      <button type="button" class="cv-tfcustom-unit-btn" data-unit="dia" onclick="cvTfCustomSetUnit('dia')" style="flex:1;padding:8px 0;border-radius:8px;border:1px solid rgba(0,0,0,0.1);background:#F5F5F5;color:#1C1C1E;font-weight:600;font-size:13px;cursor:pointer;">Dias</button>
-      <button type="button" class="cv-tfcustom-unit-btn" data-unit="mes" onclick="cvTfCustomSetUnit('mes')" style="flex:1;padding:8px 0;border-radius:8px;border:1px solid rgba(0,0,0,0.1);background:#F5F5F5;color:#1C1C1E;font-weight:600;font-size:13px;cursor:pointer;">Meses</button>
-    </div>
+    <div id="cv-tfcustom-prev" style="font-size:13px;font-weight:700;color:#26A69A;min-height:18px;margin-bottom:6px;"></div>
+    <div style="font-size:11.5px;color:#8E8E93;line-height:1.5;margin-bottom:16px;"><b>m</b> minutos &nbsp;·&nbsp; <b>h</b> horas &nbsp;·&nbsp; <b>d</b> dias &nbsp;·&nbsp; <b>M</b> (maiúsculo) meses</div>
     <div id="cv-tfcustom-erro" style="display:none;color:#EF5350;font-size:12px;margin-bottom:12px;"></div>
     <div class="modal-actions">
       <button class="modal-btn-cancelar" onclick="cvFecharModalTfCustom()">Cancelar</button>
@@ -1881,7 +1874,8 @@ function cvAbrirMenuTf(clientX, clientY, opts) {
     };
     if (opts && opts.aoEscolher) {
         // Modo "escolher": devolve o TF a quem chamou (ex.: régua Delta ATR) e NÃO troca o timeframe do gráfico.
-        if (opts.igual) menu.appendChild(linha('Igual ao gráfico', () => opts.aoEscolher(null), opts.atual == null));
+        if (opts.auto) menu.appendChild(linha('Automático', opts.auto, !!opts.atualAuto));
+        if (opts.igual) menu.appendChild(linha('Igual ao gráfico', () => opts.aoEscolher(null), opts.atual == null && !opts.atualAuto));
         itens.forEach(it => menu.appendChild(linha(it.label, () => opts.aoEscolher(it.tf === 'c5' ? '5m' : it.tf === 'c30' ? '30m' : it.tf), it.tf === opts.atual || (it.tf === 'c5' && opts.atual === '5m') || (it.tf === 'c30' && opts.atual === '30m'))));
         if (opts.personalizado) {
             const sep2 = document.createElement('div');
@@ -2225,7 +2219,6 @@ function grTfSiglaAtual() {
 }
 // ── Timeframe Personalizado (n minutos/horas/dias/meses) ─────────────
 let _grTfCustomAmount = null, _grTfCustomUnit = null;
-let _cvTfCustomUnitSel = 'min';
 try {
     const _tfCustomSalvo = JSON.parse(localStorage.getItem('cvTfCustom') || 'null');
     if (_tfCustomSalvo && _tfCustomSalvo.amount && _tfCustomSalvo.unit) {
@@ -2241,58 +2234,135 @@ const _cvTfCustomNomes = {
     mes: n => n === 1 ? 'Mês' : 'Meses'
 };
 const _cvTfCustomSiglas = { min: 'M', hor: 'H', dia: 'D', mes: 'MÊS' };
-function cvTfCustomSetUnit(unit) {
-    _cvTfCustomUnitSel = unit;
-    document.querySelectorAll('.cv-tfcustom-unit-btn').forEach(b => {
-        const ativo = b.dataset.unit === unit;
-        b.classList.toggle('active', ativo);
-        b.style.background = ativo ? '#E9F7F5' : '#F5F5F5';
-        b.style.color = ativo ? '#26A69A' : '#1C1C1E';
-        b.style.borderColor = ativo ? 'rgba(38,166,154,0.4)' : 'rgba(0,0,0,0.1)';
-    });
+// Lê o que foi digitado ("45m", "3h", "2d", "1M", "3 horas", "6 meses"...) e devolve { u, a } ou { erro }.
+// Atenção: "m" minúsculo = minutos e "M" MAIÚSCULO = meses (mesma convenção da TradingView). "mes"/"mês"/"meses"/"mo" também valem.
+function cvTfCustomParse(txt) {
+    const t = String(txt == null ? '' : txt).trim();
+    if (!t) return { vazio: true };
+    const m = t.match(/^(\d+)\s*([A-Za-zÀ-ú]*)$/);
+    if (!m) return { erro: 'Digite número + unidade, ex.: 45m, 3h, 2d, 1M.' };
+    const n = parseInt(m[1], 10), tok = m[2];
+    if (!tok) return { erro: 'Falta a unidade: m (min), h (horas), d (dias) ou M (meses).' };
+    let u = null;
+    if (tok === 'M') u = 'mes';
+    else {
+        const k = tok.toLowerCase();
+        if (['m', 'min', 'mins', 'minuto', 'minutos'].includes(k)) u = 'min';
+        else if (['h', 'hr', 'hrs', 'hora', 'horas'].includes(k)) u = 'hor';
+        else if (['d', 'dia', 'dias'].includes(k)) u = 'dia';
+        else if (['mes', 'mês', 'meses', 'mo'].includes(k)) u = 'mes';
+    }
+    if (!u) return { erro: 'Unidade "' + tok + '" não reconhecida. Use m, h, d ou M.' };
+    const [minV, maxV] = _cvTfCustomLimites[u];
+    if (!n || n < minV || n > maxV) return { erro: 'Em ' + _cvTfCustomNomes[u](2).toLowerCase() + ' use um número entre ' + minV + ' e ' + maxV + '.' };
+    return { u, a: n };
+}
+function cvTfCustomPreview() {
+    const el = document.getElementById('cv-tfcustom-prev'), erro = document.getElementById('cv-tfcustom-erro');
+    if (!el) return;
+    const r = cvTfCustomParse(document.getElementById('cv-tfcustom-txt').value);
+    if (erro) erro.style.display = 'none';
+    el.textContent = r.u ? ('→ ' + r.a + ' ' + _cvTfCustomNomes[r.u](r.a)) : '';
 }
 let _cvTfCustomDestino = null;   // null = timeframe do gráfico; 'da' = timeframe próprio da régua Delta ATR
 function cvAbrirModalTfCustom(destino) {
     const overlay = document.getElementById('cv-tfcustom-overlay');
-    const nInput = document.getElementById('cv-tfcustom-n');
+    const inp = document.getElementById('cv-tfcustom-txt');
     _cvTfCustomDestino = destino === 'da' ? 'da' : null;
     document.body.appendChild(overlay);   // sai de dentro de #cv-screen (empilhamento próprio, z 4000): senão o z-index não vence o popup do chip
     overlay.style.zIndex = _cvTfCustomDestino ? '100000' : '';   // da régua: por cima de tudo, inclusive do popup do chip
     const ref = _cvTfCustomDestino ? (_grDaTfCustom || {}) : { u: _grTfCustomUnit, a: _grTfCustomAmount };
-    _cvTfCustomUnitSel = ref.u || 'min';
-    nInput.value = ref.a || '';
+    const sig = { min: 'm', hor: 'h', dia: 'd', mes: 'M' };
+    inp.value = (ref.u && ref.a && sig[ref.u]) ? ref.a + sig[ref.u] : '';
     document.getElementById('cv-tfcustom-erro').style.display = 'none';
-    cvTfCustomSetUnit(_cvTfCustomUnitSel);
+    cvTfCustomPreview();
     overlay.classList.add('active');
+    setTimeout(() => { try { inp.focus(); inp.select(); } catch (e) {} }, 60);
 }
 function cvFecharModalTfCustom() {
     document.getElementById('cv-tfcustom-overlay').classList.remove('active');
     _cvTfCustomDestino = null;
 }
 function cvAplicarTfCustom() {
-    const n = parseInt(document.getElementById('cv-tfcustom-n').value, 10);
-    const unit = _cvTfCustomUnitSel;
     const erro = document.getElementById('cv-tfcustom-erro');
-    const [minV, maxV] = _cvTfCustomLimites[unit];
-    if (!n || isNaN(n) || n < minV || n > maxV) {
-        erro.textContent = `Informe um número entre ${minV} e ${maxV}.`;
+    const r = cvTfCustomParse(document.getElementById('cv-tfcustom-txt').value);
+    if (!r.u) {
+        erro.textContent = r.erro || 'Digite o timeframe, ex.: 45m, 3h, 2d, 1M.';
         erro.style.display = 'block';
         return;
     }
-    if (_cvTfCustomDestino === 'da') {   // timeframe da RÉGUA: não mexe no gráfico
-        _grDaAuto = false; _grDaTf = 'custom'; _grDaTfCustom = { u: unit, a: n };
-        cvFecharModalTfCustom();
-        if (typeof grAmbienteSalvar === 'function') grAmbienteSalvar();   // só marca pendente; grava ao clicar em Sair
-        window._grDeltaAtrCache = {};
-        if (_grFpCfgMenuQual === 'deltaatr') cvRenderMenuFpCfg();
-        grDrawChart();
-        return;
-    }
-    _grTfCustomAmount = n;
-    _grTfCustomUnit = unit;
-    try { localStorage.setItem('cvTfCustom', JSON.stringify({ amount: n, unit })); } catch (e) {}
+    const destino = _cvTfCustomDestino;
     cvFecharModalTfCustom();
-    cvSetTf('custom');
+    if (destino === 'da') cvTfAplicarRegua(r);   // timeframe da RÉGUA: não mexe no gráfico
+    else cvTfAplicarGrafico(r);
+}
+// ── Navegação < TF > (botões ‹ › do chip "TF" e do chip "Régua" na barra superior) ───────────────────────────────────────────────────────
+// Escada de timeframes ordenada pela duração. ‹ vai pro degrau de baixo, › pro de cima — a partir de QUALQUER TF atual (inclusive um
+// personalizado como 3h: ‹ → 1H, › → 4H). Os ids são os mesmos de GR_DA_TFS, então valem para o gráfico e para a régua.
+const CV_TF_ESCADA = [
+    { tf: '5m', u: 'min', a: 5 }, { tf: '15m', u: 'min', a: 15 }, { tf: '30m', u: 'min', a: 30 }, { tf: '1h', u: 'hor', a: 1 },
+    { tf: '4h', u: 'hor', a: 4 }, { tf: '1day', u: 'dia', a: 1 }, { tf: '1week', u: 'sem', a: 1 }, { tf: '1month', u: 'mes', a: 1 }
+];
+function cvTfMs(u, a) { return a * (u === 'min' ? 60000 : u === 'hor' ? 3600000 : u === 'dia' ? 86400000 : u === 'sem' ? 7 * 86400000 : 30.4 * 86400000); }
+function cvTfVizinho(ms, dir) {
+    if (!(ms > 0)) return null;
+    const l = CV_TF_ESCADA.map(e => Object.assign({ ms: cvTfMs(e.u, e.a) }, e));
+    if (dir > 0) return l.find(e => e.ms > ms * 1.0001) || null;
+    for (let i = l.length - 1; i >= 0; i--) if (l[i].ms < ms * 0.9999) return l[i];
+    return null;
+}
+function cvTfMsGrafico() {
+    if (_grTf === 'custom') return (_grTfCustomUnit && _grTfCustomAmount) ? cvTfMs(_grTfCustomUnit, _grTfCustomAmount) : null;
+    const e = CV_TF_ESCADA.find(x => x.tf === _grTf); return e ? cvTfMs(e.u, e.a) : null;
+}
+function cvTfMsRegua() {
+    grDaSincAuto();
+    if (_grDaTf === 'custom') return _grDaTfCustom ? cvTfMs(_grDaTfCustom.u, _grDaTfCustom.a) : null;
+    if (!_grDaTf) return cvTfMsGrafico();   // "Igual ao gráfico"
+    const e = CV_TF_ESCADA.find(x => x.tf === _grDaTf); return e ? cvTfMs(e.u, e.a) : null;
+}
+// Aplica um TF { u, a } ao GRÁFICO. Se for igual a um fixo (15m, 1h, 4h, Diário, Semanal, Mensal) usa o fixo; senão, personalizado.
+function cvTfAplicarGrafico(spec) {
+    const e = CV_TF_ESCADA.find(x => x.u === spec.u && x.a === spec.a);
+    if (e && e.tf !== '5m' && e.tf !== '30m') return cvSetTf(e.tf);   // 5m e 30m sempre foram o personalizado (ver cvAbrirMenuTf)
+    _grTfCustomAmount = spec.a; _grTfCustomUnit = spec.u;
+    try { localStorage.setItem('cvTfCustom', JSON.stringify({ amount: spec.a, unit: spec.u })); } catch (er) {}
+    return cvSetTf('custom');
+}
+// Aplica um TF { u, a } à RÉGUA Delta ATR (não mexe no gráfico). Escolher manualmente desliga o Automático.
+function cvTfAplicarRegua(spec) {
+    const e = CV_TF_ESCADA.find(x => x.u === spec.u && x.a === spec.a);
+    _grDaAuto = false;
+    if (e) _grDaTf = e.tf; else { _grDaTf = 'custom'; _grDaTfCustom = { u: spec.u, a: spec.a }; }
+    cvTfReguaAtualizar();
+}
+function cvTfReguaAtualizar() {
+    if (typeof grAmbienteSalvar === 'function') grAmbienteSalvar();   // só marca pendente; grava ao clicar em Sair
+    window._grDeltaAtrCache = {};
+    if (_grFpCfgMenuQual === 'deltaatr') cvRenderMenuFpCfg();   // mantém o combobox "Timeframe" da config da régua em sincronia
+    grDrawChart();
+}
+let _cvTfNavTrava = false;
+function cvTfPassoGrafico(dir) {
+    if (_cvTfNavTrava) return;
+    const v = cvTfVizinho(cvTfMsGrafico(), dir); if (!v) return;
+    _cvTfNavTrava = true; setTimeout(() => { _cvTfNavTrava = false; }, 4000);
+    Promise.resolve(cvTfAplicarGrafico(v)).catch(() => {}).then(() => { _cvTfNavTrava = false; });
+}
+function cvTfPassoRegua(dir) {
+    const v = cvTfVizinho(cvTfMsRegua(), dir); if (v) cvTfAplicarRegua(v);
+}
+function cvTfPodeGrafico(dir) { return !!cvTfVizinho(cvTfMsGrafico(), dir); }
+function cvTfPodeRegua(dir) { return !!cvTfVizinho(cvTfMsRegua(), dir); }
+// Sigla do TF da régua pro chip da barra superior (o automático aparece com "auto" ao lado)
+function cvTfSiglaRegua() {
+    grDaSincAuto();
+    const map = { '5m': '5M', '15m': '15M', '30m': '30M', '1h': '1H', '4h': '4H', '1day': '1D', '1week': '1S', '1month': '1M' };
+    let t;
+    if (_grDaTf === 'custom' && _grDaTfCustom) t = _grDaTfCustom.a + (_cvTfCustomSiglas[_grDaTfCustom.u] || '');
+    else if (!_grDaTf) t = grTfSiglaAtual();
+    else t = map[_grDaTf] || _grDaTf;
+    return t + (_grDaAuto ? ' auto' : '');
 }
 // Intervalo-base da Binance usado para depois agrupar em blocos de N minutos/horas/dias/meses
 function grBaseIntervalCustom(unit, amount) {
@@ -3303,7 +3373,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v578';
+const APP_VERSAO = 'v579';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3418,10 +3488,12 @@ function grDaDefinirTf(v) {
     cvRenderMenuFpCfg();
     grDrawChart();
 }
-function grDaAbrirMenuTf(ev) {
+function grDaAbrirMenuTf(ev, cx, cy) {
     const r = ev && ev.currentTarget ? ev.currentTarget.getBoundingClientRect() : null;
-    cvAbrirMenuTf(r ? r.left : 40, r ? r.bottom : 120, {
+    cvAbrirMenuTf(r ? r.left : (cx != null ? cx : 40), r ? r.bottom : (cy != null ? cy : 120), {
         atual: _grDaTf,
+        atualAuto: _grDaAuto,
+        auto: () => grDaDefinirTf('auto'),
         igual: true,
         personalizado: () => cvAbrirModalTfCustom('da'),
         aoEscolher: tf => {
@@ -7693,22 +7765,46 @@ function grDesenharLinhaOhlc(ctx, W, info) {
     } catch (e) {}
     if (_grAmbExpandido) {
         const itens = [
-            { rot: 'TF ', val: grTfSiglaAtual(), abrir: (cx, cy) => cvAbrirMenuTf(cx, cy) },
-            { rot: 'Escala ', val: _grEscalaLog ? 'Log' : 'Normal', abrir: (cx, cy) => cvAbrirMenuEscala(cx, cy) },
+            { rot: 'TF ', val: grTfSiglaAtual(), abrir: (cx, cy) => cvAbrirMenuTf(cx, cy),
+              setas: { esq: () => cvTfPassoGrafico(-1), dir: () => cvTfPassoGrafico(1), okEsq: cvTfPodeGrafico(-1), okDir: cvTfPodeGrafico(1) } },
         ];
+        // Régua Delta ATR: só aparece com a régua ligada. Mesmo botão < TF > do gráfico, mas muda só o TF da régua
+        // (o mesmo da config "Delta ATR → Timeframe", que acompanha na hora).
+        if (_indState.deltaAtr) itens.push({ rot: 'Régua ', val: cvTfSiglaRegua(), abrir: (cx, cy) => grDaAbrirMenuTf(null, cx, cy),
+            setas: { esq: () => cvTfPassoRegua(-1), dir: () => cvTfPassoRegua(1), okEsq: cvTfPodeRegua(-1), okDir: cvTfPodeRegua(1) } });
+        itens.push({ rot: 'Escala ', val: _grEscalaLog ? 'Log' : 'Normal', abrir: (cx, cy) => cvAbrirMenuEscala(cx, cy) });
         let xb = x0 + wChev + 8;
+        const wS = 22;   // largura de cada botão de seta ‹ ›
         itens.forEach(it => {
             ctx.font = fs + 'px -apple-system'; const wRot = ctx.measureText(it.rot).width;
             ctx.font = 'bold ' + fs + 'px -apple-system'; const wVal = ctx.measureText(it.val).width;
-            const wB = wRot + wVal + 16;
+            const wB = wRot + wVal + 16 + (it.setas ? 2 * wS - 8 : 0);
             if (xb + wB > (yRow === yTopB ? xLim - 4 : xMax + 4) && xb > x0 + wChev + 8) { xb = x0; yRow += hB + 6; }  // não coube: quebra para a linha de baixo
+            const xTxt = xb + (it.setas ? wS - 4 : 0) + 8;
             desenharBadge(xb, wB, () => {
                 const yTxt = yRow + 0.5 + hB / 2 + fs * 0.35;
                 ctx.textAlign = 'left';
-                ctx.font = fs + 'px -apple-system'; ctx.fillStyle = corRotulo; ctx.fillText(it.rot, xb + 8, yTxt);
-                ctx.font = 'bold ' + fs + 'px -apple-system'; ctx.fillStyle = it.cor || corData; ctx.fillText(it.val, xb + 8 + wRot, yTxt);
+                ctx.font = fs + 'px -apple-system'; ctx.fillStyle = corRotulo; ctx.fillText(it.rot, xTxt, yTxt);
+                ctx.font = 'bold ' + fs + 'px -apple-system'; ctx.fillStyle = it.cor || corData; ctx.fillText(it.val, xTxt + wRot, yTxt);
+                if (it.setas) {
+                    const cy0 = yRow + 0.5 + hB / 2;
+                    const seta = (cxS, dir, ok) => {   // chevron ‹ (dir -1) ou › (dir +1); apagado quando não há mais degrau naquela direção
+                        ctx.beginPath(); ctx.moveTo(cxS - dir * 2.5, cy0 - 4.5); ctx.lineTo(cxS + dir * 2.5, cy0); ctx.lineTo(cxS - dir * 2.5, cy0 + 4.5);
+                        ctx.lineWidth = 1.8; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = corData; ctx.globalAlpha = ok ? 1 : 0.28; ctx.stroke();
+                        ctx.globalAlpha = 1; ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
+                    };
+                    seta(xb + 0.5 + (wS - 4) / 2 + 3, -1, it.setas.okEsq);
+                    seta(xb + 0.5 + wB - (wS - 4) / 2 - 3, 1, it.setas.okDir);
+                }
             });
-            window._grBarraSuperiorChips.push({ x: xb - 4, y: yRow - 6, w: wB + 8, h: hB + 12, abrir: it.abrir });
+            if (it.setas) {
+                // as setas entram ANTES do centro na lista: o primeiro retângulo que acerta o toque vence
+                window._grBarraSuperiorChips.push({ x: xb - 4, y: yRow - 6, w: wS + 6, h: hB + 12, abrir: () => { if (it.setas.okEsq) it.setas.esq(); } });
+                window._grBarraSuperiorChips.push({ x: xb + wB - wS - 2, y: yRow - 6, w: wS + 6, h: hB + 12, abrir: () => { if (it.setas.okDir) it.setas.dir(); } });
+                window._grBarraSuperiorChips.push({ x: xb + wS + 2, y: yRow - 6, w: wB - 2 * wS - 4, h: hB + 12, abrir: it.abrir });
+            } else {
+                window._grBarraSuperiorChips.push({ x: xb - 4, y: yRow - 6, w: wB + 8, h: hB + 12, abrir: it.abrir });
+            }
             xb += wB + 8;
         });
     }
