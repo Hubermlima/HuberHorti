@@ -2913,6 +2913,12 @@ function grVwapCarregarAncoras() {
     try {
         const raw = localStorage.getItem(_grVwapLSKey());
         _grVwapAncoras = raw ? (JSON.parse(raw) || []) : [];
+        // Âncora ÚNICA, como o Volume Profile e a Value Area: se sobrou mais de uma (versões antigas acumulavam), fica a automática ou, sem ela, a mais recente.
+        if (_grVwapAncoras.length > 1) {
+            const uma = _grVwapAncoras.filter(a => a && a.auto).pop() || _grVwapAncoras.slice().sort((x, y) => (x.ts || 0) - (y.ts || 0)).pop();
+            _grVwapAncoras = uma ? [uma] : [];
+            grVwapSalvarAncoras();
+        }
     } catch (e) { _grVwapAncoras = []; }
 }
 // Acha o índice atual em _grAllCandles pelo timestamp guardado — precisa
@@ -2950,13 +2956,11 @@ function grVwapClassificarTipo(idx) {
 // essa — as outras âncoras continuam intactas (múltiplas ao mesmo tempo).
 function grVwapAncorarNoCandle(idxCandle) {
     if (idxCandle == null || !_grAllCandles[idxCandle]) return;
+    if (typeof _scCfg !== 'undefined' && _scCfg.ancAuto !== false) { _scCfg.ancAuto = false; try { scSalvar(); grAreaToast('Âncora automática desligada (você ancorou na mão)', '#8E8E93'); } catch (e) {} }
     const ts = _grAllCandles[idxCandle].t;
-    const pos = _grVwapAncoras.findIndex(a => a.ts === ts);
-    if (pos >= 0) {
-        _grVwapAncoras.splice(pos, 1);
-    } else {
-        _grVwapAncoras.push({ ts, tipo: grVwapClassificarTipo(idxCandle) });
-    }
+    // Âncora única (igual VP e Value Area): tocar no MESMO candle remove; em outro candle SUBSTITUI a atual.
+    if (_grVwapAncoras.some(a => a.ts === ts)) _grVwapAncoras = [];
+    else _grVwapAncoras = [{ ts, tipo: grVwapClassificarTipo(idxCandle) }];
     grVwapSalvarAncoras();
     grVwapAtualizarBotaoLimpar();
     const btnVwap = document.getElementById('cv-ind-vwap');
@@ -3373,7 +3377,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v579';
+const APP_VERSAO = 'v586';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4639,6 +4643,9 @@ function grPosNome(pz) { if (!pz) return ''; const og = pz.tradeId || pz.pm > 0 
 // BREAKEVEN de verdade = o preço que paga as taxas de ida e volta (zero no bolso). Long: PE×(1+t)/(1−t) · Short: PE×(1−t)/(1+t).
 // t = taxa por lado da caixa (Taxa % do painel Dados; sem ela, o padrão da simulação). Segue o PE sozinho; o usuário não mexe.
 function grTaxaLado(pz) { let t = pz && pz.simTaxa > 0 ? pz.simTaxa : null; if (t == null) { try { t = grPadraoSim().taxa; } catch (e) {} } return (t > 0 ? t : 0.1) / 100; }
+// Breakeven a partir do PM do app: o PM JÁ contém a taxa de ABERTURA (ela entra no custo: sobe no long, desce no short), então falta só a de fechamento.
+// Long: PM ÷ (1 − t) · Short: PM ÷ (1 + t). Para uma ENTRADA planejada (sem PM), vale grBreakeven (as duas taxas).
+function grBreakevenPM(pm, lado, t) { if (!(pm > 0)) return null; return lado === 'short' ? pm / (1 + t) : pm / (1 - t); }
 function grBreakeven(pe, lado, t) { if (!(pe > 0)) return null; return lado === 'short' ? pe * (1 - t) / (1 + t) : pe * (1 + t) / (1 - t); }
 // monta uma posição com medidas padrão (largura 14 candles, stop 2%, alvo 4%) a partir de um ponto
 // Limite de alcance: a rolagem lateral só vai até alguns slots depois do último candle (zoom × 15%). A borda direita da caixa não é desenhada além
@@ -4987,16 +4994,30 @@ async function cvPosCarregarTrades() {
 // Status/cores da caixa: sem tradeId = Em Análise (cinza); trade sem data_fechamento = Ativo (verde/vermelho); com = Encerrado (tom do resultado)
 // Linha central da caixa: com PM (posição aberta) é o PM, travado; a PE vira só informação
 function cvPosPivo(pz) { return pz.pm > 0 ? pz.pm : pz.entrada; }
+// BREAKEVEN = a referência da caixa: (PM com posição, senão a entrada) + taxas de ida e volta. É ESTE o nível desenhado no meio da caixa;
+// o preço de entrada em si não é mais desenhado.
+function cvPosBE(pz) { const pv = cvPosPivo(pz), b = pv > 0 ? (pz.pm > 0 ? grBreakevenPM(pv, pz.lado, grTaxaLado(pz)) : grBreakeven(pv, pz.lado, grTaxaLado(pz))) : null; return b > 0 ? b : pv; }
+// Em trade (tem trade no banco ou PM de posição aberta/encerrada): o breakeven fica TRAVADO. Só stop e alvo continuam editáveis.
+function cvPosEmTrade(pz) { return !!(pz && (pz.tradeId || pz.pm > 0)); }
+// Inverso do breakeven: o preço de entrada que gera o BE tocado/arrastado (usado quando a caixa ainda está em análise)
+function cvPosEntradaDoBE(be, pz) { return grBreakeven(be, pz.lado === 'short' ? 'long' : 'short', grTaxaLado(pz)) || be; }
 const GR_MARGEM_ANALISE0 = 1000;   // margem simulada (USDT) da caixa Em Análise (padrão de fábrica)
 const GR_RISCO_ANALISE_PCT0 = 50;  // risco usado na alavancagem sugerida da caixa Em Análise (% da margem, padrão de fábrica)
 // Padrão do Risco % e do Aporte: o último valor digitado no "Dados" vira o padrão das caixas novas (gravado no ambiente)
 const GR_TAXA_PCT0 = 0.1;   // taxa por lado (% da posição), a mesma da boleta: 0,1% na abertura e 0,1% no fechamento
 function grPadraoSim() { try { const o = JSON.parse(localStorage.getItem('grPadraoSim') || '{}'); return { risco: o.risco > 0 ? o.risco : GR_RISCO_ANALISE_PCT0, aporte: o.aporte > 0 ? o.aporte : GR_MARGEM_ANALISE0, taxa: o.taxa > 0 ? o.taxa : GR_TAXA_PCT0 }; } catch (e) { return { risco: GR_RISCO_ANALISE_PCT0, aporte: GR_MARGEM_ANALISE0, taxa: GR_TAXA_PCT0 }; } }
+// Alavancagem sugerida: a perda LÍQUIDA no stop (com as taxas) não passa do Risco % da margem. Tudo vezes a alavancagem:
+// perda (% da margem) = alavancagem × (distância do BREAKEVEN até o stop, em % da entrada). O BE já carrega as taxas de ida e volta.
+function grSimAlavancagem(pz, rk, tx) {
+    const lado = pz.stop < pz.entrada ? 'long' : 'short', be = grBreakeven(pz.entrada, lado, tx) || pz.entrada;
+    const distBE = Math.abs(be - pz.stop) / pz.entrada * 100;
+    return Math.max(1, Math.floor(rk / distBE));
+}
 // Simulação da caixa em análise: alavancagem, posição, taxas (entrada + saída) e resultados LÍQUIDOS no alvo e no stop
 function grSimCaixa(pz) {
     if (!pz || !(pz.entrada > 0) || !(pz.stop > 0) || pz.stop === pz.entrada) return null;
     const P = grPadraoSim(), rk = pz.simRisco > 0 ? pz.simRisco : P.risco, mg = pz.simAporte > 0 ? pz.simAporte : P.aporte, tx = (pz.simTaxa > 0 ? pz.simTaxa : P.taxa) / 100;
-    const sgn = pz.stop < pz.entrada ? 1 : -1, dist = Math.abs(pz.entrada - pz.stop) / pz.entrada * 100, al = Math.max(1, Math.floor(rk / dist)), nt = mg * al;
+    const sgn = pz.stop < pz.entrada ? 1 : -1, al = grSimAlavancagem(pz, rk, tx), nt = mg * al;
     const tEnt = nt * tx, tSaiS = nt * pz.stop / pz.entrada * tx, perdaB = nt * (pz.stop - pz.entrada) / pz.entrada * sgn, perda = perdaB - tEnt - tSaiS;
     let lucro = null, tSaiA = null, lucroB = null;
     if (pz.alvo > 0) { tSaiA = nt * pz.alvo / pz.entrada * tx; lucroB = nt * (pz.alvo - pz.entrada) / pz.entrada * sgn; lucro = lucroB - tEnt - tSaiA; }
@@ -5308,7 +5329,7 @@ function cvPosFormAbrir(idx) {
                     if (pos(r) && perda > marg * r / 100 * 1.0001) t += '<br><span style="color:#E08A00;">Acima do risco planejado (' + f(marg * r / 100, 2) + ' USDT).</span>';
                     L.push(t);
                     {
-                        const a = num('pf-alvo'), beF = grBreakeven(est.pm, sgn > 0 ? 'long' : 'short', grTaxaLado(null)) || est.pm, rw = (a - beF) * sgn, rk = (beF - st) * sgn;
+                        const a = num('pf-alvo'), beF = grBreakevenPM(est.pm, sgn > 0 ? 'long' : 'short', grTaxaLado(null)) || est.pm, rw = (a - beF) * sgn, rk = (beF - st) * sgn;
                         if (pos(a) && rw > 0 && rk > 0) L.push('R/R: <b>' + f(rw / rk, 1) + ' para 1</b>');
                     }
                     g('pf-risco-real').value = cvMascaraDeNumero(perda / marg * 100);
@@ -5371,7 +5392,7 @@ function cvPosFormAbrir(idx) {
             gm('am-v').value = q != null && pos(it.preco) ? f2(q * it.preco) : '';
             gm('am-r').value = q != null && pos(it.preco) ? sinal(q * (it.preco - r) * sgn) : '';
             if (tab === 'alvo') {
-                const sf = L.stop[farIdx(L.stop, 'stop')].preco, rB = grBreakeven(r, sgn > 0 ? 'long' : 'short', grTaxaLado(null)) || r, risco = pos(sf) ? (rB - sf) * sgn : 0, ganho = pos(it.preco) ? (it.preco - rB) * sgn : 0;   // R/R do BE
+                const sf = L.stop[farIdx(L.stop, 'stop')].preco, rB = (estado().pm != null ? grBreakevenPM : grBreakeven)(r, sgn > 0 ? 'long' : 'short', grTaxaLado(null)) || r, risco = pos(sf) ? (rB - sf) * sgn : 0, ganho = pos(it.preco) ? (it.preco - rB) * sgn : 0;   // R/R do BE
                 gm('am-rr').value = risco > 0 && ganho > 0 ? (ganho / risco).toFixed(1).replace('.', ',') : '';
             }
             const tot = L[tab].reduce((a, x) => a + (x.pct || 0), 0);
@@ -6159,12 +6180,14 @@ function grDrawCandles(candles, emptyRight) {
             const pick = new Set(); for (let k = 0; k < n; k++) pick.add(ok[Math.round(k * (ok.length - 1) / Math.max(1, n - 1))]);
             pick.forEach(i => { const y = toY(vals[i]); if (y >= PAD.top && y <= PAD.top + chartH) window._grAncDotsMain.push({ x: grAncXc(i), y, cor }); });
         };
-        const _pnVwap = [];
+        const _pnVwap = [], _pnVwapIdx = new Set();
+        // Rótulo da linha na caixinha: VWAP + data/hora da âncora (e "auto" se for a automática), pra saber de qual âncora vem cada valor
+        const _pnVwapRot = a => { let d = ''; try { d = new Date(a.ts).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }).replace(',', ''); } catch (e) {} return 'VWAP ' + (a.auto ? 'auto ' : '') + d; };
         if (_grFootprintAtivo && _grVwapAncoras.length > 0) {
             _grVwapAncoras.forEach(ancora => {
                 if (ancora.oculta) {   // escondida = ativa sem desenho: o valor continua na caixinha
                     const iO = grVwapIdxPorTs(ancora.ts);
-                    if (iO >= 0) { const vO = grVWAPAncorado(_grAllCandles, iO).filter(x => x != null).pop(); if (vO) _pnVwap.push({ rot: 'VWAP', val: fmtN(vO), cor: ancora.tipo === 'topo' ? '#EF5350' : '#64B5F6' }); }
+                    if (iO >= 0 && !_pnVwapIdx.has(iO)) { _pnVwapIdx.add(iO); const vO = grVWAPAncorado(_grAllCandles, iO).filter(x => x != null).pop(); if (vO) _pnVwap.push({ rot: _pnVwapRot(ancora), val: fmtN(vO), cor: ancora.tipo === 'topo' ? '#EF5350' : '#64B5F6' }); }
                     return;
                 }
                 const idxA = grVwapIdxPorTs(ancora.ts);
@@ -6196,7 +6219,7 @@ function grDrawCandles(candles, emptyRight) {
                 const lastVwap = vwapVis.filter(v=>v!==null).pop();
                 if (lastVwap) {
                     window._compValores.vwap = { cor: CorVwap, valor: fmtN(lastVwap) };
-                    _pnVwap.push({ rot: 'VWAP', val: fmtN(lastVwap), cor: CorVwap === '#C62828' ? '#EF5350' : '#64B5F6' });
+                    if (!_pnVwapIdx.has(idxA)) { _pnVwapIdx.add(idxA); _pnVwap.push({ rot: _pnVwapRot(ancora), val: fmtN(lastVwap), cor: CorVwap === '#C62828' ? '#EF5350' : '#64B5F6' }); }
                 }
             });
         }
@@ -7099,7 +7122,7 @@ if (fibsParaDesenhar.length > 0) {
                 if (xb < PAD.left || xa > W - PAD.right) {   // caixa fora da tela: os níveis (entrada, alvos, stops) continuam como linhas contínuas de ponta a ponta
                     const _ipzSel = grPosicoes().indexOf(pz);   // fora da tela: as linhas dos níveis só aparecem na caixa SELECIONADA
                     if (!pz.previa && _ipzSel >= 0 && _edSel && _edSel.tipo === 'ps' && _edSel.idx === _ipzSel) {
-                        const czf = cvPosCores(pz), pv = cvPosPivo(pz), nivs = [];
+                        const czf = cvPosCores(pz), pv = cvPosBE(pz), nivs = [];
                         if (pv > 0) nivs.push([pv, '#787B86']);
                         if (pz.alvo > 0) nivs.push([pz.alvo, czf.la]);
                         if (pz.stop > 0) nivs.push([pz.stop, czf.ls]);
@@ -7114,7 +7137,7 @@ if (fibsParaDesenhar.length > 0) {
                     }
                     return;
                 }
-                const pvt = cvPosPivo(pz), tA = pz.alvo > 0, tS = pz.stop > 0, yE = toY(pvt), yA = tA ? toY(pz.alvo) : yE, yS = tS ? toY(pz.stop) : yE;   // sem alvo/stop definidos: sem zona nem linha
+                const pvt = cvPosPivo(pz), beRef = cvPosBE(pz), tA = pz.alvo > 0, tS = pz.stop > 0, yE = toY(beRef), yA = tA ? toY(pz.alvo) : yE, yS = tS ? toY(pz.stop) : yE;   // sem alvo/stop definidos: sem zona nem linha
                 ctx.save();
                 ctx.beginPath(); ctx.rect(PAD.left, PAD.top, W - PAD.left - PAD.right, chartH); ctx.clip();
                 if (pz.previa) ctx.globalAlpha = 0.7;
@@ -7124,7 +7147,7 @@ if (fibsParaDesenhar.length > 0) {
                 { const ipz = grPosicoes().indexOf(pz); if (ipz >= 0) {
                     const rx0 = Math.min(xa, xb), ry0 = Math.min(yE, yA, yS), rh0 = Math.max(yE, yA, yS) - ry0;
                     window._grPosRects.push({ x: rx0, y: ry0, w: Math.abs(xb - xa), h: rh0, abrir: () => { if (_indState.posLong || _indState.posShort) return; if (!(_edSel && _edSel.tipo === 'ps' && _edSel.idx === ipz)) cvEdicaoIniciar('ps', ipz); else if (window._grCtxFechado || !document.getElementById('cv-pos-ctx')) { window._grCtxFechado = false; grDrawChart(); } } });
-                    if (_edSel && _edSel.tipo === 'ps' && _edSel.idx === ipz) { if (!window._grCtxFechado) { _ctxMostrado = true; cvPosCtxMenu(ipz, rx0, ry0, Math.abs(xb - xa), rh0); } window._grPosSel = { yE, yA, yS, tA, tS, pvt, alvo: pz.alvo, stop: pz.stop, cz }; }
+                    if (_edSel && _edSel.tipo === 'ps' && _edSel.idx === ipz) { if (!window._grCtxFechado) { _ctxMostrado = true; cvPosCtxMenu(ipz, rx0, ry0, Math.abs(xb - xa), rh0); } window._grPosSel = { yE, yA, yS, tA, tS, pvt: beRef, alvo: pz.alvo, stop: pz.stop, cz }; }
                 } }
                 if (pz.scalp) {   // caixa de scalp: só o contorno das duas áreas (alvo e captura/stop), sem preenchimento
                     ctx.lineWidth = 1.5; ctx.setLineDash([]);
@@ -7140,14 +7163,8 @@ if (fibsParaDesenhar.length > 0) {
                     if (rgbm && niv.length > 1) { let prev = yE; niv.forEach((pr, ix) => { const yy = toY(pr); if (ix > 0) { ctx.fillStyle = 'rgba(' + rgbm[1] + ',' + rgbm[2] + ',' + rgbm[3] + ',' + Math.min(0.32, 0.1 * ix) + ')'; ctx.fillRect(xa, Math.min(prev, yy), xb - xa, Math.abs(yy - prev)); } prev = yy; }); }
                 }
                 if (tS && !pz.scalp) { ctx.fillStyle = cz.fs; ctx.fillRect(xa, Math.min(yE, yS), xb - xa, Math.abs(yS - yE)); }
-                if (pvt > 0 && !inf) {   // BOCA DO BREAKEVEN: faixa clara entre o PE e o BE (PE + taxas de ida e volta), em toda caixa, em toda fase
-                    const be = grBreakeven(pvt, pz.lado, grTaxaLado(pz)), yB = be > 0 ? toY(be) : null;
-                    if (yB != null && Math.abs(yB - yE) >= 0.5) {
-                        ctx.save(); ctx.fillStyle = 'rgba(236,238,242,0.78)'; ctx.fillRect(xa, Math.min(yE, yB), xb - xa, Math.max(1.5, Math.abs(yB - yE)));
-                        ctx.lineWidth = 1; ctx.setLineDash([]); ctx.strokeStyle = '#9A9DA6'; ctx.beginPath(); ctx.moveTo(xa, yB); ctx.lineTo(xb, yB); ctx.stroke();
-                        if (Math.abs(xb - xa) > 40) { ctx.font = 'bold 8px -apple-system'; ctx.fillStyle = '#5A5D66'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillText('BE', xa + 4, (yB + yE) / 2 + 0.5); }
-                        ctx.restore();
-                    }
+                if (pvt > 0 && !inf && Math.abs(xb - xa) > 40) {   // rótulo do nível central: ele É o breakeven (a entrada não é mais desenhada)
+                    ctx.save(); ctx.font = 'bold 8px -apple-system'; ctx.fillStyle = '#5A5D66'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillText('BE', xa + 4, yE + (tS ? (yS > yE ? -6 : 6) : -6)); ctx.restore();
                 }
                 const teseInv0 = cz.st === 'analise' && !pz.previa && grTeseInvalida(pz);
                 const perdida = !teseInv0 && cz.st === 'analise' && !pz.previa && grEntradaPerdida(pz);
@@ -7166,7 +7183,8 @@ if (fibsParaDesenhar.length > 0) {
                         if (rgF.stpOrig > 0) { ctx.fillStyle = 'rgba(232,234,238,0.62)'; ctx.fillRect(xa, Math.min(yoE, yoS), xb - xa, Math.abs(yoS - yoE)); }   // zona de captura do robô: cinza CLARO (a sua é cinza escuro)
                         ctx.lineWidth = 1; ctx.setLineDash([4, 3]); ctx.strokeStyle = '#8E9099';
                         ctx.strokeRect(xa, yT, xb - xa, hT);
-                        const muda = [[oE, cvPosPivo(pz)], [oS, pz.stop], [oA, pz.alvo]].filter(([o, n]) => o > 0 && Math.abs(o - n) > 1e-6);
+                        const oEb = grBreakeven(oE, pz.lado, grTaxaLado(pz)) || oE;
+                        const muda = [[oEb, beRef], [oS, pz.stop], [oA, pz.alvo]].filter(([o, n]) => o > 0 && Math.abs(o - n) > 1e-6);
                         muda.forEach(([o]) => { const yy = toY(o); ctx.beginPath(); ctx.moveTo(xa, yy); ctx.lineTo(xb, yy); ctx.stroke(); });
                         ctx.setLineDash([]); ctx.font = 'bold 9px -apple-system'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
                         const dec = Math.max(2, typeof grDecimaisPreco === 'function' ? grDecimaisPreco() : 2);
@@ -7236,7 +7254,7 @@ if (fibsParaDesenhar.length > 0) {
                     ctx.fillStyle = cor; ctx.beginPath(); ctx.roundRect(cx - tw / 2, ty, tw, th, 4); ctx.fill();
                     ctx.fillStyle = '#FFFFFF'; ctx.textAlign = 'center'; ctx.fillText(txt, cx, ty + 11);
                 };
-                const pc = v => (v >= 0 ? '+' : '') + (v * 100).toFixed(2) + '%';
+                const pc = v => (v >= 0 ? '+' : '') + (v * 100).toFixed(2) + '%';   // % do preço; abaixo vira % da MARGEM (× alavancagem)
                 if (!pz.previa && pz.pm > 0 && tS) {   // cadeado no stop
                     ctx.save(); ctx.translate(xa + 6, yS + (yS < yE ? 3 : -15)); ctx.scale(0.5, 0.5); ctx.strokeStyle = '#D1D4DC'; ctx.lineWidth = 2.2; ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.setLineDash([]);
                     try { ctx.stroke(new Path2D(GR_HEROICONS['lock-closed'])); } catch (e) {}
@@ -7245,20 +7263,21 @@ if (fibsParaDesenhar.length > 0) {
                 if (!pz.previa) {
                     let rr = '';
                     // TUDO MEDIDO PELO BREAKEVEN (PE/PM + taxas de ida e volta): % do alvo/stop, R/R e $ = o que fica no bolso
-                    const beL = (() => { const r0 = pz.pm > 0 ? pz.pm : pz.entrada, b = grBreakeven(r0, pz.lado, grTaxaLado(pz)); return b > 0 ? b : r0; })();
+                    const beL = cvPosBE(pz);
                     { const ref = beL, sg = pz.alvo > pz.stop ? 1 : -1, rw = (pz.alvo - ref) * sg, rk = (ref - pz.stop) * sg; if (tA && tS && rw > 0 && rk > 0) rr = ' · R/R ' + (rw / rk).toFixed(1).replace('.', ','); }
                     // Em Análise: simulação com margem fixa e a alavancagem sugerida (tudo recalculado a cada desenho)
                     let ana = null;
                     if (cz.st === 'analise' && !teseInv && tS && pz.entrada > 0 && pz.stop !== pz.entrada) {
-                        const rk = pz.simRisco > 0 ? pz.simRisco : grPadraoSim().risco, mg = pz.simAporte > 0 ? pz.simAporte : grPadraoSim().aporte, dist = Math.abs(pz.entrada - pz.stop) / pz.entrada * 100, al = Math.max(1, Math.floor(rk / dist)), nt = mg * al, sgn = pz.stop < pz.entrada ? 1 : -1;
+                        const rk = pz.simRisco > 0 ? pz.simRisco : grPadraoSim().risco, mg = pz.simAporte > 0 ? pz.simAporte : grPadraoSim().aporte, al = grSimAlavancagem(pz, rk, grTaxaLado(pz)), nt = mg * al, sgn = pz.stop < pz.entrada ? 1 : -1;
                         ana = { al, nt, lucro: tA ? nt * (pz.alvo - beL) / pz.entrada * sgn : null, perda: nt * (pz.stop - beL) / pz.entrada * sgn };
                     }
                     const fu = v => (v >= 0 ? '+' : '−') + Math.abs(Math.round(v)).toLocaleString('pt-BR');
+                    const levCx = ana ? ana.al : ((pz.pm > 0 && pz.cfg && parseFloat(pz.cfg.alav) > 0) ? parseFloat(pz.cfg.alav) : 1);   // alavancagem da caixa: os % passam a ser sobre a margem
                     // dois lucros em $: do preço de entrada (PM, se já ativa) até a COTAÇÃO e até o ALVO. Em análise usa a posição simulada (Pos); ativa usa a quantidade lançada.
                     const qL = (pz.pm > 0 && pz.qty > 0) ? pz.qty : (ana && pz.entrada > 0 ? ana.nt / pz.entrada : null), sgL = pz.lado === 'short' ? -1 : 1;
                     const lucAlvo = (qL != null && tA) ? qL * (pz.alvo - beL) * sgL : null, lucCot = (qL != null && _precoAtual > 0 && (pz.pm > 0 || (window._scRegistro || []).some(r => r.id === pz.id && r.st === 'entrou'))) ? qL * (_precoAtual - beL) * sgL : null;   // resultado na cotação: só com o trade aberto (PM lançado ou o gatilho do motor já entrou)
-                    if (tA && !inf) rot('Alvo ' + fmtX(pz.alvo) + ' (' + pc((pz.alvo - beL) / beL) + ')' + rr + (lucAlvo != null ? ' · ' + fu(lucAlvo) : ''), yA, cz.st === 'analise' ? '#26A69A' : cz.ca, yA <= yE);
-                    if (tS && !inf) rot('Stop ' + fmtX(pz.stop) + ' (' + pc((pz.stop - beL) / beL) + ')' + (ana ? ' · ' + fu(ana.perda) : ''), yS, cz.st === 'analise' ? '#EF5350' : cz.cs, yS < yE);
+                    if (tA && !inf) rot('Alvo ' + fmtX(pz.alvo) + ' (' + pc((pz.alvo - beL) / beL * levCx * sgL) + ')' + rr + (lucAlvo != null ? ' · ' + fu(lucAlvo) : ''), yA, cz.st === 'analise' ? '#26A69A' : cz.ca, yA <= yE);
+                    if (tS && !inf) rot('Stop ' + fmtX(pz.stop) + ' (' + pc((pz.stop - beL) / beL * levCx * sgL) + ')' + (qL != null ? ' · ' + fu(qL * (pz.stop - beL) * sgL) : ''), yS, cz.st === 'analise' ? '#EF5350' : cz.cs, yS < yE);
                     const atv = !ana && cz.st !== 'analise' && pz.pm > 0 && pz.qty > 0 && !teseInv;   // caixa ativa: Alv do trade (banco) e Pos = quantidade × PM
                     if ((ana || atv) && !inf) {   // alavancagem e posição: texto preto no meio da zona do alvo (a menos congestionada)
                         const alvA = atv && pz.cfg && pz.cfg.alav > 0 ? parseFloat(pz.cfg.alav) : null;
@@ -7291,7 +7310,7 @@ if (fibsParaDesenhar.length > 0) {
                         ctx.font = 'bold 9px -apple-system'; ctx.textAlign = 'right'; ctx.textBaseline = 'middle'; const sgl = pz.alvo > pz.stop ? 1 : -1, lc = pz.qty > 0 && pz.pm > 0 ? pz.qty * (it.pct || 0) / 100 * (it.preco - pz.pm) * sgl : null; ctx.fillText((it.pct || 0) + '%' + (lc == null ? '' : ' · ' + (lc >= 0 ? '+' : '-') + Math.abs(lc).toFixed(2)), xb - 10, y); ctx.restore();
                     });
                     if (tA && !inf) inter(pz.alvos, 'rgba(38,166,154,0.95)', 'A', pz.alvo); if (tS && !inf) inter(pz.stops, 'rgba(239,83,80,0.95)', 'S', pz.stop);
-                    if (!inf) rot((pz.pm > 0 ? 'PM ' + fmtX(pz.pm) + ' · PE ' + fmtX(pz.entrada) : 'PE ' + fmtX(pz.entrada)) + (lucCot != null ? ' · ' + fu(lucCot) : ''), yE, cz.st === 'analise' ? '#787B86' : '#26A69A', tS ? yS > yE : pz.lado !== 'short');   // conferência: entrada da caixa × preço médio
+                    if (!inf) rot('BE ' + fmtX(beRef) + (lucCot != null ? ' · ' + fu(lucCot) : ''), yE, cz.st === 'analise' ? '#787B86' : '#26A69A', tS ? yS > yE : pz.lado !== 'short');   // conferência: entrada da caixa × preço médio
                 }
                 ctx.restore();
             });
@@ -7864,7 +7883,7 @@ function grEdAlcas(fx, fy) {
         // Caixa mais larga que a tela (ex.: criada no 3D e vista no 4h): as alças são presas à parte VISÍVEL, pra sempre dar pra alcançar e encolher.
         const L = grPadL() + 16, R = grPadL() + (window._grChartW || 300) - 16;
         const cl = x => Math.max(L, Math.min(R, x));
-        const xa0 = fx(o.t1), xb0 = fx(o.t2v || o.t2), xa = cl(xa0), xb = cl(xb0), xm = (cl(Math.min(xa0, xb0)) + cl(Math.max(xa0, xb0))) / 2; const hs = []; if (o.alvo > 0) hs.push({ k: 'a', x: xm, y: fy(o.alvo) }); if (o.stop > 0) hs.push({ k: 's', x: xm, y: fy(o.stop) }); hs.push({ k: 'e', x: xm, y: fy(cvPosPivo(o)) }, { k: 'l', x: xa, y: fy(cvPosPivo(o)) }, { k: 'r', x: xb, y: fy(cvPosPivo(o)) }); return hs; }
+        const xa0 = fx(o.t1), xb0 = fx(o.t2v || o.t2), xa = cl(xa0), xb = cl(xb0), xm = (cl(Math.min(xa0, xb0)) + cl(Math.max(xa0, xb0))) / 2; const hs = []; if (o.alvo > 0) hs.push({ k: 'a', x: xm, y: fy(o.alvo) }); if (o.stop > 0) hs.push({ k: 's', x: xm, y: fy(o.stop) }); if (!cvPosEmTrade(o)) hs.push({ k: 'e', x: xm, y: fy(cvPosBE(o)) }); hs.push({ k: 'l', x: xa, y: fy(cvPosBE(o)) }, { k: 'r', x: xb, y: fy(cvPosBE(o)) }); return hs; }
     return [];
 }
 function grEdCor() { const o = grEdObjeto(); if (o && _edSel.tipo === 'ps') return o.lado === 'short' ? '#EF5350' : '#26A69A'; if (o && _edSel.tipo === 'al') return grAlertaCor(o); return (o && (o.cor || '#000000')) || '#000000'; }
@@ -7889,7 +7908,7 @@ function grEdToqueInicio(x, y) {   // x,y em coordenadas do canvas; devolve true
     if (_edSel.tipo === 'ps' && bd > 30) {   // longe das alças e dentro da caixa: arrasta a caixa inteira
         const o = grEdObjeto(), fxx = t => grIndexToX(grTimeToIndex(t));
         const xa = Math.min(fxx(o.t1), fxx(o.t2v || o.t2)), xb = Math.max(fxx(o.t1), fxx(o.t2v || o.t2));
-        const ys = [grLineY(cvPosPivo(o))].concat(o.alvo > 0 ? [grLineY(o.alvo)] : [], o.stop > 0 ? [grLineY(o.stop)] : []), ya = Math.min(...ys), yb = Math.max(...ys);
+        const ys = [grLineY(cvPosBE(o))].concat(o.alvo > 0 ? [grLineY(o.alvo)] : [], o.stop > 0 ? [grLineY(o.stop)] : []), ya = Math.min(...ys), yb = Math.max(...ys);
         if (x >= xa && x <= xb && y >= ya && y <= yb) { best = { k: 'm', x, y }; }
         else { window._edTapPend = { x, y, sel: _edSel }; return false; }   // longe das alças e fora da caixa: o dedo rola o gráfico normalmente (um toque simples ainda solta a caixa)
     }
@@ -7965,7 +7984,7 @@ function grEdToqueMove(x, y) {
     else if (tp === 'ps') {
         if (d.k === 'a') o.alvo = preco;
         else if (d.k === 's') o.stop = preco;
-        else if (d.k === 'e') { if (!(o.pm > 0)) o.entrada = preco; }   // com PM a linha central é o PM: travada
+        else if (d.k === 'e') { if (!cvPosEmTrade(o)) o.entrada = cvPosEntradaDoBE(preco, o); }   // o nível central é o BREAKEVEN: o preço arrastado vira BE e a entrada é derivada dele; em trade fica travado
         else if (d.k === 'l') { if (!o.tradeId) o.t1 = grIndexToTime(idx); }   // a borda esquerda não passa do limite de rolagem (senão a caixa 'reaparece' inteira ao cruzá-lo)   // com trade, a borda esquerda é fixa no 1º aporte
         else if (d.k === 'r') o.t2 = grIndexToTime(idx);
         else if (d.k === 'm') {   // corpo: desloca tempo e preços juntos (em escala log mantém as distâncias em %)
@@ -7975,7 +7994,7 @@ function grEdToqueMove(x, y) {
             // inteira reaparecia de uma vez (o "estranho" ao passar do último candle). A largura guardada não muda: voltando, a caixa reaparece inteira.
             let dI = dIdx;
             if (!o.tradeId) { o.t1 = grIndexToTime(grTimeToIndex(d.snap.t1) + dI); o.t2 = grIndexToTime(grTimeToIndex(d.snap.t2) + dI); }
-            if (!(o.pm > 0) && !cvPosTravaV(o)) { o.entrada = mv(d.snap.entrada); o.alvo = mv(d.snap.alvo); o.stop = mv(d.snap.stop); grZonaCelIma(o); }   // Melhor e Setup: corpo só anda na horizontal, os preços calculados não saem do lugar   // com PM: só desloca na horizontal
+            if (!cvPosEmTrade(o) && !cvPosTravaV(o)) { o.entrada = mv(d.snap.entrada); o.alvo = mv(d.snap.alvo); o.stop = mv(d.snap.stop); grZonaCelIma(o); }   // Melhor e Setup: corpo só anda na horizontal, os preços calculados não saem do lugar   // com PM: só desloca na horizontal
         }
     }
     grDrawChart();
@@ -8012,8 +8031,47 @@ function cvEdicaoIniciar(tipo, idx) {
     window._nfCtxAberto = GR_ED_CTX_TIPOS.indexOf(tipo) >= 0;   // selecionou (pela alça ou pela lista): o menu de contexto já aparece
     grDrawChart();
 }
-function cvPosCtxRemover() { const m = document.getElementById('cv-pos-ctx'); if (m) m.remove(); const d = document.getElementById('cv-pos-dados'); if (d) d.remove(); const sc = document.getElementById('cv-pos-score'); if (sc) sc.remove(); const ss = document.getElementById('cv-pos-status'); if (ss) ss.remove(); }
+function cvPosCtxRemover() { cvPosLockFechar(); const m = document.getElementById('cv-pos-ctx'); if (m) m.remove(); const d = document.getElementById('cv-pos-dados'); if (d) d.remove(); const sc = document.getElementById('cv-pos-score'); if (sc) sc.remove(); const ss = document.getElementById('cv-pos-status'); if (ss) ss.remove(); }
 function cvPosTravaV(z) { return z.travaV != null ? !!z.travaV : (z.origem === 'melhor' || z.origem === 'setup'); }   // Trava Vertical: corpo da caixa só anda na horizontal (padrão ligado no Melhor e no Setup)
+// ── Cadeado da caixa: abre um modalzinho com as duas travas ──────────────────────────────────────────────────────────────────────────
+//  • Travar só o vertical: o corpo da caixa só anda na horizontal (as alças de entrada/alvo/stop continuam editáveis). Era o "Trava Vertical" do modal Dados.
+//  • Travar tudo: a caixa não move nem redimensiona (o dedo rola o gráfico).
+// Tocar na opção ligada desliga. Ícone: fechado escuro = tudo · fechado azul = só vertical · aberto = livre.
+function cvPosLockIcone(z) {
+    const b = document.getElementById('cv-pos-ctx-lock'); if (!b || !z) return;
+    const tudo = !!z.trancada, vert = !tudo && cvPosTravaV(z);
+    b.innerHTML = grHeroicon((tudo || vert) ? 'lock-closed' : 'lock-open', 16);
+    b.style.color = vert ? '#2962FF' : '#1C1C1E';
+}
+function cvPosLockFechar() { ['cv-pos-lock-menu', 'cv-pos-lock-ov'].forEach(id => { const e = document.getElementById(id); if (e) e.remove(); }); }
+function cvPosLockMenu(i) {
+    if (document.getElementById('cv-pos-lock-menu')) { cvPosLockFechar(); return; }
+    const btn = document.getElementById('cv-pos-ctx-lock'); if (!btn || !grPosicoes()[i]) return;
+    const ov = document.createElement('div'); ov.id = 'cv-pos-lock-ov'; ov.style.cssText = 'position:fixed;inset:0;z-index:9695;background:transparent;';
+    ov.onclick = ev => { ev.stopPropagation(); cvPosLockFechar(); };
+    const mn = document.createElement('div'); mn.id = 'cv-pos-lock-menu';
+    mn.style.cssText = 'position:fixed;z-index:9696;background:#FFFFFF;border-radius:12px;padding:6px;box-shadow:0 8px 28px rgba(0,0,0,0.25);font-family:-apple-system,sans-serif;width:230px;';
+    mn.onclick = ev => ev.stopPropagation();
+    const linha = (rot, sub, ativo, fn) => {
+        const b = document.createElement('button'); b.type = 'button';
+        b.style.cssText = 'display:flex;align-items:center;gap:10px;width:100%;text-align:left;border:none;background:' + (ativo ? '#EAF1FF' : 'none') + ';padding:9px 10px;border-radius:8px;';
+        b.innerHTML = '<span style="flex:1;"><span style="display:block;font-size:14px;font-weight:700;color:#1C1C1E;">' + rot + '</span><span style="display:block;font-size:11.5px;color:#8E8E93;margin-top:1px;">' + sub + '</span></span>'
+            + (ativo ? '<span style="color:#2962FF;font-size:16px;font-weight:800;">&#10003;</span>' : '');
+        b.onclick = ev => { ev.stopPropagation(); fn(); };
+        return b;
+    };
+    const aplicar = fn => { const z = grPosicoes()[i]; if (!z) return cvPosLockFechar(); fn(z); try { grPosSalvar(); } catch (e) {} cvPosLockIcone(z); cvPosLockFechar(); grDrawChart(); };
+    const z0 = grPosicoes()[i];
+    mn.appendChild(linha('Travar só o vertical', 'A caixa só anda na horizontal', !z0.trancada && cvPosTravaV(z0),
+        () => aplicar(z => { if (!z.trancada && cvPosTravaV(z)) z.travaV = false; else { z.travaV = true; z.trancada = false; } })));
+    mn.appendChild(linha('Travar tudo', 'Não move nem redimensiona', !!z0.trancada,
+        () => aplicar(z => { z.trancada = !z.trancada; })));
+    document.body.appendChild(ov); document.body.appendChild(mn);
+    const r = btn.getBoundingClientRect(), W = window.innerWidth, H = window.innerHeight, w = mn.offsetWidth || 230, h = mn.offsetHeight || 110;
+    let x = r.left + r.width / 2 - w / 2, y = r.bottom + 6;
+    if (y + h > H - 8) y = r.top - h - 6;
+    mn.style.left = Math.max(8, Math.min(W - w - 8, x)) + 'px'; mn.style.top = Math.max(8, y) + 'px';
+}
 function cvPosMask(v) { return (v > 0 ? v : 0).toLocaleString('pt-BR', { minimumFractionDigits: 5, maximumFractionDigits: 5 }); }
 function cvPosDadosPainel(i, m) {   // modalzinho "Dados": Entrada, Stop, Risco %, Aporte — a caixa atualiza na tela enquanto digita
     let d = document.getElementById('cv-pos-dados');
@@ -8034,6 +8092,7 @@ function cvPosDadosPainel(i, m) {   // modalzinho "Dados": Entrada, Stop, Risco 
                 inp.value = cvPosMask(v);
                 try { inp.setSelectionRange(inp.value.length, inp.value.length); } catch (e) {}
                 const z = grPosicoes()[d._i]; if (!z) return;
+                if (chave === 'entrada' && cvPosEmTrade(z)) return;   // em trade o nível central (BE) é travado
                 if (chave === 'entrada' || chave === 'stop') { if (!(v > 0)) return; z[chave] = v; }
                 else if (v > 0) { const vv = chave === 'simRisco' ? Math.min(v, 100) : v; grPadraoSimGravar(chave, vv); z[chave] = vv; } else delete z[chave];
                 grDrawChart();
@@ -8048,28 +8107,27 @@ function cvPosDadosPainel(i, m) {   // modalzinho "Dados": Entrada, Stop, Risco 
         campo('cv-pos-dados-aporte', 'Aporte', 'simAporte');
         campo('cv-pos-dados-taxa', 'Taxa % (lado)', 'simTaxa');
         const res = document.createElement('div'); res.id = 'cv-pos-dados-res'; res.style.cssText = 'grid-column:1 / span 2;border-top:1px solid #E5E5EA;margin-top:2px;padding-top:4px;font-size:11px;line-height:1.5;color:#3A3A3C;display:grid;grid-template-columns:auto 1fr;column-gap:8px;'; d.appendChild(res);
-        const lb = document.createElement('label'); lb.style.cssText = 'grid-column:1 / span 2;display:flex;align-items:center;gap:6px;margin-top:2px;font-size:12px;';
-        const ck = document.createElement('input'); ck.type = 'checkbox'; ck.id = 'cv-pos-dados-travav'; ck.style.cssText = 'width:16px;height:16px;margin:0;';
-        ck.addEventListener('change', () => { const z = grPosicoes()[d._i]; if (!z) return; z.travaV = ck.checked; try { grPosSalvar(); } catch (e) {} grDrawChart(); });
-        lb.appendChild(ck); lb.appendChild(document.createTextNode('Trava Vertical')); d.appendChild(lb);
         document.body.appendChild(d);
     }
     d._i = i;
     { const hd = d.querySelector('#cv-pos-dados-nome'); if (hd) { hd.textContent = grPosNome(pz); hd.style.color = pz.lado === 'short' ? '#DC2626' : '#16A34A'; } }
-    d.querySelector('#cv-pos-dados-travav').checked = cvPosTravaV(pz);
     ['cv-pos-dados-risco', 'cv-pos-dados-aporte', 'cv-pos-dados-taxa'].forEach(id => { const e = d.querySelector('#' + id); if (e) { e.style.display = pz.tradeId ? 'none' : ''; e.previousSibling.style.display = pz.tradeId ? 'none' : ''; } });   // risco/aporte só valem na caixa em análise
     const fmt = v => String(v).replace('.', ',');
     const set = (id, val, preco) => { const e = d.querySelector('#' + id); if (!e) return; if (document.activeElement !== e) e.value = cvPosMask(Number(val)); };
-    set('cv-pos-dados-pe', pz.entrada, true);
+    { const ePe = d.querySelector('#cv-pos-dados-pe'), emT = cvPosEmTrade(pz); if (ePe) { ePe.readOnly = emT; ePe.style.background = emT ? '#F2F2F7' : '#fff'; ePe.style.color = emT ? '#8E8E93' : '#1C1C1E'; if (ePe.previousSibling) ePe.previousSibling.textContent = emT ? 'Breakeven (travado)' : 'Entrada'; } }
+    set('cv-pos-dados-pe', cvPosEmTrade(pz) ? cvPosBE(pz) : pz.entrada, true);
     set('cv-pos-dados-stop', pz.stop, true);
     set('cv-pos-dados-risco', pz.simRisco > 0 ? pz.simRisco : grPadraoSim().risco);
     set('cv-pos-dados-aporte', pz.simAporte > 0 ? pz.simAporte : grPadraoSim().aporte);
     set('cv-pos-dados-taxa', pz.simTaxa > 0 ? pz.simTaxa : grPadraoSim().taxa);
-    { const res = d.querySelector('#cv-pos-dados-res'), sm = pz.tradeId ? null : grSimCaixa(pz);
+    { const res = d.querySelector('#cv-pos-dados-res'), sm = pz.tradeId ? (() => { if (!(pz.pm > 0) || !(pz.qty > 0)) return null; const al = pz.cfg && parseFloat(pz.cfg.alav) > 0 ? parseFloat(pz.cfg.alav) : null, tx = grTaxaLado(pz), nt = pz.qty * pz.pm, be = cvPosBE(pz), sg = pz.lado === 'short' ? -1 : 1;
+          const lucro = pz.alvo > 0 ? pz.qty * (pz.alvo - be) * sg : null, perda = pz.stop > 0 ? pz.qty * (pz.stop - be) * sg : null;
+          return { al, nt, aporte: al ? nt / al : 0, tEnt: nt * tx, tSaiA: nt * tx, tSaiS: nt * tx, lucro, perda, rr: lucro != null && perda != null && perda < 0 ? lucro / -perda : null }; })() : grSimCaixa(pz);
       if (res) { res.style.display = sm ? 'grid' : 'none'; if (sm) { const $ = v => (v < 0 ? '−' : '') + '$' + Math.abs(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         const ln = (r0, v, cor) => '<span' + (cor ? ' style="color:' + cor + ';"' : '') + '>' + r0 + '</span><span style="text-align:right;' + (cor ? 'color:' + cor + ';' : '') + '">' + v + '</span>';
-        res.innerHTML = ln('Alavancagem', '<b>' + sm.al + 'x</b>') + ln('Posição', $(sm.nt)) + ln('Taxas (total)', $(sm.tEnt + (sm.tSaiA != null ? sm.tSaiA : sm.tSaiS)))
-            + (sm.lucro != null ? ln('Alvo líquido', '<b>' + $(sm.lucro) + '</b>' + (sm.aporte > 0 ? ' (' + (sm.lucro >= 0 ? '+' : '−') + (Math.abs(sm.lucro) / sm.aporte * 100).toFixed(1).replace('.', ',') + '%)' : ''), '#16A34A') : '') + ln('Stop líquido', '<b>' + $(sm.perda) + '</b>' + (sm.aporte > 0 ? ' (' + (sm.perda >= 0 ? '+' : '−') + (Math.abs(sm.perda) / sm.aporte * 100).toFixed(1).replace('.', ',') + '%)' : ''), '#DC2626')
+        const txTot = sm.tEnt + (sm.tSaiA != null ? sm.tSaiA : sm.tSaiS);
+        res.innerHTML = ln('Alavancagem', '<b>' + (sm.al ? sm.al + 'x' : '—') + '</b>') + ln('Posição', $(sm.nt)) + ln('Taxas (alav. × taxa)', $(txTot) + (sm.aporte > 0 ? ' (' + (txTot / sm.aporte * 100).toFixed(1).replace('.', ',') + '% da margem)' : ''))
+            + (sm.lucro != null ? ln('Alvo líquido', '<b>' + $(sm.lucro) + '</b>' + (sm.aporte > 0 ? ' (' + (sm.lucro >= 0 ? '+' : '−') + (Math.abs(sm.lucro) / sm.aporte * 100).toFixed(1).replace('.', ',') + '%)' : ''), '#16A34A') : '') + (sm.perda != null ? ln('Stop líquido', '<b>' + $(sm.perda) + '</b>' + (sm.aporte > 0 ? ' (' + (sm.perda >= 0 ? '+' : '−') + (Math.abs(sm.perda) / sm.aporte * 100).toFixed(1).replace('.', ',') + '%)' : ''), '#DC2626') : '')
             + (sm.rr != null ? ln('Ganho ÷ perda', sm.rr.toFixed(2).replace('.', ',')) : ''); } } }
     if (d.contains(document.activeElement)) return cvPosDadosFixar();   // digitando: o modal fica PARADO no topo da parte visível (não segue a caixa nem o teclado)
     const mr = m.getBoundingClientRect(), dw = d.offsetWidth || 170, dh = d.offsetHeight || 110;
@@ -8095,7 +8153,7 @@ function cvPosCtxMenu(i, rx, ry, rw, rh) {   // menu de contexto da caixa seleci
         m.style.cssText = 'position:fixed;z-index:9690;display:flex;align-items:center;gap:1px;background:#FFFFFF;border-radius:9px;padding:2px 4px;box-shadow:0 1px 8px rgba(0,0,0,0.25);font-family:-apple-system,sans-serif;font-size:11px;color:#3A3A3C;';
         const bt = (id, svg, cor, fn) => { const b = document.createElement('button'); b.type = 'button'; b.id = id; b.innerHTML = svg; b.style.cssText = 'width:26px;height:26px;background:none;border:none;color:' + cor + ';display:flex;align-items:center;justify-content:center;padding:0;'; b.onclick = ev => { ev.stopPropagation(); fn(); }; m.appendChild(b); };
         bt('cv-pos-ctx-olho', '', '#1C1C1E', () => { const z = grPosicoes()[m._i]; if (!z) return; z.oculta = !z.oculta; if (z.oculta) cvEdicaoSair(true); grDrawChart(); });
-        bt('cv-pos-ctx-lock', '', '#1C1C1E', () => { const z = grPosicoes()[m._i]; if (!z) return; z.trancada = !z.trancada; try { grPosSalvar(); } catch (e) {} grDrawChart(); });
+        bt('cv-pos-ctx-lock', '', '#1C1C1E', () => cvPosLockMenu(m._i));
         bt('cv-pos-ctx-cfg', grHeroicon('cog-6-tooth', 16), '#1C1C1E', () => cvPosFormAbrir(m._i));
         bt('cv-pos-ctx-del', grHeroicon('trash', 16), '#EF5350', async () => { await cvPosApagarCaixa(m._i); cvEdicaoSair(true); grDrawChart(); });
         // PAINEL ▾: um botão só; dentro, Dados · Score · Status · Sair agora (o menu da caixa não fica largo)
@@ -8138,7 +8196,7 @@ function cvPosCtxMenu(i, rx, ry, rw, rh) {   // menu de contexto da caixa seleci
         document.body.appendChild(m);
     }
     m._i = i;
-    m.querySelector('#cv-pos-ctx-lock').innerHTML = grHeroicon(pz.trancada ? 'lock-closed' : 'lock-open', 16);
+    cvPosLockIcone(pz);
     m.querySelector('#cv-pos-ctx-olho').innerHTML = grHeroicon(pz.oculta ? 'eye-slash' : 'eye', 16);
     const analise = !pz.tradeId;
     m.querySelector('#cv-pos-ctx-dados').style.display = 'flex';
@@ -12924,7 +12982,7 @@ function odCardAtivo(t, o) {
     }
     if (sls.length && tps.length) {
         const tpL = tps.reduce((m, a) => (Math.abs(a.preco - pm) > Math.abs(m.preco - pm) ? a : m)), slL = sls.reduce((m, a) => (Math.abs(a.preco - pm) > Math.abs(m.preco - pm) ? a : m));
-        const beC = grBreakeven(pm, sg > 0 ? 'long' : 'short', grTaxaLado(null)) || pm, rw = (tpL.preco - beC) * sg, rk = (beC - slL.preco) * sg;
+        const beC = grBreakevenPM(pm, sg > 0 ? 'long' : 'short', grTaxaLado(null)) || pm, rw = (tpL.preco - beC) * sg, rk = (beC - slL.preco) * sg;
         if (rw > 0 && rk > 0) itens.push(par('R/R', f2(rw / rk, 1) + ' para 1'));
     }
     if (sls.length) {
@@ -12988,7 +13046,7 @@ function odRenderTradeRow(t) {
             const aa = al.filter(a => a.tipo !== 'stop'), ss = al.filter(a => a.tipo === 'stop');
             if (st === 'ativo' && pm > 0 && aa.length && ss.length) {
                 const alvoLonge = aa.reduce((m, a) => (Math.abs(a.preco - pm) > Math.abs(m.preco - pm) ? a : m)), stopLonge = ss.reduce((m, a) => (Math.abs(a.preco - pm) > Math.abs(m.preco - pm) ? a : m));
-                const beC = grBreakeven(pm, sg > 0 ? 'long' : 'short', grTaxaLado(null)) || pm, rw = (alvoLonge.preco - beC) * sg, rk = (beC - stopLonge.preco) * sg;
+                const beC = grBreakevenPM(pm, sg > 0 ? 'long' : 'short', grTaxaLado(null)) || pm, rw = (alvoLonge.preco - beC) * sg, rk = (beC - stopLonge.preco) * sg;
                 if (rw > 0 && rk > 0) extra += '<div style="font-size:12px;color:#6C6C70;margin-top:4px;">R/R <b>' + f2(rw / rk, 1) + ' para 1</b></div>';
             }
         }
@@ -14208,17 +14266,17 @@ async function scSugerirAncora() {
         if (cm.length) { const k = cm.reduce((a, b) => (+b.v > +a.v ? b : a)); tAnc = k.t; refino = { rot: dMi.rot, t: k.t, v: +k.v }; } } } catch (e) {}
     return { lado: P.lado, origem: cs[P.i0], amp: P.amp, retr: P.retr, outra: P.outra, ampO: P.ampO, ig, igPct: (ig.c - ig.o) / ig.o * 100, tAnc, refino, tf: defM.rot };
 }
-// Ancora VP, Value Area e VWAP no mesmo instante (a VWAP automática substitui só a anterior automática; as suas ficam).
+// Ancora VP, Value Area e VWAP no mesmo instante (a VWAP é âncora única, como VP e VA: a automática substitui a que estiver).
 function grAncorarTudo(ts, lado) {
     if (!(ts > 0)) return;
     // VISIBILIDADE: a âncora automática NÃO mostra nada sozinha. Na 1ª vez os três ficam ocultos (olho fechado); depois
     // cada reancoragem mantém o olho como você deixou (mostrar/ocultar pelo olho na engrenagem do chip ou do Footprint ▾).
     const primeira = !_scCfg.ancAutoIni;
     if (primeira) { _scCfg.ancAutoIni = true; scSalvar(); _grVpOculta = true; _grVaOculta = true; try { grOcultaSalvar(); } catch (e) {} }
-    const vwOcAnt = (_grVwapAncoras.find(a => a.auto) || {}).oculta;
+    const vwOcAnt = (_grVwapAncoras[0] || {}).oculta;
     grVpAncorarTs(ts);
     try { _grValueAreaAncoraTs = ts; grValueAreaSalvarAncora(); _grValueAreaCache = { binsRef: null, poc: null, vah: null, val: null }; const b = document.getElementById('cv-ind-valueArea'); if (b) b.classList.add('active'); } catch (e) {}
-    try { _grVwapAncoras = _grVwapAncoras.filter(a => !a.auto); _grVwapAncoras.push({ ts, tipo: lado === 'baixa' ? 'topo' : 'fundo', auto: true, oculta: primeira ? true : !!vwOcAnt }); grVwapSalvarAncoras(); grVwapAtualizarBotaoLimpar(); const b = document.getElementById('cv-ind-vwap'); if (b) b.classList.add('active'); } catch (e) {}
+    try { _grVwapAncoras = [{ ts, tipo: lado === 'baixa' ? 'topo' : 'fundo', auto: true, oculta: primeira ? true : !!vwOcAnt }]; grVwapSalvarAncoras(); grVwapAtualizarBotaoLimpar(); const b = document.getElementById('cv-ind-vwap'); if (b) b.classList.add('active'); } catch (e) {}
     try { grAmbienteSalvar(); } catch (e) {}
     grDrawChart();
 }
@@ -18520,30 +18578,42 @@ function scRelatorioMostrar(o) {
     ov.style.display = 'flex';
 }
 function scDefinirDias(v) { _scCfg.dias = parseInt(v) || 30; scSalvar(); cvRenderMenuFpCfg(); }
-// Janelinha do timeframe personalizado (macro ou micro): unidade + quantidade
+// Janelinha do timeframe personalizado (macro ou micro): digita direto "45m", "3h", "2d" (m = minutos, h = horas, d = dias). Meses não existem aqui.
 function scPersAbrir(qual) {
     const ant = document.getElementById('sc-pers-overlay'); if (ant) ant.remove();
-    const atual = scTfBase(_scCfg[qual]) && scTfBase(_scCfg[qual]).custom, st = { u: atual ? atual.u : 'hor' };
+    const atual = scTfBase(_scCfg[qual]) && scTfBase(_scCfg[qual]).custom;
+    const sig = { min: 'm', hor: 'h', dia: 'd' }, LIM = { min: 1440, hor: 168, dia: 30 }, NOME = { min: 'minutos', hor: 'horas', dia: 'dias' };
     const ov = document.createElement('div'); ov.id = 'sc-pers-overlay'; ov.style.cssText = 'position:fixed;inset:0;z-index:9900;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;padding:16px;';
-    const UN = [['min', 'Minutos', 1440], ['hor', 'Horas', 168], ['dia', 'Dias', 30]];
     ov.innerHTML = '<div style="background:#FFFFFF;width:100%;max-width:300px;border-radius:14px;padding:14px 16px;font-family:-apple-system,sans-serif;color:#1C1C1E;box-shadow:0 8px 28px rgba(0,0,0,0.3);">'
         + '<div style="font-size:15px;font-weight:800;">Timeframe ' + qual + ' personalizado</div>'
-        + '<div id="sc-pers-un" style="display:flex;gap:6px;margin-top:12px;"></div>'
-        + '<input id="sc-pers-n" type="text" inputmode="numeric" maxlength="4" value="' + (atual ? atual.a : '') + '" placeholder="Quantidade" style="width:100%;box-sizing:border-box;margin-top:10px;border:1px solid #D1D1D6;border-radius:8px;padding:10px;font-size:16px;">'
+        + '<input id="sc-pers-n" type="text" inputmode="text" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" value="' + (atual && sig[atual.u] ? atual.a + sig[atual.u] : '') + '" placeholder="Ex: 45m, 3h, 2d" style="width:100%;box-sizing:border-box;margin-top:12px;border:1px solid #D1D1D6;border-radius:8px;padding:10px;font-size:16px;">'
+        + '<div id="sc-pers-prev" style="font-size:13px;font-weight:700;color:#26A69A;min-height:18px;margin-top:6px;"></div>'
+        + '<div style="font-size:11.5px;color:#8E8E93;line-height:1.5;margin-top:2px;"><b>m</b> minutos &nbsp;·&nbsp; <b>h</b> horas &nbsp;·&nbsp; <b>d</b> dias</div>'
         + '<div id="sc-pers-msg" style="font-size:11.5px;color:#DC2626;min-height:16px;margin-top:6px;"></div>'
-        + '<div style="display:flex;gap:8px;margin-top:6px;"><button type="button" id="sc-pers-c" style="flex:1;border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:700;background:#E5E5EA;color:#1C1C1E;">Cancelar</button><button type="button" id="sc-pers-ok" style="flex:1;border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:800;background:#1C1C1E;color:#FFFFFF;">OK</button></div></div>';
+        + '<div style="display:flex;gap:8px;margin-top:6px;"><button type="button" id="sc-pers-c" style="flex:1;border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:700;background:#E5E5EA;color:#1C1C1E;">Cancelar</button><button type="button" id="sc-pers-ok" style="flex:1;border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:800;background:#1C1C1E;color:#FFFFFF;">OK</button></div>'
+        + '</div>';
     document.body.appendChild(ov);
     const g = i => document.getElementById(i), fechar = () => ov.remove();
-    const pintar = () => { g('sc-pers-un').innerHTML = UN.map(x => '<button type="button" data-u="' + x[0] + '" style="flex:1;border:none;border-radius:8px;padding:9px 0;font-size:13px;font-weight:700;' + (st.u === x[0] ? 'background:#2A2E39;color:#FFFFFF;' : 'background:#F2F2F7;color:#1C1C1E;') + '">' + x[1] + '</button>').join(''); g('sc-pers-un').querySelectorAll('button').forEach(b => b.onclick = () => { st.u = b.dataset.u; pintar(); }); };
-    pintar();
-    g('sc-pers-n').addEventListener('input', () => { g('sc-pers-n').value = g('sc-pers-n').value.replace(/\D/g, '').slice(0, 4); });
+    // Reaproveita o leitor do modal do gráfico e aplica os limites do Setup Caixas
+    const ler = () => {
+        const r = cvTfCustomParse(g('sc-pers-n').value);
+        if (r.u === 'mes') return { erro: 'Meses não estão disponíveis aqui. Use m, h ou d.' };
+        if (r.u && r.a > LIM[r.u]) return { erro: 'Use de 1 a ' + LIM[r.u] + ' ' + NOME[r.u] + '.' };
+        return r;
+    };
+    const nomeU = (u, a) => a === 1 ? { min: 'minuto', hor: 'hora', dia: 'dia' }[u] : NOME[u];
+    g('sc-pers-n').addEventListener('input', () => { const r = ler(); g('sc-pers-msg').textContent = ''; g('sc-pers-prev').textContent = r.u ? '→ ' + r.a + ' ' + nomeU(r.u, r.a) : ''; });
+    g('sc-pers-n').dispatchEvent(new Event('input'));
+    const ok = () => {
+        const r = ler();
+        if (!r.u) { g('sc-pers-msg').textContent = r.erro || 'Digite o timeframe, ex.: 45m, 3h, 2d.'; return; }
+        _scCfg[qual] = 'c:' + r.u + ':' + r.a; scSalvar(); fechar(); cvRenderMenuFpCfg();
+    };
+    g('sc-pers-n').addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); ok(); } });
     ov.onclick = ev => { if (ev.target === ov) fechar(); };
     g('sc-pers-c').onclick = fechar;
-    g('sc-pers-ok').onclick = () => {
-        const a = parseInt(g('sc-pers-n').value), un = UN.find(x => x[0] === st.u);
-        if (!(a >= 1) || a > un[2]) { g('sc-pers-msg').textContent = 'Use de 1 a ' + un[2] + ' ' + un[1].toLowerCase() + '.'; return; }
-        _scCfg[qual] = 'c:' + st.u + ':' + a; scSalvar(); fechar(); cvRenderMenuFpCfg();
-    };
+    g('sc-pers-ok').onclick = ok;
+    setTimeout(() => { try { g('sc-pers-n').focus(); g('sc-pers-n').select(); } catch (e) {} }, 60);
 }
 function scDefinirMacro(v) { if (v === '__pers') { scPersAbrir('macro'); return; } if (scTfBase(v)) _scCfg.macro = v; scMicroSinc(); scSalvar(); cvRenderMenuFpCfg(); }
 function scDefinirIntervalo(v) { const m = parseInt(v); if (SC_PLAY_INTERVALOS.includes(m)) _scCfg.intervalo = m; scSalvar(); if (_scPlay.on) _scPlay.prox = scPlayProxima(); cvRenderMenuFpCfg(); try { scPlayUI(); } catch (e) {} }
