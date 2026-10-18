@@ -3355,7 +3355,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v604';
+const APP_VERSAO = 'v606';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -8148,8 +8148,9 @@ function cvPosCtxMenu(i, rx, ry, rw, rh) {   // menu de contexto da caixa seleci
             const L = scRegLista(), vivo = L.find(r => r.id === z.id && r.manual && (r.st === 'aguardando' || r.st === 'entrou'));
             if (vivo) { z.monitorar = false; if (vivo.st === 'aguardando') { vivo.st = 'apagada'; vivo.tFim = Date.now(); } else vivo.semTela = true; try { scRegGravarServidor(); } catch (e) {} return; }
             for (let k = L.length - 1; k >= 0; k--) if (L[k].id === z.id && L[k].manual) L.splice(k, 1);   // registro velho (parado antes): recomeça do zero
+            const mot = scManualMotivo(z);
+            if (mot) { z.monitorar = false; try { grAreaToast('Não dá para monitorar: ' + mot, '#EF5350'); } catch (e) {} return; }
             z.monitorar = true; try { scManualSync(); } catch (e) {}
-            if (!L.some(r => r.id === z.id)) { z.monitorar = false; try { grAreaToast('Caixa inválida: confira entrada, stop e alvo', '#EF5350'); } catch (e) {} }
         });
         mkBt('cv-pos-ctx-pct', z => { z.pctMargem = !z.pctMargem; });
         [dd, sb, st].forEach(b => { b.style.margin = '0'; b.style.height = '26px'; b.style.fontSize = '12px'; b.style.justifyContent = 'flex-start'; });
@@ -11868,24 +11869,36 @@ const GR_AMBIENTE_BKP = 'gr_ambiente_bkp_v1';
 // v93: NADA grava sozinho. grAmbienteSalvar() só marca "pendente"; a gravação de verdade é grAmbienteGravar(), chamada só pelo botão Sair.
 function grAmbienteSalvar() {
     if (_grAmbienteRestaurando || !_grAmbienteCarregado) return;
-    window._grSujo = true;
-    if (window._grAmbStatus && window._grAmbStatus.save.indexOf('pendente') !== 0) { window._grAmbStatus.save = 'pendente — só grava ao clicar em Sair'; try { grAmbStatusMostrar(); } catch (e) {} }
+    window._grSujo = true; window._grSeq = (window._grSeq || 0) + 1;
+    if (window._grAmbStatus && window._grAmbStatus.save.indexOf('pendente') !== 0) { window._grAmbStatus.save = 'pendente — grava sozinho em instantes'; try { grAmbStatusMostrar(); } catch (e) {} }
+    clearTimeout(window._grAutoTmr); window._grAutoTmr = setTimeout(grAmbienteAuto, 2000);   // GRAVAÇÃO AUTOMÁTICA: 2 s sem mudança nova e grava (várias mudanças seguidas viram uma só)
 }
+async function grAmbienteAuto() {
+    clearTimeout(window._grAutoTmr);
+    if (!window._grSujo || !_grAmbienteCarregado || _grAmbienteRestaurando) return;
+    if (window._grGravando) { window._grAutoTmr = setTimeout(grAmbienteAuto, 1500); return; }   // já tem uma gravação em andamento: tenta de novo logo depois
+    try { await grAmbienteGravar(); } catch (e) {}
+    if (window._grSujo && !window._grServidorFalhou) window._grAutoTmr = setTimeout(grAmbienteAuto, 8000);   // falhou (sem rede?) ou mudou no meio: tenta de novo
+}
+// Ao sair do app (trocar de aplicativo, bloquear a tela): grava na hora, antes de o iOS dormir a página
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && window._grSujo && !window._grGravando) { try { grAmbienteGravar(); } catch (e) {} } });
+window.addEventListener('pagehide', () => { if (window._grSujo && !window._grGravando) { try { grAmbienteGravar(); } catch (e) {} } });
 async function grAmbienteGravar() {
     if (!_grAmbienteCarregado) return false;
     if (window._grServidorFalhou) { window._grAmbStatus.save = 'NÃO gravou: leitura do servidor falhou (protege o que está salvo)'; grAmbStatusMostrar(); return false; }
-    const ambiente = grAmbienteColetar();
+    const ambiente = grAmbienteColetar(), seq0 = window._grSeq || 0;
+    window._grGravando = true;
     try {
         const r = await db.from('preferencias').upsert({ id: 1, indicadores: ambiente, updated_at: new Date().toISOString() });
         if (r && r.error) throw new Error(r.error.message || JSON.stringify(r.error));
         const aviso = '';
-        window._grSujo = false;
+        if ((window._grSeq || 0) === seq0) window._grSujo = false;   // mudou durante a gravação: continua pendente e grava de novo
         window._grAmbStatus.save = 'ok no servidor ' + new Date().toTimeString().slice(0, 8) + aviso;
         grAmbStatusMostrar();
         return aviso === '';
     } catch (e) {
         window._grAmbStatus.save = 'FALHOU: ' + (e && e.message ? e.message : e); grAmbStatusMostrar(); return false;
-    }
+    } finally { window._grGravando = false; }
 }
 // Botão Sair (menu e barra do topo): grava tudo no servidor e só então sai. Se falhar, pergunta antes de sair sem gravar.
 async function grSair() {
@@ -17957,18 +17970,28 @@ async function scRegRevisar0() {
 // A revisão automática da tese NÃO mexe em caixa refinada: quem decide é você.
 // CAIXA MANUAL monitorada pelo robô: a caixa desenhada à mão (sem trade gravado, sem origem) entra no MESMO registro do robô (manual:true).
 // Daí em diante vale a regra do robô: 'em trade' só quando o preço toca a entrada; depois acompanha stop / alvo e avisa em modal.
+// Por que a caixa manual NÃO pode ser monitorada (null = pode). O lado vem da GEOMETRIA (alvo acima da entrada = long), não do rótulo da caixa: arrastar o stop para o outro lado não muda o rótulo.
+function scManualMotivo(z) {
+    if (typeof _grAmbienteCarregado === 'undefined' || !_grAmbienteCarregado) return 'o app ainda está carregando';
+    if (!z || z.origem) return 'só caixa manual pode ser monitorada';
+    if (z.tradeId || z.pm > 0) return 'a caixa já é um trade real';
+    if (z.previa || z.teste || z.restaurada) return 'caixa temporária';
+    if (!(z.entrada > 0)) return 'falta a entrada';
+    if (!(z.stop > 0)) return 'falta o stop';
+    if (!(z.alvo > 0)) return 'falta o alvo';
+    const lg = z.alvo > z.entrada;
+    if (lg ? !(z.stop < z.entrada) : !(z.stop > z.entrada)) return 'o stop está do mesmo lado do alvo (stop ' + Math.round(z.stop) + ' · entrada ' + Math.round(z.entrada) + ' · alvo ' + Math.round(z.alvo) + ')';
+    return null;
+}
 function scManualSync() {
     if (typeof _grAmbienteCarregado === 'undefined' || !_grAmbienteCarregado) return;
     const L = scRegLista(), sym = grBinSymbolAtual(), P = grPosicoes(), mapa = new Map(P.map(z => [z.id, z]));
     let mudou = false;
     P.forEach(z => {
-        if (!z || z.origem || z.tradeId || z.pm > 0 || z.previa || z.teste || z.restaurada || !z.monitorar) return;   // só monitora quando você aperta Iniciar monitoramento
-        const lg = z.lado === 'long';
-        if (!lg && z.lado !== 'short') return;
-        if (!(z.entrada > 0 && z.stop > 0 && z.alvo > 0)) return;
-        if (lg ? !(z.stop < z.entrada && z.entrada < z.alvo) : !(z.alvo < z.entrada && z.entrada < z.stop)) return;
+        if (!z || !z.monitorar || scManualMotivo(z)) return;   // só monitora quando você aperta Iniciar monitoramento
+        const lg = z.alvo > z.entrada;
         if (L.some(r => r.id === z.id)) return;
-        scRegistrar({ id: z.id, mv: 'manual', manual: true, modo: 'manual', lado: z.lado, ent: z.entrada, stp: z.stop, alvo: z.alvo, alvoTipo: 'manual', mi: '—', ma: '—', tfAk: '5m', zero: false, sym });
+        scRegistrar({ id: z.id, mv: 'manual', manual: true, modo: 'manual', lado: lg ? 'long' : 'short', ent: z.entrada, stp: z.stop, alvo: z.alvo, alvoTipo: 'manual', mi: '—', ma: '—', tfAk: '5m', zero: false, sym });
     });
     L.forEach(r => {
         if (!r.manual || (r.st !== 'aguardando' && r.st !== 'entrou') || r.semTela || (r.sym && r.sym !== sym)) return;
