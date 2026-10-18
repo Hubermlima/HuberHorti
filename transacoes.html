@@ -2129,8 +2129,6 @@ function cvRenderMenuFpCfg() {
     } else if (_grFpCfgMenuQual === 'vp') {
         const semAncora = _grVpAncoraTs == null;
         menu.innerHTML = '<div style="font-size:13px;font-weight:700;color:#1C1C1E;">Volume Profile</div>'
-            + grConfigCombo(ICO_FLUXO.linhas, 'Linhas', 'Como o perfil divide o preço em degraus', 'cv-cfg-vplinhas', [['atr', 'ATR'], ['auto', 'Auto']], GR_VP_LINHAS_MODO, 'grVpDefinirLinhasModo')
-            + '<div class="cv-med-item"><span class="cv-med-lbl">Comprimento</span><button onclick="grVpAjustarComprimento();cvRenderMenuFpCfg();" style="border:none;background:#F2F2F7;border-radius:6px;padding:4px 8px;font-size:12px;font-weight:600;color:#1C1C1E;cursor:pointer;">Ajustar</button></div>'
             + '<div class="cv-med-item"><span class="cv-med-lbl">' + (semAncora ? 'Sem âncora' : grVpRotuloData(_grVpAncoraTs)) + '</span>'
             + (semAncora ? '<span style="font-size:11px;color:#8E8E93;">use o botão da barra lateral</span>' : '<button onclick="grAncOlho(\'vp\')" style="border:none;background:none;cursor:pointer;padding:2px 4px;display:flex;color:' + (_grVpOculta ? '#EF5350' : '#6B6B70') + ';">' + grHeroicon(_grVpOculta ? 'eye-slash' : 'eye', 15) + '</button><button onclick="grVpRemover();cvFecharMenuFpCfg();" style="border:none;background:none;cursor:pointer;padding:2px 4px;display:flex;">' + xIcone + '</button>') + '</div>';
     } else if (_grFpCfgMenuQual === 'bollinger') {
@@ -3356,7 +3354,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v595';
+const APP_VERSAO = 'v597';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -14398,9 +14396,24 @@ function grVpObterMapa() {
 // Altura da linha do perfil (USD): 'atr' = tick do ATR (a mesma grade dos clusters; cada barra cai numa linha do
 // footprint), com piso de GR_VP_LINHA_MIN_PX pixels; 'auto' = a menor linha que dá o piso na escala atual do eixo Y
 // (mais níveis).
+// GRADE DO PERFIL = a do TF MICRO do robô (a mesma com que ele monta o sino): assim as barras e a nuvem do sino mostram o que o robô enxergou.
+// O degrau vem do ATR do micro (scTick, assíncrono, em cache): lido aqui de forma síncrona e atualizado em segundo plano a cada 30 s.
+function grVpTickRobo() {
+    try {
+        const key = (typeof SCX !== 'undefined' && SCX.cfg && SCX.cfg.micro) || '', agora = Date.now();
+        if (key && !window._scTickMicroBusy && (!window._scTickMicroTs || agora - window._scTickMicroTs > 30000 || window._scTickMicroKey !== key)) {
+            window._scTickMicroBusy = true; window._scTickMicroKey = key; window._scTickMicroTs = agora;
+            scTick(scDefTf(key)).then(v => {
+                if (v > 0 && v !== window._scTickMicro) { window._scTickMicro = v; if (_grVpMapaCache) _grVpMapaCache.agrup = null; window._grSinoCache = null; try { grDrawChart(); } catch (e) {} }
+            }).catch(() => {}).finally(() => { window._scTickMicroBusy = false; });
+        }
+    } catch (e) {}
+    return window._scTickMicro > 0 ? window._scTickMicro : 0;
+}
 function grVpTick(pxPorUsd) {
-    if (_indState.deltaAtr && _grFootprintAtivo && pxPorUsd > 0) return grTickDaRegua(pxPorUsd);   // régua ligada: mesma grade da régua (barras do perfil = níveis da régua)
     const tickPx = grTickImparPorPx(GR_VP_LINHA_MIN_PX, pxPorUsd);
+    const tr = (_grFootprintAtivo && pxPorUsd > 0) ? grVpTickRobo() : 0;
+    if (tr > 0) return (isFinite(tickPx) && tickPx > tr) ? Math.ceil(tickPx / tr) * tr : tr;   // com o gráfico muito afastado, sobe em múltiplos do degrau do robô (barra nunca fina demais)
     return GR_VP_LINHAS_MODO === 'atr' ? Math.max(grTickAtr(), tickPx) : tickPx;
 }
 // Reagrupa o mapa de $10 em linhas de `tick` (mesma conta dos clusters: Math.round(preço / tick) * tick).
@@ -14577,38 +14590,37 @@ function grFootprintDesenharOverlay() {
     const dados = grVpObterMapa();
     const bolinhasVp = [];   // bolinhas da seleção (pintadas no fim, por cima das barras)
     if (dados && dados.mapa.size > 0) {
-        const tick = grVpTick(pxPorDolar);
-        const ag = grVpAgrupar(dados, tick);
-        // Comprimento máximo: % da largura do gráfico (Configurações Ambiente), sem passar da borda direita.
-        const maxBarW = Math.max(0, Math.min(chartW * GR_VP_COMPRIMENTO_PCT / 100, rightEdge - xBase - 2));
+        // O perfil agora é só a NUVEM do sino (sem barras): o volume desde a âncora aparece como densidade da nuvem.
         ctx.save();
         ctx.beginPath(); ctx.rect(padLeft, chartTop, chartW, _grChartH); ctx.clip(); // não vaza pros painéis nem pro eixo
-        ag.mapa.forEach((v, p) => {
-            const total = v.c + v.v;
-            if (total <= 0 || ag.maxTotal <= 0) return;
-            // Bordas da linha pelo PREÇO (p ± tick/2), arredondadas: linhas vizinhas dividem a borda (sem fresta e sem
-            // sobreposição, que escureceria a emenda com a transparência) e batem com as linhas do footprint no modo ATR.
-            const yTopo = Math.round(grLineY(p + tick / 2)), yBase = Math.round(grLineY(p - tick / 2));
-            if (yBase < chartTop || yTopo > chartBottom) return;
-            const barW = (total / ag.maxTotal) * maxBarW;
-            if (barW < 0.5) return;
-            const h = Math.max(1, yBase - yTopo);
-            const buyW = barW * (v.c / total);
-            const alpha = p === ag.pocPreco ? 0.62 : 0.40; // semitransparente: os números das células continuam legíveis por baixo
-            ctx.fillStyle = 'rgba(76,175,80,' + alpha + ')';           // compra (verde): encostada na âncora
-            ctx.fillRect(xBase, yTopo, buyW, h);
-            ctx.fillStyle = 'rgba(239,83,80,' + alpha + ')';           // venda (vermelho): pra fora
-            ctx.fillRect(xBase + buyW, yTopo, barW - buyW, h);
-            if (!grPlAtivo()) window._grVpHits.push({ x: xBase, y: yTopo - 2, w: barW, h: h + 4, cel: true, abrir: (cx, cy) => grAncCtxAbrir('vp', _grVpAncoraTs, cx, cy) });
-        });
-        ctx.restore();
-        if (ag.pocPreco != null && grAncSelEh('vp', _grVpAncoraTs)) {   // ponta da barra do POC
-            const vPoc = ag.mapa.get(ag.pocPreco), totPoc = vPoc ? vPoc.c + vPoc.v : 0;
-            if (totPoc > 0 && ag.maxTotal > 0) {
-                const yPoc = (grLineY(ag.pocPreco + tick / 2) + grLineY(ag.pocPreco - tick / 2)) / 2;
-                if (yPoc >= chartTop && yPoc <= chartBottom) bolinhasVp.push({ x: xBase + (totPoc / ag.maxTotal) * maxBarW, y: yPoc });
+        // NUVEM DO SINO: a zona quente do robô (a mesma da mensagem dele), em violeta, de ponta a ponta. Mais densa onde há mais volume; o pico leva uma linha.
+        try {
+            const tkR = grVpTickRobo();
+            if (tkR > 0) {
+                const kC = dados.chave + '|' + tkR + '|' + (SCX.vaAncoraTs || '');
+                if (!window._grSinoCache || window._grSinoCache.k !== kC) window._grSinoCache = { k: kC, b: scBandaQuente(null, tkR) };
+                const sino = window._grSinoCache.b;
+                if (sino && sino.niveis && sino.niveis.length) {
+                    const nv = sino.niveis.slice().sort((a, b2) => b2.k - a.k), maxV = Math.max.apply(null, nv.map(n => n.v)) || 1, VIO = '124,77,255';
+                    const fx0 = sino.faixas[0], yTopS = grLineY(fx0.hi), yBotS = grLineY(fx0.lo);
+                    if (yBotS > yTopS && yBotS >= chartTop && yTopS <= chartBottom) {
+                        const gr = ctx.createLinearGradient(0, yTopS, 0, yBotS);
+                        gr.addColorStop(0, 'rgba(' + VIO + ',0)');
+                        nv.forEach(n => { const f = (grLineY(n.k * tkR) - yTopS) / (yBotS - yTopS); if (f > 0 && f < 1) gr.addColorStop(f, 'rgba(' + VIO + ',' + (0.07 + 0.25 * Math.sqrt(n.v / maxV)).toFixed(3) + ')'); });
+                        gr.addColorStop(1, 'rgba(' + VIO + ',0)');
+                        ctx.fillStyle = gr; ctx.fillRect(padLeft, yTopS, rightEdge - padLeft, yBotS - yTopS);
+                        ctx.font = 'bold 10px -apple-system'; ctx.textAlign = 'left'; ctx.fillStyle = 'rgba(' + VIO + ',0.95)';
+                        ctx.fillText('SINO', padLeft + 6, Math.max(chartTop + 11, yTopS + 12));
+                        if (!grPlAtivo()) window._grVpHits.push({ x: padLeft, y: Math.max(chartTop, yTopS) - 2, w: 44, h: 18, cel: true, abrir: (cx, cy) => grAncCtxAbrir('vp', _grVpAncoraTs, cx, cy) });
+                    }
+                    (sino.faixas || []).slice(1).forEach(fx => { const y1 = grLineY(fx.hi), y2 = grLineY(fx.lo); if (y2 > y1) { ctx.fillStyle = 'rgba(' + VIO + ',0.12)'; ctx.fillRect(padLeft, y1, rightEdge - padLeft, Math.max(2, y2 - y1)); } });
+                    ctx.strokeStyle = 'rgba(' + VIO + ',0.9)'; ctx.lineWidth = 1; ctx.setLineDash([5, 4]);
+                    (sino.picos || [sino.pico]).forEach(pk => { if (!(pk > 0)) return; const yp = Math.round(grLineY(pk)) + 0.5; if (yp < chartTop || yp > chartBottom) return; ctx.beginPath(); ctx.moveTo(padLeft, yp); ctx.lineTo(rightEdge, yp); ctx.stroke(); });
+                    ctx.setLineDash([]);
+                }
             }
-        }
+        } catch (eSn) {}
+        ctx.restore();
         { const pF = grVpPocFina(dados); if (pF != null) grPainelValores('vp', [{ rot: 'VP', val: fmtN(pF), cor: '#FFB300' }]); }
         if (_grVpCarregando) aviso('Carregando dias… ' + _grVpCarregando.feitos + '/' + _grVpCarregando.total);
     } else if (_grVpCarregando) {
