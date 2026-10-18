@@ -2041,7 +2041,24 @@ function sentRelatorio() {
     const rL = sg > 0 ? ls != null && mm != null && ls > mm && ls > 1 : sg < 0 ? ls != null && mm != null && ls < mm && ls < 1 : false;
     const rO = !oiSobe && oiA != null && oiB != null;
     const nr = (rF ? 1 : 0) + (rL ? 1 : 0) + (rO ? 1 : 0), risco = nr >= 2 ? 'alto' : nr === 1 ? 'médio' : 'baixo';
-    return { lado, sg, forca, vc, vp, vr, ex, ls, mm, fr, oiSobe, dp, rF, rL, rO, risco, oiPct: oiA != null && oiB > 0 ? (oiA - oiB) / oiB * 100 : null };
+    // QUALIDADE DO MOVIMENTO (últimos 12 candles): cruza preço × OI × CVD pra dizer se a alta/queda é posição NOVA ou fechamento de posição.
+    let qual = null;
+    try {
+        const K = 12, i0 = n - 1 - K, oiK = grSentValorEm(oi, cs[i0].t), dpK = cs[n - 1].c - cs[i0].c;
+        if (Math.abs(dpK) / cs[n - 1].c > 0.001 && oiA != null && oiK != null) {
+            let cvd = null; const dm = grObterDeltaTotalPorCandle(cs);
+            if (dm) { let sm = 0, k = 0; for (let i = i0 + 1; i < n; i++) { const d = dm.get(cs[i].t); if (d) { sm += d.delta; k++; } } if (k >= K / 2) cvd = sm; }
+            const sobe = dpK > 0, oiUp = oiA > oiK, cUp = cvd == null ? null : cvd > 0, lado = sobe ? 'Alta' : 'Queda', nova = sobe ? 'compra' : 'venda', fecha = sobe ? 'vendidos' : 'comprados';
+            let txt, ok = false;
+            if (cUp == null) txt = oiUp ? lado + ' com Open Interest subindo: posições novas entrando.' : lado + ' com Open Interest caindo: posições fechando, não é ' + nova + ' nova.', ok = oiUp;
+            else if (oiUp && cUp === sobe) { txt = lado + ' saudável: ' + nova + ' nova (OI sobe e CVD ' + (sobe ? 'comprador' : 'vendedor') + ').'; ok = true; }
+            else if (oiUp) txt = lado + ' com OI subindo, mas CVD ' + (sobe ? 'vendedor' : 'comprador') + ': o outro lado está absorvendo, atenção a reversão.';
+            else if (cUp === sobe) txt = lado + ' com agressão ' + (sobe ? 'compradora' : 'vendedora') + ', mas posições fechando (OI cai): força curta.';
+            else txt = lado + ' por fechamento de ' + fecha + ' (OI cai e CVD ' + (sobe ? 'vendedor' : 'comprador') + '): não é ' + nova + ' nova.';
+            qual = { txt, ok };
+        }
+    } catch (e) {}
+    return { qual, lado, sg, forca, vc, vp, vr, ex, ls, mm, fr, oiSobe, dp, rF, rL, rO, risco, oiPct: oiA != null && oiB > 0 ? (oiA - oiB) / oiB * 100 : null };
 }
 function sentRelatorioHtml() {
     const r = sentRelatorio(); if (!r) return '<div style="font-size:12px;color:#8E8E93;">Carregando dados…</div>';
@@ -2054,6 +2071,7 @@ function sentRelatorioHtml() {
     if (r.sg < 0 && r.forca === 'perdendo força') atencao = 'Atenção: vendido perdendo força. Possível virada para compra; confirme pelo preço.';
     else if (r.sg > 0 && r.forca === 'perdendo força') atencao = 'Atenção: comprado perdendo força. Possível virada para venda; confirme pelo preço.';
     return '<div style="font-size:14px;font-weight:800;color:' + cor + ';">Mercado ' + r.lado + (r.forca ? ' · ' + r.forca : '') + '</div>'
+        + (r.qual ? '<div style="margin-top:4px;font-size:12px;font-weight:600;color:' + (r.qual.ok ? '#16A34A' : '#D97706') + ';">' + r.qual.txt + '</div>' : '')
         + '<div style="margin-top:6px;font-size:10.5px;font-weight:800;color:#8E8E93;letter-spacing:.5px;">DIREÇÃO</div>'
         + '<div style="display:grid;grid-template-columns:1fr auto;column-gap:14px;row-gap:3px;align-items:baseline;">'
         + linha(r.vc, 'Top Trader (contas)', f(ex.ttc, 2)) + linha(r.vp, 'Top Trader ($)', f(ex.ttp, 2)) + linha(r.vr, 'Coinbase Premium', f(ex.prem, 3, '%')) + '</div>'
@@ -3468,7 +3486,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v671';
+const APP_VERSAO = 'v672';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
