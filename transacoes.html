@@ -238,7 +238,6 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
         </button>
         <button class="od-tab active" id="od-tab-0" onclick="odSetTab(0)">Candles</button>
         <button class="od-tab" id="od-tab-1" onclick="odSetTab(1)">Trades</button>
-        <button class="od-tab" id="od-tab-2" onclick="odSetTab(2)">Mercado</button>
     </div>
     <div class="od-tabs-dir">
         <button class="od-bar-btn" onclick="cvToggleMenu()" aria-label="Menu">
@@ -360,42 +359,6 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <div id="od-trades-filtro" style="display:flex;gap:6px;padding:12px 14px 6px;"></div>
       <div id="od-trades-list" style="padding:4px 16px 16px;">
         <div style="padding:24px 0;text-align:center;color:#8E8E93;font-size:13px;">Carregando…</div>
-      </div>
-    </div>
-    <!-- ABA 2: Mercado -->
-    <div class="od-pane" id="od-pane-2">
-      <!-- GRÁFICO COMBINADO: PREÇO x INDICADORES (4H) -->
-      <div style="padding:10px 0;">
-        <div style="margin-bottom:4px;display:flex;align-items:center;justify-content:space-between;">
-          <span style="font-size:11px;font-weight:600;color:#1C1C1E;letter-spacing:0.4px;text-transform:uppercase;">PREÇO x INDICADORES (4H)</span>
-          <span id="od-sent-loading" style="font-size:10px;color:#007AFF;display:none;">...</span>
-        </div>
-        <canvas id="od-combo-canvas" width="600" height="220" style="width:100%;height:220px;display:block;"></canvas>
-        <div id="od-combo-chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;"></div>
-      </div>
-      <div class="od-divider"></div>
-      <!-- CONCLUSÃO -->
-      <div style="padding:10px 0;">
-        <div style="font-size:11px;font-weight:600;color:#1C1C1E;letter-spacing:0.4px;text-transform:uppercase;margin-bottom:6px;">CONCLUSÃO</div>
-        <div id="od-sent-narrativa" style="font-size:14px;font-weight:700;color:#1C1C1E;font-family:-apple-system,sans-serif;">—</div>
-      </div>
-      <!-- Card explicativo -->
-      <div style="display:none;">
-        <div id="od-sent-vd"></div>
-        <div id="od-sent-ratio"></div>
-        <div id="od-sent-ttrpos"></div>
-        <div id="od-sent-funding"></div>
-        <div id="od-sent-oi"></div>
-        <div id="od-sent-lsr"></div>
-      </div>
-      <!-- Card explicativo -->
-      <div id="od-info-overlay" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.4);" onclick="odFecharInfo()"></div>
-      <div id="od-info-card" style="display:none;position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:300px;background:#fff;border-radius:16px;padding:20px;z-index:10000;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-          <div id="od-info-titulo" style="font-size:15px;font-weight:700;color:#1C1C1E;"></div>
-          <button onclick="odFecharInfo()" style="background:#E5E5EA;border:none;border-radius:50%;width:26px;height:26px;cursor:pointer;font-size:14px;color:#3A3A3C;">✕</button>
-        </div>
-        <div id="od-info-texto" style="font-size:13px;color:#1C1C1E;line-height:1.6;"></div>
       </div>
     </div>
   </div><!-- /od-content -->
@@ -2031,36 +1994,74 @@ function sentOlho() { _sentOculto = !_sentOculto; try { localStorage.setItem('gr
 function grOlhoBtn(oculto, fn) { return '<button type="button" onclick="' + fn + '()" title="' + (oculto ? 'Mostrar' : 'Ocultar') + '" style="border:none;background:none;padding:2px 4px;color:#1C1C1E;display:flex;align-items:center;">' + grHeroicon(oculto ? 'eye-slash' : 'eye', 18) + '</button>'; }
 // RELATÓRIO DO SENTIMENTO (OI + FR + L/S): três votos, cada um +1 (comprado) / −1 (vendido) / 0 (neutro). É CONTEXTO, não gatilho de entrada.
 function grSentMediaEm(d, ts, n) { if (!d || !d.length) return null; let lo = 0, hi = d.length - 1, r = -1; while (lo <= hi) { const m = (lo + hi) >> 1; if (d[m].t <= ts) { r = m; lo = m + 1; } else hi = m - 1; } if (r < n - 1) return null; let sm = 0; for (let k = r - n + 1; k <= r; k++) sm += d[k].v; return sm / n; }
+// VALORES EXTRAS (Top Trader contas e $, Coinbase Premium) com um ponto de comparação (6 leituras atrás). Cache de 60 s; Coinbase só existe pro BTC.
+window._grSentExtra = window._grSentExtra || {};
+function grSentExtraGarantir() {
+    const sym = grBinSymbolAtual(), per = grOiPeriodoParaTf(), key = sym + '|' + per, c = window._grSentExtra[key] || (window._grSentExtra[key] = {});
+    if (_ativoFonte === 'td' || c.carregando || (c.ts && Date.now() - c.ts < 60000)) return c;
+    c.carregando = true;
+    const J = u => fetch(u).then(r => r.json()).catch(() => null);
+    const par = a => Array.isArray(a) && a.length > 6 ? [parseFloat(a[a.length - 1].longShortRatio), parseFloat(a[a.length - 7].longShortRatio)] : [null, null];
+    const btc = sym === 'BTCUSDT';
+    Promise.all([
+        J('https://fapi.binance.com/futures/data/topLongShortAccountRatio?symbol=' + sym + '&period=' + per + '&limit=8'),
+        J('https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol=' + sym + '&period=' + per + '&limit=8'),
+        btc ? J('https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=3600') : Promise.resolve(null),
+        btc ? J('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=8') : Promise.resolve(null)
+    ]).then(([ta, tp, cb, kl]) => {
+        [c.ttc, c.ttcB] = par(ta); [c.ttp, c.ttpB] = par(tp);
+        c.prem = null; c.premB = null;
+        if (Array.isArray(cb) && Array.isArray(kl) && kl.length > 6) {
+            const mp = new Map(cb.map(x => [x[0] * 1000, x[4]])), pr = k => { const q = mp.get(k[0]), b = parseFloat(k[4]); return q > 0 && b > 0 ? (q - b) / b * 100 : null; };
+            c.prem = pr(kl[kl.length - 1]); c.premB = pr(kl[kl.length - 7]);
+        }
+        c.ts = Date.now(); c.carregando = false;
+        try { if (_grFpCfgMenuQual === 'sent') cvRenderMenuFpCfg(); } catch (e) {}
+        try { grDrawChart(); } catch (e) {}
+    }).catch(() => { c.carregando = false; c.ts = Date.now(); });
+    return c;
+}
+// VEREDITO DO SENTIMENTO. DIREÇÃO (quem decide o lado): Top Trader (contas), Top Trader ($) e Coinbase Premium, cada um +1 / −1.
+// RISCO (não decide o lado, só diz o quão esticado está): Funding, Long/Short das contas em geral (contrário: multidão lotada) e OI.
+// Nunca devolve "equilíbrio": soma 0 desempata pra onde a soma anda e, depois, pelo Top Trader ($).
 function sentRelatorio() {
-    const cs = _grAllCandles || [], n = cs.length, sym = grBinSymbolAtual(), per = grOiPeriodoParaTf(), N = 20, M = 10;
+    const cs = _grAllCandles || [], n = cs.length, sym = grBinSymbolAtual(), per = grOiPeriodoParaTf(), N = 20;
     const sc = window._grSentCache && window._grSentCache[sym], oiC = window._grOiCache && window._grOiCache[sym + '|' + per];
     const lsr = sc && sc.lsr && sc.lsr.dados, fn = sc && sc.fund && sc.fund.dados, oi = oiC && oiC.dados ? oiC.dados.map(o => ({ t: o.t, v: o.oi })) : null;
-    if (n < N + M + 2 || !lsr || !fn || !oi) return null;
-    const votos = i => {
-        const ts = cs[i].t, ls = grSentValorEm(lsr, ts), mm = grSentMediaEm(lsr, ts, 21), fr = grSentValorEm(fn, ts);
-        const oiA = grSentValorEm(oi, ts), oiB = grSentValorEm(oi, cs[i - N].t), dp = cs[i].c - cs[i - N].c;
-        const vL = ls == null || mm == null ? 0 : ls > mm ? 1 : ls < mm ? -1 : 0, vF = fr == null ? 0 : fr > 0.0001 ? 1 : fr < 0 ? -1 : 0;
-        const oiSobe = oiA != null && oiB != null && oiA > oiB, vO = !oiSobe ? 0 : dp > 0 ? 1 : dp < 0 ? -1 : 0;
-        return { vL, vF, vO, tot: vL + vF + vO, ls, mm, fr, oiSobe, dp };
-    };
-    const a = votos(n - 1), b = votos(n - 1 - M);
-    const lado = a.tot >= 2 ? 'COMPRADO' : a.tot <= -2 ? 'VENDIDO' : 'EQUILIBRADO', sg = a.tot >= 2 ? 1 : a.tot <= -2 ? -1 : 0;
-    const forca = sg === 0 ? '' : (a.tot - b.tot) * sg < 0 ? 'perdendo força' : (a.tot - b.tot) * sg > 0 ? 'ganhando força' : 'estável';
-    return { a, b, lado, sg, forca };
+    const ex = grSentExtraGarantir();
+    if (n < N + 2 || !lsr || !fn || !oi || !ex.ts) return null;
+    const ts = cs[n - 1].t, ls = grSentValorEm(lsr, ts), mm = grSentMediaEm(lsr, ts, 21), fr = grSentValorEm(fn, ts);
+    const oiA = grSentValorEm(oi, ts), oiB = grSentValorEm(oi, cs[n - 1 - N].t), dp = cs[n - 1].c - cs[n - 1 - N].c, oiSobe = oiA != null && oiB != null && oiA > oiB;
+    const v1 = x => x == null ? 0 : x > 1 ? 1 : x < 1 ? -1 : 0, v0 = x => x == null ? 0 : x > 0 ? 1 : x < 0 ? -1 : 0;
+    const vc = v1(ex.ttc), vp = v1(ex.ttp), vr = v0(ex.prem), tot = vc + vp + vr, totB = v1(ex.ttcB) + v1(ex.ttpB) + v0(ex.premB);
+    const sg = tot > 0 ? 1 : tot < 0 ? -1 : (tot - totB) > 0 ? 1 : (tot - totB) < 0 ? -1 : v0((ex.ttp || 1) - 1) || v0((ex.ttc || 1) - 1), ab = Math.abs(tot);
+    const lado = sg === 0 ? 'SEM DIREÇÃO' : (sg > 0 ? 'COMPRADO' : 'VENDIDO') + (ab >= 3 ? ' forte' : ab === 2 ? ' moderado' : ' leve');
+    const forca = sg === 0 ? '' : (tot - totB) * sg < 0 ? 'perdendo força' : (tot - totB) * sg > 0 ? 'ganhando força' : 'estável';
+    const rF = sg > 0 ? fr != null && fr > 0.0001 : sg < 0 ? fr != null && fr < 0 : false;
+    const rL = sg > 0 ? ls != null && mm != null && ls > mm && ls > 1 : sg < 0 ? ls != null && mm != null && ls < mm && ls < 1 : false;
+    const rO = !oiSobe && oiA != null && oiB != null;
+    const nr = (rF ? 1 : 0) + (rL ? 1 : 0) + (rO ? 1 : 0), risco = nr >= 2 ? 'alto' : nr === 1 ? 'médio' : 'baixo';
+    return { lado, sg, forca, vc, vp, vr, ex, ls, mm, fr, oiSobe, dp, rF, rL, rO, risco };
 }
 function sentRelatorioHtml() {
     const r = sentRelatorio(); if (!r) return '<div style="font-size:12px;color:#8E8E93;">Carregando dados…</div>';
-    const cor = r.sg > 0 ? '#16A34A' : r.sg < 0 ? '#DC2626' : '#6B6B70', a = r.a, sinal = v => v > 0 ? '▲' : v < 0 ? '▼' : '●', cs = v => v > 0 ? '#16A34A' : v < 0 ? '#DC2626' : '#8E8E93';
-    const f = (v, d) => v == null ? '—' : v.toFixed(d).replace('.', ',');
-    const linha = (v, t) => '<div style="font-size:12px;color:#1C1C1E;"><span style="color:' + cs(v) + ';font-weight:800;">' + sinal(v) + '</span> ' + t + '</div>';
+    const cor = r.sg > 0 ? '#16A34A' : r.sg < 0 ? '#DC2626' : '#6B6B70', ex = r.ex, sinal = v => v > 0 ? '▲' : v < 0 ? '▼' : '●', cs = v => v > 0 ? '#16A34A' : v < 0 ? '#DC2626' : '#8E8E93';
+    const f = (v, d, suf) => v == null || !isFinite(v) ? '—' : (suf === '%' && v >= 0 ? '+' : '') + v.toFixed(d).replace('.', ',') + (suf || '');
+    const linha = (v, t, val) => '<div style="display:flex;justify-content:space-between;gap:16px;font-size:12px;color:#1C1C1E;"><span><span style="color:' + cs(v) + ';font-weight:800;">' + sinal(v) + '</span> ' + t + '</span><span style="font-weight:700;">' + val + '</span></div>';
+    const al = (b, t, val) => '<div style="display:flex;justify-content:space-between;gap:16px;font-size:12px;color:#1C1C1E;"><span><span style="color:' + (b ? '#D97706' : '#8E8E93') + ';font-weight:800;">' + (b ? '!' : '○') + '</span> ' + t + '</span><span style="font-weight:700;">' + val + '</span></div>';
+    const corR = r.risco === 'alto' ? '#DC2626' : r.risco === 'médio' ? '#D97706' : '#16A34A';
     let atencao = '';
     if (r.sg < 0 && r.forca === 'perdendo força') atencao = 'Atenção: vendido perdendo força. Possível virada para compra; confirme pelo preço.';
     else if (r.sg > 0 && r.forca === 'perdendo força') atencao = 'Atenção: comprado perdendo força. Possível virada para venda; confirme pelo preço.';
     return '<div style="font-size:14px;font-weight:800;color:' + cor + ';">Mercado ' + r.lado + (r.forca ? ' · ' + r.forca : '') + '</div>'
-        + '<div style="margin-top:6px;display:flex;flex-direction:column;gap:2px;">'
-        + linha(a.vO, 'OI × preço: ' + (a.oiSobe ? (a.dp >= 0 ? 'OI sobe com preço subindo' : 'OI sobe com preço caindo') : 'OI caindo (posições fechando)'))
-        + linha(a.vF, 'Funding ' + (a.fr == null ? '—' : (a.fr * 100).toFixed(4).replace('.', ',') + '%'))
-        + linha(a.vL, 'Long/Short ' + f(a.ls, 2) + (a.mm != null ? ' (média ' + f(a.mm, 2) + ')' : '')) + '</div>'
+        + '<div style="margin-top:6px;font-size:10.5px;font-weight:800;color:#8E8E93;letter-spacing:.5px;">DIREÇÃO</div>'
+        + '<div style="display:flex;flex-direction:column;gap:2px;">'
+        + linha(r.vc, 'Top Trader (contas)', f(ex.ttc, 2)) + linha(r.vp, 'Top Trader ($)', f(ex.ttp, 2)) + linha(r.vr, 'Coinbase Premium', f(ex.prem, 3, '%')) + '</div>'
+        + '<div style="margin-top:6px;font-size:10.5px;font-weight:800;color:#8E8E93;letter-spacing:.5px;">RISCO · <span style="color:' + corR + ';">' + r.risco.toUpperCase() + '</span></div>'
+        + '<div style="display:flex;flex-direction:column;gap:2px;">'
+        + al(r.rF, 'Funding ' + (r.sg >= 0 ? 'comprador' : 'vendedor') + ' lotado', f(r.fr == null ? null : r.fr * 100, 4, '%'))
+        + al(r.rL, 'Multidão (L/S) lotada', f(r.ls, 2) + (r.mm != null ? ' (méd ' + f(r.mm, 2) + ')' : ''))
+        + al(r.rO, 'OI caindo (posições fechando)', r.oiSobe ? 'sobe' : 'cai') + '</div>'
         + (atencao ? '<div style="margin-top:6px;font-size:11.5px;color:#8E8E93;max-width:220px;">' + atencao + '</div>' : '');
 }
 function cvdBenchmark() {
@@ -3466,7 +3467,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v662';
+const APP_VERSAO = 'v667';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -11161,7 +11162,7 @@ function grRSI(data, period) {
 }
 function fecharModal(id) {
     if (id === 'modal-nova') {
-        odPararRefreshMercado(); odPararRefreshTrades();
+        odPararRefreshTrades();
         // Antes, fechar o Order Desk sempre revelava o gráfico por trás (cv-screen
         // nunca perdia o 'active'). Agora os dois se alternam por aba, então
         // fechar precisa voltar explicitamente pra aba Candles.
@@ -11171,27 +11172,6 @@ function fecharModal(id) {
     document.getElementById(id).classList.remove('active');
 }
 function fecharModalFora(e, id) { if (e.target === document.getElementById(id)) fecharModal(id); }
-function odFecharInfo() {
-    document.getElementById('od-info-card').style.display = 'none';
-    document.getElementById('od-info-overlay').style.display = 'none';
-}
-// ── Auto-refresh do painel Mercado ──────────────────────────────────
-// Sem isso, os dados (Funding, OI, TTR, LSR, VD) só são buscados uma vez ao abrir e
-// nunca mais, mesmo com a tela aberta por horas. Atualiza a cada 60s, e SÓ enquanto
-// a aba Mercado estiver realmente visível — para sozinho ao trocar de aba ou fechar
-// o Order Desk, pra não ficar fazendo requisição em segundo plano sem necessidade.
-let _odMercadoRefreshInterval = null;
-const OD_MERCADO_REFRESH_MS = 60000;
-function odIniciarRefreshMercado() {
-    if (_odMercadoRefreshInterval) return; // já está rodando, não duplica
-    _odMercadoRefreshInterval = setInterval(() => { odCarregarSentimento(); }, OD_MERCADO_REFRESH_MS);
-}
-function odPararRefreshMercado() {
-    if (_odMercadoRefreshInterval) {
-        clearInterval(_odMercadoRefreshInterval);
-        _odMercadoRefreshInterval = null;
-    }
-}
 const TWELVE_DATA_KEY = '3366384ac03a400c84f239e16cb5c4bd';
 // ── Aba Macro: SPY/TLT, DXY, VIX ──────────────────────────────────────
 // Fonte: Twelve Data (chave TWELVE_DATA_KEY). Direto do navegador, sem proxy: diferente do Yahoo,
@@ -11450,7 +11430,7 @@ function odAbrirOnchain(url, btnEl) {
         if (!carregou && erroEl) erroEl.style.display = 'block';
     }, 6000);
 }
-// injetado via innerHTML chama essa função fora do contexto de odCarregarSentimento.
+// injetado via innerHTML chama essa função de fora.
 function odSparkline(values, color, id, decimais, sufixo, baseline) {
     if (!values || values.length < 2) return '';
     id = id || 'spk' + Math.random().toString(36).slice(2, 8);
@@ -11494,370 +11474,6 @@ function odSparkline(values, color, id, decimais, sufixo, baseline) {
         <polyline points="${mmPts}" fill="none" stroke="rgba(0,0,0,0.35)" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="4,3"/>
         <circle cx="${last.x.toFixed(1)}" cy="${last.y.toFixed(1)}" r="2.2" fill="${color}"/>
     </svg>`;
-}
-async function odCarregarSentimento() {
-    const loading = document.getElementById("od-sent-loading");
-    const elFunding = document.getElementById("od-sent-funding");
-    const elOI = document.getElementById("od-sent-oi");
-    const elRatio = document.getElementById("od-sent-ratio");
-    const elNarrativa = document.getElementById("od-sent-narrativa");
-    if (!elFunding) return;
-    loading.style.display = "inline";
-    elNarrativa.textContent = "Analisando...";
-    try {
-        const [rFunding, rOI, rRatio, rLSR, rTTRPos, rPrice, rCoinbase] = await Promise.all([
-            fetch("https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&limit=20").then(r => r.json()),
-            fetch("https://fapi.binance.com/futures/data/openInterestHist?symbol=BTCUSDT&period=4h&limit=24").then(r => r.json()),
-            fetch("https://fapi.binance.com/futures/data/topLongShortAccountRatio?symbol=BTCUSDT&period=4h&limit=24").then(r => r.json()),
-            fetch("https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=BTCUSDT&period=4h&limit=24").then(r => r.json()),
-            fetch("https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol=BTCUSDT&period=4h&limit=24").then(r => r.json()),
-            fetch("https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=4h&limit=24").then(r => r.json()),
-            fetch("https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=3600").then(r => r.json()).catch(() => [])
-        ]);
-        // Funding
-        const fundingVals = [...rFunding].reverse().map(f => parseFloat(f.fundingRate || 0) * 100);
-        const funding = fundingVals[fundingVals.length - 1] || 0;
-        const fundingAnterior = fundingVals[fundingVals.length - 2] || funding;
-        const fundingDelta = funding - fundingAnterior;
-        // OI
-        const oiVals = [...rOI].map(o => parseFloat(o.sumOpenInterest || 0) * _precoAtual / 1e9);
-        const oiAtual = oiVals[oiVals.length - 1] || 0;
-        const oiAnterior = oiVals[oiVals.length - 2] || oiAtual;
-        const oiDelta = oiAnterior > 0 ? ((oiAtual - oiAnterior) / oiAnterior * 100) : 0;
-        // Ratio
-        const ratioVals = [...rRatio].map(r => parseFloat(r.longShortRatio || 1));
-        const ratio = ratioVals[ratioVals.length - 1] || 1;
-        const ratioAnterior = ratioVals[ratioVals.length - 2] || ratio;
-        const ratioDelta = ratioAnterior > 0 ? ((ratio - ratioAnterior) / ratioAnterior * 100) : 0;
-        // Helper: Bullish/Bearish baseado em z-score vs média móvel (janela maior, detecta extremos)
-        // z-score = (valor atual - média) / desvio-padrão da janela
-        // |z| > LIMIAR_EXTREMO indica que o indicador está em zona extrema (não só "acima da média")
-        const DIAGMEDIA_PERIOD = 30;
-        const LIMIAR_EXTREMO = 1.5;
-        const diagMedia = (vals, inverso = false, period = DIAGMEDIA_PERIOD) => {
-            const slice = vals.slice(-period);
-            const n = slice.length;
-            const atual = vals[vals.length - 1];
-            if (n < 2 || atual === undefined) return { diag: 'Bearish', cor: '#EF4444', z: 0, extremo: false };
-            const mm = slice.reduce((s, v) => s + v, 0) / n;
-            const variancia = slice.reduce((s, v) => s + Math.pow(v - mm, 2), 0) / n;
-            const desvio = Math.sqrt(variancia);
-            const zBruto = desvio > 0 ? (atual - mm) / desvio : 0;
-            const z = inverso ? -zBruto : zBruto;
-            const bullish = z > 0;
-            const extremo = Math.abs(zBruto) > LIMIAR_EXTREMO;
-            return { diag: bullish ? 'Bullish' : 'Bearish', cor: bullish ? '#10B981' : '#EF4444', z, extremo };
-        };
-        // Funding (inverso: negativo = bullish)
-        const fRes = diagMedia(fundingVals, true);
-        elFunding.innerHTML = `<span style="font-weight:700;">${funding.toFixed(4)}%</span> <span style="font-size:11px;color:${fundingDelta>0?'#EF4444':fundingDelta<0?'#10B981':'#8E8E93'};margin-right:6px;">${(fundingDelta>=0?'+':'')+fundingDelta.toFixed(4)}%</span><span style="font-size:12px;font-weight:600;color:${fRes.cor};">${fRes.diag}</span>`;
-        // OI (direto: subindo = bullish)
-        const oiRes = diagMedia(oiVals);
-        elOI.innerHTML = `<span style="font-weight:700;">$${oiAtual.toFixed(2)}B</span> <span style="font-size:11px;color:${oiDelta>0?'#EF4444':oiDelta<0?'#10B981':'#8E8E93'};margin-right:6px;">${(oiDelta>=0?'+':'')+oiDelta.toFixed(2)}%</span><span style="font-size:12px;font-weight:600;color:${oiRes.cor};">${oiRes.diag}</span>`;
-        // TTR (direto: subindo = bullish)
-        const ttrRes = diagMedia(ratioVals);
-        elRatio.innerHTML = `<span style="font-weight:700;">${ratio.toFixed(2)}</span> <span style="font-size:11px;color:${ratioDelta>0?'#10B981':ratioDelta<0?'#EF4444':'#8E8E93'};margin-right:6px;">${(ratioDelta>=0?'+':'')+ratioDelta.toFixed(2)}%</span><span style="font-size:12px;font-weight:600;color:${ttrRes.cor};">${ttrRes.diag}</span>`;
-        // ── Top Trader Position Ratio ($) ──────────────────────────────
-        const elTTRPos = document.getElementById('od-sent-ttrpos');
-        let ttrPos = ratio, ttrPosDelta = 0, ttrPosRes = ttrRes;
-        if (elTTRPos && Array.isArray(rTTRPos)) {
-            const ttrPosVals = rTTRPos.map(r => parseFloat(r.longShortRatio || 1));
-            ttrPos = ttrPosVals[ttrPosVals.length - 1] || 1;
-            const ttrPosAnterior = ttrPosVals[ttrPosVals.length - 2] || ttrPos;
-            ttrPosDelta = ttrPosAnterior > 0 ? ((ttrPos - ttrPosAnterior) / ttrPosAnterior * 100) : 0;
-            ttrPosRes = diagMedia(ttrPosVals);
-            elTTRPos.innerHTML = `<span style="font-weight:700;">${ttrPos.toFixed(2)}</span> <span style="font-size:11px;color:${ttrPosDelta>0?'#10B981':ttrPosDelta<0?'#EF4444':'#8E8E93'};margin-right:6px;">${(ttrPosDelta>=0?'+':'')+ttrPosDelta.toFixed(2)}%</span><span style="font-size:12px;font-weight:600;color:${ttrPosRes.cor};">${ttrPosRes.diag}</span>`;
-        }
-        // ── Long/Short Ratio Geral ────────────────────────────────────
-        const elLSR = document.getElementById('od-sent-lsr');
-        let lsr = 1, lsrDelta = 0, lsrRes = { diag: 'Bearish', cor: '#EF4444' };
-        if (elLSR && Array.isArray(rLSR)) {
-            const lsrVals = rLSR.map(r => parseFloat(r.longShortRatio || 1));
-            lsr = lsrVals[lsrVals.length - 1] || 1;
-            const lsrAnterior = lsrVals[lsrVals.length - 2] || lsr;
-            lsrDelta = lsrAnterior > 0 ? ((lsr - lsrAnterior) / lsrAnterior * 100) : 0;
-            lsrRes = diagMedia(lsrVals, true); // inverso: subindo = bearish
-            elLSR.innerHTML = `<span style="font-weight:700;">${lsr.toFixed(2)}</span> <span style="font-size:11px;color:${lsrDelta>0?'#10B981':lsrDelta<0?'#EF4444':'#8E8E93'};margin-right:6px;">${(lsrDelta>=0?'+':'')+lsrDelta.toFixed(2)}%</span><span style="font-size:12px;font-weight:600;color:${lsrRes.cor};">${lsrRes.diag}</span>`;
-        }
-        // ── Volume Delta (Spot) ── usa os mesmos candles de 4h buscados acima
-        const elVD = document.getElementById('od-sent-vd');
-        const precoVals = (Array.isArray(rPrice) ? rPrice : []).map(k => parseFloat(k[4]));
-        let vdVals = [], vdAtual = 0, vdRes = { diag: 'Bearish', cor: '#EF4444' };
-        if (Array.isArray(rPrice) && rPrice.length > 0) {
-            vdVals = rPrice.map(k => {
-                const v = parseFloat(k[5]), bv = parseFloat(k[9]);
-                return 2 * bv - v;
-            });
-            vdAtual = vdVals[vdVals.length - 1] || 0;
-            vdRes = diagMedia(vdVals);
-            if (elVD) elVD.innerHTML = `<span style="font-weight:700;color:${vdRes.cor}">${(vdAtual >= 0 ? '+' : '') + vdAtual.toFixed(2)}</span> <span style="font-size:12px;font-weight:600;color:${vdRes.cor};">${vdRes.diag}</span>`;
-        }
-        // ── Coinbase Premium Index ── (Coinbase - Binance) / Binance × 100
-        // A Coinbase só aceita granularidade de 1h (não tem opção de 4h) — por isso buscamos
-        // candles de 1h e, pra cada candle de 4h da Binance, pegamos o de 1h da Coinbase com
-        // o horário de fechamento mais próximo.
-        let premiumVals = [], premiumAtual = 0, premiumDelta = 0;
-        let premRes = { diag: 'Bearish', cor: '#EF4444' };
-        if (Array.isArray(rCoinbase) && rCoinbase.length > 0 && Array.isArray(rPrice) && rPrice.length > 0) {
-            const cbCandles = rCoinbase.map(c => ({ t: c[0] * 1000, close: c[4] })); // API retorna tempo em segundos
-            premiumVals = rPrice.map(k => {
-                const closeTime = k[6]; // fechamento do candle de 4h da Binance, em ms
-                const binClose = parseFloat(k[4]);
-                let melhor = null, menorDiff = Infinity;
-                for (const cb of cbCandles) {
-                    const diff = Math.abs(cb.t - closeTime);
-                    if (diff < menorDiff) { menorDiff = diff; melhor = cb; }
-                }
-                if (!melhor || binClose <= 0) return 0;
-                return ((melhor.close - binClose) / binClose) * 100;
-            });
-            premiumAtual = premiumVals[premiumVals.length - 1] || 0;
-            const premiumAnterior = premiumVals[premiumVals.length - 2] || premiumAtual;
-            premiumDelta = premiumAtual - premiumAnterior;
-            premRes = diagMedia(premiumVals); // direto: premium subindo (mais institucional comprando) = bullish
-        }
-        // ── Gráfico combinado: Preço (eixo esquerdo) x Indicadores normalizados (eixo direito) ──
-        window._odCombo = {
-            preco: precoVals,
-            vd: vdVals,
-            ttr: ratioVals,
-            ttrpos: (Array.isArray(rTTRPos) ? rTTRPos.map(r => parseFloat(r.longShortRatio || 1)) : []),
-            funding: fundingVals,
-            oi: oiVals,
-            lsr: (Array.isArray(rLSR) ? rLSR.map(r => parseFloat(r.longShortRatio || 1)) : []),
-            premium: premiumVals
-        };
-        window._odComboValores = {
-            vd: { v: vdAtual, fmt: (vdAtual >= 0 ? '+' : '') + vdAtual.toFixed(2) },
-            ttr: { v: ratio, fmt: ratio.toFixed(2) },
-            ttrpos: { v: ttrPos, fmt: ttrPos.toFixed(2) },
-            funding: { v: funding, fmt: funding.toFixed(4) + '%' },
-            oi: { v: oiAtual, fmt: '$' + oiAtual.toFixed(2) + 'B' },
-            lsr: { v: lsr, fmt: lsr.toFixed(2) },
-            premium: { v: premiumAtual, fmt: (premiumAtual >= 0 ? '+' : '') + premiumAtual.toFixed(3) + '%' }
-        };
-        odMontarChipsCombo();
-        odDesenharCombo();
-        // Gera narrativa em frases curtas + conclusão, cruzando os indicadores
-        const elNarrativa = document.getElementById("od-sent-narrativa");
-        // Estado "grandes" (Top Trader Ratio + Top Trader Ratio $)
-        const grandesComprado1 = ratio > 1, grandesComprado2 = ttrPos > 1;
-        const grandesBull = ttrRes.diag === 'Bullish' && ttrPosRes.diag === 'Bullish';
-        const grandesBear = ttrRes.diag === 'Bearish' && ttrPosRes.diag === 'Bearish';
-        let fraseGrandes;
-        if (grandesComprado1 === grandesComprado2) {
-            const lado = grandesComprado1 ? 'comprados' : 'vendidos';
-            if (grandesBull) fraseGrandes = grandesComprado1 ? `grandes traders seguem ${lado}, em alta` : `grandes traders reduzindo a posição vendida`;
-            else if (grandesBear) fraseGrandes = grandesComprado1 ? `grandes traders seguem ${lado}, mas perdendo força` : `grandes traders seguem ${lado}, intensificando`;
-            else fraseGrandes = `grandes traders seguem ${lado}, sinal misto`;
-        } else {
-            fraseGrandes = 'Top Trader Ratio e Top Trader Ratio ($) divergem entre si — sinal misto entre contas e capital dos grandes traders';
-        }
-        // Estado "geral" (LSR) — a frase agora descreve a MESMA métrica que decide a bola
-        // (posição vs média de 5 dias, já invertida), em vez do delta cru de 1 candle.
-        const geralComprado = lsr > 1;
-        const fraseLSR = `mercado geral ${geralComprado ? 'comprado' : 'vendido'} (ratio ${lsr.toFixed(2)}), `
-            + (lsrRes.diag === 'Bullish'
-                ? 'abaixo da própria média de 5 dias — sinal contrário de alta'
-                : 'acima da própria média de 5 dias — sinal contrário de baixa');
-        // Funding
-        const fraseFunding = funding < 0 ? 'negativo, vendedor pagando comprador' : funding > 0 ? 'positivo, comprador pagando vendedor' : 'neutro';
-        // OI
-        const fraseOI = oiDelta >= 0 ? 'subindo, novas posições entrando' : 'caindo, posições sendo fechadas';
-        // Coinbase Premium
-        const frasePremium = premiumAtual > 0
-            ? (premiumDelta >= 0 ? 'positivo e subindo, fluxo institucional (Coinbase) comprando mais forte' : 'positivo mas caindo, fluxo institucional perdendo força')
-            : (premiumDelta >= 0 ? 'negativo mas subindo, fluxo institucional se recuperando' : 'negativo e caindo, fluxo institucional fraco/vendendo');
-        // ── Matriz Direção x Alavancagem ──────────────────────────────
-        // Grupo 1 (Direção): pra onde o mercado está inclinado
-        const direcaoVotos = [
-            { nome: 'Top Trader (contas)', bull: ttrRes.diag === 'Bullish' },
-            { nome: 'Top Trader ($)',       bull: ttrPosRes.diag === 'Bullish' },
-            { nome: 'L/S Ratio',            bull: lsrRes.diag === 'Bullish' },
-            { nome: 'Coinbase Premium',     bull: premRes.diag === 'Bullish' },
-        ];
-        // Grupo 2 (Leverage/Extremo): se a direção está "esticada" vs a própria média histórica
-        const leverageVotos = [
-            { nome: 'Funding Rate',  bull: fRes.diag === 'Bullish',  extremo: fRes.extremo },
-            { nome: 'Open Interest', bull: oiRes.diag === 'Bullish', extremo: oiRes.extremo },
-            { nome: 'Vol. Delta',    bull: vdRes.diag === 'Bullish', extremo: vdRes.extremo },
-        ];
-        const direcaoBull = direcaoVotos.filter(v => v.bull).length;
-        const direcaoBear = direcaoVotos.length - direcaoBull;
-        let direcao, direcaoLabel;
-        if (direcaoBull > direcaoBear)      { direcao = 'comprado'; direcaoLabel = 'COMPRADO'; }
-        else if (direcaoBear > direcaoBull) { direcao = 'vendido';  direcaoLabel = 'VENDIDO'; }
-        else                                 { direcao = 'misto';   direcaoLabel = 'MISTO'; }
-        // Indicadores de leverage "alinhados": extremos E na mesma direção do viés geral
-        const leverageAlinhados = leverageVotos.filter(v => v.extremo && (direcao === 'misto' ? true : v.bull === (direcao === 'comprado')));
-        const leverageExtremos = leverageVotos.filter(v => v.extremo);
-        let nivelAlavancagem, corConclusao, riscoTxt = '';
-        if (direcao === 'misto') {
-            nivelAlavancagem = null;
-            corConclusao = '#8E8E93';
-        } else if (leverageAlinhados.length >= 2) {
-            nivelAlavancagem = 'fortemente alavancado';
-            corConclusao = direcao === 'comprado' ? '#16A34A' : '#c0392b';
-            riscoTxt = direcao === 'comprado' ? ' Risco de long squeeze.' : ' Risco de short squeeze.';
-        } else if (leverageAlinhados.length === 1) {
-            nivelAlavancagem = 'levemente alavancado';
-            corConclusao = direcao === 'comprado' ? '#26A69A' : '#EF5350';
-        } else {
-            nivelAlavancagem = 'sem alavancagem excessiva (movimento mais orgânico)';
-            corConclusao = direcao === 'comprado' ? '#26A69A' : '#EF5350';
-        }
-        const conclusaoPrincipal = direcao === 'misto'
-            ? 'Sinal misto: os indicadores de direção (grandes traders e mercado geral) divergem entre si — sem viés claro no momento.'
-            : `Mercado <b>${direcaoLabel}</b> — ${nivelAlavancagem}.${riscoTxt}`;
-        const extremosTxt = leverageExtremos.length > 0
-            ? `Em zona extrema (vs média histórica): ${leverageExtremos.map(v => v.nome).join(', ')}.`
-            : 'Nenhum indicador de leverage em zona extrema no momento.';
-        const conclusaoHtml =
-            `<div style="font-size:16px;font-weight:800;color:${corConclusao};margin-bottom:6px;">${conclusaoPrincipal}</div>`
-            + `<div style="font-size:12px;color:#555;margin-bottom:12px;">${extremosTxt}</div>`
-            + `<div style="display:flex;gap:12px;margin-bottom:10px;">`
-            + `<div style="flex:1;background:#f2f2f7;border-radius:10px;padding:10px;">`
-            + `<div style="font-size:10px;font-weight:700;color:#6C6C70;letter-spacing:0.5px;margin-bottom:6px;">DIREÇÃO</div>`
-            + direcaoVotos.map(v => `${v.bull ? '🟢' : '🔴'} ${v.nome}`).join('<br>')
-            + `</div>`
-            + `<div style="flex:1;background:#f2f2f7;border-radius:10px;padding:10px;">`
-            + `<div style="font-size:10px;font-weight:700;color:#6C6C70;letter-spacing:0.5px;margin-bottom:6px;">LEVERAGE / EXTREMO</div>`
-            + leverageVotos.map(v => `${v.bull ? '🟢' : '🔴'} ${v.nome}${v.extremo ? ' ⚡' : ''}`).join('<br>')
-            + `</div>`
-            + `</div>`;
-        // Mantém as frases descritivas de cada indicador (informativas)
-        const narrativaHtml =
-            `<div style="font-size:13px;font-weight:500;line-height:1.5;margin-bottom:12px;">`
-            + `<b>Top Trader Ratio e Top Trader Ratio ($):</b> ${fraseGrandes}.<br>`
-            + `<b>Long/Short Ratio:</b> ${fraseLSR}.<br>`
-            + `<b>Coinbase Premium:</b> ${frasePremium}.<br>`
-            + `<b>Funding Rate:</b> ${fraseFunding}.<br>`
-            + `<b>Open Interest:</b> ${fraseOI}.`
-            + `</div>`
-            + conclusaoHtml;
-        if (elNarrativa) elNarrativa.innerHTML = narrativaHtml;
-    } catch(e) { 
-        const elNarrativa = document.getElementById("od-sent-narrativa");
-        if (elNarrativa) elNarrativa.textContent = "Erro ao calcular.";
-    }
-    finally { loading.style.display = "none"; }
-}
-// ── Gráfico combinado: Preço x Indicadores normalizados ──────────────
-const _odComboDefs = [
-    { key: 'oi',      label: 'Open Int.',   cor: '#00C7BE' },
-    { key: 'ttrpos',  label: 'TTR $',       cor: '#FF2D55' },
-    { key: 'ttr',     label: 'Top Trader',  cor: '#5856D6' },
-    { key: 'lsr',     label: 'L/S Ratio',   cor: '#AF52DE' },
-    { key: 'funding', label: 'Funding',     cor: '#34C759' },
-    { key: 'vd',      label: 'Vol. Delta',  cor: '#FF9F0A' },
-    { key: 'premium', label: 'CB Premium',  cor: '#007AFF' }
-];
-if (!window._odComboSelecionados) {
-    window._odComboSelecionados = { vd: true, ttr: true, ttrpos: false, funding: true, oi: true, lsr: false, premium: false };
-}
-function odToggleCombo(key) {
-    window._odComboSelecionados[key] = !window._odComboSelecionados[key];
-    odMontarChipsCombo();
-    odDesenharCombo();
-}
-// Detecta se a leitura recente (últimos 5 candles de 4h ≈ 20h) diverge da tendência de 5 dias —
-// sem trocar o cálculo principal, só pra sinalizar "algo mudou rápido, a média longa ainda não sentiu".
-function odMudancaRecente(vals) {
-    if (!Array.isArray(vals) || vals.length < 10) return false;
-    const longo = vals.slice(-30);
-    const curto = vals.slice(-5);
-    const mmLongo = longo.reduce((s, v) => s + v, 0) / longo.length;
-    const mmCurto = curto.reduce((s, v) => s + v, 0) / curto.length;
-    const atual = vals[vals.length - 1];
-    return (atual > mmLongo) !== (atual > mmCurto);
-}
-function odMontarChipsCombo() {
-    const wrap = document.getElementById('od-combo-chips');
-    if (!wrap || !window._odComboValores) return;
-    wrap.innerHTML = _odComboDefs.map(d => {
-        const ativo = window._odComboSelecionados[d.key];
-        const val = window._odComboValores[d.key];
-        const fmt = val ? val.fmt : '—';
-        const bg = ativo ? d.cor : '#E5E5EA';
-        const txt = '#000000';
-        const mudou = window._odCombo ? odMudancaRecente(window._odCombo[d.key]) : false;
-        const borda = mudou ? 'border:2px solid #FF9500;' : 'border:none;';
-        return `<button onclick="odToggleCombo('${d.key}')" style="${borda}border-radius:14px;padding:5px 10px;font-size:11px;font-weight:600;background:${bg};color:${txt};display:flex;align-items:center;gap:4px;">${d.label} <span style="font-weight:500;opacity:0.9;">${fmt}${mudou ? ' ⚡' : ''}</span></button>`;
-    }).join('');
-}
-function odDesenharCombo() {
-    const canvas = document.getElementById('od-combo-canvas');
-    if (!canvas || !window._odCombo) return;
-    const rect = canvas.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
-    const W = Math.max(rect.width, 300), H = 220;
-    canvas.width = W * dpr; canvas.height = H * dpr;
-    canvas.style.height = H + 'px';
-    const ctx = canvas.getContext('2d');
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, W, H);
-    const PAD = { top: 12, bottom: 18, left: 54, right: 54 };
-    const chartW = W - PAD.left - PAD.right;
-    const chartH = H - PAD.top - PAD.bottom;
-    const preco = window._odCombo.preco || [];
-    const n = preco.length;
-    if (n < 2) return;
-    const toX = i => PAD.left + (i / (n - 1)) * chartW;
-    // Desenha uma linha suave (curva por pontos médios) a partir de array de pontos {x,y}
-    const desenharSuave = pts => {
-        if (pts.length < 2) return;
-        ctx.moveTo(pts[0].x, pts[0].y);
-        for (let i = 0; i < pts.length - 1; i++) {
-            const p0 = pts[i], p1 = pts[i + 1];
-            const mx = (p0.x + p1.x) / 2, my = (p0.y + p1.y) / 2;
-            ctx.quadraticCurveTo(p0.x, p0.y, mx, my);
-        }
-        const last = pts[pts.length - 1];
-        ctx.lineTo(last.x, last.y);
-    };
-    // ── Preço: eixo esquerdo, escala real ──
-    const pMin = Math.min(...preco), pMax = Math.max(...preco);
-    const toYPreco = v => PAD.top + chartH - ((v - pMin) / (pMax - pMin || 1)) * chartH;
-    // Grade leve
-    ctx.strokeStyle = 'rgba(0,0,0,0.06)';
-    ctx.lineWidth = 1;
-    for (let g = 0; g <= 2; g++) {
-        const y = PAD.top + (chartH / 2) * g;
-        ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(W - PAD.right, y); ctx.stroke();
-    }
-    // Labels eixo esquerdo (preço)
-    ctx.fillStyle = '#8E8E93';
-    ctx.font = '10px -apple-system, sans-serif';
-    ctx.textAlign = 'right';
-    ctx.fillText(pMax.toFixed(0), PAD.left - 6, PAD.top + 4);
-    ctx.fillText(pMin.toFixed(0), PAD.left - 6, PAD.top + chartH);
-    // Labels eixo direito (normalizado 0-100)
-    ctx.textAlign = 'left';
-    ctx.fillText('100', W - PAD.right + 6, PAD.top + 4);
-    ctx.fillText('0', W - PAD.right + 6, PAD.top + chartH);
-    // Linha do preço
-    ctx.strokeStyle = '#FFFFFF';
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    desenharSuave(preco.map((v, i) => ({ x: toX(i), y: toYPreco(v) })));
-    ctx.stroke();
-    ctx.strokeStyle = '#1C1C1E';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    // ── Indicadores selecionados: normalizados min-max 0-100, eixo direito ──
-    _odComboDefs.forEach(d => {
-        if (!window._odComboSelecionados[d.key]) return;
-        const vals = window._odCombo[d.key];
-        if (!vals || vals.length < 2) return;
-        const vMin = Math.min(...vals), vMax = Math.max(...vals);
-        const range = (vMax - vMin) || 1;
-        const toYNorm = v => PAD.top + chartH - ((v - vMin) / range) * chartH;
-        ctx.strokeStyle = d.cor;
-        ctx.lineWidth = 1.8;
-        ctx.beginPath();
-        desenharSuave(vals.map((v, i) => ({ x: toX(i), y: toYNorm(v) })));
-        ctx.stroke();
-    });
 }
 // ── Aba Trades ──────────────────────────────────────────────
 // Status é derivado: sem data_abertura = Em Análise; com data_abertura = Ativo; com data_fechamento = Encerrado.
@@ -12142,9 +11758,7 @@ function odPararRefreshTrades() {
 function odSetTab(idx) {
     if (idx === 1) { odCarregarTrades(); odIniciarRefreshTrades(); }
     else { odPararRefreshTrades(); }
-    if (idx === 2) { odCarregarSentimento(); odIniciarRefreshMercado(); }
-    else { odPararRefreshMercado(); }
-    for (let i of [0, 1, 2]) {
+    for (let i of [0, 1]) {
         document.getElementById('od-tab-' + i).classList.toggle('active', i === idx);
         document.getElementById('od-pane-' + i).classList.toggle('active', i === idx);
     }
