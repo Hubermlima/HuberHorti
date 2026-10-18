@@ -2159,7 +2159,7 @@ function cvRenderMenuFpCfg() {
     } else if (_grFpCfgMenuQual === 'cvd') {
         const c = window._compValores && window._compValores.cvdPA;
         menu.innerHTML = '<div style="font-size:13px;font-weight:700;color:#1C1C1E;">CVD / Delta</div>'
-            + '<div style="font-size:12px;color:#8E8E93;max-width:200px;padding-bottom:4px;">CVD (linha grossa) x Delta (linha fina) sobrepostos no preço.</div>'
+            + '<div style="font-size:12px;color:#8E8E93;max-width:200px;padding-bottom:4px;">CVD (linha laranja) e VD (barras verde/vermelho), somados desde a âncora do VP.</div>'
             + (c ? '<div style="font-size:13px;font-weight:700;color:' + c.cor + ';">' + c.valor + '</div>' : '')
             + (window._compValores.conclusaoOiCvd
                 ? '<div style="margin-top:8px;padding-top:8px;border-top:1px solid #F2F2F7;"><div style="font-size:12.5px;font-weight:700;color:#1C1C1E;">' + window._compValores.conclusaoOiCvd.titulo + '</div><div style="font-size:11.5px;color:#8E8E93;margin-top:2px;">' + window._compValores.conclusaoOiCvd.texto + '</div><div style="font-size:11px;color:#AEAEB2;margin-top:4px;font-style:italic;">' + window._compValores.conclusaoOiCvd.nota + '</div></div>'
@@ -3356,7 +3356,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v592';
+const APP_VERSAO = 'v594';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -6645,100 +6645,53 @@ if (_grTipoGrafico === 'linha') {
                 }
 
                 if (_indState.cvdPA) {
-                    const cvdAllPA = new Array(_grAllCandles.length).fill(null);
-                    const deltaAllPA = new Array(_grAllCandles.length).fill(null);
-                    let acumuladoPA = 0;
-                    for (let i = 0; i < _grAllCandles.length; i++) {
-                        const c = _grAllCandles[i];
-                        if (c.t < inicioJanelaPA) continue; // fora da janela — ainda não começou a acumular
-                        const dPA = dtMapaPA ? dtMapaPA.get(c.t) : null;
-                        const dc = dPA ? dPA.delta : 0;
-                        acumuladoPA += dc;
-                        cvdAllPA[i] = acumuladoPA;
-                        deltaAllPA[i] = dc;
+                    // CVD ANCORADO NO VP: soma o delta desde o candle da âncora do Volume Profile (a mesma do POC / VWAP / Value Area).
+                    // Sem âncora não há de onde somar: não desenha. CVD = linha laranja grossa; VD (delta de cada candle) = barras
+                    // verde (compra) / vermelho (venda) saindo de uma linha de zero. Escalas fixas pela janela INTEIRA desde a âncora
+                    // (não pelo que está na tela), então rolar o gráfico não deforma as curvas — elas só andam para os lados.
+                    const ancCvd = (typeof _grVpAncoraTs !== 'undefined' && _grVpAncoraTs > 0) ? _grVpAncoraTs : null;
+                    let rotuloCvd = 'CVD sem âncora';
+                    if (ancCvd != null) {
+                        const nTot = _grAllCandles.length, cvdAll = new Array(nTot).fill(null), vdAll = new Array(nTot).fill(null);
+                        let acum = 0, minC = 0, maxC = 0, maxD = 0, ultC = null;
+                        for (let i = 0; i < nTot; i++) {
+                            const c = _grAllCandles[i];
+                            if (c.t < ancCvd) continue;
+                            const dd = dtMapaPA ? dtMapaPA.get(c.t) : null, dv = dd ? dd.delta : 0;
+                            acum += dv; cvdAll[i] = acum; vdAll[i] = dv; ultC = acum;
+                            if (acum < minC) minC = acum; if (acum > maxC) maxC = acum; if (Math.abs(dv) > maxD) maxD = Math.abs(dv);
+                        }
+                        // faixa fixa no terço de baixo da área dos candles (não depende da máxima/mínima visível, que muda a cada rolagem)
+                        const bandTop = PAD.top + chartH * 0.64, bandBot = PAD.top + chartH * 0.95, bandH = bandBot - bandTop;
+                        const yMid = (bandTop + bandBot) / 2;                       // linha de zero do VD
+                        const rngC = Math.max(maxC - minC, 1e-9);
+                        const yC = v => bandBot - ((v - minC) / rngC) * bandH;      // CVD: de baixo (mínimo) a cima (máximo) da janela; inclui o zero
+                        const xDoIdx = i => PAD.left + (i / totalSlots) * chartW + cW / 2;
+                        ctx.save(); ctx.beginPath(); ctx.rect(PAD.left, PAD.top, chartW, chartH); ctx.clip();
+                        // zero do VD
+                        ctx.strokeStyle = 'rgba(150,155,165,0.55)'; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+                        ctx.beginPath(); ctx.moveTo(PAD.left, Math.round(yMid) + 0.5); ctx.lineTo(PAD.left + chartW, Math.round(yMid) + 0.5); ctx.stroke(); ctx.setLineDash([]);
+                        // VD: barras
+                        const bw = Math.max(1, cW * 0.6), amp = bandH / 2 * 0.95;
+                        for (let i = 0; i < visible; i++) {
+                            const v = vdAll[startIdx + i]; if (v == null || !v || !(maxD > 0)) continue;
+                            const h = Math.abs(v) / maxD * amp, x = xDoIdx(i) - bw / 2;
+                            ctx.fillStyle = v > 0 ? 'rgba(38,166,154,0.85)' : 'rgba(239,83,80,0.85)';
+                            ctx.fillRect(x, v > 0 ? yMid - h : yMid, bw, Math.max(1, h));
+                        }
+                        // CVD: linha laranja grossa, só os candles visíveis (a escala já é da janela toda)
+                        ctx.strokeStyle = '#FF9800'; ctx.lineWidth = 2.4; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+                        ctx.beginPath(); let ini = false;
+                        for (let i = 0; i < visible; i++) {
+                            const v = cvdAll[startIdx + i];
+                            if (v == null) { ini = false; continue; }
+                            const x = xDoIdx(i), y = yC(v);
+                            if (!ini) { ctx.moveTo(x, y); ini = true; } else ctx.lineTo(x, y);
+                        }
+                        ctx.stroke(); ctx.restore();
+                        if (ultC != null) rotuloCvd = 'CVD ' + (ultC >= 0 ? '+' : '-') + grFmtVolCompacto(Math.abs(ultC), 0);
                     }
-                    const cvdVals = [], deltaVals = [];
-                    for (let i = 0; i < visible; i++) {
-                        const idx = startIdx + i;
-                        cvdVals.push(idx >= 0 && idx < cvdAllPA.length ? cvdAllPA[idx] : null);
-                        deltaVals.push(idx >= 0 && idx < deltaAllPA.length ? deltaAllPA[idx] : null);
-                    }
-                    // Centraliza no meio do range REAL dos candles visíveis (não do
-                    // painel inteiro) — eixo Y é fixo, sobra espaço em branco.
-                    const yCandleHi = toY(window._grVisibleHigh);
-                    const yCandleLo = toY(window._grVisibleLow);
-                    const zeroYpa = (yCandleHi + yCandleLo) / 2;
-                    const alturaCandlesPx = Math.max(20, Math.abs(yCandleLo - yCandleHi));
-                    const xDoIdx = i => PAD.left + (i / totalSlots) * chartW + cW / 2;
-                    // Normaliza cada série pelo que tá VISÍVEL na tela — é o que dá
-                    // reação/cruzamento de verdade entre CVD e Delta. Uma janela maior
-                    // (ex: últimos 300 candles) faz o range do CVD ficar dominado por
-                    // picos antigos fora da tela (CVD acumula, positivo e negativo se
-                    // cancelam ao longo do tempo — o range dele tende a ser definido
-                    // por poucos picos isolados). A régua reajusta ao rolar — isso é
-                    // padrão em qualquer oscilador de sub-painel (RSI, MACD já fazem
-                    // isso no resto do app), não é bug.
-                    function calcularRange(valsVisiveis) {
-                        const validos = valsVisiveis.filter(v => v != null);
-                        if (!validos.length) return null;
-                        const minV = Math.min(...validos), maxV = Math.max(...validos);
-                        return { minV, maxV: Math.max(maxV, minV + 0.001) };
-                    }
-                    const rangeCvd = calcularRange(cvdVals);
-                    const rangeDelta = calcularRange(deltaVals);
-                    function construirPontosNormalizados(vals, range) {
-                        if (!range) return vals.map(() => null);
-                        const { minV, maxV } = range;
-                        const rangeVal = maxV - minV;
-                        const bandTop = zeroYpa - alturaCandlesPx * 0.3;
-                        const bandBottom = zeroYpa + alturaCandlesPx * 0.3;
-                        return vals.map((v, i) => v == null ? null : {
-                            x: xDoIdx(i),
-                            y: bandBottom - ((v - minV) / rangeVal) * (bandBottom - bandTop)
-                        });
-                    }
-                    // Traça uma curva CONTÍNUA (um path só, sem reiniciar a cada
-                    // segmento) passando por todos os pontos — cada ponto original
-                    // vira o "puxão" da curva rumo ao ponto médio até o próximo,
-                    // aí sim suaviza de verdade, sem quina em cada vértice. Corta
-                    // em runs quando encontra null (fora da janela de dias).
-                    function grTracarSuave(pts, cor, lw) {
-                        ctx.strokeStyle = cor;
-                        ctx.lineWidth = lw;
-                        ctx.lineJoin = 'round';
-                        ctx.lineCap = 'round';
-                        let run = [];
-                        const flush = () => {
-                            if (run.length >= 2) {
-                                ctx.beginPath();
-                                ctx.moveTo(run[0].x, run[0].y);
-                                for (let i = 1; i < run.length - 1; i++) {
-                                    const mx = (run[i].x + run[i + 1].x) / 2, my = (run[i].y + run[i + 1].y) / 2;
-                                    ctx.quadraticCurveTo(run[i].x, run[i].y, mx, my);
-                                }
-                                ctx.lineTo(run[run.length - 1].x, run[run.length - 1].y);
-                                ctx.stroke();
-                            }
-                            run = [];
-                        };
-                        pts.forEach(p => { if (p == null) flush(); else run.push(p); });
-                        flush();
-                    }
-                    const cvdPts = construirPontosNormalizados(cvdVals, rangeCvd);
-                    const deltaPts = construirPontosNormalizados(deltaVals, rangeDelta);
-                    grTracarSuave(cvdPts, '#26A69A', 2.2);   // CVD — linha grossa de referência
-                    grTracarSuave(deltaPts, '#1565C0', 1.2); // Delta — linha fina por cima
-                    // Valor do CVD entra como chip na Barra Superior, junto com os outros — toca e desliga.
-                    let idxUltCvd = -1;
-                    for (let i = cvdVals.length - 1; i >= 0; i--) { if (cvdVals[i] != null && deltaVals[i] != null) { idxUltCvd = i; break; } }
-                    // Seta indicando qual linha está visualmente por cima na tela agora (CVD vs Delta) — ajuda a
-                    // ler quem está "ganhando" sem precisar comparar as duas curvas no olho.
-                    let setaCvdTopo = '';
-                    if (idxUltCvd >= 0 && cvdPts[idxUltCvd] && deltaPts[idxUltCvd]) {
-                        setaCvdTopo = cvdPts[idxUltCvd].y <= deltaPts[idxUltCvd].y ? ' ▲' : ' ▼';
-                    }
-                    const rotuloCvd = 'CVD' + (idxUltCvd >= 0 ? ' ' + (cvdVals[idxUltCvd] >= 0 ? '+' : '-') + grFmtVolCompacto(Math.abs(cvdVals[idxUltCvd]), 0) : '') + setaCvdTopo;
-                    window._compValores.cvdPA = { cor: '#1565C0', valor: rotuloCvd }; window._grFpItens.push({ rot: rotuloCvd, abrir: (cx, cy) => cvAbrirMenuFpCfg('cvd', cx, cy) });
+                    window._compValores.cvdPA = { cor: '#E65100', valor: rotuloCvd }; window._grFpItens.push({ rot: rotuloCvd, abrir: (cx, cy) => cvAbrirMenuFpCfg('cvd', cx, cy) });
                 }
 
                 // ── Open Interest -- mesmo framework do CVD (nivel acumulado + variacao por candle, sobrepostos
@@ -8482,7 +8435,7 @@ function cvAbrirMenuCandle(clientX, clientY, snap) {
         } else {
             itens.push({ txt: 'Novo Fibo: ponto 2 aqui', icone: HEROICON_BOOKMARK, acao: () => {
                 if (!(pCh > 0) || (candle.t === _nfP1.t && pCh === _nfP1.p)) return;
-                _novosFibos.push({ t1: _nfP1.t, p1: _nfP1.p, t2: candle.t, p2: pCh, cor: '#2962FF' }); _nfP1 = null; _nfAtual = null;
+                _novosFibos.push({ t1: _nfP1.t, p1: _nfP1.p, t2: candle.t, p2: pCh, cor: '#2962FF', niv: nfNivNovo() }); _nfP1 = null; _nfAtual = null;
                 try { grAmbienteSalvar(); } catch (e) {}
                 window._longPressActive = false; grFerramentaDesligar('novoFibo', ['cv-ind-novofibo']);
                 cvEdicaoIniciar('nf', _novosFibos.length - 1);
@@ -9297,7 +9250,7 @@ function grInitTouch() {
         _nfDrawing = false; grNfAutoParar();
         const aN = _nfAtual; _nfAtual = null;
         if (aN && aN.moved && (aN.t1 !== aN.t2 || aN.p1 !== aN.p2)) {
-            _novosFibos.push({ t1: aN.t1, p1: aN.p1, t2: aN.t2, p2: aN.p2, cor: '#2962FF' });
+            _novosFibos.push({ t1: aN.t1, p1: aN.p1, t2: aN.t2, p2: aN.p2, cor: '#2962FF', niv: nfNivNovo() });
             try { grAmbienteSalvar(); } catch (e) {}
             grFerramentaDesligar('novoFibo', ['cv-ind-novofibo']);
             cvEdicaoIniciar('nf', _novosFibos.length - 1);
@@ -10634,7 +10587,7 @@ async function cvCarregarTrendlines() {
     if (!_ativoId) return;
     window._grTlOk = _ativoId;
     const d = (window._grDesenhosMapa || {})[_ativoId];
-    _novosFibos = d && d.novosFibos ? d.novosFibos.map(f => ({ t1: f.t1, p1: parseFloat(f.p1), t2: f.t2, p2: parseFloat(f.p2), cor: '#2962FF', oculta: !!f.oculta })) : [];
+    _novosFibos = d && d.novosFibos ? d.novosFibos.map(f => ({ t1: f.t1, p1: parseFloat(f.p1), t2: f.t2, p2: parseFloat(f.p2), cor: '#2962FF', esp: f.esp || undefined, niv: Array.isArray(f.niv) ? f.niv : undefined, oculta: !!f.oculta })) : [];
     if (d) { // v93: vem do JSON de preferencias
         _trendlines = (d.trendlines || []).map(t => ({ id: null, t1: t.t1, p1: parseFloat(t.p1), t2: t.t2, p2: parseFloat(t.p2), cor: t.cor || '#000000', esp: t.esp || undefined, canal: !!t.canal, pi: t.pi || undefined, pe: t.pe || undefined, hor: !!t.hor, oculta: !!t.oculta }));
         return;
@@ -11241,13 +11194,39 @@ function cvApagarFreehand(idx) {
 }
 // ── NOVO FIBO: arrasta do ponto 1 ao ponto 2 (com ímã) e, ao soltar, aparecem os níveis, como no TradingView. Nível 0% = ponto 2; 100% = ponto 1. ──
 let _nfP1 = null, _nfUlt = 0, _nfAcc = 0, _novosFibos = [], _nfAtual = null, _nfDrawing = false, _nfDedo = null, _nfTimer = null;
-const NF_NIVEIS = [[0, '0', '#9AA0A6'], [0.236, '0,236', '#F23645'], [0.382, '0,382', '#FF9800'], [0.5, '0,5', '#4CAF50'], [0.618, '0,618', '#089981'], [0.786, '0,786', '#2962FF'], [1, '1', '#9AA0A6']];
+// Níveis do Novo Fibo: sem cor (só traços). Cada fibo guarda os níveis que você marcou (f.niv); os novos herdam a última seleção.
+const NF_NIVEIS_TODOS = [0, 0.236, 0.382, 0.5, 0.618, 0.705, 0.786, 0.886, 1, 1.272, 1.618];
+const NF_NIVEIS_PADRAO = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+const nfRot = r => String(r).replace('.', ',');
+function nfNivNovo() { let v = null; try { v = JSON.parse(localStorage.getItem('nfNivPadrao')); } catch (e) {} v = Array.isArray(v) ? v.filter(r => NF_NIVEIS_TODOS.indexOf(r) >= 0) : []; return v.length ? v : NF_NIVEIS_PADRAO.slice(); }
+function nfNiveisDe(f) { const sel = Array.isArray(f && f.niv) && f.niv.length ? f.niv : nfNivNovo(); return NF_NIVEIS_TODOS.filter(r => sel.indexOf(r) >= 0).map(r => [r, nfRot(r)]); }
+function nfNiveisAbrir() {
+    const o = grEdObjeto(); if (!o || !_edSel || _edSel.tipo !== 'nf') return;
+    if (!Array.isArray(o.niv) || !o.niv.length) o.niv = nfNivNovo();
+    const velho = document.getElementById('cv-nf-niv-ov'); if (velho) velho.remove();
+    const ov = document.createElement('div'); ov.id = 'cv-nf-niv-ov';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:9800;background:rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;font-family:-apple-system,sans-serif;';
+    const card = document.createElement('div'); card.style.cssText = 'background:#FFFFFF;border-radius:16px;width:min(300px,86vw);max-height:80vh;overflow:auto;padding:16px;box-shadow:0 8px 28px rgba(0,0,0,0.3);';
+    const h = document.createElement('div'); h.textContent = 'Níveis do Fibo'; h.style.cssText = 'font-size:17px;font-weight:800;color:#1C1C1E;margin-bottom:8px;'; card.appendChild(h);
+    NF_NIVEIS_TODOS.forEach(r => {
+        const lb = document.createElement('label'); lb.style.cssText = 'display:flex;align-items:center;gap:12px;padding:9px 2px;font-size:16px;color:#1C1C1E;border-bottom:1px solid #F2F2F7;';
+        const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = o.niv.indexOf(r) >= 0; cb.style.cssText = 'width:20px;height:20px;';
+        cb.onchange = () => { const z = grEdObjeto(); if (!z) return; const set = new Set(z.niv); if (cb.checked) set.add(r); else set.delete(r); if (!set.size) { cb.checked = true; return; } z.niv = NF_NIVEIS_TODOS.filter(x => set.has(x)); try { grDrawChart(); } catch (e) {} };
+        lb.appendChild(cb); const sp = document.createElement('span'); sp.textContent = nfRot(r); lb.appendChild(sp); card.appendChild(lb);
+    });
+    const ok = document.createElement('button'); ok.type = 'button'; ok.textContent = 'OK';
+    ok.style.cssText = 'width:100%;margin-top:12px;border:none;border-radius:10px;padding:12px;font-size:15px;font-weight:800;background:#1C1C1E;color:#FFFFFF;';
+    ok.onclick = () => { const z = grEdObjeto(); if (z && Array.isArray(z.niv)) { try { localStorage.setItem('nfNivPadrao', JSON.stringify(z.niv)); } catch (e) {} grEdCtxSalvar('nf'); } ov.remove(); try { grDrawChart(); } catch (e) {} };
+    card.appendChild(ok); ov.appendChild(card);
+    ['touchstart', 'touchend', 'touchmove', 'mousedown'].forEach(n => ov.addEventListener(n, ev => ev.stopPropagation(), { passive: true }));
+    document.body.appendChild(ov);
+}
 function grNfConfirmar() {   // toque simples com o Novo Fibo ligado: marca o ponto onde o crosshair está (1º toque = ponto 1; 2º = ponto 2, cria e libera a ferramenta)
     const arr = _grAllCandles || [], ic = Math.max(0, Math.min(arr.length - 1, Math.floor(grXToIndex(_grCrosshairX)))), c = arr[ic], pr = grToPrice(window._longPressY);
     if (!c || !(pr > 0)) return;
     if (!_nfP1) { _nfP1 = { t: c.t, p: pr }; try { grAreaToast('Ponto 1 marcado. Arraste até o destino e toque de novo', '#2962FF'); } catch (e) {} grDrawChart(); return; }
     if (c.t === _nfP1.t && Math.abs(pr - _nfP1.p) < 1e-9) return;
-    _novosFibos.push({ t1: _nfP1.t, p1: _nfP1.p, t2: c.t, p2: pr, cor: '#2962FF' }); _nfP1 = null; _nfAtual = null;
+    _novosFibos.push({ t1: _nfP1.t, p1: _nfP1.p, t2: c.t, p2: pr, cor: '#2962FF', niv: nfNivNovo() }); _nfP1 = null; _nfAtual = null;
     try { grAmbienteSalvar(); } catch (e) {}
     window._longPressActive = false; window._nfT = null;
     grFerramentaDesligar('novoFibo', ['cv-ind-novofibo']);   // ferramenta livre: a rolagem volta
@@ -11479,7 +11458,7 @@ function grEdCtxFecharEsp() { const d = document.getElementById('cv-esp-menu'); 
 function grEdCtxAbrirEsp(btn) {   // seletor de espessura igual ao TradingView: 1px a 4px, o atual em destaque
     grEdCtxFecharEsp();
     const o = grEdObjeto(); if (!o || !_edSel) return;
-    const cur = o.esp || 2, r = btn.getBoundingClientRect();
+    const cur = o.esp || (_edSel.tipo === 'nf' ? 1 : 2), r = btn.getBoundingClientRect();
     const ov = document.createElement('div'); ov.id = 'cv-esp-overlay'; ov.style.cssText = 'position:fixed;inset:0;z-index:9694;background:transparent;'; ov.onclick = ev => { ev.stopPropagation(); grEdCtxFecharEsp(); };
     const d = document.createElement('div'); d.id = 'cv-esp-menu';
     d.style.cssText = 'position:fixed;z-index:9695;background:#FFFFFF;border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,0.28);padding:4px 0;min-width:190px;transform:scale(.85);transform-origin:top left;overflow:hidden;font-family:-apple-system,sans-serif;';
@@ -11499,7 +11478,7 @@ function cvNfCtxMenu() {   // barra de contexto do desenho selecionado (como no 
     const o = grEdObjeto(), cv = document.getElementById('gr-chart-canvas'); if (!o || !cv || !_edSel || GR_ED_CTX_TIPOS.indexOf(_edSel.tipo) < 0) return cvNfCtxRemover();
     const tipo = _edSel.tipo, rc = cv.getBoundingClientRect(), sx = rc.width / grLW(cv), sy = rc.height / grLH(cv);
     const chave = tipo + (tipo === 'tl' && o.canal ? ':canal' : '');
-    const temCor = tipo !== 'nf' && tipo !== 'md', temEsp = tipo !== 'nf' && tipo !== 'md';   // Medida: só olho, lixeira e fechar   // Novo Fibo: cada nível tem a sua cor fixa, sem cor/espessura únicas
+    const temCor = tipo !== 'nf' && tipo !== 'md', temEsp = tipo !== 'md';   // Medida: só olho, lixeira e fechar   // Novo Fibo: cada nível tem a sua cor fixa, sem cor/espessura únicas
     let m = document.getElementById('cv-nf-ctx');
     if (m && m._chave !== chave) { m.remove(); m = null; }   // os botões mudam conforme o tipo
     if (!m) {
@@ -11518,6 +11497,10 @@ function cvNfCtxMenu() {   // barra de contexto do desenho selecionado (como no 
             const b = bt('<span class="cv-ctx-esp" style="font-size:14px;color:#1C1C1E;">2px</span>', '#1C1C1E', btn => grEdCtxAbrirEsp(btn));
             b.style.cssText += 'width:auto;min-width:40px;padding:0 6px;border-radius:6px;background:#F2F2F7;margin:0 2px;';
         }
+        if (tipo === 'nf') {
+            const b = bt('<span style="font-size:14px;color:#1C1C1E;">Níveis</span>', '#1C1C1E', () => nfNiveisAbrir());
+            b.style.cssText += 'width:auto;min-width:40px;padding:0 8px;border-radius:6px;background:#F2F2F7;margin:0 2px;';
+        }
         bt(grHeroicon('eye-slash', 16), '#1C1C1E', () => { const z = grEdObjeto(); if (!z || !_edSel) return; const tp = _edSel.tipo; z.oculta = true; grEdCtxSalvar(tp); cvEdicaoSair(true); grDrawChart(); });
         if (chave === 'tl:canal') bt(grHeroicon('cog-6-tooth', 16), '#1C1C1E', () => { if (_edSel && _edSel.tipo === 'tl') grCanalCfgAbrir(_edSel.idx); });
         bt(grHeroicon('trash', 16), '#EF5350', () => grEdCtxApagar());
@@ -11525,7 +11508,7 @@ function cvNfCtxMenu() {   // barra de contexto do desenho selecionado (como no 
         document.body.appendChild(m);
     }
     const barra = m.querySelector('.cv-ctx-corbar'); if (barra) barra.style.background = o.cor || '#000000';
-    const et = m.querySelector('.cv-ctx-esp'); if (et) et.textContent = (o.esp || 2) + 'px';
+    const et = m.querySelector('.cv-ctx-esp'); if (et) et.textContent = (o.esp || (tipo === 'nf' ? 1 : 2)) + 'px';
     const al = grEdAlcas(t => grIndexToX(grTimeToIndex(t)), p => grLineY(p));
     if (!al.length) return cvNfCtxRemover();
     let ax = 0, yMin = Infinity, yMax = -Infinity;
@@ -11551,17 +11534,19 @@ function grNfDesenhar(ctx, fx, fy, PAD, W, chartH, selIdx) {
     const lista = _novosFibos.map((f, i) => ({ f, i })).filter(o => !o.f.oculta); if (_nfAtual) lista.push({ f: _nfAtual, i: -1 });
     lista.forEach(({ f, i }) => {
         const x1 = fx(f.t1), x2 = fx(f.t2), y1 = fy(f.p1), y2 = fy(f.p2), xL = Math.min(x1, x2), xR = Math.max(x1, x2);
-        if (i >= 0 && !grPlAtivo()) { window._grPosRects = window._grPosRects || []; NF_NIVEIS.forEach(([r]) => { const yy = fy(f.p2 + (f.p1 - f.p2) * r); window._grPosRects.push({ x: xL - 10, y: yy - 12, w: xR - xL + 20, h: 24, abrir: () => { if (!(_edSel && _edSel.tipo === 'nf' && _edSel.idx === i)) cvEdicaoIniciar('nf', i); } }); }); }   // tocar numa linha do fibo seleciona (já selecionado: abre/fecha a lixeira)
+        if (i >= 0 && !grPlAtivo()) { window._grPosRects = window._grPosRects || []; nfNiveisDe(f).forEach(([r]) => { const yy = fy(f.p2 + (f.p1 - f.p2) * r); window._grPosRects.push({ x: xL - 10, y: yy - 12, w: xR - xL + 20, h: 24, abrir: () => { if (!(_edSel && _edSel.tipo === 'nf' && _edSel.idx === i)) cvEdicaoIniciar('nf', i); } }); }); }   // tocar numa linha do fibo seleciona (já selecionado: abre/fecha a lixeira)
         const preco = r => f.p2 + (f.p1 - f.p2) * r;
         ctx.save(); ctx.beginPath(); ctx.rect(PAD.left, PAD.top, W - PAD.left - PAD.right, chartH); ctx.clip();
         const xIni = PAD.left, xFim = W - PAD.right;   // níveis marcam TODO o horizonte (largura inteira do gráfico), sem linhas separando
-        for (let k = 0; k < NF_NIVEIS.length - 1; k++) { const ya = fy(preco(NF_NIVEIS[k][0])), yb = fy(preco(NF_NIVEIS[k + 1][0])); ctx.globalAlpha = 0.14; ctx.fillStyle = NF_NIVEIS[k + 1][2]; ctx.fillRect(xIni, Math.min(ya, yb), xFim - xIni, Math.abs(yb - ya)); }
         ctx.globalAlpha = 1; ctx.font = 'bold 10px -apple-system'; ctx.textAlign = 'right';
         const decNf = (typeof window._grEixoDec === 'number') ? window._grEixoDec : 2;   // casas decimais = as que o eixo Y exige (muitas só quando o eixo pede)
         const fmtNf = v => parseFloat(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: decNf, maximumFractionDigits: decNf });
-        NF_NIVEIS.forEach(([r, rot, cor]) => {
-            const yy = fy(preco(r)), tx = xFim - 4;   // ancorado na lateral direita
-            ctx.fillStyle = cor;
+        const COR_NF = '#9AA0A6';   // níveis sem cor: só traços
+        ctx.strokeStyle = COR_NF; ctx.lineWidth = f.esp || 1; ctx.setLineDash([]);
+        nfNiveisDe(f).forEach(([r, rot]) => {
+            const yy = Math.round(fy(preco(r))) + 0.5, tx = xFim - 4;   // ancorado na lateral direita
+            ctx.beginPath(); ctx.moveTo(xIni, yy); ctx.lineTo(xFim, yy); ctx.stroke();
+            ctx.fillStyle = COR_NF;
             ctx.fillText(fmtNf(preco(r)), tx, yy - 3);   // valor em cima
             ctx.fillText(rot, tx, yy + 10);              // porcentagem (nível) embaixo
         });
@@ -11692,7 +11677,7 @@ function grDesenhosColetar() {
     if (_ativoId && window._grTlOk === _ativoId) {
         window._grDesenhosMapa[_ativoId] = {
             trendlines: _trendlines.map(t => ({ t1: t.t1, p1: t.p1, t2: t.t2, p2: t.p2, cor: t.cor, esp: t.esp || undefined, canal: !!t.canal, pi: t.pi || null, pe: t.pe || null, hor: !!t.hor, oculta: !!t.oculta || undefined })),
-            novosFibos: _novosFibos.map(f => ({ t1: f.t1, p1: f.p1, t2: f.t2, p2: f.p2, oculta: !!f.oculta || undefined })),
+            novosFibos: _novosFibos.map(f => ({ t1: f.t1, p1: f.p1, t2: f.t2, p2: f.p2, esp: f.esp || undefined, niv: Array.isArray(f.niv) ? f.niv : undefined, oculta: !!f.oculta || undefined })),
             fibs: _fibs.map(f => ({ p1: f.p1, p2: f.p2, tipo: f.tipo }))
         };
     }
