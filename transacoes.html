@@ -3355,7 +3355,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v613';
+const APP_VERSAO = 'v615';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -6163,8 +6163,9 @@ function grDrawCandles(candles, emptyRight) {
                 const _pnVwapRot = a => 'VWAP';
         if (_grFootprintAtivo && _grVwapAncoras.length > 0) {
             _grVwapAncoras.forEach(ancora => {
-                if (ancora.oculta) {   // escondida = ativa sem desenho: o valor continua na caixinha
+                if (ancora.oculta || grVwapIdxPorTs(ancora.ts) < 0) {   // escondida (ou âncora mais antiga que os candles deste TF) = sem desenho: o valor continua na caixinha
                     const iO = grVwapIdxPorTs(ancora.ts);
+                    if (iO < 0) { const vF = grVwapValorPorFootprint(ancora.ts); if (vF && !_pnVwapIdx.has(-1)) { _pnVwapIdx.add(-1); _pnVwap.push({ rot: _pnVwapRot(ancora), val: fmtN(vF), cor: ancora.tipo === 'topo' ? '#EF5350' : '#64B5F6' }); window._compValores.vwap = { cor: ancora.tipo === 'topo' ? '#C62828' : '#1565C0', valor: fmtN(vF) }; } return; }
                     if (iO >= 0 && !_pnVwapIdx.has(iO)) { _pnVwapIdx.add(iO); const vO = grVWAPAncorado(_grAllCandles, iO).filter(x => x != null).pop(); if (vO) _pnVwap.push({ rot: _pnVwapRot(ancora), val: fmtN(vO), cor: ancora.tipo === 'topo' ? '#EF5350' : '#64B5F6' }); }
                     return;
                 }
@@ -6660,7 +6661,12 @@ if (_grTipoGrafico === 'linha') {
                             acum += dv; cvdAll[i] = acum; vdAll[i] = dv; ultC = acum;
                             if (acum < minC) minC = acum; if (acum > maxC) maxC = acum; if (Math.abs(dv) > maxD) maxD = Math.abs(dv);
                         }
-                        // faixa fixa no terço de baixo da área dos candles (não depende da máxima/mínima visível, que muda a cada rolagem)
+                        // ESCALA PELO QUE ESTÁ NA TELA (como o eixo de preço): dar zoom abre a curva, afastar fecha. O CVD continua somado desde a âncora; só a escala é da janela visível.
+                        { let mn = Infinity, mx = -Infinity, md = 0;
+                          for (let i = 0; i < visible; i++) { const vc = cvdAll[startIdx + i], vv = vdAll[startIdx + i]; if (vc != null) { if (vc < mn) mn = vc; if (vc > mx) mx = vc; } if (vv != null && Math.abs(vv) > md) md = Math.abs(vv); }
+                          if (isFinite(mn) && isFinite(mx)) { const pad = Math.max((mx - mn) * 0.08, 1e-9); minC = mn - pad; maxC = mx + pad; if (!(mx > mn)) { minC = mn - 1; maxC = mx + 1; } }
+                          if (md > 0) maxD = md; }
+                        // faixa fixa no terço de baixo da área dos candles
                         const bandTop = PAD.top + chartH * 0.64, bandBot = PAD.top + chartH * 0.95, bandH = bandBot - bandTop;
                         const yMid = (bandTop + bandBot) / 2;                       // linha de zero do VD
                         const rngC = Math.max(maxC - minC, 1e-9);
@@ -12026,6 +12032,23 @@ function cvRenderEmaCustomLista() {
 // Antes do candle-âncora não desenha nada (null). Ideia: topo/fundo de um
 // evento relevante vira o "zero" — a linha mostra o preço médio de quem
 // entrou dali pra frente, ponderado por volume.
+// VWAP de HOJE ancorado em 'ts' calculado pelo FOOTPRINT (minuto a minuto, preço de cada nível × volume): não depende do timeframe da tela, então
+// funciona mesmo quando a âncora é mais antiga que os candles carregados (5 min, 15 min...). Usa o mesmo mapa do Volume Profile quando a âncora é a dele.
+let _grVwapFpCache = null;
+function grVwapValorPorFootprint(ts) {
+    try {
+        if (!(ts > 0) || !SCX.fpRaw) return null;
+        const chave = ts + '_' + Math.floor(Date.now() / 60000) + '_' + SCX.fpRaw.length;
+        if (_grVwapFpCache && _grVwapFpCache.chave === chave) return _grVwapFpCache.v;
+        let pv = 0, vv = 0;
+        const d = (SCX.vpAncoraTs === ts) ? grVpObterMapa() : null;
+        if (d && d.mapa) d.mapa.forEach((a, pr) => { const w = a.c + a.v; pv += pr * w; vv += w; });
+        else grFootprintParaCadaMinuto(ts, Infinity, m => (m.niveis || []).forEach(n => { const w = n.c + n.v; pv += n.p * w; vv += w; }));
+        const v = vv > 0 ? pv / vv : null;
+        _grVwapFpCache = { chave, v };
+        return v;
+    } catch (e) { return null; }
+}
 function grVWAPAncorado(candles, ancoraIdx) {
     if (ancoraIdx == null || ancoraIdx < 0 || ancoraIdx >= candles.length) {
         return candles.map(() => null);
