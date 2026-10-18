@@ -3355,7 +3355,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v600';
+const APP_VERSAO = 'v602';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -17973,6 +17973,7 @@ function scManualSync() {
     L.forEach(r => {
         if (!r.manual || (r.st !== 'aguardando' && r.st !== 'entrou') || r.semTela || (r.sym && r.sym !== sym)) return;
         const z = mapa.get(r.id);
+        if (!z && Date.now() - (r.t0 || 0) > 20000) { if (r.st === 'aguardando') { r.st = 'apagada'; r.tFim = Date.now(); } else r.semTela = true; mudou = true; return; }   // a caixa manual não existe mais no gráfico: sai do monitor e das listas (antes ficava armada escondida)
         if (z && z.tradeId) { if (r.st === 'aguardando') { r.st = 'apagada'; r.tFim = Date.now(); } else r.semTela = true; mudou = true; }   // virou trade real: sai do monitor
     });
     if (mudou) scRegGravarServidor();
@@ -18403,6 +18404,20 @@ function scAutoLogMostrar() {
     L.forEach(x => { out.push('— ' + hm(x.t) + ' —'); x.linhas.forEach(l => out.push(l)); });
     scRelatorioMostrar({ lado: null, linhas: out });
 }
+function scSelecionarCaixa(id) {   // seleciona a caixa no gráfico; se estiver fora da tela, rola até ela (sem mudar o timeframe)
+    const lista = grPosicoes(), idx = lista.findIndex(z => String(z.id) === String(id)), pz = lista[idx];
+    if (!pz) { try { grAreaToast('Essa caixa não está mais no gráfico', '#8E8E93'); } catch (e) {} return; }
+    pz.oculta = false; window._grCtxFechado = false; _edSel = { tipo: 'ps', idx };
+    try {
+        const i1 = grTimeToIndex(Math.min(pz.t1, pz.t2)), i2 = grTimeToIndex(Math.max(pz.t1, pz.t2)), ini = window._grStartIdx, tot = window._grTotalSlots, z = _grZoom || 15;
+        if (ini != null && tot && (i2 < ini || i1 > ini + tot)) {
+            const maxOff = _grAllCandles.length + Math.floor(z * 0.5);
+            _grOffset = Math.max(0, Math.min(maxOff, Math.round(i1 - z / 4)));
+            const ps = [pz.entrada, pz.stop, pz.alvo].filter(v => v > 0); if (ps.length && !_grEscalaLog) { _grYAxisCenter = (Math.max.apply(null, ps) + Math.min.apply(null, ps)) / 2; }
+        }
+    } catch (e) {}
+    grDrawChart();
+}
 function scAutoMenuFechar() { ['cv-auto-ov', 'cv-auto-menu'].forEach(id => { const e = document.getElementById(id); if (e) e.remove(); }); }
 function scAutoMenu(cx, cy) {
     scAutoMenuFechar();
@@ -18417,17 +18432,18 @@ function scAutoMenu(cx, cy) {
     const tEv = r => r.tFim || r.tEnt || r.t0 || 0;
     const ult2 = scRegLista().filter(r => (!r.sym || r.sym === sym) && r.st !== 'apagada' && (r.st === 'aguardando' || r.st === 'entrou' || Date.now() - tEv(r) < 24 * 3600000)).sort((a, b) => tEv(b) - tEv(a)).slice(0, 2);
     const linha = r => { const viva = r.st === 'aguardando' || r.st === 'entrou', cl = r.lado === 'long' ? '#16A34A' : '#DC2626', nm = (r.lado === 'long' ? 'Long ' : 'Short ') + grPosId(r.id);
-        if (viva) return '<div style="padding:4px 0;font-weight:700;display:flex;align-items:center;gap:6px;color:' + cl + ';">'
+        if (viva) return '<div data-rid="' + r.id + '" style="cursor:pointer;padding:4px 0;font-weight:700;display:flex;align-items:center;gap:6px;color:' + cl + ';">'
             + '<span style="width:9px;height:9px;border-radius:50%;flex-shrink:0;background:' + (r.st === 'entrou' ? '#F59E0B' : 'transparent') + ';border:1.5px solid ' + (r.st === 'entrou' ? '#F59E0B' : '#C7C7CC') + ';"></span>'
             + nm + ' ' + tfC(r) + ' · E ' + Math.round(r.entReal || r.ent).toLocaleString('pt-BR')
             + '<span style="font-weight:600;color:' + (r.st === 'entrou' ? '#B45309' : '#8E8E93') + ';">' + (r.st === 'entrou' ? ' · em trade' : ' · armada') + '</span></div>';
-        return '<div style="padding:4px 0;font-weight:600;display:flex;align-items:center;gap:6px;color:#8E8E93;">'
+        return '<div data-rid="' + r.id + '" style="cursor:pointer;padding:4px 0;font-weight:600;display:flex;align-items:center;gap:6px;color:#8E8E93;">'
             + '<span style="font-size:11px;width:9px;text-align:center;flex-shrink:0;">✕</span>'
             + '<span><span style="color:' + cl + ';font-weight:700;">' + nm + '</span> ' + tfC(r) + ' · E ' + Math.round(r.entReal || r.ent).toLocaleString('pt-BR')
             + ' · ' + (SC_REG_ROT[r.st] || r.st) + (r.tFim ? ' ' + hm2(r.tFim) : '') + '</span></div>'; };
     m.innerHTML = (ult2.length ? ult2.map(linha).join('') : '<div style="padding:4px 0;color:#8E8E93;">nenhuma caixa</div>')
         + '<button type="button" id="cv-auto-bt" style="display:block;width:100%;margin-top:6px;border:none;border-radius:12px;padding:7px 10px;font-size:13px;font-weight:800;background:' + (_scPlay.on ? '#F2F2F7' : '#1C1C1E') + ';color:' + (_scPlay.on ? '#1C1C1E' : '#FFFFFF') + ';">' + (_scPlay.on ? 'Pausar' : 'Ligar') + '</button>';
     document.body.appendChild(ov); document.body.appendChild(m);
+    m.querySelectorAll('[data-rid]').forEach(d => { d.onclick = e => { e.stopPropagation(); scAutoMenuFechar(); scSelecionarCaixa(d.dataset.rid); }; });   // tocar numa caixa da lista: seleciona no gráfico
     m.querySelector('#cv-auto-bt').onclick = e => { e.stopPropagation(); scAutoMenuFechar(); if (_scPlay.on) scPlayParar(); else scPlayLigar(); try { grDrawChart(); } catch (x) {} };
     requestAnimationFrame(() => { const r = m.getBoundingClientRect(), W = window.innerWidth, H = window.innerHeight; let x = (cx || 0) - r.width / 2, y = (cy || 0) + 12; if (x + r.width > W - 8) x = W - r.width - 8; if (y + r.height > H - 8) y = (cy || 0) - r.height - 12; m.style.left = Math.max(8, x) + 'px'; m.style.top = Math.max(8, y) + 'px'; });
 }
