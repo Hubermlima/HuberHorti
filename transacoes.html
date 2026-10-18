@@ -2050,7 +2050,7 @@ function sentRelatorio() {
         const K = 12, i0 = n - 1 - K, oiK = grSentValorEm(oi, cs[i0].t), dpK = cs[n - 1].c - cs[i0].c;
         if (Math.abs(dpK) / cs[n - 1].c > 0.001 && oiA != null && oiK > 0) {
             const sobe = dpK > 0, oiPc = (oiA - oiK) / oiK * 100, pPc = Math.abs(dpK) / cs[i0].c * 100;
-            if (oiPc >= 0) qual = sobe ? { txt: 'Compra nova: comprados entrando.', ok: true } : { txt: 'Venda nova: vendidos entrando.', ok: true };
+            if (oiPc >= 0) qual = { k: sobe ? 'compra' : 'venda' };
             else {
                 let sP = 0, sO = 0, m = 0;
                 for (let e = Math.max(K, n - 300); e < n - 1; e++) {
@@ -2063,12 +2063,32 @@ function sentRelatorio() {
                     const nv = r => r >= 3 ? 3 : r >= 2 ? 2 : r >= 1 ? 1 : 0, lv = Math.min(nv(pPc / (sP / m)), nv(-oiPc / (sO / m)));
                     q = ['', 'fraco', 'médio', 'brutal'][lv] || null;
                 }
-                qual = sobe ? (q ? { txt: 'Short squeeze ' + q + ': vendidos sendo forçados a recomprar.', ok: false } : { txt: 'Cobertura de vendidos: vendidos recomprando para sair.', ok: false })
-                            : (q ? { txt: 'Long squeeze ' + q + ': comprados sendo forçados a vender.', ok: false } : { txt: 'Saída de comprados: comprados saindo das posições.', ok: false });
+                qual = { k: sobe ? (q ? 'sqUp' : 'cobertura') : (q ? 'sqDown' : 'saida'), q };
             }
         }
     } catch (e) {}
     return { qual, lado, sg, forca, vc, vp, vr, ex, ls, mm, fr, oiSobe, dp, rF, rL, rO, risco, oiPct: oiA != null && oiB > 0 ? (oiA - oiB) / oiB * 100 : null };
+}
+// CONCLUSÃO EM PROSA: 3 frases montadas por regra (o que move o preço · quem acompanha · alavancagem). Cada parte só aparece se o dado sustentar.
+function sentConclusao(r) {
+    const P = [], ex = r.ex, q = r.qual;
+    if (q) P.push({ compra: 'O preço sobe com gente nova comprando: quem aposta na alta está entrando agora.', venda: 'O preço cai com gente nova vendendo: quem aposta na queda está entrando agora.',
+        cobertura: 'O preço sobe, mas não é gente nova comprando: são vendidos que apostavam na queda e estão comprando de volta para sair (cobertura de vendidos).',
+        saida: 'O preço cai, mas não é gente nova vendendo: são comprados que apostavam na alta e estão vendendo para sair (saída de comprados).',
+        sqUp: 'O preço sobe com força: vendidos que apostavam na queda estão perdendo dinheiro e sendo obrigados a comprar de volta (short squeeze ' + q.q + ').',
+        sqDown: 'O preço cai com força: comprados que apostavam na alta estão perdendo dinheiro e sendo obrigados a vender (long squeeze ' + q.q + ').' }[q.k]);
+    const w = v => v > 0 ? 'comprados' : 'vendidos';
+    if (r.vc !== 0 && r.vc === r.vp) {
+        if (r.vr === r.vc) P.push('Os grandes traders e o dinheiro institucional (Coinbase) estão ' + w(r.vc) + ': o movimento tem respaldo.');
+        else if (r.vr !== 0) P.push('Os grandes traders estão ' + w(r.vc) + ', mas o dinheiro institucional (Coinbase) não acompanha.');
+        else P.push('Os grandes traders estão ' + w(r.vc) + '.');
+    } else if (r.vc !== 0 && r.vp !== 0) P.push('Os grandes traders divergem: as contas estão ' + w(r.vc) + ' e o capital está ' + w(r.vp) + '.');
+    const fl = [];
+    if (r.rF) fl.push(r.sg > 0 ? 'o Funding está alto: quem está comprado paga caro para manter a posição' : 'o Funding está negativo: quem está vendido paga caro para manter a posição');
+    if (r.rL) fl.push(r.sg > 0 ? 'o varejo (as contas comuns) está muito comprado' : 'o varejo (as contas comuns) está muito vendido');
+    if (r.rO && !(q && /^(cobertura|saida|sqUp|sqDown)$/.test(q.k))) fl.push('o número de posições abertas (Open Interest) está caindo, ou seja, as pessoas estão saindo do mercado');
+    P.push(fl.length ? 'Alavancagem ' + (r.risco === 'alto' ? 'alta' : 'média') + ': ' + fl.join('; ') + '.' : 'Sem exagero de alavancagem: ninguém está esticado demais.');
+    return P.join(' ');
 }
 function sentRelatorioHtml() {
     const r = sentRelatorio();
@@ -2083,16 +2103,17 @@ function sentRelatorioHtml() {
     if (r.sg < 0 && r.forca === 'perdendo força') atencao = 'Atenção: vendido perdendo força. Possível virada para compra; confirme pelo preço.';
     else if (r.sg > 0 && r.forca === 'perdendo força') atencao = 'Atenção: comprado perdendo força. Possível virada para venda; confirme pelo preço.';
     return '<div style="font-size:14px;font-weight:800;color:' + cor + ';">Mercado ' + r.lado + (r.forca ? ' · ' + r.forca : '') + '</div>'
-        + (r.qual ? '<div style="margin-top:4px;font-size:12px;font-weight:600;color:' + (r.qual.ok ? '#16A34A' : '#D97706') + ';">' + r.qual.txt + '</div>' : '')
-        + '<div style="margin-top:6px;font-size:10.5px;font-weight:800;color:#8E8E93;letter-spacing:.5px;">DIREÇÃO</div>'
+        + '<div style="margin-top:5px;font-size:12.5px;line-height:1.45;color:#1C1C1E;">' + sentConclusao(r) + '</div>'
+        + (atencao ? '<div style="margin-top:5px;font-size:11.5px;color:#8E8E93;">' + atencao + '</div>' : '')
+        + '<details ' + (window._sentDet ? 'open ' : '') + 'ontoggle="window._sentDet=this.open" style="margin-top:8px;"><summary style="cursor:pointer;font-size:12px;font-weight:700;color:#007AFF;">Ver detalhes</summary>'
+        + '<div style="margin-top:4px;font-size:10.5px;font-weight:800;color:#8E8E93;letter-spacing:.5px;">DIREÇÃO</div>'
         + '<div style="display:grid;grid-template-columns:1fr auto;column-gap:14px;row-gap:3px;align-items:baseline;">'
         + linha(r.vc, 'Top Trader (contas)', f(ex.ttc, 2)) + linha(r.vp, 'Top Trader ($)', f(ex.ttp, 2)) + linha(r.vr, 'Coinbase Premium', f(ex.prem, 3, '%')) + '</div>'
         + '<div style="margin-top:6px;font-size:10.5px;font-weight:800;color:#8E8E93;letter-spacing:.5px;">ALAVANCAGEM <span style="color:' + corR + ';">' + ({ alto: 'ALTA', 'médio': 'MÉDIA', baixo: 'BAIXA' })[r.risco] + '</span>' + (r.sg !== 0 ? ' · de ' + (r.sg > 0 ? 'compradores' : 'vendedores') : '') + '</div>'
         + '<div style="display:grid;grid-template-columns:1fr auto;column-gap:14px;row-gap:3px;align-items:baseline;">'
         + al(r.rF, r.rF ? (r.sg > 0 ? 'Funding alto (compradores pagando)' : 'Funding negativo (vendedores pagando)') : 'Funding normal', f(r.fr == null ? null : r.fr * 100, 4, '%'))
         + al(r.rL, r.rL ? (r.sg > 0 ? 'Varejo muito comprado' : 'Varejo muito vendido') : 'Varejo na média', f(r.ls, 2) + (r.mm != null ? ' · méd ' + f(r.mm, 2) : ''))
-        + al(r.rO, r.rO ? 'Open Interest caindo (posições fechando)' : 'Open Interest subindo', f(r.oiPct, 1, '%')) + '</div>'
-        + (atencao ? '<div style="margin-top:6px;font-size:11.5px;color:#8E8E93;max-width:220px;">' + atencao + '</div>' : '');
+        + al(r.rO, r.rO ? 'Open Interest caindo (posições fechando)' : 'Open Interest subindo', f(r.oiPct, 1, '%')) + '</div></details>';
 }
 function cvdBenchmark() {
     try { cvFecharMenuFpCfg(); } catch (e) {}
@@ -3498,7 +3519,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v677';
+const APP_VERSAO = 'v681';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
