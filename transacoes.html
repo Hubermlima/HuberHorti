@@ -3355,7 +3355,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v615';
+const APP_VERSAO = 'v616';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -18095,7 +18095,13 @@ function scRegChecarPreco(px) {
         if ((r.st !== 'aguardando' && r.st !== 'entrou') || (r.sym && r.sym !== sym)) return;
         const lg = r.lado === 'long', toca = lg ? px <= r.ent : px >= r.ent, bStop = lg ? px <= r.stp : px >= r.stp, bAlvo = lg ? px >= r.alvo : px <= r.alvo;
         const ant = r.st;
-        if (r.st === 'aguardando') {
+        if (r.st === 'aguardando' && r.manual) {   // CAIXA MANUAL: o preço ENTRA na zona (entrada↔stop) e SAI a favor da caixa (rumo ao alvo) = em trade. Sai pelo lado do stop = sem gatilho. Não importa onde a caixa foi posicionada.
+            const lo = Math.min(r.ent, r.stp), hi = Math.max(r.ent, r.stp), dentro = px >= lo && px <= hi;
+            if (dentro) r.dz = true;
+            else if (r.dz) { r.dz = false; if (lg ? px > hi : px < lo) { r.st = 'entrou'; r.tEnt = agora; r.entReal = px; } else { r.st = 'semGatilho'; r.tFim = agora; } }
+            else if (bAlvo) { r.st = 'perdida'; r.tFim = agora; }
+            else if (r.val > 0 && agora > r.t0 + r.val) { r.st = 'expirou'; r.tFim = agora; }
+        } else if (r.st === 'aguardando') {
             if (toca && r.gat && !window._scRegBackfillOk) return;   // antes da 1ª leitura dos candles, quem decide a hora da entrada são os candles
             if (toca) { r.st = 'entrou'; r.tEnt = agora; if (r.gat) { const bl = scDefTf(r.tfAk || '5m').blocoMs; r.tGat = Math.floor(agora / bl) * bl; r.entReal = r.ent; r.toque = true; } if (bStop) { r.st = 'stop'; r.tFim = agora; } }
             else if (bAlvo) { r.st = 'perdida'; r.tFim = agora; }
@@ -18201,7 +18207,16 @@ async function scRegAtualizar() {
             if (c.t < r.t0) continue;
             if (r.st === 'entrou' && r.tEnt != null && c.t <= r.tEnt) continue;
             const toca = lg ? c.l <= r.ent : c.h >= r.ent, bStop = lg ? c.l <= r.stp : c.h >= r.stp, bAlvo = lg ? c.h >= r.alvo : c.l <= r.alvo;
-            if (r.st === 'aguardando') {
+            if (r.st === 'aguardando' && r.manual) {   // caixa manual: entrou na zona e saiu a favor (olhando o fechamento do candle)
+                const lo = Math.min(r.ent, r.stp), hi = Math.max(r.ent, r.stp), ov = c.h >= lo && c.l <= hi;
+                if (ov || r.dz) {
+                    r.dz = ov && c.c >= lo && c.c <= hi;
+                    if (!r.dz) { if (lg ? c.c > hi : c.c < lo) { r.st = 'entrou'; r.tEnt = c.t; r.entReal = c.c; } else { r.st = 'semGatilho'; r.tFim = c.t; break; } }
+                    continue;
+                }
+                if (bAlvo) { r.st = 'perdida'; r.tFim = c.t; break; }
+                if (r.val > 0 && c.t > r.t0 + r.val) { r.st = 'expirou'; r.tFim = c.t; break; }
+            } else if (r.st === 'aguardando') {
                 if (toca) { r.st = 'entrou'; r.tEnt = c.t; if (bStop) { r.st = 'stop'; r.tFim = c.t; break; } continue; }
                 if (bAlvo) { r.st = 'perdida'; r.tFim = c.t; break; }
                 if (r.val > 0 && c.t > r.t0 + r.val) { r.st = 'expirou'; r.tFim = c.t; break; }
