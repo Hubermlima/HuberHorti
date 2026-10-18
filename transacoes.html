@@ -3355,7 +3355,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v598';
+const APP_VERSAO = 'v600';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -7018,6 +7018,16 @@ if (fibsParaDesenhar.length > 0) {
                     if (pIdx === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
                 });
                 ctx.stroke();
+                {   // setinha na ponta, seguindo o rumo do último trecho (movimento pra frente depois do último clique)
+                    const q = fh.pontos, fim = q[q.length - 1], xf = toXIdxFH(fim.i), yf = toY(fim.p);
+                    let k = q.length - 2, xa = xf, ya = yf;
+                    while (k >= 0) { xa = toXIdxFH(q[k].i); ya = toY(q[k].p); if (Math.hypot(xf - xa, yf - ya) > 3) break; k--; }
+                    if (k >= 0) {
+                        const ang = Math.atan2(yf - ya, xf - xa), lw = fh.esp || 2, L = 9 + lw * 2, A = 0.45;
+                        ctx.fillStyle = fh.cor || '#000000'; ctx.beginPath(); ctx.moveTo(xf + Math.cos(ang) * L * 0.4, yf + Math.sin(ang) * L * 0.4);
+                        ctx.lineTo(xf - Math.cos(ang - A) * L * 0.6, yf - Math.sin(ang - A) * L * 0.6); ctx.lineTo(xf - Math.cos(ang + A) * L * 0.6, yf - Math.sin(ang + A) * L * 0.6); ctx.closePath(); ctx.fill();
+                    }
+                }
                 ctx.restore();
             });
             if (_freehandAtual && window._fhDwProg > 0 && _grCrosshairX != null && window._longPressY >= 0) {   // anel enchendo em volta do crosshair: falta pouco para marcar o ponto
@@ -7208,7 +7218,7 @@ if (fibsParaDesenhar.length > 0) {
                         ana = { al, nt, lucro: tA ? nt * (pz.alvo - beL) / pz.entrada * sgn : null, perda: nt * (pz.stop - beL) / pz.entrada * sgn };
                     }
                     const fu = v => (v >= 0 ? '+' : '−') + Math.abs(Math.round(v)).toLocaleString('pt-BR');
-                    const levCx = ana ? ana.al : ((pz.pm > 0 && pz.cfg && parseFloat(pz.cfg.alav) > 0) ? parseFloat(pz.cfg.alav) : 1);   // alavancagem da caixa: os % passam a ser sobre a margem
+                    const levCx = !pz.pctMargem ? 1 : (ana ? ana.al : ((pz.pm > 0 && pz.cfg && parseFloat(pz.cfg.alav) > 0) ? parseFloat(pz.cfg.alav) : 1));   // alavancagem da caixa: os % passam a ser sobre a margem
                     // dois lucros em $: do preço de entrada (PM, se já ativa) até a COTAÇÃO e até o ALVO. Em análise usa a posição simulada (Pos); ativa usa a quantidade lançada.
                     const qL = (pz.pm > 0 && pz.qty > 0) ? pz.qty : (ana && pz.entrada > 0 ? ana.nt / pz.entrada : null), sgL = pz.lado === 'short' ? -1 : 1;
                     const lucAlvo = (qL != null && tA) ? qL * (pz.alvo - beL) * sgL : null, lucCot = (qL != null && _precoAtual > 0 && (pz.pm > 0 || (window._scRegistro || []).some(r => r.id === pz.id && r.st === 'entrou'))) ? qL * (_precoAtual - beL) * sgL : null;   // resultado na cotação: só com o trade aberto (PM lançado ou o gatilho do motor já entrou)
@@ -8131,6 +8141,17 @@ function cvPosCtxMenu(i, rx, ry, rw, rh) {   // menu de contexto da caixa seleci
         sx.textContent = 'Encerrar Trade';
         sx.onclick = ev => { ev.stopPropagation(); const z = grPosicoes()[m._i]; if (z) scSairManual(z); };
         dp.appendChild(sx);
+        const mkBt = (id, fn) => { const b = document.createElement('button'); b.type = 'button'; b.id = id;
+            b.style.cssText = 'display:none;align-items:center;justify-content:flex-start;height:26px;padding:0 6px;border:1px solid #D1D1D6;border-radius:6px;background:#fff;color:#1C1C1E;font-size:12px;white-space:nowrap;';
+            b.onclick = ev => { ev.stopPropagation(); const z = grPosicoes()[m._i]; if (z) { fn(z); try { grDrawChart(); } catch (e) {} } }; dp.appendChild(b); return b; };
+        mkBt('cv-pos-ctx-monit', z => {
+            const L = scRegLista(), vivo = L.find(r => r.id === z.id && r.manual && (r.st === 'aguardando' || r.st === 'entrou'));
+            if (vivo) { z.monitorar = false; if (vivo.st === 'aguardando') { vivo.st = 'apagada'; vivo.tFim = Date.now(); } else vivo.semTela = true; try { scRegGravarServidor(); } catch (e) {} return; }
+            for (let k = L.length - 1; k >= 0; k--) if (L[k].id === z.id && L[k].manual) L.splice(k, 1);   // registro velho (parado antes): recomeça do zero
+            z.monitorar = true; try { scManualSync(); } catch (e) {}
+            if (!L.some(r => r.id === z.id)) { z.monitorar = false; try { grAreaToast('Caixa inválida: confira entrada, stop e alvo', '#EF5350'); } catch (e) {} }
+        });
+        mkBt('cv-pos-ctx-pct', z => { z.pctMargem = !z.pctMargem; });
         [dd, sb, st].forEach(b => { b.style.margin = '0'; b.style.height = '26px'; b.style.fontSize = '12px'; b.style.justifyContent = 'flex-start'; });
         if (!window._grStatusTimer) window._grStatusTimer = setInterval(() => { const mm = document.getElementById('cv-pos-ctx'); if (!mm) return; const z = grPosicoes()[mm._i]; if (z && scStatusElegivel(z)) cvPosStatusIniciar(z); }, 30000);   // enquanto o menu da caixa está aberto, relê o Status a cada 30 s
         bt('cv-pos-ctx-x', grHeroicon('x-mark', 16), '#6B6B70', () => { window._grCtxFechado = true; cvPosCtxRemover(); });   // fecha só a barra (a caixa continua selecionada); ao selecionar a caixa de novo ela volta
@@ -8144,6 +8165,8 @@ function cvPosCtxMenu(i, rx, ry, rw, rh) {   // menu de contexto da caixa seleci
     m.querySelector('#cv-pos-ctx-dados').style.display = 'flex';
     { const sb = m.querySelector('#cv-pos-ctx-score'); if (sb) { sb.style.display = (typeof scScoreElegivel === 'function' && scScoreElegivel(pz)) ? 'flex' : 'none'; sb.textContent = pz.score ? 'Score ' + pz.score.n + '/' + pz.score.total : 'Score'; } }
     { const st = m.querySelector('#cv-pos-ctx-status'); if (st) { const ok = scStatusElegivel(pz); st.style.display = ok ? 'flex' : 'none'; if (ok) { cvPosStatusBotao(pz, st); if (!pz._statCalc && (!pz._stat || Date.now() - pz._stat.t > 30000)) cvPosStatusIniciar(pz); } } }
+    { const bm = m.querySelector('#cv-pos-ctx-monit'); if (bm) { const man = !pz.origem && !pz.tradeId && !(pz.pm > 0) && !pz.previa && !pz.teste; const vivo = (window._scRegistro || []).some(r => r.id === pz.id && r.manual && (r.st === 'aguardando' || r.st === 'entrou')); bm.style.display = man ? 'flex' : 'none'; bm.textContent = vivo ? 'Parar monitoramento' : 'Iniciar monitoramento'; bm.style.color = vivo ? '#DC2626' : '#16A34A'; bm.style.fontWeight = '700'; } }
+    { const bp = m.querySelector('#cv-pos-ctx-pct'); if (bp) { bp.style.display = 'flex'; bp.textContent = '% do alvo/stop: ' + (pz.pctMargem ? 'Margem' : 'Preço'); } }
     { const sx = m.querySelector('#cv-pos-ctx-sair'); if (sx) { const rg = (window._scRegistro || []).find(r => r.id === pz.id); sx.style.display = rg && rg.st === 'entrou' ? 'flex' : 'none'; } }
     { const dt = m.querySelector('#cv-pos-ctx-painel-dot'); if (dt) dt.innerHTML = pz._stat ? '<span style="color:' + scStatusCor(pz._stat) + ';font-size:12px;line-height:1;">&#9679;</span>' : ''; }
     const mw = m.offsetWidth || 90, mh = m.offsetHeight || 30;
@@ -17939,7 +17962,7 @@ function scManualSync() {
     const L = scRegLista(), sym = grBinSymbolAtual(), P = grPosicoes(), mapa = new Map(P.map(z => [z.id, z]));
     let mudou = false;
     P.forEach(z => {
-        if (!z || z.origem || z.tradeId || z.pm > 0 || z.previa || z.teste || z.restaurada) return;
+        if (!z || z.origem || z.tradeId || z.pm > 0 || z.previa || z.teste || z.restaurada || !z.monitorar) return;   // só monitora quando você aperta Iniciar monitoramento
         const lg = z.lado === 'long';
         if (!lg && z.lado !== 'short') return;
         if (!(z.entrada > 0 && z.stop > 0 && z.alvo > 0)) return;
