@@ -2006,6 +2006,60 @@ function cvFecharMenuEma() {
 // logo abaixo do chip, lista as âncoras com X pra remover cada uma. Substitui as 3 seções que ficavam
 // dentro do modal grande de Configurações (ver grConfigRender).
 let _grFpCfgMenuQual = null; // 'vwap' | 'va' | 'vp'
+// BENCHMARK DO CVD: as divergências CVD × preço (mesma regra do gráfico) previram o movimento? Percorre os candles carregados do TF da tela, desde a âncora do VP.
+// Sem olhar o futuro: o sinal vale no FECHAMENTO do candle que confirma o 2º pivô (pivô + k candles). Resultado: nos próximos 12 candles, o que veio primeiro,
+// +1 ATR a favor ou 1 ATR contra (no mesmo candle conta como contra). Comparado com (a) pivôs de preço SEM divergência e (b) qualquer candle.
+function cvdBenchmark() {
+    try { cvFecharMenuFpCfg(); } catch (e) {}
+    const aviso = t => { try { scAviso(t, '#8E8E93'); } catch (e) { alert(t); } };
+    const arr = _grAllCandles, anc = (typeof _grVpAncoraTs !== 'undefined' && _grVpAncoraTs > 0) ? _grVpAncoraTs : null;
+    if (!arr || arr.length < 60) return aviso('Benchmark CVD: poucos candles carregados.');
+    if (anc == null) return aviso('Benchmark CVD: sem âncora do VP (o CVD soma desde ela).');
+    const dm = grObterDeltaTotalPorCandle(arr); if (!dm) return aviso('Benchmark CVD: sem dados de delta (ligue o Fluxo).');
+    const n = arr.length, K = 3, H = 12, cvd = new Array(n).fill(null), atr = new Array(n).fill(null);
+    let acum = 0, mn = Infinity, mx = -Infinity, i0 = -1;
+    for (let i = 0; i < n; i++) { if (arr[i].t < anc) continue; if (i0 < 0) i0 = i; const dd = dm.get(arr[i].t); acum += dd ? dd.delta : 0; cvd[i] = acum; if (acum < mn) mn = acum; if (acum > mx) mx = acum; }
+    if (i0 < 0 || n - i0 < 60) return aviso('Benchmark CVD: a âncora é muito recente (' + Math.max(0, n - i0) + ' candles). Precisa de mais histórico.');
+    const tr = i => i === 0 ? arr[0].h - arr[0].l : Math.max(arr[i].h - arr[i].l, Math.abs(arr[i].h - arr[i - 1].c), Math.abs(arr[i].l - arr[i - 1].c));
+    for (let i = 14; i < n; i++) { let t = 0; for (let j = i - 13; j <= i; j++) t += tr(j); atr[i] = t / 14; }
+    const limDif = (mx - mn) * 0.05, topos = [], fundos = [];
+    for (let i = Math.max(i0, K); i < n - K; i++) {
+        const c0 = arr[i]; let eT = true, eF = true;
+        for (let j = 1; j <= K && (eT || eF); j++) { const a1 = arr[i - j], b1 = arr[i + j]; if (!(c0.h > a1.h && c0.h >= b1.h)) eT = false; if (!(c0.l < a1.l && c0.l <= b1.l)) eF = false; }
+        if (eT) topos.push({ i, p: c0.h, cv: cvd[i] });
+        if (eF) fundos.push({ i, p: c0.l, cv: cvd[i] });
+    }
+    const aval = (s0, dir) => {   // dir 1 = long, -1 = short
+        const a = atr[s0]; if (!(a > 0) || s0 >= n) return null; if (s0 + H >= n) return { aberto: true };
+        const e = arr[s0].c, alvo = e + dir * a, stp = e - dir * a;
+        for (let j = s0 + 1; j <= s0 + H; j++) { const c = arr[j], hitA = dir > 0 ? c.h >= alvo : c.l <= alvo, hitS = dir > 0 ? c.l <= stp : c.h >= stp; if (hitS) return { r: 'p', mv: -1 }; if (hitA) return { r: 'g', mv: 1 }; }
+        return { r: 't', mv: dir * (arr[s0 + H].c - e) / a };
+    };
+    const resumo = lista => { let g = 0, p = 0, t = 0, ab = 0, soma = 0, nn = 0; lista.forEach(x => { if (!x) return; if (x.aberto) { ab++; return; } nn++; soma += x.mv; if (x.r === 'g') g++; else if (x.r === 'p') p++; else t++; }); return { n: nn, g, p, t, ab, mv: nn ? soma / nn : 0, ac: (g + p) ? g / (g + p) : null }; };
+    const fmt = r => r.n ? (r.g + ' ganhou · ' + r.p + ' perdeu · ' + r.t + ' sem resolver · acerto ' + (r.ac == null ? '—' : Math.round(r.ac * 100) + '%') + ' · média ' + (r.mv >= 0 ? '+' : '') + r.mv.toFixed(2).replace('.', ',') + ' ATR') : 'sem sinais fechados';
+    const pares = (L, baixa) => { const div = [], conf = []; for (let k = 1; k < L.length; k++) { const A = L[k - 1], B = L[k], s0 = B.i + K;
+        if (baixa ? B.p > A.p : B.p < A.p) { const temDiv = baixa ? (B.cv < A.cv && A.cv - B.cv > limDif) : (B.cv > A.cv && B.cv - A.cv > limDif), semDiv = baixa ? B.cv >= A.cv : B.cv <= A.cv; if (temDiv) div.push(s0); else if (semDiv) conf.push(s0); } } return { div, conf }; };
+    const pB = pares(topos, true), pA = pares(fundos, false), dirB = -1, dirA = 1;
+    const sB = resumo(pB.div.map(x => aval(x, dirB))), cB = resumo(pB.conf.map(x => aval(x, dirB)));
+    const sA = resumo(pA.div.map(x => aval(x, dirA))), cA = resumo(pA.conf.map(x => aval(x, dirA)));
+    const todosS = [], todosL = []; for (let i = Math.max(i0, 14); i < n; i++) { todosS.push(aval(i, -1)); todosL.push(aval(i, 1)); }
+    const bS = resumo(todosS), bL = resumo(todosL);
+    const dias = ((arr[n - 1].t - arr[i0].t) / 86400000).toFixed(1).replace('.', ','), tfRot = (typeof _grTf !== 'undefined' ? _grTf : '');
+    const L = [];
+    L.push('BENCHMARK CVD × PREÇO · TF ' + tfRot + ' · ' + (n - i0) + ' candles (' + dias + ' dias desde a âncora)');
+    L.push('Divergência de baixa (short): ' + sB.n + ' sinais · acerto ' + (sB.ac == null ? '—' : Math.round(sB.ac * 100) + '%') + '   |   de alta (long): ' + sA.n + ' sinais · acerto ' + (sA.ac == null ? '—' : Math.round(sA.ac * 100) + '%'));
+    L.push('REGRA: sinal no fechamento do candle que confirma o 2º pivô (' + K + ' candles depois). Vence quem vier primeiro nos próximos ' + H + ' candles: +1 ATR a favor ou −1 ATR contra (empate no mesmo candle = contra).');
+    L.push('▼ Divergência de baixa → short: ' + fmt(sB));
+    L.push('   Controle (topo mais alto SEM divergência → short): ' + fmt(cB));
+    L.push('   Referência (qualquer candle → short): ' + fmt(bS));
+    L.push('▲ Divergência de alta → long: ' + fmt(sA));
+    L.push('   Controle (fundo mais baixo SEM divergência → long): ' + fmt(cA));
+    L.push('   Referência (qualquer candle → long): ' + fmt(bL));
+    const pequeno = Math.min(sB.n, sA.n) < 30;
+    L.push('Atenção: ' + (pequeno ? 'a amostra é pequena (menos de 30 sinais num dos lados): tome como indício, não como prova. ' : '') + 'O resultado vale só para este timeframe e esta âncora. Divergência que ganha do controle e da referência é a que agrega.');
+    if (sB.ab || sA.ab) L.push('(' + (sB.ab + sA.ab) + ' sinal(is) recente(s) ainda sem os ' + H + ' candles para fechar: não entraram na conta.)');
+    scRelatorioMostrar({ lado: null, linhas: L });
+}
 function cvAbrirMenuFpCfg(qual, clientX, clientY) {
     const menu = document.getElementById('cv-fp-cfg-menu');
     const jaAberto = menu.classList.contains('active') && _grFpCfgMenuQual === qual;
@@ -2160,6 +2214,7 @@ function cvRenderMenuFpCfg() {
         menu.innerHTML = '<div style="font-size:13px;font-weight:700;color:#1C1C1E;">CVD / Delta</div>'
             + '<div style="font-size:12px;color:#8E8E93;max-width:200px;padding-bottom:4px;">CVD (linha laranja) e VD (barras verde/vermelho), somados desde a âncora do VP.</div>'
             + (c ? '<div style="font-size:13px;font-weight:700;color:' + c.cor + ';">' + c.valor + '</div>' : '')
+            + '<button type="button" onclick="cvdBenchmark()" style="margin-top:8px;width:100%;border:1px solid #D1D1D6;background:#FFFFFF;border-radius:8px;padding:7px 10px;font-size:12.5px;font-weight:700;color:#1C1C1E;">Benchmark das divergências</button>'
             + (window._compValores.conclusaoOiCvd
                 ? '<div style="margin-top:8px;padding-top:8px;border-top:1px solid #F2F2F7;"><div style="font-size:12.5px;font-weight:700;color:#1C1C1E;">' + window._compValores.conclusaoOiCvd.titulo + '</div><div style="font-size:11.5px;color:#8E8E93;margin-top:2px;">' + window._compValores.conclusaoOiCvd.texto + '</div><div style="font-size:11px;color:#AEAEB2;margin-top:4px;font-style:italic;">' + window._compValores.conclusaoOiCvd.nota + '</div></div>'
                 : '');
@@ -3355,7 +3410,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v617';
+const APP_VERSAO = 'v618';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
