@@ -3355,7 +3355,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v616';
+const APP_VERSAO = 'v617';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -6693,7 +6693,36 @@ if (_grTipoGrafico === 'linha') {
                             const x = xDoIdx(i), y = yC(v);
                             if (!ini) { ctx.moveTo(x, y); ini = true; } else ctx.lineTo(x, y);
                         }
-                        ctx.stroke(); ctx.restore();
+                        ctx.stroke();
+                        // DIVERGÊNCIAS CVD × PREÇO (só visual): pivôs de preço consecutivos em que o CVD discorda.
+                        //  ▼ baixa: topo de preço MAIS ALTO com CVD MAIS BAIXO · ▲ alta: fundo de preço MAIS BAIXO com CVD MAIS ALTO. Uma linha liga os dois pivôs no preço e outra no CVD.
+                        try {
+                            const kP = Math.max(2, Math.round(visible / 20)), nA = _grAllCandles.length, topos = [], fundos = [];
+                            for (let i = 0; i < visible; i++) {
+                                const ix = startIdx + i; if (ix - kP < 0 || ix + kP >= nA || cvdAll[ix] == null) continue;
+                                const c0 = _grAllCandles[ix]; let eT = true, eF = true;
+                                for (let j = 1; j <= kP && (eT || eF); j++) {
+                                    const a1 = _grAllCandles[ix - j], b1 = _grAllCandles[ix + j];
+                                    if (!(c0.h > a1.h && c0.h >= b1.h)) eT = false;
+                                    if (!(c0.l < a1.l && c0.l <= b1.l)) eF = false;
+                                }
+                                if (eT) topos.push({ i, ix, p: c0.h, cv: cvdAll[ix] });
+                                if (eF) fundos.push({ i, ix, p: c0.l, cv: cvdAll[ix] });
+                            }
+                            const limDif = rngC * 0.05;
+                            const marca = (A, B, baixa) => {
+                                const cor = baixa ? '#D32F2F' : '#2E7D32', xa = xDoIdx(A.i), xb = xDoIdx(B.i), ypA = toY(A.p), ypB = toY(B.p), ycA = yC(A.cv), ycB = yC(B.cv);
+                                ctx.save(); ctx.strokeStyle = cor; ctx.fillStyle = cor; ctx.lineWidth = 1.6; ctx.setLineDash([5, 3]);
+                                ctx.beginPath(); ctx.moveTo(xa, ypA); ctx.lineTo(xb, ypB); ctx.moveTo(xa, ycA); ctx.lineTo(xb, ycB); ctx.stroke(); ctx.setLineDash([]);
+                                [[xa, ypA], [xb, ypB], [xa, ycA], [xb, ycB]].forEach(([x, y]) => { ctx.beginPath(); ctx.arc(x, y, 2.6, 0, Math.PI * 2); ctx.fill(); });
+                                ctx.font = 'bold 9px -apple-system'; ctx.textAlign = 'center'; ctx.textBaseline = baixa ? 'bottom' : 'top';
+                                ctx.fillText(baixa ? 'Div ▼' : 'Div ▲', xb, baixa ? ypB - 6 : ypB + 6);
+                                ctx.restore();
+                            };
+                            for (let k = 1; k < topos.length; k++) { const A = topos[k - 1], B = topos[k]; if (B.p > A.p && B.cv < A.cv && A.cv - B.cv > limDif) marca(A, B, true); }
+                            for (let k = 1; k < fundos.length; k++) { const A = fundos[k - 1], B = fundos[k]; if (B.p < A.p && B.cv > A.cv && B.cv - A.cv > limDif) marca(A, B, false); }
+                        } catch (eDv) {}
+                        ctx.restore();
                         if (ultC != null) rotuloCvd = 'CVD ' + (ultC >= 0 ? '+' : '-') + grFmtVolCompacto(Math.abs(ultC), 0);
                     }
                     window._compValores.cvdPA = { cor: '#E65100', valor: rotuloCvd }; window._grFpItens.push({ rot: rotuloCvd, abrir: (cx, cy) => cvAbrirMenuFpCfg('cvd', cx, cy) });
