@@ -475,6 +475,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <button class="cv-ind-btn" id="cv-ind-deltaAtr" onclick="cvToggleInd('deltaAtr')"><span class="btn-sigla">DA</span><span class="btn-nome">Delta ATR</span></button>
       <button class="cv-ind-btn" id="cv-ind-setupCx" onclick="scToggle()"><span class="btn-sigla">SC</span><span class="btn-nome">Robô Trade</span></button>
       <button class="cv-ind-btn" id="cv-ind-oiPA" onclick="cvToggleInd('oiPA')"><span class="btn-sigla">OI</span><span class="btn-nome">Open Interest</span></button>
+      <button class="cv-ind-btn" id="cv-ind-sent" onclick="cvToggleSent()"><span class="btn-sigla">Sent</span><span class="btn-nome">Sentimento</span></button>
       <button class="cv-ind-btn absorcao" id="cv-ind-absorcao" onclick="cvToggleSubInd('absorcao')"><span class="btn-sigla">Abs</span><span class="btn-nome">Absorção</span></button>
       <button class="cv-ind-btn" id="cv-ind-eficiencia" onclick="cvToggleInd('eficiencia')"><span class="btn-sigla">Ef</span><span class="btn-nome">Eficiência</span></button>
     </div>
@@ -2012,6 +2013,40 @@ let _grFpCfgMenuQual = null; // 'vwap' | 'va' | 'vp'
 let _cvdEscVd = parseInt(localStorage.getItem('gr_cvd_esc_vd')) || 3, _cvdEscCv = parseInt(localStorage.getItem('gr_cvd_esc_cv')) || 2;   // escalares de altura: histograma (VD) e linha (CVD)
 function cvdEscVdDefinir(v) { _cvdEscVd = Math.max(1, Math.min(20, Math.round(parseFloat(v) || 1))); try { localStorage.setItem('gr_cvd_esc_vd', String(_cvdEscVd)); } catch (e) {} grDrawChart(); }
 function cvdEscCvDefinir(v) { _cvdEscCv = Math.max(1, Math.min(20, Math.round(parseFloat(v) || 1))); try { localStorage.setItem('gr_cvd_esc_cv', String(_cvdEscCv)); } catch (e) {} grDrawChart(); }
+// ── SENTIMENTO: Open Interest, Funding Rate e Long/Short (contas globais), dados públicos da Binance do ativo aberto ──
+let _sentEsc = { oi: 1, fn: 1, ls: 1 };
+try { const _se = JSON.parse(localStorage.getItem('gr_sent_esc') || 'null'); if (_se) ['oi', 'fn', 'ls'].forEach(k => { const v = parseInt(_se[k]); if (v >= 1 && v <= 20) _sentEsc[k] = v; }); } catch (e) {}
+function sentEscDef(k, v) { _sentEsc[k] = Math.max(1, Math.min(20, Math.round(parseFloat(v) || 1))); try { localStorage.setItem('gr_sent_esc', JSON.stringify(_sentEsc)); } catch (e) {} grDrawChart(); }
+function sentEscOi(v) { sentEscDef('oi', v); } function sentEscFn(v) { sentEscDef('fn', v); } function sentEscLs(v) { sentEscDef('ls', v); }
+function cvToggleSent() {
+    _indState.sent = !_indState.sent;
+    const b = document.getElementById('cv-ind-sent'); if (b) b.classList.toggle('active', _indState.sent);
+    try { localStorage.setItem('gr_sent_on', _indState.sent ? '1' : '0'); } catch (e) {}
+    cvFecharMenuEma(); grDrawChart();
+}
+document.addEventListener('DOMContentLoaded', () => { try { if (localStorage.getItem('gr_sent_on') === '1') { _indState.sent = true; const b = document.getElementById('cv-ind-sent'); if (b) b.classList.add('active'); } } catch (e) {} });
+window._grSentCache = window._grSentCache || {};
+function grSentGarantir(per) {
+    const sym = grBinSymbolAtual(), c = window._grSentCache[sym] || (window._grSentCache[sym] = { lsr: {}, fund: {} });
+    if (_ativoFonte === 'td') return c;
+    const ir = (alvo, chave, url, mapa) => {
+        if (alvo.carregando || (alvo.ts && Date.now() - alvo.ts < 60000 && alvo.per === chave)) return;
+        alvo.carregando = true;
+        fetch(url).then(r => r.json()).then(arr => {
+            alvo.dados = (Array.isArray(arr) ? arr : []).map(mapa).filter(o => o.t > 0 && isFinite(o.v)).sort((a, b) => a.t - b.t);
+            alvo.ts = Date.now(); alvo.per = chave; alvo.carregando = false; grDrawChart();
+        }).catch(() => { alvo.carregando = false; alvo.ts = Date.now(); alvo.per = chave; });
+    };
+    ir(c.lsr, per, 'https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=' + sym + '&period=' + per + '&limit=500', o => ({ t: o.timestamp, v: parseFloat(o.longShortRatio) }));
+    ir(c.fund, 'f', 'https://fapi.binance.com/fapi/v1/fundingRate?symbol=' + sym + '&limit=1000', o => ({ t: o.fundingTime, v: parseFloat(o.fundingRate) }));
+    return c;
+}
+function grSentValorEm(d, ts) {   // último valor NÃO POSTERIOR a ts (o candle não vê o futuro); null antes do 1º dado
+    if (!d || !d.length) return null;
+    let lo = 0, hi = d.length - 1, r = -1;
+    while (lo <= hi) { const m = (lo + hi) >> 1; if (d[m].t <= ts) { r = m; lo = m + 1; } else hi = m - 1; }
+    return r >= 0 ? d[r].v : null;
+}
 function cvdBenchmark() {
     try { cvFecharMenuFpCfg(); } catch (e) {}
     const aviso = t => { try { scAviso(t, '#8E8E93'); } catch (e) { alert(t); } };
@@ -2233,6 +2268,12 @@ function cvRenderMenuFpCfg() {
             + (window._compValores.conclusaoOiCvd
                 ? '<div style="margin-top:8px;padding-top:8px;border-top:1px solid #F2F2F7;"><div style="font-size:12.5px;font-weight:700;color:#1C1C1E;">' + window._compValores.conclusaoOiCvd.titulo + '</div><div style="font-size:11.5px;color:#8E8E93;margin-top:2px;">' + window._compValores.conclusaoOiCvd.texto + '</div><div style="font-size:11px;color:#AEAEB2;margin-top:4px;font-style:italic;">' + window._compValores.conclusaoOiCvd.nota + '</div></div>'
                 : '');
+    } else if (_grFpCfgMenuQual === 'sent') {
+        menu.innerHTML = '<div style="font-size:13px;font-weight:700;color:#1C1C1E;">Sentimento</div>'
+            + '<div style="font-size:12px;color:#8E8E93;max-width:210px;padding-bottom:4px;">Open Interest, Funding e Long/Short (contas globais), da Binance. Escala fixa desde a âncora; o escalar abre a curva.</div>'
+            + grConfigSliderInt('cv-cfg-sent-oi', 'Altura Open Interest', _sentEsc.oi, 1, 20, 'sentEscOi', '', 'x')
+            + grConfigSliderInt('cv-cfg-sent-fn', 'Altura Funding', _sentEsc.fn, 1, 20, 'sentEscFn', '', 'x')
+            + grConfigSliderInt('cv-cfg-sent-ls', 'Altura Long/Short', _sentEsc.ls, 1, 20, 'sentEscLs', '', 'x');
     } else if (_grFpCfgMenuQual === 'eficiencia') {
         const ef = window._compValores && window._compValores.eficiencia;
         const pBid = ef ? Math.round(ef.fracBid * 100) : 50, pAsk = 100 - pBid;
@@ -2712,10 +2753,11 @@ let _grAllCandles = [];
 // painel inferior existente (subInd: Absorção, Vol, MACD...) e, ACIMA dele, o
 // painel Delta/Total (só existe com o Fluxo ligado e o footprint carregado).
 function grAlturasPaineis(H) {
+    if (_indState.sent) { const st = Math.floor(H * 0.42); return { sub: 0, dt: 0, sent: st, total: st }; }   // Sentimento ocupa o lugar do painel inferior e do Delta/Total
     const sub = (_indState.subInd && !_indOculto.painel) ? Math.floor(H * 0.28) : 0;
     // Skin cinza mostra só o TOTAL por linha (sem lado dominante): o painel Delta/Total não faz sentido nela.
     const dt = (_grFootprintAtivo && _grFootprintCandlesRaw && FOOTPRINT_SKIN !== 'cinza') ? Math.max(76, Math.floor(H * 0.165)) : 0; // 4 linhas: Delta V, Delta/Vol %, Delta $ e Total
-    return { sub, dt, total: sub + dt };
+    return { sub, dt, sent: 0, total: sub + dt };
 }
 // Delta (compra-venda) e Total (compra+venda) por candle EXIBIDO, somando o
 // footprint bruto (R2) dentro da janela de cada candle. Mesma varredura de
@@ -3425,7 +3467,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v635';
+const APP_VERSAO = 'v640';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -6753,14 +6795,23 @@ if (_grTipoGrafico === 'linha') {
                         }
                         // CVD: linha laranja grossa, só os candles visíveis (a escala já é da janela toda)
                         ctx.strokeStyle = '#FF9800'; ctx.lineWidth = 2.4; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-                        ctx.beginPath(); let ini = false;
+                        ctx.beginPath(); let ini = false, tipX = null, tipY = 0, tipV = 0;
                         for (let i = 0; i < visible; i++) {
                             const v = cvdAll[startIdx + i];
                             if (v == null) { ini = false; continue; }
                             const x = xDoIdx(i), y = yC(v);
                             if (!ini) { ctx.moveTo(x, y); ini = true; } else ctx.lineTo(x, y);
+                            tipX = x; tipY = y; tipV = v;
                         }
                         ctx.stroke();
+                        if (tipX != null) {   // valor do CVD na ponta da linha (o último candle visível)
+                            const txt = (tipV >= 0 ? '+' : '-') + grFmtVolCompacto(Math.abs(tipV), 0);
+                            ctx.save(); ctx.fillStyle = '#FF9800'; ctx.beginPath(); ctx.arc(tipX, tipY, 3.2, 0, Math.PI * 2); ctx.fill();
+                            ctx.font = 'bold 10px -apple-system'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                            const bw2 = ctx.measureText(txt).width + 10, bh2 = 16, bx2 = tipX - 8 - bw2, by2 = Math.max(bandTop, Math.min(bandBot - bh2, tipY - bh2 / 2));
+                            ctx.fillStyle = tipV >= 0 ? '#26A69A' : '#EF5350'; ctx.beginPath(); ctx.roundRect(bx2, by2, bw2, bh2, 4); ctx.fill();   // badge: verde se positivo, vermelho se negativo (o sinal fica no número)
+                            ctx.fillStyle = '#FFFFFF'; ctx.fillText(txt, bx2 + bw2 / 2, by2 + bh2 / 2 + 0.5); ctx.restore();
+                        }
                         ctx.restore();
                         // DIVERGÊNCIAS CVD × PREÇO (só visual): pivôs de preço consecutivos em que o CVD discorda.
                         //  ▼ baixa: topo de preço MAIS ALTO com CVD MAIS BAIXO · ▲ alta: fundo de preço MAIS BAIXO com CVD MAIS ALTO. Uma linha liga os dois pivôs no preço e outra no CVD.
@@ -6843,7 +6894,7 @@ if (_grTipoGrafico === 'linha') {
             }
             // ── Open Interest: dado público da Binance por símbolo (openInterestHist) — NÃO depende do Fluxo/R2, então acompanha o ticker aberto.
             const inicioJanelaOi = Date.now() - (_grFootprintLookbackDias || 7) * 24 * 60 * 60 * 1000;
-            if (_indState.oiPA) {
+            if (_indState.oiPA && !_indState.sent) {
                 const periodoOi = grOiPeriodoParaTf();
                 grOiGarantirDados(periodoOi);
                 const cacheOi = grOiCache(periodoOi);
@@ -6918,6 +6969,7 @@ if (_grTipoGrafico === 'linha') {
                     window._grFpItens.push({ rot: rotuloOi, abrir: (cx, cy) => cvAbrirMenuFpCfg('oi', cx, cy) });
                 }
             }
+            if (_indState.sent) window._grFpItens.push({ rot: 'Sentimento', abrir: (cx, cy) => cvAbrirMenuFpCfg('sent', cx, cy) });
             if (window._grFpItens.length) { const _fpIt = window._grFpItens; grBarraChip('Footprint ▾', '#000000', (cx, cy) => cvDropGrupoAbrir(cx, cy, _fpIt)); }
             window._grBarraSuperiorBottom = chipY + 4; // a linha OHLC é desenhada logo abaixo dos chips
         }
@@ -7507,8 +7559,50 @@ if (fibsParaDesenhar.length > 0) {
                 if (p != null) escreve(txtPct(p), x, yC2);
             }
         }
+        // ── SENTIMENTO: 3 painéis de linha (Open Interest, Funding, Long/Short) no lugar dos painéis de baixo ──
+        // Escala FIXA do ponto inicial (âncora do VP; sem âncora, tudo o que está carregado) até o último candle, × escalar de cada painel: rolar/dar zoom não deforma a curva.
+        if (_indState.sent && _altPan.sent > 0) { try {
+            const sentH = _altPan.sent, y0 = H - sentH, ph = Math.floor(sentH / 3), nS = _grAllCandles.length;
+            const per = grOiPeriodoParaTf(); grOiGarantirDados(per); const sc = grSentGarantir(per), oiC = grOiCache(per);
+            const oiD = oiC && oiC.dados ? (oiC.dv || (oiC.dv = oiC.dados.map(o => ({ t: o.t, v: o.oi })))) : null;
+            const ancS = (typeof _grVpAncoraTs !== 'undefined' && _grVpAncoraTs > 0) ? _grVpAncoraTs : 0;
+            let i0S = 0; while (i0S < nS && _grAllCandles[i0S].t < ancS) i0S++;
+            const defs = [
+                { rot: 'Open Interest', sig: 'OI', d: oiD, cor: '#42A5F5', ref: null, k: 'oi', fmt: v => grFmtVolCompacto(v, 0), bad: () => '#1E88E5' },
+                { rot: 'Funding Rate', sig: 'FR', d: sc.fund.dados, cor: '#FFB300', ref: 0, k: 'fn', fmt: v => (v >= 0 ? '+' : '-') + Math.abs(v * 100).toFixed(4) + '%', bad: v => v >= 0 ? '#26A69A' : '#EF5350' },
+                { rot: 'Long/Short', sig: 'L/S', d: sc.lsr.dados, cor: '#AB47BC', ref: 1, k: 'ls', fmt: v => v.toFixed(2), bad: v => v >= 1 ? '#26A69A' : '#EF5350' }
+            ];
+            defs.forEach((df, k) => {
+                const py = y0 + k * ph, hP = k === 2 ? sentH - 2 * ph : ph, top = py + 14, bot = py + hP - 4, hh = Math.max(10, bot - top);
+                ctx.fillStyle = '#0E1117'; ctx.fillRect(0, py, W, hP);
+                ctx.save(); ctx.beginPath(); ctx.rect(PAD.left, py + 1, chartW, hP - 1); ctx.clip();
+                const vals = new Array(nS).fill(null); let mn = Infinity, mx = -Infinity;
+                if (df.d && df.d.length) for (let i = i0S; i < nS; i++) { const v = grSentValorEm(df.d, _grAllCandles[i].t); vals[i] = v; if (v != null) { if (v < mn) mn = v; if (v > mx) mx = v; } }
+                if (df.ref != null && isFinite(mn)) { if (df.ref < mn) mn = df.ref; if (df.ref > mx) mx = df.ref; }
+                if (!isFinite(mn)) { ctx.restore(); return; }
+                const rng = Math.max(mx - mn, 1e-12), mid = (mn + mx) / 2, esc = _sentEsc[df.k] || 1, yv = v => (top + bot) / 2 - ((v - mid) / rng) * hh * esc;
+                ctx.strokeStyle = df.cor; ctx.lineWidth = 1.8; ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.beginPath();
+                let ini = false, tx = null, ty = 0, tv = 0;
+                for (let i = 0; i < visible; i++) {
+                    const ix = startIdx + i; if (ix < 0 || ix >= nS) continue; const v = vals[ix];
+                    if (v == null) { ini = false; continue; }
+                    const x = PAD.left + (i / totalSlots) * chartW + cW / 2, y = yv(v);
+                    if (!ini) { ctx.moveTo(x, y); ini = true; } else ctx.lineTo(x, y);
+                    tx = x; ty = y; tv = v;
+                }
+                ctx.stroke();
+                if (tx != null) {   // badge com o valor na ponta da linha: verde/vermelho conforme o lado (sinal mantido no número)
+                    const txt = df.sig + ' ' + df.fmt(tv); ctx.fillStyle = df.cor; ctx.beginPath(); ctx.arc(tx, ty, 3, 0, Math.PI * 2); ctx.fill();
+                    ctx.font = 'bold 10px -apple-system'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                    const bw = ctx.measureText(txt).width + 10, bh = 15, bx = tx - 8 - bw, by = Math.max(py + 2, Math.min(py + hP - bh - 2, ty - bh / 2));
+                    ctx.fillStyle = df.bad(tv); ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 4); ctx.fill();
+                    ctx.fillStyle = '#FFFFFF'; ctx.fillText(txt, bx + bw / 2, by + bh / 2 + 0.5);
+                }
+                ctx.restore();
+            });
+        } catch (eSent) { try { console.error('sentimento', eSent); } catch (e2) {} } }
         // ── Painel inferior RSI ou Volume ─────────────────────────────
-        if (_indState.subInd && !_indOculto.painel) {
+        if (_indState.subInd && !_indOculto.painel && !_indState.sent) {
             const panH = Math.floor(H * 0.28); // 28% da altura
             const panY = H - panH;
             const panW = chartW;
@@ -10536,6 +10630,7 @@ const _indState = {
     cvdPA:     false, // CVD + Delta sobrepostos no painel de preço (segunda camada, em cima dos candles)
     deltaAtr:  false, // Regua de delta por faixa de ATR, eixo dedicado no canto esquerdo (experimental)
     eficiencia: false, // Eficiência Bid/Ask: chip na Barra Superior; a régua Bid x Ask fica dentro do modal do chip (depende do Fluxo, TF <= 4H)
+    sent:      false, // Sentimento: 3 painéis no lugar dos de baixo (Open Interest, Funding, Long/Short), escala fixa desde a âncora
     oiPA:      false, // Open Interest (nivel + variacao por candle) sobreposto ao preco, igual o CVD
     fib:       false,
     trend:     false,
