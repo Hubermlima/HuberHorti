@@ -2014,6 +2014,10 @@ let _cvdEscVd = parseInt(localStorage.getItem('gr_cvd_esc_vd')) || 3, _cvdEscCv 
 function cvdEscVdDefinir(v) { _cvdEscVd = Math.max(1, Math.min(20, Math.round(parseFloat(v) || 1))); try { localStorage.setItem('gr_cvd_esc_vd', String(_cvdEscVd)); } catch (e) {} grDrawChart(); }
 function cvdEscCvDefinir(v) { _cvdEscCv = Math.max(1, Math.min(20, Math.round(parseFloat(v) || 1))); try { localStorage.setItem('gr_cvd_esc_cv', String(_cvdEscCv)); } catch (e) {} grDrawChart(); }
 // ── SENTIMENTO: Open Interest, Funding Rate e Long/Short (contas globais), dados públicos da Binance do ativo aberto ──
+const GR_SENT_AX = 16, GR_SENT_CH = 18;   // altura do eixo do tempo / de um painel recolhido
+let _sentCol = { oi: false, fn: false, ls: false };   // painel recolhido (só o cabeçalho)
+try { const _sc = JSON.parse(localStorage.getItem('gr_sent_col') || 'null'); if (_sc) ['oi', 'fn', 'ls'].forEach(k => { _sentCol[k] = _sc[k] === true; }); } catch (e) {}
+function sentColAlterna(k) { _sentCol[k] = !_sentCol[k]; try { localStorage.setItem('gr_sent_col', JSON.stringify(_sentCol)); } catch (e) {} grDrawChart(); }
 let _sentEsc = { oi: 1, fn: 1, ls: 1 };
 try { const _se = JSON.parse(localStorage.getItem('gr_sent_esc') || 'null'); if (_se) ['oi', 'fn', 'ls'].forEach(k => { const v = parseInt(_se[k]); if (v >= 1 && v <= 20) _sentEsc[k] = v; }); } catch (e) {}
 function sentEscDef(k, v) { _sentEsc[k] = Math.max(1, Math.min(20, Math.round(parseFloat(v) || 1))); try { localStorage.setItem('gr_sent_esc', JSON.stringify(_sentEsc)); } catch (e) {} grDrawChart(); }
@@ -2027,7 +2031,7 @@ function cvToggleSent() {
 document.addEventListener('DOMContentLoaded', () => { try { if (localStorage.getItem('gr_sent_on') === '1') { _indState.sent = true; const b = document.getElementById('cv-ind-sent'); if (b) b.classList.add('active'); } } catch (e) {} });
 window._grSentCache = window._grSentCache || {};
 function grSentGarantir(per) {
-    const sym = grBinSymbolAtual(), c = window._grSentCache[sym] || (window._grSentCache[sym] = { lsr: {}, fund: {}, fpay: {} }); if (!c.fpay) c.fpay = {};
+    const sym = grBinSymbolAtual(), c = window._grSentCache[sym] || (window._grSentCache[sym] = { lsr: {}, fund: {}, prem: {} }); if (!c.prem) c.prem = {};
     if (_ativoFonte === 'td') return c;
     const ir = (alvo, chave, url, mapa) => {
         if (alvo.carregando || (alvo.ts && Date.now() - alvo.ts < 60000 && alvo.per === chave)) return;
@@ -2038,9 +2042,26 @@ function grSentGarantir(per) {
         }).catch(() => { alvo.carregando = false; alvo.ts = Date.now(); alvo.per = chave; });
     };
     ir(c.lsr, per, 'https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=' + sym + '&period=' + per + '&limit=500', o => ({ t: o.timestamp, v: parseFloat(o.longShortRatio) }));
-    ir(c.fund, per, 'https://fapi.binance.com/fapi/v1/premiumIndexKlines?symbol=' + sym + '&interval=' + per + '&limit=1500', o => ({ t: o[0], v: parseFloat(o[4]) }));   // prêmio (perp × índice): o que move o funding, contínuo; o funding pago só muda a cada 8h
-    ir(c.fpay, 'f', 'https://fapi.binance.com/fapi/v1/fundingRate?symbol=' + sym + '&limit=1000', o => ({ t: o.fundingTime, v: parseFloat(o.fundingRate) }));   // funding PAGO (oficial): degraus de 8h
+    ir(c.fund, 'f', 'https://fapi.binance.com/fapi/v1/fundingRate?symbol=' + sym + '&limit=1000', o => ({ t: o.fundingTime, v: parseFloat(o.fundingRate) }));   // funding PAGO (oficial): muda a cada 8h; a matemática do painel amplifica as variações
+    ir(c.prem, per, 'https://fapi.binance.com/fapi/v1/premiumIndexKlines?symbol=' + sym + '&interval=' + per + '&limit=1500', o => ({ t: o[0], v: parseFloat(o[4]) }));   // prêmio do perpétuo, base do funding previsto
     return c;
+}
+// FUNDING PREVISTO (fórmula da Binance): F = P + clamp(I − P, ±0,05%), com P = média do prêmio desde o início do período de 8h (00/08/16 UTC) e I = 0,01%.
+// Vai se refinando durante o período e termina igual ao funding pago.
+function grSentPrevisto(prem) {
+    if (!prem || !prem.dados || !prem.dados.length) return null;
+    if (prem.pv && prem.pvRef === prem.dados) return prem.pv;
+    const out = []; let blk = null, soma = 0, n = 0;
+    prem.dados.forEach(o => { const b = Math.floor(o.t / 28800000); if (b !== blk) { blk = b; soma = 0; n = 0; } soma += o.v; n++; const P = soma / n; out.push({ t: o.t, v: P + Math.max(-0.0005, Math.min(0.0005, 0.0001 - P)) }); });
+    prem.pv = out; prem.pvRef = prem.dados; return out;
+}
+// Caminho de uma linha: reta, em degraus (dado que só muda de tempos em tempos) ou suavizada por curvas (pontos médios).
+function grSentCaminho(ctx, pts, modo) {
+    if (!pts.length) return;
+    ctx.moveTo(pts[0].x, pts[0].y);
+    if (modo === 'degrau') { for (let i = 1; i < pts.length; i++) { ctx.lineTo(pts[i].x, pts[i - 1].y); ctx.lineTo(pts[i].x, pts[i].y); } return; }
+    if (modo === 'suave' && pts.length > 2) { for (let i = 1; i < pts.length - 1; i++) ctx.quadraticCurveTo(pts[i].x, pts[i].y, (pts[i].x + pts[i + 1].x) / 2, (pts[i].y + pts[i + 1].y) / 2); ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y); return; }
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
 }
 function grSentValorEm(d, ts) {   // último valor NÃO POSTERIOR a ts (o candle não vê o futuro); null antes do 1º dado
     if (!d || !d.length) return null;
@@ -2271,7 +2292,7 @@ function cvRenderMenuFpCfg() {
                 : '');
     } else if (_grFpCfgMenuQual === 'sent') {
         menu.innerHTML = '<div style="font-size:13px;font-weight:700;color:#1C1C1E;">Sentimento</div>'
-            + '<div style="font-size:12px;color:#8E8E93;max-width:210px;padding-bottom:4px;">Open Interest, Funding (prêmio contínuo + funding pago em degraus) e Long/Short (contas globais), da Binance. Escala fixa desde a âncora; o escalar abre a curva.</div>'
+            + '<div style="font-size:12px;color:#8E8E93;max-width:210px;padding-bottom:4px;">Open Interest, Funding pago (degraus de 8h) + funding previsto (suavizado) e Long/Short (contas globais), da Binance. Escala fixa desde a âncora; o escalar abre a curva.</div>'
             + grConfigSliderInt('cv-cfg-sent-oi', 'Altura Open Interest', _sentEsc.oi, 1, 20, 'sentEscOi', '', 'x')
             + grConfigSliderInt('cv-cfg-sent-fn', 'Altura Funding', _sentEsc.fn, 1, 20, 'sentEscFn', '', 'x')
             + grConfigSliderInt('cv-cfg-sent-ls', 'Altura Long/Short', _sentEsc.ls, 1, 20, 'sentEscLs', '', 'x');
@@ -2754,7 +2775,7 @@ let _grAllCandles = [];
 // painel inferior existente (subInd: Absorção, Vol, MACD...) e, ACIMA dele, o
 // painel Delta/Total (só existe com o Fluxo ligado e o footprint carregado).
 function grAlturasPaineis(H) {
-    if (_indState.sent) { const st = Math.floor(H * 0.42); return { sub: 0, dt: 0, sent: st, total: st }; }   // Sentimento ocupa o lugar do painel inferior e do Delta/Total
+    if (_indState.sent) { const nC = ['oi', 'fn', 'ls'].filter(k => _sentCol[k]).length, st = nC === 3 ? GR_SENT_AX + 3 * GR_SENT_CH : Math.floor(H * 0.42); return { sub: 0, dt: 0, sent: st, total: st }; }   // Sentimento ocupa o lugar do painel inferior e do Delta/Total
     const sub = (_indState.subInd && !_indOculto.painel) ? Math.floor(H * 0.28) : 0;
     // Skin cinza mostra só o TOTAL por linha (sem lado dominante): o painel Delta/Total não faz sentido nela.
     const dt = (_grFootprintAtivo && _grFootprintCandlesRaw && FOOTPRINT_SKIN !== 'cinza') ? Math.max(76, Math.floor(H * 0.165)) : 0; // 4 linhas: Delta V, Delta/Vol %, Delta $ e Total
@@ -3468,7 +3489,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v643';
+const APP_VERSAO = 'v647';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -6970,7 +6991,7 @@ if (_grTipoGrafico === 'linha') {
                     window._grFpItens.push({ rot: rotuloOi, abrir: (cx, cy) => cvAbrirMenuFpCfg('oi', cx, cy) });
                 }
             }
-            if (_indState.sent) window._grFpItens.push({ rot: 'Sentimento', abrir: (cx, cy) => cvAbrirMenuFpCfg('sent', cx, cy) });
+            if (_indState.sent) grBarraChip('Sentimento', '#000000', (cx, cy) => cvAbrirMenuFpCfg('sent', cx, cy));   // chip PRÓPRIO na barra superior (não fica dentro do menu Footprint)
             if (window._grFpItens.length) { const _fpIt = window._grFpItens; grBarraChip('Footprint ▾', '#000000', (cx, cy) => cvDropGrupoAbrir(cx, cy, _fpIt)); }
             window._grBarraSuperiorBottom = chipY + 4; // a linha OHLC é desenhada logo abaixo dos chips
         }
@@ -7281,30 +7302,18 @@ if (fibsParaDesenhar.length > 0) {
                     ctx.fillStyle = 'rgba(150,155,165,0.22)'; ctx.fillRect(xa, yTop, xb - xa, hTot);
                     const pat = grListraPadrao(ctx); if (pat) { ctx.fillStyle = pat; ctx.fillRect(xa, yTop, xb - xa, hTot); }
                 }
-                if (pz.origem === 'setup' && !pz.previa) {   // CAIXA FANTASMA: o que o robô tinha posto, quando você mexeu (tracejado apagado por trás da sua)
+                if (pz.origem === 'setup' && !pz.previa) {   // CAIXA FANTASMA: se você redimensionou a do robô, ele redesenha a original AO LADO (à direita), toda tracejada
                     const rgF = (window._scRegistro || []).find(r => r.id === pz.id);
                     if (rgF && rgF.ref && rgF.entOrig > 0) {
                         const oE = rgF.entOrig, oS = rgF.stpOrig > 0 ? rgF.stpOrig : oE, oA = rgF.alvoOrig > 0 ? rgF.alvoOrig : oE;
-                        const yoE = toY(oE), yoS = toY(oS), yoA = toY(oA), yT = Math.min(yoE, yoS, yoA), hT = Math.max(yoE, yoS, yoA) - yT;
-                        ctx.save();
-                        if (rgF.stpOrig > 0) { ctx.fillStyle = 'rgba(232,234,238,0.62)'; ctx.fillRect(xa, Math.min(yoE, yoS), xb - xa, Math.abs(yoS - yoE)); }   // zona de captura do robô: cinza CLARO (a sua é cinza escuro)
-                        ctx.lineWidth = 1; ctx.setLineDash([4, 3]); ctx.strokeStyle = '#8E9099';
-                        ctx.strokeRect(xa, yT, xb - xa, hT);
-                        const oEb = grBreakeven(oE, pz.lado, grTaxaLado(pz)) || oE;
-                        const muda = [[oEb, beRef], [oS, pz.stop], [oA, pz.alvo]].filter(([o, n]) => o > 0 && Math.abs(o - n) > 1e-6);
-                        muda.forEach(([o]) => { const yy = toY(o); ctx.beginPath(); ctx.moveTo(xa, yy); ctx.lineTo(xb, yy); ctx.stroke(); });
-                        ctx.setLineDash([]); ctx.font = 'bold 9px -apple-system'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-                        const dec = Math.max(2, typeof grDecimaisPreco === 'function' ? grDecimaisPreco() : 2);
-                        const selF = typeof _edSel !== 'undefined' && _edSel && _edSel.tipo === 'ps' && _edSel.idx === grPosicoes().indexOf(pz);
-                        muda.forEach(([o]) => {   // bolinha na borda direita; o valor só aparece com a caixa SELECIONADA
-                            const yy = toY(o);
-                            ctx.fillStyle = '#5A5D66'; ctx.beginPath(); ctx.arc(xb, yy, 3.5, 0, Math.PI * 2); ctx.fill();
-                            if (selF) { const pS = (o === oS && rgF.stpOrig > 0 && pz.stop > 0) ? (pz.stop - o) / o * 100 : null;   // no stop: quanto o SEU stop se afastou do do robô (% do preço)
-                                const tx = Number(o).toLocaleString('pt-BR', { minimumFractionDigits: dec, maximumFractionDigits: dec }) + (pS != null ? ' (' + (pS >= 0 ? '+' : '−') + Math.abs(pS).toFixed(2).replace('.', ',') + '%)' : ''), tw = ctx.measureText(tx).width + 10;
-                                ctx.fillStyle = '#3A3A3C'; ctx.beginPath(); ctx.roundRect(xb + 6, yy - 7, tw, 14, 3); ctx.fill();
-                                ctx.fillStyle = '#FFFFFF'; ctx.fillText(tx, xb + 11, yy + 0.5); }
-                        });
-                        ctx.restore();
+                        const mudou = Math.abs(oE - pz.entrada) > 1e-6 || (rgF.stpOrig > 0 && Math.abs(oS - pz.stop) > 1e-6) || (rgF.alvoOrig > 0 && Math.abs(oA - pz.alvo) > 1e-6);
+                        if (mudou) {
+                            const gx = xb + 8, gw = xb - xa, yoE = toY(oE), yoS = toY(oS), yoA = toY(oA), yT = Math.min(yoE, yoS, yoA), hT = Math.max(yoE, yoS, yoA) - yT;
+                            ctx.save(); ctx.lineWidth = 1; ctx.setLineDash([4, 3]); ctx.strokeStyle = '#8E9099';
+                            ctx.strokeRect(gx, yT, gw, hT);
+                            [yoE, yoS, yoA].forEach(yy => { ctx.beginPath(); ctx.moveTo(gx, yy); ctx.lineTo(gx + gw, yy); ctx.stroke(); });
+                            ctx.restore();
+                        }
                     }
                 }
                 ctx.lineWidth = 1.5; ctx.setLineDash([]);
@@ -7563,68 +7572,97 @@ if (fibsParaDesenhar.length > 0) {
         // ── SENTIMENTO: 3 painéis de linha (Open Interest, Funding, Long/Short) no lugar dos painéis de baixo ──
         // Escala FIXA do ponto inicial (âncora do VP; sem âncora, tudo o que está carregado) até o último candle, × escalar de cada painel: rolar/dar zoom não deforma a curva.
         if (_indState.sent && _altPan.sent > 0) { try {
-            const sentH = _altPan.sent, AX = 16, y0 = H - sentH, ph = Math.floor((sentH - AX) / 3), nS = _grAllCandles.length;
+            const sentH = _altPan.sent, AX = GR_SENT_AX, CH = GR_SENT_CH, y0 = H - sentH, nS = _grAllCandles.length;
             const per = grOiPeriodoParaTf(); grOiGarantirDados(per); const sc = grSentGarantir(per), oiC = grOiCache(per);
             const oiD = oiC && oiC.dados ? (oiC.dv || (oiC.dv = oiC.dados.map(o => ({ t: o.t, v: o.oi })))) : null;
             const ancS = (typeof _grVpAncoraTs !== 'undefined' && _grVpAncoraTs > 0) ? _grVpAncoraTs : 0;
             let i0S = 0; while (i0S < nS && _grAllCandles[i0S].t < ancS) i0S++;
             const pct = (arr, q) => { const o = arr.slice().sort((x, y) => x - y); return o[Math.max(0, Math.min(o.length - 1, Math.round(q * (o.length - 1))))]; };
+            const cTxt = _grTemaClaro ? '#1C1C1E' : '#E5E5EA', cBorda = _grTemaClaro ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)';
             const defs = [
-                { rot: 'Open Interest', sig: 'OI', d: oiD, cor: '#42A5F5', k: 'oi', fmt: v => grFmtVolCompacto(v, 0), bad: () => '#1E88E5' },
-                { rot: 'Funding Rate', sig: 'FR', d: sc.fund.dados, cor: '#FFB300', k: 'fn', fmt: v => (v >= 0 ? '+' : '-') + Math.abs(v * 100).toFixed(4) + '%', bad: v => v >= 0 ? '#26A69A' : '#EF5350' },
-                { rot: 'Long/Short', sig: 'L/S', d: sc.lsr.dados, cor: '#AB47BC', k: 'ls', fmt: v => v.toFixed(2), bad: v => v >= 1 ? '#26A69A' : '#EF5350' }
+                { sig: 'OI', d: oiD, cor: '#42A5F5', k: 'oi', fmt: v => grFmtVolCompacto(v, 0), bad: () => '#1E88E5' },
+                { sig: 'FR', d: sc.fund.dados, cor: '#FFB300', k: 'fn', fmt: v => (v >= 0 ? '+' : '-') + Math.abs(v * 100).toFixed(4) + '%', bad: v => v >= 0 ? '#26A69A' : '#EF5350' },
+                { sig: 'L/S', d: sc.lsr.dados, cor: '#AB47BC', k: 'ls', fmt: v => v.toFixed(2), bad: v => v >= 1 ? '#26A69A' : '#EF5350' }
             ];
+            const nCol = defs.filter(df => _sentCol[df.k]).length, nExp = 3 - nCol;
+            const hExp = nExp > 0 ? Math.floor((sentH - AX - nCol * CH) / nExp) : 0;
+            const hs = defs.map(df => _sentCol[df.k] ? CH : hExp), totPan = hs.reduce((x, y) => x + y, 0), xL = PAD.left, xR = PAD.left + chartW;
+            let py = y0;
             defs.forEach((df, k) => {
-                const py = y0 + k * ph, top = py + 6, bot = py + ph - 6, hh = Math.max(10, bot - top);
-                ctx.save(); ctx.beginPath(); ctx.rect(PAD.left, py, chartW, ph); ctx.clip();
-                const vals = new Array(nS).fill(null), conj = [], valsF = new Array(nS).fill(null), dF = df.k === 'fn' ? sc.fpay.dados : null;
-                if (df.d && df.d.length) for (let i = i0S; i < nS; i++) { const v = grSentValorEm(df.d, _grAllCandles[i].t); vals[i] = v; if (v != null) conj.push(df.k === 'ls' ? Math.log(Math.max(v, 1e-9)) : v); }
-                if (dF && dF.length && conj.length) for (let i = i0S; i < nS; i++) { const v = grSentValorEm(dF, _grAllCandles[i].t); valsF[i] = v; if (v != null) conj.push(v); }
-                if (!conj.length) { ctx.restore(); return; }
-                // NORMALIZAÇÃO FIXA (âncora → último candle), de um jeito por indicador, sem depender do trecho visível:
-                //  OI: mínimo..máximo · Funding(prêmio): simétrico em torno do ZERO, pela faixa típica (percentil 97 do |valor|) · Long/Short: em log (1,0 = 0) em torno da mediana, pela faixa típica (percentis 3–97)
-                let f;
-                const esc = _sentEsc[df.k] || 1, yMed = (top + bot) / 2;
-                if (df.k === 'oi') { const mn = Math.min.apply(null, conj), mx = Math.max.apply(null, conj), rng = Math.max(mx - mn, 1e-12), mid = (mn + mx) / 2; f = v => yMed - ((v - mid) / rng) * hh * esc; }
-                else if (df.k === 'fn') { const meia = Math.max(pct(conj.map(Math.abs), 0.97), 1e-9); f = v => yMed - (v / meia) * (hh / 2) * esc; }
-                else { const med = pct(conj, 0.5), meia = Math.max((pct(conj, 0.97) - pct(conj, 0.03)) / 2, 1e-6); f = v => yMed - ((Math.log(Math.max(v, 1e-9)) - med) / meia) * (hh / 2) * esc; }
-                let tF = null;
-                if (dF) {   // funding pago (degraus de 8h): linha mais fina e mais escura, atrás do prêmio
-                    ctx.strokeStyle = '#E65100'; ctx.lineWidth = 1.4; ctx.lineJoin = 'round'; ctx.beginPath(); let iniF = false;
-                    for (let i = 0; i < visible; i++) { const ix = startIdx + i; if (ix < 0 || ix >= nS) continue; const v = valsF[ix]; if (v == null) { iniF = false; continue; } const x = PAD.left + (i / totalSlots) * chartW + cW / 2, y = f(v); if (!iniF) { ctx.moveTo(x, y); iniF = true; } else ctx.lineTo(x, y); tF = v; }
-                    ctx.stroke();
+                const ph = hs[k], rec = _sentCol[df.k], top = py + 12, bot = py + ph - 6, hh = Math.max(10, bot - top), yMed = (top + bot) / 2;
+                ctx.save(); ctx.beginPath(); ctx.rect(xL, py, chartW, ph); ctx.clip();
+                const vals = new Array(nS).fill(null), vals2 = new Array(nS).fill(null), conj = [];
+                if (df.d && df.d.length) for (let i = i0S; i < nS; i++) { const v = grSentValorEm(df.d, _grAllCandles[i].t); vals[i] = v; if (v != null) conj.push(v); }
+                const pd2 = df.k === 'fn' ? grSentPrevisto(sc.prem) : null;
+                if (pd2 && pd2.length && conj.length) for (let i = i0S; i < nS; i++) { const v = grSentValorEm(pd2, _grAllCandles[i].t); vals2[i] = v; if (v != null) conj.push(v); }
+                let tx = null, ty = 0, tv = null, tv2 = null;
+                if (conj.length) {
+                    // NORMALIZAÇÃO FIXA (âncora → último candle), um jeito por indicador, nada depende do trecho visível:
+                    //  OI: mínimo..máximo.  FR: em torno do ZERO, saturando com tanh (oscilação pequena fica grande, extremo nunca sai do painel).
+                    //  L/S: em log, desvio (suavizado) em relação à média móvel de 24 candles (zero = média recente), mesma saturação tanh.
+                    const esc = _sentEsc[df.k] || 1, G = 2 * esc, linhas = [];
+                    if (df.k === 'oi') { const mn = Math.min.apply(null, conj), mx = Math.max.apply(null, conj), rng = Math.max(mx - mn, 1e-12), mid = (mn + mx) / 2; linhas.push({ v: vals, y: v => yMed - ((v - mid) / rng) * hh * esc, cor: df.cor, lw: 1.8, prim: true }); }
+                    else if (df.k === 'fn') { const sg = Math.max(pct(conj.map(Math.abs), 0.9), 1e-9), yy = v => yMed - Math.tanh(G * v / sg) * (hh / 2);
+                        linhas.push({ v: vals2, y: yy, cor: '#FFB300', lw: 1.6, modo: 'suave', prev: true });   // funding PREVISTO: suavizado
+                        linhas.push({ v: vals, y: yy, cor: '#E65100', lw: 2, modo: 'degrau', prim: true }); }   // funding PAGO: degraus de 8h
+                    else {
+                        const dev = new Array(nS).fill(null), al = 2 / 25, al2 = 2 / 7; let em = null, es = null; const ad = [];
+                        for (let i = i0S; i < nS; i++) { const v = vals[i]; if (v == null) continue; const l = Math.log(Math.max(v, 1e-9)); em = em == null ? l : em + al * (l - em); const d0 = l - em; es = es == null ? d0 : es + al2 * (d0 - es); dev[i] = es; ad.push(Math.abs(es)); }
+                        const sg = Math.max(pct(ad, 0.95), 1e-9); linhas.push({ v: dev, y: v => yMed - Math.tanh(G * v / sg) * (hh / 2), cor: df.cor, lw: 1.8, modo: 'suave', prim: true, real: vals });
+                    }
+                    if (!rec && (df.k === 'fn' || df.k === 'ls')) {   // EIXO ZERO (FR: zero · L/S: média recente), tracejado na cor do painel
+                        ctx.save(); ctx.strokeStyle = df.cor; ctx.globalAlpha = 0.55; ctx.lineWidth = 1; ctx.setLineDash([4, 3]); ctx.beginPath(); ctx.moveTo(xL, yMed); ctx.lineTo(xR, yMed); ctx.stroke(); ctx.restore();
+                        ctx.font = 'bold 9px -apple-system'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = cTxt; ctx.fillText('0', xL + 4, yMed - 7);
+                    }
+                    linhas.forEach(ln => {
+                        const real = ln.real || ln.v; let pts = [], ult = null;
+                        const segs = [];
+                        for (let i = 0; i < visible; i++) {
+                            const ix = startIdx + i; if (ix < 0 || ix >= nS) continue;
+                            if (ln.v[ix] == null) { if (pts.length) segs.push(pts); pts = []; continue; }
+                            const pt = { x: PAD.left + (i / totalSlots) * chartW + cW / 2, y: ln.y(ln.v[ix]) }; pts.push(pt); ult = { pt, val: real[ix] };
+                        }
+                        if (pts.length) segs.push(pts);
+                        if (!rec) { ctx.strokeStyle = ln.cor; ctx.lineWidth = ln.lw; ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.setLineDash([]); ctx.beginPath(); segs.forEach(sg0 => grSentCaminho(ctx, sg0, ln.modo)); ctx.stroke(); }
+                        if (ult) { if (ln.prim) { tx = ult.pt.x; ty = ult.pt.y; tv = ult.val; } if (ln.prev) tv2 = ult.val; }
+                    });
                 }
-                ctx.strokeStyle = df.cor; ctx.lineWidth = 1.8; ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.beginPath();
-                let ini = false, tx = null, ty = 0, tv = 0;
-                for (let i = 0; i < visible; i++) {
-                    const ix = startIdx + i; if (ix < 0 || ix >= nS) continue; const v = vals[ix];
-                    if (v == null) { ini = false; continue; }
-                    const x = PAD.left + (i / totalSlots) * chartW + cW / 2, y = f(v);
-                    if (!ini) { ctx.moveTo(x, y); ini = true; } else ctx.lineTo(x, y);
-                    tx = x; ty = y; tv = v;
-                }
-                ctx.stroke();
-                if (tx != null) {   // badge com o valor na ponta da linha: verde/vermelho conforme o lado (sinal mantido no número)
-                    const txt = df.sig + ' ' + df.fmt(tv) + (tF != null ? ' · F ' + df.fmt(tF) : ''); ctx.fillStyle = df.cor; ctx.beginPath(); ctx.arc(tx, Math.max(py + 3, Math.min(py + ph - 3, ty)), 3, 0, Math.PI * 2); ctx.fill();
+                if (!rec && tx != null) {   // badge na ponta da linha: verde/vermelho pelo lado (o sinal fica no número)
+                    const txt = df.sig + ' ' + df.fmt(tv) + (tv2 != null ? ' · prev ' + df.fmt(tv2) : ''); ctx.fillStyle = df.cor; ctx.beginPath(); ctx.arc(tx, Math.max(py + 3, Math.min(py + ph - 3, ty)), 3, 0, Math.PI * 2); ctx.fill();
                     ctx.font = 'bold 10px -apple-system'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
                     const bw = ctx.measureText(txt).width + 10, bh = 15, bx = tx - 8 - bw, by = Math.max(py + 1, Math.min(py + ph - bh - 1, ty - bh / 2));
                     ctx.fillStyle = df.bad(tv); ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 4); ctx.fill();
                     ctx.fillStyle = '#FFFFFF'; ctx.fillText(txt, bx + bw / 2, by + bh / 2 + 0.5);
                 }
+                if (rec) {   // recolhido: só o cabeçalho (nome + valor atual na cor do painel)
+                    ctx.font = 'bold 10px -apple-system'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = df.cor;
+                    ctx.fillText(df.sig + (tv != null ? ' ' + df.fmt(tv) : ''), xL + 24, py + ph / 2);
+                }
+                // controle no canto superior esquerdo: traço = recolher (painel aberto) · quadrado = expandir (painel recolhido)
+                { const cx0 = xL + 5, cy0 = py + (rec ? ph / 2 - 6 : 4);
+                  ctx.strokeStyle = cTxt; ctx.lineWidth = 1.5; ctx.setLineDash([]);
+                  if (rec) ctx.strokeRect(cx0 + 0.5, cy0 + 0.5, 11, 11); else { ctx.beginPath(); ctx.moveTo(cx0, cy0 + 6); ctx.lineTo(cx0 + 12, cy0 + 6); ctx.stroke(); }
+                  (window._grBadgeHits = window._grBadgeHits || []).push({ x: xL, y: py, w: 34, h: Math.min(ph, 30), abrir: () => sentColAlterna(df.k) }); }
                 ctx.restore();
+                py += ph;
             });
-            {   // EIXO DO TEMPO (embaixo dos 3 painéis), alinhado aos candles: hora nos candles do dia, data (dd/MM) quando vira o dia
-                const yA = y0 + 3 * ph, esp = chartW / Math.max(1, totalSlots), passo = Math.max(1, Math.ceil(78 / Math.max(esp, 1)));
+            // um quadrado em volta + UMA linha separando cada painel do outro
+            ctx.save(); ctx.strokeStyle = cBorda; ctx.lineWidth = 1; ctx.setLineDash([]);
+            ctx.strokeRect(xL + 0.5, y0 + 0.5, chartW - 1, totPan - 1);
+            { let yy = y0; hs.slice(0, 2).forEach(h => { yy += h; ctx.beginPath(); ctx.moveTo(xL, Math.round(yy) + 0.5); ctx.lineTo(xR, Math.round(yy) + 0.5); ctx.stroke(); }); }
+            ctx.restore();
+            {   // EIXO DO TEMPO (embaixo dos painéis), alinhado aos candles: hh:mm; dd/MM quando vira o dia
+                const yA = y0 + totPan, esp = chartW / Math.max(1, totalSlots), passo = Math.max(1, Math.ceil(78 / Math.max(esp, 1)));
                 const p2 = n => String(n).padStart(2, '0'); let ultDia = null;
                 ctx.save(); ctx.font = '10px -apple-system'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-                ctx.fillStyle = _grTemaClaro ? '#1C1C1E' : '#E5E5EA'; ctx.strokeStyle = ctx.fillStyle; ctx.lineWidth = 1;
+                ctx.fillStyle = cTxt; ctx.strokeStyle = cTxt; ctx.lineWidth = 1;
                 const diario = grFootprintMsPorCandle() >= 86400000;
                 for (let i = 0; i < visible; i += passo) {
                     const ix = startIdx + i; if (ix < 0 || ix >= nS) continue;
                     const d = new Date(_grAllCandles[ix].t), dia = d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate(), novoDia = dia !== ultDia; ultDia = dia;
                     const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
                     ctx.beginPath(); ctx.moveTo(x, yA); ctx.lineTo(x, yA + 3); ctx.stroke();
-                    ctx.fillText(diario || novoDia ? p2(d.getDate()) + '/' + p2(d.getMonth() + 1) : p2(d.getHours()) + ':' + p2(d.getMinutes()), x, yA + 10);   // dia novo (ou TF diário): dd/MM; senão hh:mm
+                    ctx.fillText(diario || novoDia ? p2(d.getDate()) + '/' + p2(d.getMonth() + 1) : p2(d.getHours()) + ':' + p2(d.getMinutes()), x, yA + 10);
                 }
                 ctx.restore();
             }
