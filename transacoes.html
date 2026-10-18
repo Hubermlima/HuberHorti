@@ -3420,7 +3420,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v622';
+const APP_VERSAO = 'v624';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -6123,7 +6123,7 @@ function grDrawCandles(candles, emptyRight) {
         _grEmaCustom.forEach(item => {
             const vals = extrairJanela(grEMA(allCloses, item.periodo), item.periodo);
             item._janela = vals;   // guardada pra área de toque / bolinhas da seleção (registradas mais abaixo)
-            desenharLinha(vals, item.cor, 1.2);
+            desenharLinha(vals, item.cor, item.esp > 0 ? item.esp : 1.2);
             const v = vals.filter(v=>v!=null).pop();
             item.valorTxt = v != null ? fmtN(v) : null;
         });
@@ -6730,7 +6730,18 @@ if (_grTipoGrafico === 'linha') {
                         { let mn = Infinity, mx = -Infinity, md = 0;
                           for (let i = 0; i < visible; i++) { const vc = cvdAll[startIdx + i], vv = vdAll[startIdx + i]; if (vc != null) { if (vc < mn) mn = vc; if (vc > mx) mx = vc; } if (vv != null && Math.abs(vv) > md) md = Math.abs(vv); }
                           if (isFinite(mn) && isFinite(mx)) { const pad = Math.max((mx - mn) * 0.08, 1e-9); minC = mn - pad; maxC = mx + pad; if (!(mx > mn)) { minC = mn - 1; maxC = mx + 1; } }
-                          if (md > 0) maxD = md; }
+                          if (md > 0) maxD = md;
+                          // SEM SALTO: a escala persegue o alvo aos poucos (ease) em vez de pular quando uma máxima/mínima entra ou sai da tela ao rolar.
+                          const chvE = ancCvd + '|' + _grTf + '|' + (_grAllCandles[0] ? _grAllCandles[0].t : 0), E = window._cvdEsc;
+                          if (!E || E.chv !== chvE) window._cvdEsc = { chv: chvE, a: minC, b: maxC, d: maxD };
+                          else {
+                              const f = 0.22; E.a += (minC - E.a) * f; E.b += (maxC - E.b) * f; E.d += (maxD - E.d) * f;
+                              const tolE = (maxC - minC) * 0.004;
+                              if ((Math.abs(E.a - minC) > tolE || Math.abs(E.b - maxC) > tolE || Math.abs(E.d - maxD) > maxD * 0.004) && !window._cvdEscRaf) {
+                                  window._cvdEscRaf = requestAnimationFrame(() => { window._cvdEscRaf = 0; try { grDrawChart(); } catch (e) {} });
+                              } else if (Math.abs(E.a - minC) <= tolE && Math.abs(E.b - maxC) <= tolE) { E.a = minC; E.b = maxC; E.d = maxD; }
+                          }
+                          minC = window._cvdEsc.a; maxC = window._cvdEsc.b; maxD = window._cvdEsc.d; }
                         // faixa fixa no terço de baixo da área dos candles
                         const bandTop = PAD.top + chartH * 0.64, bandBot = PAD.top + chartH * 0.95, bandH = bandBot - bandTop;
                         const yMid = (bandTop + bandBot) / 2;                       // linha de zero do VD
@@ -6741,6 +6752,7 @@ if (_grTipoGrafico === 'linha') {
                         // zero do VD
                         ctx.strokeStyle = 'rgba(150,155,165,0.55)'; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
                         ctx.beginPath(); ctx.moveTo(PAD.left, Math.round(yMid) + 0.5); ctx.lineTo(PAD.left + chartW, Math.round(yMid) + 0.5); ctx.stroke(); ctx.setLineDash([]);
+                        ctx.save(); ctx.beginPath(); ctx.rect(PAD.left, bandTop - 3, chartW, bandH + 6); ctx.clip();   // barras e linha ficam na faixa mesmo enquanto a escala acomoda
                         // VD: barras
                         const bw = Math.max(1, cW * 0.6), amp = bandH / 2 * 0.95;
                         for (let i = 0; i < visible; i++) {
@@ -6759,22 +6771,26 @@ if (_grTipoGrafico === 'linha') {
                             if (!ini) { ctx.moveTo(x, y); ini = true; } else ctx.lineTo(x, y);
                         }
                         ctx.stroke();
+                        ctx.restore();
                         // DIVERGÊNCIAS CVD × PREÇO (só visual): pivôs de preço consecutivos em que o CVD discorda.
                         //  ▼ baixa: topo de preço MAIS ALTO com CVD MAIS BAIXO · ▲ alta: fundo de preço MAIS BAIXO com CVD MAIS ALTO. Uma linha liga os dois pivôs no preço e outra no CVD.
                         try {
-                            const kP = Math.max(2, Math.round(visible / 20)), nA = _grAllCandles.length, topos = [], fundos = [];
-                            for (let i = 0; i < visible; i++) {
-                                const ix = startIdx + i; if (ix - kP < 0 || ix + kP >= nA || cvdAll[ix] == null) continue;
+                            // Calculadas na série INTEIRA com regra fixa (a mesma do benchmark: pivô de 3 candles, diferença > 5% da faixa do CVD nos 100 candles anteriores):
+                            // não dependem do zoom nem do trecho visível, então rolar não faz a divergência sumir.
+                            const kP = 3, nA = _grAllCandles.length, topos = [], fundos = [];
+                            let iAnc = 0; while (iAnc < nA && cvdAll[iAnc] == null) iAnc++;
+                            for (let ix = Math.max(iAnc, kP); ix + kP < nA; ix++) {
                                 const c0 = _grAllCandles[ix]; let eT = true, eF = true;
                                 for (let j = 1; j <= kP && (eT || eF); j++) {
                                     const a1 = _grAllCandles[ix - j], b1 = _grAllCandles[ix + j];
                                     if (!(c0.h > a1.h && c0.h >= b1.h)) eT = false;
                                     if (!(c0.l < a1.l && c0.l <= b1.l)) eF = false;
                                 }
-                                if (eT) topos.push({ i, ix, p: c0.h, cv: cvdAll[ix] });
-                                if (eF) fundos.push({ i, ix, p: c0.l, cv: cvdAll[ix] });
+                                if (eT) topos.push({ i: ix - startIdx, ix, p: c0.h, cv: cvdAll[ix] });
+                                if (eF) fundos.push({ i: ix - startIdx, ix, p: c0.l, cv: cvdAll[ix] });
                             }
-                            const limDif = rngC * 0.05;
+                            const limDifEm = ix => { let lo = Infinity, hi = -Infinity; for (let j = Math.max(iAnc, ix - 99); j <= ix; j++) { const v = cvdAll[j]; if (v < lo) lo = v; if (v > hi) hi = v; } return (hi - lo) * 0.05; };
+                            const noVis = (A, B) => B.ix >= startIdx && A.ix < startIdx + visible;
                             const marca = (A, B, baixa) => {
                                 const cor = baixa ? '#D32F2F' : '#2E7D32', xa = xDoIdx(A.i), xb = xDoIdx(B.i), ypA = toY(A.p), ypB = toY(B.p), ycA = yC(A.cv), ycB = yC(B.cv);
                                 ctx.save(); ctx.strokeStyle = cor; ctx.fillStyle = cor; ctx.lineWidth = 1.6; ctx.setLineDash([5, 3]);
@@ -6784,8 +6800,8 @@ if (_grTipoGrafico === 'linha') {
                                 ctx.fillText(baixa ? 'Div ▼' : 'Div ▲', xb, baixa ? ypB - 6 : ypB + 6);
                                 ctx.restore();
                             };
-                            for (let k = 1; k < topos.length; k++) { const A = topos[k - 1], B = topos[k]; if (B.p > A.p && B.cv < A.cv && A.cv - B.cv > limDif) marca(A, B, true); }
-                            for (let k = 1; k < fundos.length; k++) { const A = fundos[k - 1], B = fundos[k]; if (B.p < A.p && B.cv > A.cv && B.cv - A.cv > limDif) marca(A, B, false); }
+                            for (let k = 1; k < topos.length; k++) { const A = topos[k - 1], B = topos[k]; if (noVis(A, B) && B.p > A.p && B.cv < A.cv && A.cv - B.cv > limDifEm(B.ix)) marca(A, B, true); }
+                            for (let k = 1; k < fundos.length; k++) { const A = fundos[k - 1], B = fundos[k]; if (noVis(A, B) && B.p < A.p && B.cv > A.cv && B.cv - A.cv > limDifEm(B.ix)) marca(A, B, false); }
                         } catch (eDv) {}
                         ctx.restore();
                         if (ultC != null) rotuloCvd = 'CVD ' + (ultC >= 0 ? '+' : '-') + grFmtVolCompacto(Math.abs(ultC), 0);
@@ -11779,7 +11795,7 @@ let _grEmaCustomSeq = 0;
 const _grEmaCustomCores = ['#4CAF50', '#FF5722', '#3F51B5', '#8BC34A', '#E040FB', '#00A3B4', '#F5A623', '#795548'];
 function grEmaCustomSalvar() {
     try {
-        localStorage.setItem(GR_EMA_CUSTOM_KEY, JSON.stringify(_grEmaCustom.map(e => ({ periodo: e.periodo, cor: e.cor }))));
+        localStorage.setItem(GR_EMA_CUSTOM_KEY, JSON.stringify(_grEmaCustom.map(e => ({ periodo: e.periodo, cor: e.cor, esp: e.esp }))));
     } catch(e) {}
 }
 function grEmaCustomCarregar() {
@@ -11791,7 +11807,7 @@ function grEmaCustomCarregar() {
         arr.forEach(item => {
             if (!item || typeof item.periodo !== 'number') return;
             const cor = item.cor || _grEmaCustomCores[_grEmaCustomSeq % _grEmaCustomCores.length];
-            _grEmaCustom.push({ id: _grEmaCustomSeq++, periodo: item.periodo, cor, valorTxt: null });
+            _grEmaCustom.push({ id: _grEmaCustomSeq++, periodo: item.periodo, cor, esp: item.esp > 0 ? item.esp : 1.2, valorTxt: null });
         });
     } catch(e) {}
 }
@@ -11949,7 +11965,7 @@ function grAmbienteColetar() {
         footprint: raiz.footprint,
         reguaLockS: _grReguaLock.S,
         reguaLockA: _grReguaLock.A,
-        emaCustom: _grEmaCustom.map(e => ({ periodo: e.periodo, cor: e.cor })),
+        emaCustom: _grEmaCustom.map(e => ({ periodo: e.periodo, cor: e.cor, esp: e.esp })),
         zoom: raiz.zoom,
         yFatorMapa: raiz.yFatorMapa,
         areas: _grAreasMapa,
@@ -12058,7 +12074,7 @@ async function grAmbienteCarregar() {
         ambiente.emaCustom.forEach(item => {
             if (item && typeof item.periodo === 'number') {
                 const cor = item.cor || _grEmaCustomCores[_grEmaCustomSeq % _grEmaCustomCores.length];
-                _grEmaCustom.push({ id: _grEmaCustomSeq++, periodo: item.periodo, cor, valorTxt: null });
+                _grEmaCustom.push({ id: _grEmaCustomSeq++, periodo: item.periodo, cor, esp: item.esp > 0 ? item.esp : 1.2, valorTxt: null });
             }
         });
         grEmaCustomSalvar();
@@ -12073,7 +12089,7 @@ function cvAdicionarEmaCustom() {
     if (!periodo || periodo < 1 || periodo > 999) return; // silencioso — campo inválido/vazio, não é erro do usuário
     if (_grEmaCustom.some(e => e.periodo === periodo)) { input.value = ''; return; } // já existe essa mesma EMA
     const cor = _grEmaCustomCores[_grEmaCustomSeq % _grEmaCustomCores.length];
-    _grEmaCustom.push({ id: _grEmaCustomSeq++, periodo, cor, valorTxt: null });
+    _grEmaCustom.push({ id: _grEmaCustomSeq++, periodo, cor, esp: 1.2, valorTxt: null });
     input.value = '';
     grEmaCustomSalvar();
     grAmbienteSalvar();
@@ -12103,12 +12119,23 @@ function cvRenderEmaCustomLista() {
         linha.className = 'cv-med-item';
         const esq = document.createElement('div');
         esq.style.cssText = 'display:flex;align-items:center;gap:6px;';
-        const dot = document.createElement('span');
-        dot.style.cssText = `display:inline-block;width:9px;height:9px;border-radius:50%;background:${item.cor};flex-shrink:0;`;
+        const cp = document.createElement('input'); cp.type = 'color'; cp.value = (/^#[0-9a-f]{6}$/i.test(item.cor) ? item.cor : '#4CAF50');
+        cp.style.cssText = 'width:22px;height:22px;padding:0;border:0.5px solid rgba(0,0,0,0.15);border-radius:50%;background:none;flex-shrink:0;cursor:pointer;';
+        cp.oninput = () => { item.cor = cp.value; grDrawChart(); };
+        cp.onchange = () => { item.cor = cp.value; grEmaCustomSalvar(); grAmbienteSalvar(); grDrawChart(); };
+        cp.onclick = e => e.stopPropagation();
         const lbl = document.createElement('span');
-        lbl.className = 'cv-med-lbl';
-        lbl.textContent = 'EMA ' + item.periodo + (item.valorTxt != null ? ' · ' + item.valorTxt : '');
-        esq.appendChild(dot); esq.appendChild(lbl);
+        lbl.className = 'cv-med-lbl'; lbl.textContent = 'EMA';
+        const per = document.createElement('input'); per.type = 'number'; per.min = 1; per.max = 999; per.value = item.periodo;
+        per.style.cssText = 'width:46px;background:#F2F2F7;border:0.5px solid rgba(0,0,0,0.12);border-radius:6px;color:#1C1C1E;font-size:13px;padding:3px 4px;font-family:-apple-system,sans-serif;';
+        per.onclick = e => e.stopPropagation();
+        per.onchange = () => { const v = parseInt(per.value, 10); if (!v || v < 1 || v > 999 || _grEmaCustom.some(x => x !== item && x.periodo === v)) { per.value = item.periodo; return; } item.periodo = v; grEmaCustomSalvar(); grAmbienteSalvar(); grDrawChart(); };
+        const esp = document.createElement('select');
+        esp.style.cssText = 'background:#F2F2F7;border:0.5px solid rgba(0,0,0,0.12);border-radius:6px;color:#1C1C1E;font-size:13px;padding:3px 2px;font-family:-apple-system,sans-serif;';
+        [1, 1.5, 2, 3, 4, 6].forEach(v => { const o = document.createElement('option'); o.value = v; o.textContent = String(v).replace('.', ',') + ' px'; if (Math.abs(v - (item.esp > 0 ? item.esp : 1.2)) < 0.3 && !esp.querySelector('[selected]')) o.selected = true; esp.appendChild(o); });
+        esp.onclick = e => e.stopPropagation();
+        esp.onchange = () => { item.esp = parseFloat(esp.value); grEmaCustomSalvar(); grAmbienteSalvar(); grDrawChart(); };
+        esq.appendChild(cp); esq.appendChild(lbl); esq.appendChild(per); esq.appendChild(esp);
         const rm = document.createElement('span');
         rm.textContent = '✕';
         rm.style.cssText = 'color:#8E8E93;font-size:14px;font-weight:700;padding:2px 6px;cursor:pointer;';
