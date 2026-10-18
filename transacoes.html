@@ -2028,6 +2028,7 @@ function sentRelatorio() {
     const cs = _grAllCandles || [], n = cs.length, sym = grBinSymbolAtual(), per = grOiPeriodoParaTf(), N = 20;
     const sc = window._grSentCache && window._grSentCache[sym], oiC = window._grOiCache && window._grOiCache[sym + '|' + per];
     const lsr = sc && sc.lsr && sc.lsr.dados, fn = sc && sc.fund && sc.fund.dados, oi = oiC && oiC.dados ? oiC.dados.map(o => ({ t: o.t, v: o.oi })) : null;
+    try { grOiGarantirDados(per); grSentGarantir(per); } catch (e) {}   // o veredito pede os próprios dados (não depende dos painéis estarem visíveis)
     const ex = grSentExtraGarantir();
     if (n < N + 2 || !lsr || !fn || !oi || !ex.ts) return null;
     const ts = cs[n - 1].t, ls = grSentValorEm(lsr, ts), mm = grSentMediaEm(lsr, ts, 21), fr = grSentValorEm(fn, ts);
@@ -2041,27 +2042,38 @@ function sentRelatorio() {
     const rL = sg > 0 ? ls != null && mm != null && ls > mm && ls > 1 : sg < 0 ? ls != null && mm != null && ls < mm && ls < 1 : false;
     const rO = !oiSobe && oiA != null && oiB != null;
     const nr = (rF ? 1 : 0) + (rL ? 1 : 0) + (rO ? 1 : 0), risco = nr >= 2 ? 'alto' : nr === 1 ? 'médio' : 'baixo';
-    // QUALIDADE DO MOVIMENTO (últimos 12 candles): cruza preço × OI × CVD pra dizer se a alta/queda é posição NOVA ou fechamento de posição.
+    // PREÇO × OPEN INTEREST (últimos 12 candles): os 4 casos clássicos; OI caindo + preço andando forte vira squeeze (fraco / médio / brutal).
+    // Régua ao estilo ATR: o "normal" de cada um (preço e OI) é a média da variação absoluta em janelas de 12 candles nos últimos ~300 candles.
+    // Fraco = ≥ 1× o normal, médio = ≥ 2×, brutal = ≥ 3× (vale o MENOR dos dois, preço e OI).
     let qual = null;
     try {
         const K = 12, i0 = n - 1 - K, oiK = grSentValorEm(oi, cs[i0].t), dpK = cs[n - 1].c - cs[i0].c;
-        if (Math.abs(dpK) / cs[n - 1].c > 0.001 && oiA != null && oiK != null) {
-            let cvd = null; const dm = grObterDeltaTotalPorCandle(cs);
-            if (dm) { let sm = 0, k = 0; for (let i = i0 + 1; i < n; i++) { const d = dm.get(cs[i].t); if (d) { sm += d.delta; k++; } } if (k >= K / 2) cvd = sm; }
-            const sobe = dpK > 0, oiUp = oiA > oiK, cUp = cvd == null ? null : cvd > 0, lado = sobe ? 'Alta' : 'Queda', nova = sobe ? 'compra' : 'venda', fecha = sobe ? 'vendidos' : 'comprados';
-            let txt, ok = false;
-            if (cUp == null) txt = oiUp ? lado + ' com Open Interest subindo: posições novas entrando.' : lado + ' com Open Interest caindo: posições fechando, não é ' + nova + ' nova.', ok = oiUp;
-            else if (oiUp && cUp === sobe) { txt = lado + ' saudável: ' + nova + ' nova (OI sobe e CVD ' + (sobe ? 'comprador' : 'vendedor') + ').'; ok = true; }
-            else if (oiUp) txt = lado + ' com OI subindo, mas CVD ' + (sobe ? 'vendedor' : 'comprador') + ': o outro lado está absorvendo, atenção a reversão.';
-            else if (cUp === sobe) txt = lado + ' com agressão ' + (sobe ? 'compradora' : 'vendedora') + ', mas posições fechando (OI cai): força curta.';
-            else txt = lado + ' por fechamento de ' + fecha + ' (OI cai e CVD ' + (sobe ? 'vendedor' : 'comprador') + '): não é ' + nova + ' nova.';
-            qual = { txt, ok };
+        if (Math.abs(dpK) / cs[n - 1].c > 0.001 && oiA != null && oiK > 0) {
+            const sobe = dpK > 0, oiPc = (oiA - oiK) / oiK * 100, pPc = Math.abs(dpK) / cs[i0].c * 100;
+            if (oiPc >= 0) qual = sobe ? { txt: 'Compra nova: comprados entrando.', ok: true } : { txt: 'Venda nova: vendidos entrando.', ok: true };
+            else {
+                let sP = 0, sO = 0, m = 0;
+                for (let e = Math.max(K, n - 300); e < n - 1; e++) {
+                    const a = grSentValorEm(oi, cs[e].t), b = grSentValorEm(oi, cs[e - K].t);
+                    if (a == null || !(b > 0)) continue;
+                    sP += Math.abs(cs[e].c - cs[e - K].c) / cs[e - K].c * 100; sO += Math.abs(a - b) / b * 100; m++;
+                }
+                let q = null;
+                if (m >= 20 && sP > 0 && sO > 0) {
+                    const nv = r => r >= 3 ? 3 : r >= 2 ? 2 : r >= 1 ? 1 : 0, lv = Math.min(nv(pPc / (sP / m)), nv(-oiPc / (sO / m)));
+                    q = ['', 'fraco', 'médio', 'brutal'][lv] || null;
+                }
+                qual = sobe ? (q ? { txt: 'Short squeeze ' + q + ': vendidos sendo forçados a recomprar.', ok: false } : { txt: 'Cobertura de vendidos: vendidos recomprando para sair.', ok: false })
+                            : (q ? { txt: 'Long squeeze ' + q + ': comprados sendo forçados a vender.', ok: false } : { txt: 'Saída de comprados: comprados saindo das posições.', ok: false });
+            }
         }
     } catch (e) {}
     return { qual, lado, sg, forca, vc, vp, vr, ex, ls, mm, fr, oiSobe, dp, rF, rL, rO, risco, oiPct: oiA != null && oiB > 0 ? (oiA - oiB) / oiB * 100 : null };
 }
 function sentRelatorioHtml() {
-    const r = sentRelatorio(); if (!r) return '<div style="font-size:12px;color:#8E8E93;">Carregando dados…</div>';
+    const r = sentRelatorio();
+    if (!r) { window._sentRetry = (window._sentRetry || 0) + 1; if (window._sentRetry < 12) setTimeout(() => { try { if (_grFpCfgMenuQual === 'sent') cvRenderMenuFpCfg(); } catch (e) {} }, 1500); return '<div style="font-size:12px;color:#8E8E93;">Carregando dados…</div>'; }
+    window._sentRetry = 0;
     const cor = r.sg > 0 ? '#16A34A' : r.sg < 0 ? '#DC2626' : '#6B6B70', ex = r.ex, sinal = v => v > 0 ? '▲' : v < 0 ? '▼' : '●', cs = v => v > 0 ? '#16A34A' : v < 0 ? '#DC2626' : '#8E8E93';
     const f = (v, d, suf) => v == null || !isFinite(v) ? '—' : (suf === '%' && v >= 0 ? '+' : '') + v.toFixed(d).replace('.', ',') + (suf || '');
     const linha = (v, t, val) => '<span style="font-size:12px;color:#1C1C1E;"><span style="color:' + cs(v) + ';font-weight:800;">' + sinal(v) + '</span> ' + t + '</span><span style="font-size:12px;font-weight:700;color:#1C1C1E;text-align:right;white-space:nowrap;">' + val + '</span>';
@@ -3486,7 +3498,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v672';
+const APP_VERSAO = 'v677';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
