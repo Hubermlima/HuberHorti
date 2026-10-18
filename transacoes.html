@@ -2129,6 +2129,7 @@ function cvRenderMenuFpCfg() {
     } else if (_grFpCfgMenuQual === 'vp') {
         const semAncora = _grVpAncoraTs == null;
         menu.innerHTML = '<div style="font-size:13px;font-weight:700;color:#1C1C1E;">Volume Profile</div>'
+            + '<div class="cv-med-item"><span class="cv-med-lbl">Comprimento</span><button onclick="grVpAjustarComprimento();cvRenderMenuFpCfg();" style="border:none;background:#F2F2F7;border-radius:6px;padding:4px 8px;font-size:12px;font-weight:600;color:#1C1C1E;cursor:pointer;">Ajustar</button></div>'
             + '<div class="cv-med-item"><span class="cv-med-lbl">' + (semAncora ? 'Sem âncora' : grVpRotuloData(_grVpAncoraTs)) + '</span>'
             + (semAncora ? '<span style="font-size:11px;color:#8E8E93;">use o botão da barra lateral</span>' : '<button onclick="grAncOlho(\'vp\')" style="border:none;background:none;cursor:pointer;padding:2px 4px;display:flex;color:' + (_grVpOculta ? '#EF5350' : '#6B6B70') + ';">' + grHeroicon(_grVpOculta ? 'eye-slash' : 'eye', 15) + '</button><button onclick="grVpRemover();cvFecharMenuFpCfg();" style="border:none;background:none;cursor:pointer;padding:2px 4px;display:flex;">' + xIcone + '</button>') + '</div>';
     } else if (_grFpCfgMenuQual === 'bollinger') {
@@ -3354,7 +3355,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v597';
+const APP_VERSAO = 'v598';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -14590,32 +14591,49 @@ function grFootprintDesenharOverlay() {
     const dados = grVpObterMapa();
     const bolinhasVp = [];   // bolinhas da seleção (pintadas no fim, por cima das barras)
     if (dados && dados.mapa.size > 0) {
-        // O perfil agora é só a NUVEM do sino (sem barras): o volume desde a âncora aparece como densidade da nuvem.
         ctx.save();
         ctx.beginPath(); ctx.rect(padLeft, chartTop, chartW, _grChartH); ctx.clip(); // não vaza pros painéis nem pro eixo
-        // NUVEM DO SINO: a zona quente do robô (a mesma da mensagem dele), em violeta, de ponta a ponta. Mais densa onde há mais volume; o pico leva uma linha.
+        // O perfil é uma NUVEM (sem barras separadas): o contorno tem o formato do histograma de antes (comprimento = volume do nível, a partir da
+        // âncora), numa cor só e suave. O trecho que é o SINO do robô fica mais forte; o pico leva uma linha tracejada.
         try {
-            const tkR = grVpTickRobo();
-            if (tkR > 0) {
-                const kC = dados.chave + '|' + tkR + '|' + (SCX.vaAncoraTs || '');
-                if (!window._grSinoCache || window._grSinoCache.k !== kC) window._grSinoCache = { k: kC, b: scBandaQuente(null, tkR) };
-                const sino = window._grSinoCache.b;
-                if (sino && sino.niveis && sino.niveis.length) {
-                    const nv = sino.niveis.slice().sort((a, b2) => b2.k - a.k), maxV = Math.max.apply(null, nv.map(n => n.v)) || 1, VIO = '124,77,255';
+            const tick = grVpTick(pxPorDolar), ag = grVpAgrupar(dados, tick), tkR = grVpTickRobo();
+            const maxBarW = Math.max(0, Math.min(chartW * GR_VP_COMPRIMENTO_PCT / 100, rightEdge - xBase - 2));
+            const VIO = '124,77,255';
+            const pts = [];
+            ag.mapa.forEach((v, p) => { const t = v.c + v.v; if (t > 0 && ag.maxTotal > 0) pts.push({ y: (grLineY(p + tick / 2) + grLineY(p - tick / 2)) / 2, w: Math.max(1, (t / ag.maxTotal) * maxBarW) }); });
+            pts.sort((q, r) => q.y - r.y);
+            const desenhaNuvem = () => {
+                ctx.beginPath(); ctx.moveTo(xBase, pts[0].y);
+                ctx.lineTo(xBase + pts[0].w, pts[0].y);
+                for (let i = 1; i < pts.length - 1; i++) { const mx = xBase + (pts[i].w + pts[i + 1].w) / 2, my = (pts[i].y + pts[i + 1].y) / 2; ctx.quadraticCurveTo(xBase + pts[i].w, pts[i].y, mx, my); }
+                const L = pts[pts.length - 1]; ctx.lineTo(xBase + L.w, L.y); ctx.lineTo(xBase, L.y); ctx.closePath();
+            };
+            if (pts.length >= 3) {
+                // perfil inteiro: nuvem fraca
+                ctx.save(); ctx.shadowColor = 'rgba(' + VIO + ',0.35)'; ctx.shadowBlur = 10;
+                desenhaNuvem(); ctx.fillStyle = 'rgba(' + VIO + ',0.13)'; ctx.fill(); ctx.restore();
+                // sino do robô: mesma nuvem, mais forte, só entre as bordas do sino
+                let sino = null;
+                if (tkR > 0) {
+                    const kC = dados.chave + '|' + tkR + '|' + (SCX.vaAncoraTs || '');
+                    if (!window._grSinoCache || window._grSinoCache.k !== kC) window._grSinoCache = { k: kC, b: scBandaQuente(null, tkR) };
+                    sino = window._grSinoCache.b;
+                }
+                if (sino && sino.faixas && sino.faixas.length) {
                     const fx0 = sino.faixas[0], yTopS = grLineY(fx0.hi), yBotS = grLineY(fx0.lo);
-                    if (yBotS > yTopS && yBotS >= chartTop && yTopS <= chartBottom) {
-                        const gr = ctx.createLinearGradient(0, yTopS, 0, yBotS);
-                        gr.addColorStop(0, 'rgba(' + VIO + ',0)');
-                        nv.forEach(n => { const f = (grLineY(n.k * tkR) - yTopS) / (yBotS - yTopS); if (f > 0 && f < 1) gr.addColorStop(f, 'rgba(' + VIO + ',' + (0.07 + 0.25 * Math.sqrt(n.v / maxV)).toFixed(3) + ')'); });
-                        gr.addColorStop(1, 'rgba(' + VIO + ',0)');
-                        ctx.fillStyle = gr; ctx.fillRect(padLeft, yTopS, rightEdge - padLeft, yBotS - yTopS);
+                    if (yBotS > yTopS) {
+                        ctx.save(); ctx.beginPath(); ctx.rect(padLeft, yTopS, rightEdge - padLeft, yBotS - yTopS); ctx.clip();
+                        ctx.shadowColor = 'rgba(' + VIO + ',0.55)'; ctx.shadowBlur = 8;
+                        desenhaNuvem(); ctx.fillStyle = 'rgba(' + VIO + ',0.42)'; ctx.fill();
+                        ctx.shadowBlur = 0; ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(' + VIO + ',0.9)'; ctx.stroke();
+                        ctx.restore();
                         ctx.font = 'bold 10px -apple-system'; ctx.textAlign = 'left'; ctx.fillStyle = 'rgba(' + VIO + ',0.95)';
-                        ctx.fillText('SINO', padLeft + 6, Math.max(chartTop + 11, yTopS + 12));
-                        if (!grPlAtivo()) window._grVpHits.push({ x: padLeft, y: Math.max(chartTop, yTopS) - 2, w: 44, h: 18, cel: true, abrir: (cx, cy) => grAncCtxAbrir('vp', _grVpAncoraTs, cx, cy) });
+                        const yLb = Math.max(chartTop + 11, yTopS - 4);
+                        ctx.fillText('SINO', Math.min(rightEdge - 34, xBase + 4), yLb);
+                        if (!grPlAtivo()) window._grVpHits.push({ x: Math.min(rightEdge - 38, xBase), y: yLb - 12, w: 38, h: 18, cel: true, abrir: (cx, cy) => grAncCtxAbrir('vp', _grVpAncoraTs, cx, cy) });
                     }
-                    (sino.faixas || []).slice(1).forEach(fx => { const y1 = grLineY(fx.hi), y2 = grLineY(fx.lo); if (y2 > y1) { ctx.fillStyle = 'rgba(' + VIO + ',0.12)'; ctx.fillRect(padLeft, y1, rightEdge - padLeft, Math.max(2, y2 - y1)); } });
                     ctx.strokeStyle = 'rgba(' + VIO + ',0.9)'; ctx.lineWidth = 1; ctx.setLineDash([5, 4]);
-                    (sino.picos || [sino.pico]).forEach(pk => { if (!(pk > 0)) return; const yp = Math.round(grLineY(pk)) + 0.5; if (yp < chartTop || yp > chartBottom) return; ctx.beginPath(); ctx.moveTo(padLeft, yp); ctx.lineTo(rightEdge, yp); ctx.stroke(); });
+                    (sino.picos || [sino.pico]).forEach(pk => { if (!(pk > 0)) return; const yp = Math.round(grLineY(pk)) + 0.5; if (yp < chartTop || yp > chartBottom) return; ctx.beginPath(); ctx.moveTo(xBase, yp); ctx.lineTo(rightEdge, yp); ctx.stroke(); });
                     ctx.setLineDash([]);
                 }
             }
