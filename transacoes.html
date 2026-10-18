@@ -2039,24 +2039,33 @@ function cvdBenchmark() {
     const fmt = r => r.n ? (r.g + ' ganhou · ' + r.p + ' perdeu · ' + r.t + ' sem resolver · acerto ' + (r.ac == null ? '—' : Math.round(r.ac * 100) + '%') + ' · média ' + (r.mv >= 0 ? '+' : '') + r.mv.toFixed(2).replace('.', ',') + ' ATR') : 'sem sinais fechados';
     const faixa = b => { let a1 = Infinity, b1 = -Infinity; for (let j = Math.max(i0, b - JAN); j <= b; j++) { if (cvd[j] == null) continue; if (cvd[j] < a1) a1 = cvd[j]; if (cvd[j] > b1) b1 = cvd[j]; } return isFinite(a1) ? b1 - a1 : 0; };
     const pares = (L, baixa) => { const div = [], conf = []; for (let k = 1; k < L.length; k++) { const A = L[k - 1], B = L[k], s0 = B.i + K, limDif = faixa(B.i) * 0.05;
-        if (baixa ? B.p > A.p : B.p < A.p) { const temDiv = baixa ? (B.cv < A.cv && A.cv - B.cv > limDif) : (B.cv > A.cv && B.cv - A.cv > limDif), semDiv = baixa ? B.cv >= A.cv : B.cv <= A.cv; if (temDiv) div.push(s0); else if (semDiv) conf.push(s0); } } return { div, conf }; };
+        if (baixa ? B.p > A.p : B.p < A.p) { const temDiv = baixa ? (B.cv < A.cv && A.cv - B.cv > limDif) : (B.cv > A.cv && B.cv - A.cv > limDif), semDiv = baixa ? B.cv >= A.cv : B.cv <= A.cv; const o = { s: s0, b: B.i }; if (temDiv) div.push(o); else if (semDiv) conf.push(o); } } return { div, conf }; };
+    // CONFIRMAÇÃO: depois do sinal, espera o preço VIRAR: 1º candle (em até W) que FECHA além da mínima (baixa) / máxima (alta) do candle do pivô. Entra no fechamento dele.
+    const confirma = (o, baixa) => { for (let j = o.s + 1; j < n; j++) { if (baixa ? arr[j].h > arr[o.b].h : arr[j].l < arr[o.b].l) return { inv: true }; if (baixa ? arr[j].c < arr[o.b].l : arr[j].c > arr[o.b].h) return { j: j }; } return { aberto: true }; };
     const pB = pares(topos, true), pA = pares(fundos, false), dirB = -1, dirA = 1;
-    const sB = resumo(pB.div.map(x => aval(x, dirB))), cB = resumo(pB.conf.map(x => aval(x, dirB)));
-    const sA = resumo(pA.div.map(x => aval(x, dirA))), cA = resumo(pA.conf.map(x => aval(x, dirA)));
+    const direto = (lista, dir) => resumo(lista.map(o => aval(o.s, dir)));
+    const comConf = (lista, baixa, dir) => { const rs = lista.map(o => confirma(o, baixa)), ok = rs.filter(x => x.j != null); const r = resumo(ok.map(x => aval(x.j, dir))); r.conf = ok.length; r.tot = lista.length; r.inv = rs.filter(x => x.inv).length; r.ab = rs.filter(x => x.aberto).length; return r; };
+    const sB = direto(pB.div, dirB), cB = direto(pB.conf, dirB), sA = direto(pA.div, dirA), cA = direto(pA.conf, dirA);
+    const sBc = comConf(pB.div, true, dirB), cBc = comConf(pB.conf, true, dirB), sAc = comConf(pA.div, false, dirA), cAc = comConf(pA.conf, false, dirA);
     const todosS = [], todosL = []; for (let i = Math.max(i0, 14); i < n; i++) { todosS.push(aval(i, -1)); todosL.push(aval(i, 1)); }
     const bS = resumo(todosS), bL = resumo(todosL);
     const dias = ((arr[n - 1].t - arr[i0].t) / 86400000).toFixed(1).replace('.', ','), tfRot = (typeof _grTf !== 'undefined' ? _grTf : '');
+    const pc = r => r.ac == null ? '—' : Math.round(r.ac * 100) + '%', fc = r => fmt(r) + ' · confirmaram ' + r.conf + ' de ' + r.tot + ' (invalidaram ' + r.inv + ', ainda esperando ' + r.ab + ')';
     const L = [];
     L.push('BENCHMARK CVD × PREÇO · TF ' + tfRot + ' · ' + (n - i0) + ' candles (' + dias + ' dias desde a âncora)');
-    L.push('Divergência de baixa (short): ' + sB.n + ' sinais · acerto ' + (sB.ac == null ? '—' : Math.round(sB.ac * 100) + '%') + '   |   de alta (long): ' + sA.n + ' sinais · acerto ' + (sA.ac == null ? '—' : Math.round(sA.ac * 100) + '%'));
-    L.push('REGRA: divergência = diferença no CVD maior que 5% da faixa dos últimos ' + JAN + ' candles. Sinal no fechamento do candle que confirma o 2º pivô (' + K + ' candles depois). Vence quem vier primeiro nos próximos ' + H + ' candles: +1 ATR a favor ou −1 ATR contra (empate no mesmo candle = contra).');
-    L.push('▼ Divergência de baixa → short: ' + fmt(sB));
-    L.push('   Controle (topo mais alto SEM divergência → short): ' + fmt(cB));
+    L.push('Baixa (short): direto ' + pc(sB) + ' (' + sB.n + ') · esperando confirmação ' + pc(sBc) + ' (' + sBc.n + ')   |   Alta (long): direto ' + pc(sA) + ' (' + sA.n + ') · esperando confirmação ' + pc(sAc) + ' (' + sAc.n + ')');
+    L.push('REGRA: divergência = diferença no CVD maior que 5% da faixa dos últimos ' + JAN + ' candles. O sinal vale no fechamento do candle que confirma o 2º pivô (' + K + ' candles depois). "Direto" = entra nesse fechamento. "Esperando confirmação" = espera SEM prazo até um candle fechar além da mínima (short) / máxima (long) do candle do pivô; se antes disso o preço romper a máxima (short) / mínima (long) do pivô, o sinal é invalidado. Depois, nos próximos ' + H + ' candles, vence quem vier primeiro: +1 ATR a favor ou −1 ATR contra (empate no mesmo candle = contra).');
+    L.push('▼ Divergência de baixa → short, direto: ' + fmt(sB));
+    L.push('▼ … esperando confirmação: ' + fc(sBc));
+    L.push('   Controle (topo mais alto SEM divergência), direto: ' + fmt(cB));
+    L.push('   Controle, esperando confirmação: ' + fc(cBc));
     L.push('   Referência (qualquer candle → short): ' + fmt(bS));
-    L.push('▲ Divergência de alta → long: ' + fmt(sA));
-    L.push('   Controle (fundo mais baixo SEM divergência → long): ' + fmt(cA));
+    L.push('▲ Divergência de alta → long, direto: ' + fmt(sA));
+    L.push('▲ … esperando confirmação: ' + fc(sAc));
+    L.push('   Controle (fundo mais baixo SEM divergência), direto: ' + fmt(cA));
+    L.push('   Controle, esperando confirmação: ' + fc(cAc));
     L.push('   Referência (qualquer candle → long): ' + fmt(bL));
-    const pequeno = Math.min(sB.n, sA.n) < 30;
+    const pequeno = Math.min(sBc.n, sAc.n) < 30;
     L.push('Atenção: ' + (pequeno ? 'a amostra é pequena (menos de 30 sinais num dos lados): tome como indício, não como prova. ' : '') + 'O resultado vale só para este timeframe e esta âncora. Divergência que ganha do controle e da referência é a que agrega.');
     if (sB.ab || sA.ab) L.push('(' + (sB.ab + sA.ab) + ' sinal(is) recente(s) ainda sem os ' + H + ' candles para fechar: não entraram na conta.)');
     scRelatorioMostrar({ lado: null, linhas: L });
@@ -3411,7 +3420,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v619';
+const APP_VERSAO = 'v622';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -14776,10 +14785,6 @@ function grFootprintDesenharOverlay() {
                         desenhaNuvem(); ctx.fillStyle = 'rgba(' + VIO + ',0.42)'; ctx.fill();
                         ctx.shadowBlur = 0; ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(' + VIO + ',0.9)'; ctx.stroke();
                         ctx.restore();
-                        ctx.font = 'bold 10px -apple-system'; ctx.textAlign = 'left'; ctx.fillStyle = 'rgba(' + VIO + ',0.95)';
-                        const yLb = Math.max(chartTop + 11, yTopS - 4);
-                        ctx.fillText('SINO', Math.min(rightEdge - 34, xBase + 4), yLb);
-                        if (!grPlAtivo()) window._grVpHits.push({ x: Math.min(rightEdge - 38, xBase), y: yLb - 12, w: 38, h: 18, cel: true, abrir: (cx, cy) => grAncCtxAbrir('vp', _grVpAncoraTs, cx, cy) });
                     }
                     ctx.strokeStyle = 'rgba(' + VIO + ',0.9)'; ctx.lineWidth = 1; ctx.setLineDash([5, 4]);
                     (sino.picos || [sino.pico]).forEach(pk => { if (!(pk > 0)) return; const yp = Math.round(grLineY(pk)) + 0.5; if (yp < chartTop || yp > chartBottom) return; ctx.beginPath(); ctx.moveTo(xBase, yp); ctx.lineTo(rightEdge, yp); ctx.stroke(); });
