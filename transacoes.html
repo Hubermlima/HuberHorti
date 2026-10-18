@@ -3356,7 +3356,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v594';
+const APP_VERSAO = 'v595';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -7682,7 +7682,34 @@ function grDesenharLinhaOhlc(ctx, W, info) {
     // Linha 3: badge retrátil (˅/˄, como no TradingView). Fechada = só a setinha; aberta = mostra as variáveis de AMBIENTE (TF e
     // Escala), cada uma numa badge só com contorno e o fundo da cor do gráfico. Tocar na badge de TF/Escala abre o seletor.
     const corBorda = _grTemaClaro ? 'rgba(0,0,0,0.16)' : 'rgba(255,255,255,0.16)';
-    const hB = fs + 11, yTopB = y2 + 7;
+    // Linha única: TF · Régua · (espaço) · Auto · Sair. Sem seta de recolher e sem Escala (a Escala mora no menu Design).
+    // A fonte dos botões diminui até tudo caber numa linha só.
+    let emT = false; try { emT = scEmTrade(); } catch (e) {}
+    let temAuto = true, vAuto = '', corA = '#8E8E93';
+    try {
+        const on = _scPlay.on; vAuto = !on ? 'pausa' : !_grFootprintAtivo ? 'sem Fluxo' : emT ? 'em trade' : _scPlay.rodando ? '…' : 'on';
+        corA = !on ? '#8E8E93' : emT ? '#F59E0B' : !_grFootprintAtivo ? '#8E8E93' : '#16A34A';
+    } catch (e) { temAuto = false; }
+    const itens = [
+        { rot: 'TF ', val: grTfSiglaAtual(), abrir: (cx, cy) => cvAbrirMenuTf(cx, cy),
+          setas: { esq: () => cvTfPassoGrafico(-1), dir: () => cvTfPassoGrafico(1), okEsq: cvTfPodeGrafico(-1), okDir: cvTfPodeGrafico(1) } },
+    ];
+    // Régua Delta ATR: só aparece com a régua ligada. Mesmo botão < TF > do gráfico, mas muda só o TF da régua
+    // (o mesmo da config "Delta ATR → Timeframe", que acompanha na hora).
+    if (_indState.deltaAtr) itens.push({ rot: 'Régua ', val: cvTfSiglaRegua(), abrir: (cx, cy) => grDaAbrirMenuTf(null, cx, cy),
+        setas: { esq: () => cvTfPassoRegua(-1), dir: () => cvTfPassoRegua(1), okEsq: cvTfPodeRegua(-1), okDir: cvTfPodeRegua(1) } });
+    const GAPB = 6;
+    const medirB = f => {
+        const k = f / fs, ws = Math.max(14, Math.round(22 * k)), pd = Math.max(8, Math.round(16 * k));
+        const m = (t, neg) => { ctx.font = (neg ? 'bold ' : '') + f + 'px -apple-system'; return ctx.measureText(t).width; };
+        let tot = 0;
+        itens.forEach(it => { it.wRot = m(it.rot, false); it.wB = it.wRot + m(it.val, true) + pd + (it.setas ? 2 * ws - 8 : 0); tot += it.wB + GAPB; });
+        const wSair = m('Sair', true) + pd, wR = m('Auto ', false), wAuto = temAuto ? wR + m(vAuto, true) + pd : 0;
+        return { ws, pd, wSair, wR, wAuto, total: tot + wAuto + (temAuto ? GAPB : 0) + wSair };
+    };
+    let fb = fs, M = medirB(fb);
+    while (fb > 7 && x0 + M.total > xMax) { fb -= 0.5; M = medirB(fb); }
+    const hB = fb + 9, yTopB = y2 + 7;
     let yRow = yTopB;
     const desenharBadge = (x, w, desenhaConteudo) => {
         ctx.beginPath(); ctx.roundRect(x + 0.5, yRow + 0.5, w, hB, 6);
@@ -7690,68 +7717,42 @@ function grDesenharLinhaOhlc(ctx, W, info) {
         ctx.lineWidth = 1; ctx.strokeStyle = corBorda; ctx.setLineDash([]); ctx.stroke();
         desenhaConteudo();
     };
-    const wChev = 28;
-    desenharBadge(x0, wChev, () => {
-        const cx0 = x0 + 0.5 + wChev / 2, cy0 = yRow + 0.5 + hB / 2;
-        ctx.beginPath();
-        if (_grAmbExpandido) { ctx.moveTo(cx0 - 4.5, cy0 + 2); ctx.lineTo(cx0, cy0 - 2.5); ctx.lineTo(cx0 + 4.5, cy0 + 2); }  // ˄ expandido
-        else { ctx.moveTo(cx0 - 4.5, cy0 - 2); ctx.lineTo(cx0, cy0 + 2.5); ctx.lineTo(cx0 + 4.5, cy0 - 2); }                  // ˅ recolhido
-        ctx.lineWidth = 1.6; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = corData; ctx.stroke();
-        ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
-    });
-    window._grBarraSuperiorChips.push({ x: x0 - 6, y: yTopB - 6, w: wChev + 12, h: hB + 12, abrir: () => grSetAmbExpandido(!_grAmbExpandido) });
-    // "Sair": independente da seta — sempre visível, à direita da linha da seta
-    ctx.font = 'bold ' + fs + 'px -apple-system';
-    const wSair = ctx.measureText('Sair').width + 16, xSair = xMax - wSair;
+    const yTxtB = () => yRow + 0.5 + hB / 2 + fb * 0.35;
+    // "Sair": sempre visível, na ponta direita
+    const wSair = M.wSair, xSair = xMax - wSair;
     desenharBadge(xSair, wSair, () => {
-        ctx.textAlign = 'left'; ctx.font = 'bold ' + fs + 'px -apple-system'; ctx.fillStyle = '#EF5350';
-        ctx.fillText('Sair', xSair + 8, yTopB + 0.5 + hB / 2 + fs * 0.35);
+        ctx.textAlign = 'left'; ctx.font = 'bold ' + fb + 'px -apple-system'; ctx.fillStyle = '#EF5350';
+        ctx.fillText('Sair', xSair + M.pd / 2, yTxtB());
     });
     window._grBarraSuperiorChips.push({ x: xSair - 4, y: yTopB - 6, w: wSair + 8, h: hB + 12, abrir: () => { grSair(); } });
     // "Auto": motor automático (tocar = pausa / liga). Verde = ligado · laranja = pausado sozinho (caixa em trade) · cinza = pausado por você
     let xLim = xSair;
-    try {
-        let emT = false; try { emT = scEmTrade(); } catch (e) {}
-        const on = _scPlay.on, vAuto = !on ? 'pausa' : !_grFootprintAtivo ? 'sem Fluxo' : emT ? 'em trade' : _scPlay.rodando ? '…' : 'on';
-        const corA = !on ? '#8E8E93' : emT ? '#F59E0B' : !_grFootprintAtivo ? '#8E8E93' : '#16A34A';
-        ctx.font = fs + 'px -apple-system'; const wR = ctx.measureText('Auto ').width; ctx.font = 'bold ' + fs + 'px -apple-system'; const wV = ctx.measureText(vAuto).width;
-        const wAuto = wR + wV + 16, xAuto = xSair - 8 - wAuto;
+    if (temAuto) {
+        const wAuto = M.wAuto, xAuto = xSair - GAPB - wAuto;
         desenharBadge(xAuto, wAuto, () => {
-            const yTxt = yTopB + 0.5 + hB / 2 + fs * 0.35; ctx.textAlign = 'left';
-            ctx.font = fs + 'px -apple-system'; ctx.fillStyle = corRotulo; ctx.fillText('Auto ', xAuto + 8, yTxt);
-            ctx.font = 'bold ' + fs + 'px -apple-system'; ctx.fillStyle = corA; ctx.fillText(vAuto, xAuto + 8 + wR, yTxt);
+            const yTxt = yTxtB(); ctx.textAlign = 'left';
+            ctx.font = fb + 'px -apple-system'; ctx.fillStyle = corRotulo; ctx.fillText('Auto ', xAuto + M.pd / 2, yTxt);
+            ctx.font = 'bold ' + fb + 'px -apple-system'; ctx.fillStyle = corA; ctx.fillText(vAuto, xAuto + M.pd / 2 + M.wR, yTxt);
         });
         window._grBarraSuperiorChips.push({ x: xAuto - 4, y: yTopB - 6, w: wAuto + 8, h: hB + 12, abrir: (cx, cy) => scAutoMenu(cx, cy) });
         xLim = xAuto;
-    } catch (e) {}
-    if (_grAmbExpandido) {
-        const itens = [
-            { rot: 'TF ', val: grTfSiglaAtual(), abrir: (cx, cy) => cvAbrirMenuTf(cx, cy),
-              setas: { esq: () => cvTfPassoGrafico(-1), dir: () => cvTfPassoGrafico(1), okEsq: cvTfPodeGrafico(-1), okDir: cvTfPodeGrafico(1) } },
-        ];
-        // Régua Delta ATR: só aparece com a régua ligada. Mesmo botão < TF > do gráfico, mas muda só o TF da régua
-        // (o mesmo da config "Delta ATR → Timeframe", que acompanha na hora).
-        if (_indState.deltaAtr) itens.push({ rot: 'Régua ', val: cvTfSiglaRegua(), abrir: (cx, cy) => grDaAbrirMenuTf(null, cx, cy),
-            setas: { esq: () => cvTfPassoRegua(-1), dir: () => cvTfPassoRegua(1), okEsq: cvTfPodeRegua(-1), okDir: cvTfPodeRegua(1) } });
-        itens.push({ rot: 'Escala ', val: _grEscalaLog ? 'Log' : 'Normal', abrir: (cx, cy) => cvAbrirMenuEscala(cx, cy) });
-        let xb = x0 + wChev + 8;
-        const wS = 22;   // largura de cada botão de seta ‹ ›
+    }
+    {
+        let xb = x0;
+        const wS = M.ws;   // largura de cada botão de seta ‹ ›
         itens.forEach(it => {
-            ctx.font = fs + 'px -apple-system'; const wRot = ctx.measureText(it.rot).width;
-            ctx.font = 'bold ' + fs + 'px -apple-system'; const wVal = ctx.measureText(it.val).width;
-            const wB = wRot + wVal + 16 + (it.setas ? 2 * wS - 8 : 0);
-            if (xb + wB > (yRow === yTopB ? xLim - 4 : xMax + 4) && xb > x0 + wChev + 8) { xb = x0; yRow += hB + 6; }  // não coube: quebra para a linha de baixo
-            const xTxt = xb + (it.setas ? wS - 4 : 0) + 8;
+            const wB = it.wB, wRot = it.wRot;
+            const xTxt = xb + (it.setas ? wS - 4 : 0) + M.pd / 2;
             desenharBadge(xb, wB, () => {
-                const yTxt = yRow + 0.5 + hB / 2 + fs * 0.35;
+                const yTxt = yTxtB();
                 ctx.textAlign = 'left';
-                ctx.font = fs + 'px -apple-system'; ctx.fillStyle = corRotulo; ctx.fillText(it.rot, xTxt, yTxt);
-                ctx.font = 'bold ' + fs + 'px -apple-system'; ctx.fillStyle = it.cor || corData; ctx.fillText(it.val, xTxt + wRot, yTxt);
+                ctx.font = fb + 'px -apple-system'; ctx.fillStyle = corRotulo; ctx.fillText(it.rot, xTxt, yTxt);
+                ctx.font = 'bold ' + fb + 'px -apple-system'; ctx.fillStyle = it.cor || corData; ctx.fillText(it.val, xTxt + wRot, yTxt);
                 if (it.setas) {
-                    const cy0 = yRow + 0.5 + hB / 2;
+                    const cy0 = yRow + 0.5 + hB / 2, sz = Math.max(3.5, 4.5 * fb / fs);
                     const seta = (cxS, dir, ok) => {   // chevron ‹ (dir -1) ou › (dir +1); apagado quando não há mais degrau naquela direção
-                        ctx.beginPath(); ctx.moveTo(cxS - dir * 2.5, cy0 - 4.5); ctx.lineTo(cxS + dir * 2.5, cy0); ctx.lineTo(cxS - dir * 2.5, cy0 + 4.5);
-                        ctx.lineWidth = 1.8; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = corData; ctx.globalAlpha = ok ? 1 : 0.28; ctx.stroke();
+                        ctx.beginPath(); ctx.moveTo(cxS - dir * sz * 0.55, cy0 - sz); ctx.lineTo(cxS + dir * sz * 0.55, cy0); ctx.lineTo(cxS - dir * sz * 0.55, cy0 + sz);
+                        ctx.lineWidth = 1.7; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = corData; ctx.globalAlpha = ok ? 1 : 0.28; ctx.stroke();
                         ctx.globalAlpha = 1; ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
                     };
                     seta(xb + 0.5 + (wS - 4) / 2 + 3, -1, it.setas.okEsq);
@@ -7766,7 +7767,7 @@ function grDesenharLinhaOhlc(ctx, W, info) {
             } else {
                 window._grBarraSuperiorChips.push({ x: xb - 4, y: yRow - 6, w: wB + 8, h: hB + 12, abrir: it.abrir });
             }
-            xb += wB + 8;
+            xb += wB + GAPB;
         });
     }
     window._grCabecalhoFundo = yRow + hB;
@@ -8345,6 +8346,17 @@ function cvAbrirMenuDesenhos(clientX, clientY) {
         corRow.appendChild(it);
     });
     menu.appendChild(corRow);
+    // Escala do eixo de preço (saiu da barra superior): Normal ou Logarítmica.
+    const escRow = document.createElement('div');
+    escRow.style.cssText = 'display:flex;align-items:center;gap:6px;padding:6px 10px 7px;border-top:1px solid #F2F2F7;';
+    const escLb = document.createElement('span'); escLb.textContent = 'Escala'; escLb.style.cssText = 'font-size:11px;color:#000000;margin-right:2px;'; escRow.appendChild(escLb);
+    [[false, 'Normal'], [true, 'Log']].forEach(([lg, rot]) => {
+        const ativo = lg === _grEscalaLog, b = document.createElement('button'); b.type = 'button'; b.textContent = rot;
+        b.style.cssText = 'border:1px solid ' + (ativo ? '#1C1C1E' : '#D1D1D6') + ';background:' + (ativo ? '#1C1C1E' : '#FFFFFF') + ';color:' + (ativo ? '#FFFFFF' : '#1C1C1E') + ';border-radius:7px;padding:4px 10px;font-size:11px;font-weight:700;font-family:inherit;cursor:pointer;';
+        b.onclick = ev => { ev.stopPropagation(); cvSetEscala(lg); cvAbrirMenuDesenhos(); };
+        escRow.appendChild(b);
+    });
+    menu.appendChild(escRow);
     // Ímã da régua nas alças de entrada/stop/alvo: ligado/desligado.
     const imaRow = document.createElement('div');
     imaRow.style.cssText = 'border-top:1px solid #F2F2F7;padding:3px 10px;zoom:.8;';
