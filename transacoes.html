@@ -3356,7 +3356,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v591';
+const APP_VERSAO = 'v592';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -17870,9 +17870,7 @@ function scAvisoMostrar() {
     card.appendChild(hd); card.appendChild(bd); card.appendChild(bt); ov.appendChild(card); document.body.appendChild(ov);
 }
 // Trade MANUAL (ou real) em andamento neste ativo: caixa com trade no banco ainda não encerrado (ou, sem o trade carregado, com PM e quantidade abertos).
-function scEmTradeManual() {
-    try { return grPosicoes().some(z => !z.teste && !z.previa && z.tradeId && (() => { const t = window._grPosTrades && window._grPosTrades[z.tradeId]; return t ? !t.data_fechamento : (z.pm > 0 && z.qty > 0); })()); } catch (e) { return false; }
-}
+function scEmTradeManual() { return false; }   // o 'em trade' vale SÓ quando o preço tocou a zona (registro do robô) — a caixa manual agora é monitorada pelo mesmo registro (scManualSync)
 function scEmTrade() { const sym = grBinSymbolAtual(); return scRegLista().some(r => r.st === 'entrou' && (!r.sym || r.sym === sym) && !r.semTela) || scEmTradeManual(); }   // pelo REGISTRO (o desenho pode ter se perdido num recarregamento)   // alguma caixa do motor em trade neste ativo?
 function scRegRevisar() { if (_scRevisando && window._scRevProm) return window._scRevProm; window._scRevProm = scRegRevisar0(); return window._scRevProm; }   // quem chamar durante uma revisão espera a mesma
 async function scRegRevisar0() {
@@ -17907,6 +17905,28 @@ async function scRegRevisar0() {
 // CAIXA REFINADA: se você mexe na entrada/stop/alvo de uma caixa do motor, o histórico passa a seguir OS SEUS números (gatilho, stop,
 // alvo e placar), guarda os do motor (entOrig/stpOrig/alvoOrig) e marca 'ref' (motor + Huber). Entrada só muda antes de entrar.
 // A revisão automática da tese NÃO mexe em caixa refinada: quem decide é você.
+// CAIXA MANUAL monitorada pelo robô: a caixa desenhada à mão (sem trade gravado, sem origem) entra no MESMO registro do robô (manual:true).
+// Daí em diante vale a regra do robô: 'em trade' só quando o preço toca a entrada; depois acompanha stop / alvo e avisa em modal.
+function scManualSync() {
+    if (typeof _grAmbienteCarregado === 'undefined' || !_grAmbienteCarregado) return;
+    const L = scRegLista(), sym = grBinSymbolAtual(), P = grPosicoes(), mapa = new Map(P.map(z => [z.id, z]));
+    let mudou = false;
+    P.forEach(z => {
+        if (!z || z.origem || z.tradeId || z.pm > 0 || z.previa || z.teste || z.restaurada) return;
+        const lg = z.lado === 'long';
+        if (!lg && z.lado !== 'short') return;
+        if (!(z.entrada > 0 && z.stop > 0 && z.alvo > 0)) return;
+        if (lg ? !(z.stop < z.entrada && z.entrada < z.alvo) : !(z.alvo < z.entrada && z.entrada < z.stop)) return;
+        if (L.some(r => r.id === z.id)) return;
+        scRegistrar({ id: z.id, mv: 'manual', manual: true, modo: 'manual', lado: z.lado, ent: z.entrada, stp: z.stop, alvo: z.alvo, alvoTipo: 'manual', mi: '—', ma: '—', tfAk: '5m', zero: false, sym });
+    });
+    L.forEach(r => {
+        if (!r.manual || (r.st !== 'aguardando' && r.st !== 'entrou') || r.semTela || (r.sym && r.sym !== sym)) return;
+        const z = mapa.get(r.id);
+        if (z && z.tradeId) { if (r.st === 'aguardando') { r.st = 'apagada'; r.tFim = Date.now(); } else r.semTela = true; mudou = true; }   // virou trade real: sai do monitor
+    });
+    if (mudou) scRegGravarServidor();
+}
 function scRegSincCaixas() {
     const L = window._scRegistro; if (!Array.isArray(L) || !L.length) return false;
     try { const dd = document.getElementById('cv-pos-dados'); if ((dd && dd.contains(document.activeElement)) || (typeof _edDrag !== 'undefined' && _edDrag)) return false; } catch (e) {}   // ainda digitando/arrastando: espera terminar
@@ -17917,7 +17937,7 @@ function scRegSincCaixas() {
     if (typeof _grAmbienteCarregado !== 'undefined' && _grAmbienteCarregado) {   // redesenhar não espera: senão o automático acha que não tem caixa e arma outra
         const sym = grBinSymbolAtual();
         // CAIXA VIVA SEM DESENHO (o app recarregou antes do Sair): redesenha a partir do registro. Apagar de propósito marca o registro antes.
-        L.forEach(r => { if ((r.st === 'aguardando' || r.st === 'entrou') && !r.semTela && (!r.sym || r.sym === sym) && !mapa.has(r.id) && r.ent > 0 && r.stp > 0) {
+        L.forEach(r => { if ((r.st === 'aguardando' || r.st === 'entrou') && !r.manual && !r.semTela && (!r.sym || r.sym === sym) && !mapa.has(r.id) && r.ent > 0 && r.stp > 0) {
             let t2 = r.t0 + 14 * 300000; try { t2 = grIndexToTime(grTimeToIndex(r.t0) + 14); } catch (e) {}
             const z = { id: r.id, lado: r.lado, origem: 'setup', entrada: r.ent, stop: r.stp, alvo: r.alvo, t1: r.t0, t2, motorV: r.mv, restaurada: true };
             if (r.gat) z.gat = true; if (r.tfA) z.tfAcomp = { rot: r.tfA };
@@ -17925,7 +17945,7 @@ function scRegSincCaixas() {
     }
     L.forEach(r => {
         if (r.st !== 'aguardando' && r.st !== 'entrou') return;
-        const z = mapa.get(r.id); if (!z || z.origem !== 'setup') return;
+        const z = mapa.get(r.id); if (!z || (z.origem !== 'setup' && !r.manual)) return;
         const dE = r.st === 'aguardando' && dif(z.entrada, r.ent), dS = dif(z.stop, r.stp), dA = dif(z.alvo, r.alvo);
         if (!dE && !dS && !dA) return;
         if (!r.ref) { r.ref = true; r.entOrig = r.ent; r.stpOrig = r.stp; r.alvoOrig = r.alvo; r.tRef = Date.now(); }
@@ -17944,11 +17964,11 @@ const GR_ST_DESCARTE = ['semGatilho', 'perdida', 'expirou', 'desfeita'];
 function grLimparDescartadas() {
     if (typeof _grAmbienteCarregado === 'undefined' || !_grAmbienteCarregado) return;
     const L = window._scRegistro; if (!Array.isArray(L) || !L.length) return;
-    const desc = new Set(L.filter(r => GR_ST_DESCARTE.indexOf(r.st) >= 0).map(r => r.id));
+    const desc = new Set(L.filter(r => !r.manual && GR_ST_DESCARTE.indexOf(r.st) >= 0).map(r => r.id));
     // UMA CAIXA DE CADA LADO na tela: caixa do robô já ENCERRADA (alvo, stop, zero) sai quando existe outra caixa do robô mais nova do mesmo lado.
     // Nunca mexe em caixa em trade nem armada.
     const reg = new Map(L.map(r => [r.id, r])), P0 = grPosicoes();
-    P0.forEach(z => { const r = reg.get(z.id); if (!r || !['alvo', 'stop', 'zero', 'saida'].includes(r.st)) return;
+    P0.forEach(z => { const r = reg.get(z.id); if (!r || r.manual || !['alvo', 'stop', 'zero', 'saida'].includes(r.st)) return;
         if (P0.some(o => o !== z && reg.has(o.id) && reg.get(o.id).lado === r.lado && (reg.get(o.id).t0 || 0) > (r.t0 || 0))) desc.add(z.id); });
     // caixa que o GRÁFICO mostra como "Tese Inválida" / "Entrada perdida" (sem trade real) também sai — menos a que o robô ainda acompanha (armada ou em trade)
     P0.forEach(z => { if (!z || z.tradeId || z.previa) return; const r = reg.get(z.id); if (r && (r.st === 'aguardando' || r.st === 'entrou')) return;
@@ -17964,6 +17984,7 @@ let _scRegChecTs = 0;
 function scRegChecarPreco(px) {
     if (!(px > 0) || Date.now() - _scRegChecTs < 1000) return;
     _scRegChecTs = Date.now();
+    try { scManualSync(); } catch (e) {}
     const L = window._scRegistro; if (!Array.isArray(L) || !L.length) return;
     try { scRegSincCaixas(); } catch (e) {}
     const sym = grBinSymbolAtual(), agora = Date.now(); let mudou = false;
@@ -17979,10 +18000,10 @@ function scRegChecarPreco(px) {
         } else if (bStop) { r.st = 'stop'; r.tFim = agora; }
         else if (r.ign && r.zero && !r.beOff && (lg ? px <= scRegBE(r) : px >= scRegBE(r)) && (!r.tIgn || agora - r.tIgn > 1000)) { r.st = 'zero'; r.tFim = agora; }
         else if (bAlvo) { r.st = 'alvo'; r.tFim = agora; }
-        if (r.st === 'entrou' && !r.ign) { const kb = scRegRiscoBE(r), r1 = kb.be + (lg ? 1 : -1) * kb.rB; if (lg ? px >= r1 : px <= r1) { r.ign = true; r.tIgn = agora; mudou = true; try { scAviso('Motor ' + (r.mv || '') + ': ' + (lg ? 'Long' : 'Short') + ' → IGNIÇÃO (+1R)', '#16A34A'); } catch (e) {} } }
+        if (r.st === 'entrou' && !r.ign) { const kb = scRegRiscoBE(r), r1 = kb.be + (lg ? 1 : -1) * kb.rB; if (lg ? px >= r1 : px <= r1) { r.ign = true; r.tIgn = agora; mudou = true; try { scAviso((r.manual ? 'Caixa manual' : 'Motor ' + (r.mv || '')) + ': ' + (lg ? 'Long' : 'Short') + ' → IGNIÇÃO (+1R)', '#16A34A'); } catch (e) {} } }
         if (r.st !== ant) {
             mudou = true;
-            if (r.st !== 'entrou') { try { scAviso('Motor ' + (r.mv || '') + ': ' + (lg ? 'Long' : 'Short') + ' → ' + SC_REG_ROT[r.st], r.st === 'alvo' ? '#16A34A' : r.st === 'stop' ? '#EF5350' : '#8E8E93'); } catch (e) {} }
+            if (r.st !== 'entrou' || r.manual) { try { scAviso((r.manual ? 'Caixa manual' : 'Motor ' + (r.mv || '')) + ': ' + (lg ? 'Long' : 'Short') + ' → ' + SC_REG_ROT[r.st], r.st === 'alvo' ? '#16A34A' : r.st === 'stop' ? '#EF5350' : '#8E8E93'); } catch (e) {} }
         }
     });
     if (mudou) scRegGravarServidor();
@@ -18197,7 +18218,7 @@ async function scMotor() {
     try {
         // lado que JÁ tem caixa do motor armada ou em trade (neste ativo) não é avaliado de novo: o botão não duplica (igual ao automático)
         const ocup = {}; { const sym0 = grBinSymbolAtual(), ids0 = new Set(grPosicoes().map(z => z.id));
-            ['short', 'long'].forEach(l => { const r0 = scRegLista().find(r => (r.lado === l || _scCfg.doisTrades !== true) && (r.st === 'aguardando' || r.st === 'entrou') && (!r.sym || r.sym === sym0) && !r.semTela); if (r0) ocup[l] = 'já tem caixa ' + (r0.st === 'entrou' ? 'em trade' : 'armada') + ' (' + (r0.tfAk || '5m') + ', criada ' + new Date(r0.t0).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) + ')'; }); }
+            ['short', 'long'].forEach(l => { const r0 = scRegLista().find(r => (r.lado === l || _scCfg.doisTrades !== true) && (r.st === 'aguardando' || r.st === 'entrou') && !r.manual && (!r.sym || r.sym === sym0) && !r.semTela); if (r0) ocup[l] = 'já tem caixa ' + (r0.st === 'entrou' ? 'em trade' : 'armada') + ' (' + (r0.tfAk || '5m') + ', criada ' + new Date(r0.t0).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) + ')'; }); }
         for (const l of ['short', 'long']) { if (!ocup[l]) { const fk = await scFaca5m(l); if (fk && fk.faca) ocup[l] = 'bloqueado: ' + (l === 'long' ? 'flush' : 'squeeze') + ' no 5 min'; } }
         a = ocup.short ? { msg: ocup.short } : await scRodar('short', { silencioso: true, soAvaliar: true });
         b = ocup.long ? { msg: ocup.long } : await scRodar('long', { silencioso: true, soAvaliar: true });
@@ -18387,7 +18408,7 @@ async function scPlayTick() {
           log.push('revisão: ' + (caiu.length ? caiu.map(r => (r.lado === 'long' ? 'Long' : 'Short') + ' → tese inválida (' + (r.motivo || '') + ')').join('; ') : arm ? arm + ' armada(s) conferida(s), tese ok' : 'nenhuma armada')); }
         const sym = grBinSymbolAtual(), ids = new Set(grPosicoes().map(z => z.id));
         for (const lado of ['short', 'long']) {
-            const nm = lado === 'short' ? 'Short' : 'Long', ja = scRegLista().find(r => (r.lado === lado || _scCfg.doisTrades !== true) && (r.st === 'aguardando' || r.st === 'entrou') && (!r.sym || r.sym === sym) && !r.semTela);   // switch desligado: UMA caixa por vez (qualquer lado)
+            const nm = lado === 'short' ? 'Short' : 'Long', ja = scRegLista().find(r => (r.lado === lado || _scCfg.doisTrades !== true) && (r.st === 'aguardando' || r.st === 'entrou') && !r.manual && (!r.sym || r.sym === sym) && !r.semTela);   // switch desligado: UMA caixa por vez (qualquer lado)
             if (ja) { partes.push((lado === 'short' ? 'S' : 'L') + '='); log.push(nm + ': já tem caixa ' + (ja.st === 'entrou' ? 'em trade' : 'armada') + ' (' + (ja.tfAk || '5m') + ', criada ' + new Date(ja.t0).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) + ')'); continue; }
             { const fk = await scFaca5m(lado); if (fk && fk.faca) { partes.push((lado === 'short' ? 'S' : 'L') + '×'); log.push(nm + ': bloqueado, ' + (lado === 'long' ? 'flush' : 'squeeze') + ' no 5 min (' + Math.round(fk.ult) + ' em 3 candles, limite ' + Math.round(fk.q3) + ')'); continue; } }
             const n0 = grPosicoes().length, ult0 = _scUltimo, r = await scRodar(lado, { silencioso: true, modo: 'auto' });
