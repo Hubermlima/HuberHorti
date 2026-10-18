@@ -443,6 +443,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <button class="cv-ind-btn rsifib active" id="cv-ind-rsi" onclick="cvToggleInd('rsi')"><span class="btn-sigla">RSI</span><span class="btn-nome">Sup/Inf</span></button>
       <button class="cv-ind-btn macd" id="cv-ind-macd" onclick="cvToggleSubInd('macd')">
 <span class="btn-sigla">MACD</span><span class="btn-nome">Convergência</span></button>
+      <button class="cv-ind-btn" id="cv-ind-sent" onclick="cvToggleSent()"><span class="btn-sigla">Sent</span><span class="btn-nome">Sentimento</span></button>
       <button class="cv-ind-btn fib" id="cv-ind-fib" onclick="cvToggleFib()"><span class="btn-sigla">Fib</span><span class="btn-nome">Fibonacci</span></button>
       <button class="cv-ind-btn fib" id="cv-ind-novofibo" onclick="cvNfToggle()"><span class="btn-sigla">NF</span><span class="btn-nome">Novo Fibo</span></button>
       <button class="cv-ind-btn" id="cv-ind-alerta" onclick="cvToggleAlertaFerramenta()"><span class="btn-sigla"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0"/></svg></span><span class="btn-nome">Alerta</span></button>
@@ -475,7 +476,6 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <button class="cv-ind-btn" id="cv-ind-deltaAtr" onclick="cvToggleInd('deltaAtr')"><span class="btn-sigla">DA</span><span class="btn-nome">Delta ATR</span></button>
       <button class="cv-ind-btn" id="cv-ind-setupCx" onclick="scToggle()"><span class="btn-sigla">SC</span><span class="btn-nome">Robô Trade</span></button>
       <button class="cv-ind-btn" id="cv-ind-oiPA" onclick="cvToggleInd('oiPA')"><span class="btn-sigla">OI</span><span class="btn-nome">Open Interest</span></button>
-      <button class="cv-ind-btn" id="cv-ind-sent" onclick="cvToggleSent()"><span class="btn-sigla">Sent</span><span class="btn-nome">Sentimento</span></button>
       <button class="cv-ind-btn absorcao" id="cv-ind-absorcao" onclick="cvToggleSubInd('absorcao')"><span class="btn-sigla">Abs</span><span class="btn-nome">Absorção</span></button>
       <button class="cv-ind-btn" id="cv-ind-eficiencia" onclick="cvToggleInd('eficiencia')"><span class="btn-sigla">Ef</span><span class="btn-nome">Eficiência</span></button>
     </div>
@@ -2027,7 +2027,7 @@ function cvToggleSent() {
 document.addEventListener('DOMContentLoaded', () => { try { if (localStorage.getItem('gr_sent_on') === '1') { _indState.sent = true; const b = document.getElementById('cv-ind-sent'); if (b) b.classList.add('active'); } } catch (e) {} });
 window._grSentCache = window._grSentCache || {};
 function grSentGarantir(per) {
-    const sym = grBinSymbolAtual(), c = window._grSentCache[sym] || (window._grSentCache[sym] = { lsr: {}, fund: {} });
+    const sym = grBinSymbolAtual(), c = window._grSentCache[sym] || (window._grSentCache[sym] = { lsr: {}, fund: {}, fpay: {} }); if (!c.fpay) c.fpay = {};
     if (_ativoFonte === 'td') return c;
     const ir = (alvo, chave, url, mapa) => {
         if (alvo.carregando || (alvo.ts && Date.now() - alvo.ts < 60000 && alvo.per === chave)) return;
@@ -2038,7 +2038,8 @@ function grSentGarantir(per) {
         }).catch(() => { alvo.carregando = false; alvo.ts = Date.now(); alvo.per = chave; });
     };
     ir(c.lsr, per, 'https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=' + sym + '&period=' + per + '&limit=500', o => ({ t: o.timestamp, v: parseFloat(o.longShortRatio) }));
-    ir(c.fund, 'f', 'https://fapi.binance.com/fapi/v1/fundingRate?symbol=' + sym + '&limit=1000', o => ({ t: o.fundingTime, v: parseFloat(o.fundingRate) }));
+    ir(c.fund, per, 'https://fapi.binance.com/fapi/v1/premiumIndexKlines?symbol=' + sym + '&interval=' + per + '&limit=1500', o => ({ t: o[0], v: parseFloat(o[4]) }));   // prêmio (perp × índice): o que move o funding, contínuo; o funding pago só muda a cada 8h
+    ir(c.fpay, 'f', 'https://fapi.binance.com/fapi/v1/fundingRate?symbol=' + sym + '&limit=1000', o => ({ t: o.fundingTime, v: parseFloat(o.fundingRate) }));   // funding PAGO (oficial): degraus de 8h
     return c;
 }
 function grSentValorEm(d, ts) {   // último valor NÃO POSTERIOR a ts (o candle não vê o futuro); null antes do 1º dado
@@ -2270,7 +2271,7 @@ function cvRenderMenuFpCfg() {
                 : '');
     } else if (_grFpCfgMenuQual === 'sent') {
         menu.innerHTML = '<div style="font-size:13px;font-weight:700;color:#1C1C1E;">Sentimento</div>'
-            + '<div style="font-size:12px;color:#8E8E93;max-width:210px;padding-bottom:4px;">Open Interest, Funding e Long/Short (contas globais), da Binance. Escala fixa desde a âncora; o escalar abre a curva.</div>'
+            + '<div style="font-size:12px;color:#8E8E93;max-width:210px;padding-bottom:4px;">Open Interest, Funding (prêmio contínuo + funding pago em degraus) e Long/Short (contas globais), da Binance. Escala fixa desde a âncora; o escalar abre a curva.</div>'
             + grConfigSliderInt('cv-cfg-sent-oi', 'Altura Open Interest', _sentEsc.oi, 1, 20, 'sentEscOi', '', 'x')
             + grConfigSliderInt('cv-cfg-sent-fn', 'Altura Funding', _sentEsc.fn, 1, 20, 'sentEscFn', '', 'x')
             + grConfigSliderInt('cv-cfg-sent-ls', 'Altura Long/Short', _sentEsc.ls, 1, 20, 'sentEscLs', '', 'x');
@@ -3467,7 +3468,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v640';
+const APP_VERSAO = 'v643';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -7562,44 +7563,71 @@ if (fibsParaDesenhar.length > 0) {
         // ── SENTIMENTO: 3 painéis de linha (Open Interest, Funding, Long/Short) no lugar dos painéis de baixo ──
         // Escala FIXA do ponto inicial (âncora do VP; sem âncora, tudo o que está carregado) até o último candle, × escalar de cada painel: rolar/dar zoom não deforma a curva.
         if (_indState.sent && _altPan.sent > 0) { try {
-            const sentH = _altPan.sent, y0 = H - sentH, ph = Math.floor(sentH / 3), nS = _grAllCandles.length;
+            const sentH = _altPan.sent, AX = 16, y0 = H - sentH, ph = Math.floor((sentH - AX) / 3), nS = _grAllCandles.length;
             const per = grOiPeriodoParaTf(); grOiGarantirDados(per); const sc = grSentGarantir(per), oiC = grOiCache(per);
             const oiD = oiC && oiC.dados ? (oiC.dv || (oiC.dv = oiC.dados.map(o => ({ t: o.t, v: o.oi })))) : null;
             const ancS = (typeof _grVpAncoraTs !== 'undefined' && _grVpAncoraTs > 0) ? _grVpAncoraTs : 0;
             let i0S = 0; while (i0S < nS && _grAllCandles[i0S].t < ancS) i0S++;
+            const pct = (arr, q) => { const o = arr.slice().sort((x, y) => x - y); return o[Math.max(0, Math.min(o.length - 1, Math.round(q * (o.length - 1))))]; };
             const defs = [
-                { rot: 'Open Interest', sig: 'OI', d: oiD, cor: '#42A5F5', ref: null, k: 'oi', fmt: v => grFmtVolCompacto(v, 0), bad: () => '#1E88E5' },
-                { rot: 'Funding Rate', sig: 'FR', d: sc.fund.dados, cor: '#FFB300', ref: 0, k: 'fn', fmt: v => (v >= 0 ? '+' : '-') + Math.abs(v * 100).toFixed(4) + '%', bad: v => v >= 0 ? '#26A69A' : '#EF5350' },
-                { rot: 'Long/Short', sig: 'L/S', d: sc.lsr.dados, cor: '#AB47BC', ref: 1, k: 'ls', fmt: v => v.toFixed(2), bad: v => v >= 1 ? '#26A69A' : '#EF5350' }
+                { rot: 'Open Interest', sig: 'OI', d: oiD, cor: '#42A5F5', k: 'oi', fmt: v => grFmtVolCompacto(v, 0), bad: () => '#1E88E5' },
+                { rot: 'Funding Rate', sig: 'FR', d: sc.fund.dados, cor: '#FFB300', k: 'fn', fmt: v => (v >= 0 ? '+' : '-') + Math.abs(v * 100).toFixed(4) + '%', bad: v => v >= 0 ? '#26A69A' : '#EF5350' },
+                { rot: 'Long/Short', sig: 'L/S', d: sc.lsr.dados, cor: '#AB47BC', k: 'ls', fmt: v => v.toFixed(2), bad: v => v >= 1 ? '#26A69A' : '#EF5350' }
             ];
             defs.forEach((df, k) => {
-                const py = y0 + k * ph, hP = k === 2 ? sentH - 2 * ph : ph, top = py + 14, bot = py + hP - 4, hh = Math.max(10, bot - top);
-                ctx.fillStyle = '#0E1117'; ctx.fillRect(0, py, W, hP);
-                ctx.save(); ctx.beginPath(); ctx.rect(PAD.left, py + 1, chartW, hP - 1); ctx.clip();
-                const vals = new Array(nS).fill(null); let mn = Infinity, mx = -Infinity;
-                if (df.d && df.d.length) for (let i = i0S; i < nS; i++) { const v = grSentValorEm(df.d, _grAllCandles[i].t); vals[i] = v; if (v != null) { if (v < mn) mn = v; if (v > mx) mx = v; } }
-                if (df.ref != null && isFinite(mn)) { if (df.ref < mn) mn = df.ref; if (df.ref > mx) mx = df.ref; }
-                if (!isFinite(mn)) { ctx.restore(); return; }
-                const rng = Math.max(mx - mn, 1e-12), mid = (mn + mx) / 2, esc = _sentEsc[df.k] || 1, yv = v => (top + bot) / 2 - ((v - mid) / rng) * hh * esc;
+                const py = y0 + k * ph, top = py + 6, bot = py + ph - 6, hh = Math.max(10, bot - top);
+                ctx.save(); ctx.beginPath(); ctx.rect(PAD.left, py, chartW, ph); ctx.clip();
+                const vals = new Array(nS).fill(null), conj = [], valsF = new Array(nS).fill(null), dF = df.k === 'fn' ? sc.fpay.dados : null;
+                if (df.d && df.d.length) for (let i = i0S; i < nS; i++) { const v = grSentValorEm(df.d, _grAllCandles[i].t); vals[i] = v; if (v != null) conj.push(df.k === 'ls' ? Math.log(Math.max(v, 1e-9)) : v); }
+                if (dF && dF.length && conj.length) for (let i = i0S; i < nS; i++) { const v = grSentValorEm(dF, _grAllCandles[i].t); valsF[i] = v; if (v != null) conj.push(v); }
+                if (!conj.length) { ctx.restore(); return; }
+                // NORMALIZAÇÃO FIXA (âncora → último candle), de um jeito por indicador, sem depender do trecho visível:
+                //  OI: mínimo..máximo · Funding(prêmio): simétrico em torno do ZERO, pela faixa típica (percentil 97 do |valor|) · Long/Short: em log (1,0 = 0) em torno da mediana, pela faixa típica (percentis 3–97)
+                let f;
+                const esc = _sentEsc[df.k] || 1, yMed = (top + bot) / 2;
+                if (df.k === 'oi') { const mn = Math.min.apply(null, conj), mx = Math.max.apply(null, conj), rng = Math.max(mx - mn, 1e-12), mid = (mn + mx) / 2; f = v => yMed - ((v - mid) / rng) * hh * esc; }
+                else if (df.k === 'fn') { const meia = Math.max(pct(conj.map(Math.abs), 0.97), 1e-9); f = v => yMed - (v / meia) * (hh / 2) * esc; }
+                else { const med = pct(conj, 0.5), meia = Math.max((pct(conj, 0.97) - pct(conj, 0.03)) / 2, 1e-6); f = v => yMed - ((Math.log(Math.max(v, 1e-9)) - med) / meia) * (hh / 2) * esc; }
+                let tF = null;
+                if (dF) {   // funding pago (degraus de 8h): linha mais fina e mais escura, atrás do prêmio
+                    ctx.strokeStyle = '#E65100'; ctx.lineWidth = 1.4; ctx.lineJoin = 'round'; ctx.beginPath(); let iniF = false;
+                    for (let i = 0; i < visible; i++) { const ix = startIdx + i; if (ix < 0 || ix >= nS) continue; const v = valsF[ix]; if (v == null) { iniF = false; continue; } const x = PAD.left + (i / totalSlots) * chartW + cW / 2, y = f(v); if (!iniF) { ctx.moveTo(x, y); iniF = true; } else ctx.lineTo(x, y); tF = v; }
+                    ctx.stroke();
+                }
                 ctx.strokeStyle = df.cor; ctx.lineWidth = 1.8; ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.beginPath();
                 let ini = false, tx = null, ty = 0, tv = 0;
                 for (let i = 0; i < visible; i++) {
                     const ix = startIdx + i; if (ix < 0 || ix >= nS) continue; const v = vals[ix];
                     if (v == null) { ini = false; continue; }
-                    const x = PAD.left + (i / totalSlots) * chartW + cW / 2, y = yv(v);
+                    const x = PAD.left + (i / totalSlots) * chartW + cW / 2, y = f(v);
                     if (!ini) { ctx.moveTo(x, y); ini = true; } else ctx.lineTo(x, y);
                     tx = x; ty = y; tv = v;
                 }
                 ctx.stroke();
                 if (tx != null) {   // badge com o valor na ponta da linha: verde/vermelho conforme o lado (sinal mantido no número)
-                    const txt = df.sig + ' ' + df.fmt(tv); ctx.fillStyle = df.cor; ctx.beginPath(); ctx.arc(tx, ty, 3, 0, Math.PI * 2); ctx.fill();
+                    const txt = df.sig + ' ' + df.fmt(tv) + (tF != null ? ' · F ' + df.fmt(tF) : ''); ctx.fillStyle = df.cor; ctx.beginPath(); ctx.arc(tx, Math.max(py + 3, Math.min(py + ph - 3, ty)), 3, 0, Math.PI * 2); ctx.fill();
                     ctx.font = 'bold 10px -apple-system'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-                    const bw = ctx.measureText(txt).width + 10, bh = 15, bx = tx - 8 - bw, by = Math.max(py + 2, Math.min(py + hP - bh - 2, ty - bh / 2));
+                    const bw = ctx.measureText(txt).width + 10, bh = 15, bx = tx - 8 - bw, by = Math.max(py + 1, Math.min(py + ph - bh - 1, ty - bh / 2));
                     ctx.fillStyle = df.bad(tv); ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 4); ctx.fill();
                     ctx.fillStyle = '#FFFFFF'; ctx.fillText(txt, bx + bw / 2, by + bh / 2 + 0.5);
                 }
                 ctx.restore();
             });
+            {   // EIXO DO TEMPO (embaixo dos 3 painéis), alinhado aos candles: hora nos candles do dia, data (dd/MM) quando vira o dia
+                const yA = y0 + 3 * ph, esp = chartW / Math.max(1, totalSlots), passo = Math.max(1, Math.ceil(78 / Math.max(esp, 1)));
+                const p2 = n => String(n).padStart(2, '0'); let ultDia = null;
+                ctx.save(); ctx.font = '10px -apple-system'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                ctx.fillStyle = _grTemaClaro ? '#1C1C1E' : '#E5E5EA'; ctx.strokeStyle = ctx.fillStyle; ctx.lineWidth = 1;
+                const diario = grFootprintMsPorCandle() >= 86400000;
+                for (let i = 0; i < visible; i += passo) {
+                    const ix = startIdx + i; if (ix < 0 || ix >= nS) continue;
+                    const d = new Date(_grAllCandles[ix].t), dia = d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate(), novoDia = dia !== ultDia; ultDia = dia;
+                    const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
+                    ctx.beginPath(); ctx.moveTo(x, yA); ctx.lineTo(x, yA + 3); ctx.stroke();
+                    ctx.fillText(diario || novoDia ? p2(d.getDate()) + '/' + p2(d.getMonth() + 1) : p2(d.getHours()) + ':' + p2(d.getMinutes()), x, yA + 10);   // dia novo (ou TF diário): dd/MM; senão hh:mm
+                }
+                ctx.restore();
+            }
         } catch (eSent) { try { console.error('sentimento', eSent); } catch (e2) {} } }
         // ── Painel inferior RSI ou Volume ─────────────────────────────
         if (_indState.subInd && !_indOculto.painel && !_indState.sent) {
