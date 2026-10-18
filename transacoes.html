@@ -3489,7 +3489,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v647';
+const APP_VERSAO = 'v649';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -7600,19 +7600,24 @@ if (fibsParaDesenhar.length > 0) {
                     // NORMALIZAÇÃO FIXA (âncora → último candle), um jeito por indicador, nada depende do trecho visível:
                     //  OI: mínimo..máximo.  FR: em torno do ZERO, saturando com tanh (oscilação pequena fica grande, extremo nunca sai do painel).
                     //  L/S: em log, desvio (suavizado) em relação à média móvel de 24 candles (zero = média recente), mesma saturação tanh.
-                    const esc = _sentEsc[df.k] || 1, G = 2 * esc, linhas = [];
+                    const esc = _sentEsc[df.k] || 1, G = 2 * esc, linhas = []; let yZ = yMed;
                     if (df.k === 'oi') { const mn = Math.min.apply(null, conj), mx = Math.max.apply(null, conj), rng = Math.max(mx - mn, 1e-12), mid = (mn + mx) / 2; linhas.push({ v: vals, y: v => yMed - ((v - mid) / rng) * hh * esc, cor: df.cor, lw: 1.8, prim: true }); }
-                    else if (df.k === 'fn') { const sg = Math.max(pct(conj.map(Math.abs), 0.9), 1e-9), yy = v => yMed - Math.tanh(G * v / sg) * (hh / 2);
+                    else if (df.k === 'fn') { const md = pct(conj, 0.5), sg = Math.max(pct(conj.map(v => Math.abs(v - md)), 0.95), 1e-9), yy = v => yMed - Math.tanh(G * (v - md) / sg) * (hh / 2); yZ = yy(0);   // centrada na MEDIANA (não no zero) e ampliada pela variação típica: degraus pequenos viram degraus grandes
                         linhas.push({ v: vals2, y: yy, cor: '#FFB300', lw: 1.6, modo: 'suave', prev: true });   // funding PREVISTO: suavizado
                         linhas.push({ v: vals, y: yy, cor: '#E65100', lw: 2, modo: 'degrau', prim: true }); }   // funding PAGO: degraus de 8h
                     else {
-                        const dev = new Array(nS).fill(null), al = 2 / 25, al2 = 2 / 7; let em = null, es = null; const ad = [];
-                        for (let i = i0S; i < nS; i++) { const v = vals[i]; if (v == null) continue; const l = Math.log(Math.max(v, 1e-9)); em = em == null ? l : em + al * (l - em); const d0 = l - em; es = es == null ? d0 : es + al2 * (d0 - es); dev[i] = es; ad.push(Math.abs(es)); }
-                        const sg = Math.max(pct(ad, 0.95), 1e-9); linhas.push({ v: dev, y: v => yMed - Math.tanh(G * v / sg) * (hh / 2), cor: df.cor, lw: 1.8, modo: 'suave', prim: true, real: vals });
+                        const dev = new Array(nS).fill(null), al2 = 2 / 7; let es = null; const ad = [];   // L/S: eixo = 1 (comprados = vendidos). Em log, 1,89 e 0,53 ficam à mesma distância do eixo.
+                        for (let i = i0S; i < nS; i++) { const v = vals[i]; if (v == null) continue; const l = Math.log(Math.max(v, 1e-9)); es = es == null ? l : es + al2 * (l - es); dev[i] = es; ad.push(Math.abs(es)); }
+                        const sg = Math.max(pct(ad, 0.95), 1e-9); yZ = yMed; linhas.push({ v: dev, y: v => yMed - Math.tanh(G * v / sg) * (hh / 2), cor: df.cor, lw: 1.8, modo: 'suave', prim: true, real: vals });
                     }
                     if (!rec && (df.k === 'fn' || df.k === 'ls')) {   // EIXO ZERO (FR: zero · L/S: média recente), tracejado na cor do painel
-                        ctx.save(); ctx.strokeStyle = df.cor; ctx.globalAlpha = 0.55; ctx.lineWidth = 1; ctx.setLineDash([4, 3]); ctx.beginPath(); ctx.moveTo(xL, yMed); ctx.lineTo(xR, yMed); ctx.stroke(); ctx.restore();
-                        ctx.font = 'bold 9px -apple-system'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = cTxt; ctx.fillText('0', xL + 4, yMed - 7);
+                        ctx.save(); ctx.strokeStyle = df.cor; ctx.globalAlpha = 0.55; ctx.lineWidth = 1; ctx.setLineDash([4, 3]); ctx.beginPath(); yZ = Math.max(top, Math.min(bot, yZ)); ctx.moveTo(xL, yZ); ctx.lineTo(xR, yZ); ctx.stroke(); ctx.restore();
+                        ctx.font = 'bold 9px -apple-system'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = cTxt; ctx.fillText(df.k === 'fn' ? '0' : '1', xL + 4, yZ - 7);
+                    }
+                    if (df.k === 'oi' || df.k === 'ls') {   // média simples de 21 candles, cinza fina: só para ver a intensidade
+                        const base = linhas[0], sma = new Array(nS).fill(null), jan = [];
+                        for (let i = i0S; i < nS; i++) { const v = base.v[i]; if (v == null) continue; jan.push(v); if (jan.length > 21) jan.shift(); if (jan.length === 21) sma[i] = jan.reduce((a, b) => a + b, 0) / 21; }
+                        linhas.unshift({ v: sma, y: base.y, cor: '#9AA0A6', lw: 1, modo: 'suave' });
                     }
                     linhas.forEach(ln => {
                         const real = ln.real || ln.v; let pts = [], ult = null;
@@ -7648,7 +7653,7 @@ if (fibsParaDesenhar.length > 0) {
             });
             // um quadrado em volta + UMA linha separando cada painel do outro
             ctx.save(); ctx.strokeStyle = cBorda; ctx.lineWidth = 1; ctx.setLineDash([]);
-            ctx.strokeRect(xL + 0.5, y0 + 0.5, chartW - 1, totPan - 1);
+            ctx.beginPath(); ctx.roundRect(xL + 0.5, y0 + 0.5, chartW - 1, totPan - 1, 8); ctx.stroke();
             { let yy = y0; hs.slice(0, 2).forEach(h => { yy += h; ctx.beginPath(); ctx.moveTo(xL, Math.round(yy) + 0.5); ctx.lineTo(xR, Math.round(yy) + 0.5); ctx.stroke(); }); }
             ctx.restore();
             {   // EIXO DO TEMPO (embaixo dos painéis), alinhado aos candles: hh:mm; dd/MM quando vira o dia
