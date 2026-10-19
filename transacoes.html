@@ -3522,7 +3522,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v694';
+const APP_VERSAO = 'v698';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4831,7 +4831,18 @@ function grPosAcompanhar(pz) {
     if (tr && tr.data_fechamento) return;
     const arr = _grAllCandles, n = arr ? arr.length : 0; if (!n) return;
     const u = arr[n - 1].t;
-    if (!(pz.acRef > 0)) { pz.acRef = u; pz.tCri = pz.tCri > 0 ? pz.tCri : Math.min(pz.t1, pz.t2); pz.tFimCri = pz.tFimCri > 0 ? pz.tFimCri : Math.max(pz.t1, pz.t2); return; }
+    if (!(pz.acRef > 0)) {   // 1ª vez que vejo a caixa (nova ou criada antes desta função existir)
+        pz.tCri = pz.tCri > 0 ? pz.tCri : Math.min(pz.t1, pz.t2); pz.tFimCri = pz.tFimCri > 0 ? pz.tFimCri : Math.max(pz.t1, pz.t2);   // guarda os dados ORIGINAIS antes de qualquer deslize
+        pz.acRef = u;
+        let dt0 = 0; try { dt0 = cvTfMsGrafico() || 0; } catch (e) {} if (!(dt0 > 0) && n > 1) dt0 = arr[n - 1].t - arr[n - 2].t;
+        const atras = dt0 > 0 ? Math.floor((u - Math.max(pz.t1, pz.t2)) / dt0) : 0;
+        if (atras >= 1) {   // caixa antiga que ficou PARA TRÁS dos candles: puxa de uma vez, sem mudar a largura, até a borda direita encostar no último candle
+            const d0 = atras * dt0; pz.t1 += d0; pz.t2 += d0;
+            if (pz._ref) { const i1 = grTimeToIndex(pz.t1), i2 = grTimeToIndex(pz.t2), dir = i2 >= i1; pz._ref.t = pz[dir ? 't2' : 't1']; pz._ref.fixo = pz[dir ? 't1' : 't2']; }
+            try { grPosSalvar(); } catch (e) {}
+        } else { try { grPosSalvar(); } catch (e) {} }
+        return;
+    }
     if (_edDrag && _edSel && _edSel.tipo === 'ps' && grPosicoes()[_edSel.idx] === pz) { pz.acRef = u; return; }   // o usuário está mexendo nela: nada anda agora
     let dt = 0; try { dt = cvTfMsGrafico() || 0; } catch (e) {}
     if (!(dt > 0) && n > 1) dt = arr[n - 1].t - arr[n - 2].t;
@@ -7687,7 +7698,7 @@ if (_grTipoGrafico === 'linha') {
 // ── Linha OHLC (estilo TradingView) ──────────────────────────────────────────────────────────────────────────────────────────
 // Substitui a antiga janela do crosshair: mostra Abr/Máx/Mín/Fch + variação do candle numa linha logo abaixo da Barra Superior.
 // Sem crosshair = último candle; com o crosshair aberto (segurar e arrastar) acompanha o candle marcado. Candle de alta = tudo
-// verde, de baixa = tudo vermelho. O chip "Ações ▾" ao lado abre o menu do candle (cvAbrirMenuCandle).
+// verde, de baixa = tudo vermelho. O chip "Ver Agregado" ao lado abre o histograma agregado.
 function grOhlcAtual() {
     if (window._longPressActive && window._grOhlcCross && window._grOhlcCross.candle) return { candle: window._grOhlcCross.candle, idx: window._grOhlcCross.idx, cross: true };
     const n = _grAllCandles.length;
@@ -7754,9 +7765,9 @@ function grDesenharLinhaOhlc(ctx, W, info) {
     ctx.fillText(txtVar, x2, y2);
     x2 += ctx.measureText(txtVar).width + fs * 0.9;
     if (!window._grBarraSuperiorChips) window._grBarraSuperiorChips = [];
-    // Chip "Ações ▾" — SÓ com o crosshair ativo (as ações valem para o candle marcado)
-    if (info.cross) {
-        const txtAc = 'Ações ▾';
+    // Chip "Ver Agregado" — SÓ com o crosshair ativo e o Fluxo ligado (abre direto o histograma agregado; o menu "Ações" deixou de existir)
+    if (info.cross && _grFootprintAtivo && _grFootprintBins) {
+        const txtAc = 'Ver Agregado';
         ctx.font = 'bold ' + Math.max(9, fs - 1) + 'px -apple-system';
         const wAc = ctx.measureText(txtAc).width + 14, hAc = fs + 7;
         const xAc = Math.min(x2, xMax - wAc), yAc = y2 - fs - 1;
@@ -7765,7 +7776,7 @@ function grDesenharLinhaOhlc(ctx, W, info) {
         ctx.fillStyle = corData;
         ctx.fillText(txtAc, xAc + 7, y2);
         // Área de toque generosa (dedo). manterCrosshair: tocar nele com o crosshair aberto NÃO fecha o crosshair.
-        window._grBarraSuperiorChips.push({ x: xAc - 6, y: yAc - 8, w: wAc + 12, h: hAc + 16, manterCrosshair: true, abrir: (cx, cy, snap) => cvAbrirMenuCandle(cx, cy, snap) });
+        window._grBarraSuperiorChips.push({ x: xAc - 6, y: yAc - 8, w: wAc + 12, h: hAc + 16, manterCrosshair: true, abrir: () => grFootprintAbrirHistogramaAgregado() });
     }
     // Linha 3: badge retrátil (˅/˄, como no TradingView). Fechada = só a setinha; aberta = mostra as variáveis de AMBIENTE (TF e
     // Escala), cada uma numa badge só com contorno e o fundo da cor do gráfico. Tocar na badge de TF/Escala abre o seletor.
@@ -8502,121 +8513,6 @@ function cvAbrirMenuDesenhos(clientX, clientY) {
         menu.style.top = Math.max(8, y) + 'px';
     });
 }
-function cvFecharMenuCandle() {
-    const overlay = document.getElementById('cv-candle-menu-overlay'); if (overlay) overlay.remove();
-    const menu = document.getElementById('cv-candle-menu'); if (menu) menu.remove();
-}
-function cvAbrirMenuCandle(clientX, clientY, snap) {
-    cvFecharMenuCandle();
-    snap = snap || window._grOhlcAtual;
-    if (!snap || !snap.candle) return;
-    const candle = snap.candle, idx = snap.idx;
-    const temBotaoFootprint = !!(_grFootprintAtivo && _grFootprintBins);
-    // Informações (não clicáveis) que a janela antiga mostrava quando não havia outro lugar pra elas
-    const infos = [];
-    const buyVol = candle.bv != null ? candle.bv : null;
-    const sellVol = candle.bv != null ? candle.v - candle.bv : null;
-    const totalVol = buyVol != null ? buyVol + sellVol : null;
-    if (!temBotaoFootprint && buyVol != null && totalVol) {
-        const fmtBtc = v => v != null ? fmtVolK(v) + ' btc' : '—';
-        infos.push({ label: (sellVol / totalVol * 100).toFixed(0) + '% venda', val: fmtBtc(sellVol), color: '#EF5350' });
-        infos.push({ label: (buyVol / totalVol * 100).toFixed(0) + '% compra', val: fmtBtc(buyVol), color: '#26A69A' });
-    }
-    if (grAlturasPaineis(window._grAlturaCanvas || 600).dt === 0 && _grFootprintAtivo) {
-        const dtMapa = grObterDeltaTotalPorCandle(_grAllCandles);
-        const dtC = dtMapa ? dtMapa.get(candle.t) : null;
-        if (dtC) {
-            const dPct = candle.o ? ((candle.c - candle.o) / candle.o) * 100 : null;
-            infos.push({ label: 'Delta V', val: (dtC.delta >= 0 ? '+' : '') + grFmtVolCompacto(Math.abs(dtC.delta), 0), color: dtC.delta >= 0 ? '#26A69A' : '#EF5350' });
-            if (dtC.total) { const dv = dtC.delta / dtC.total * 100; infos.push({ label: 'Delta/Vol', val: (dv >= 0 ? '+' : '') + dv.toFixed(2) + '%', color: dv >= 0 ? '#26A69A' : '#EF5350' }); }
-            if (dPct != null) infos.push({ label: 'Delta $', val: (dPct >= 0 ? '+' : '') + dPct.toFixed(2) + '%', color: dPct >= 0 ? '#26A69A' : '#EF5350' });
-            infos.push({ label: 'Total', val: grFmtVolCompacto(dtC.total, 0) });
-        }
-    }
-    // Ações
-    const itens = [];
-    if (false && _indState.novoFibo && snap.cross && window._longPressActive) {   // (substituído: crosshair próprio do Novo Fibo, toque marca)
-        const pCh = window._grCrosshairPrecoAtual;
-        if (!_nfP1) {
-            itens.push({ txt: 'Novo Fibo: ponto 1 aqui', icone: HEROICON_BOOKMARK, acao: () => { if (!(pCh > 0)) return; _nfP1 = { t: candle.t, p: pCh }; grToast('Ponto 1 marcado. Mova o crosshair e abra Ações', '#2962FF'); grDrawChart(); } });
-        } else {
-            itens.push({ txt: 'Novo Fibo: ponto 2 aqui', icone: HEROICON_BOOKMARK, acao: () => {
-                if (!(pCh > 0) || (candle.t === _nfP1.t && pCh === _nfP1.p)) return;
-                _novosFibos.push({ t1: _nfP1.t, p1: _nfP1.p, t2: candle.t, p2: pCh, cor: '#2962FF', niv: nfNivNovo() }); _nfP1 = null; _nfAtual = null;
-                try { grAmbienteSalvar(); } catch (e) {}
-                window._longPressActive = false; grFerramentaDesligar('novoFibo', ['cv-ind-novofibo']);
-                cvEdicaoIniciar('nf', _novosFibos.length - 1);
-            } });
-            itens.push({ txt: 'Novo Fibo: cancelar ponto 1', icone: HEROICON_XMARK, acao: () => { _nfP1 = null; _nfAtual = null; grDrawChart(); } });
-        }
-    }
-    if (false && _canalModo && snap.cross && window._longPressActive) {   // (substituído: o Canal agora usa o mesmo gesto do Novo Fibo — crosshair + toque marca)
-        if (!_canalP1) {
-            itens.push({ txt: 'Canal: marcar início aqui', icone: HEROICON_BOOKMARK, acao: () => {
-                _canalP1 = { t: candle.t }; grToast('Início marcado. Mova o crosshair e abra Ações', '#00ACC1'); grDrawChart();
-            } });
-        } else {
-            itens.push({ txt: 'Canal: marcar fim aqui', icone: HEROICON_BOOKMARK, acao: () => grCanalFinalizar(candle.t) });
-            itens.push({ txt: 'Canal: cancelar início', icone: HEROICON_XMARK, acao: () => { _canalP1 = null; grDrawChart(); } });
-        }
-    }
-    if (temBotaoFootprint) {
-        itens.push({ txt: 'Ver Footprint', icone: HEROICON_CHART_BAR, acao: () => grFootprintAbrirCandleModal(candle) });
-        itens.push({ txt: _grMetricasTabTs === candle.t ? 'Ocultar Métricas' : 'Ver Métricas', icone: HEROICON_CHART_BAR, acao: () => {
-            grMetricasAlternar(candle);
-            window._longPressActive = false; // fecha o crosshair: o candle e a tabela ficam à vista
-            grDrawChart();
-        } });
-    }
-    const overlay = document.createElement('div');
-    overlay.id = 'cv-candle-menu-overlay';
-    overlay.style.cssText = 'position:fixed;inset:0;z-index:9700;background:transparent;';
-    overlay.onclick = cvFecharMenuCandle;
-    const menu = document.createElement('div');
-    menu.id = 'cv-candle-menu';
-    menu.style.cssText = 'position:fixed;z-index:9701;background:#FFFFFF;border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,0.22);padding:6px;min-width:230px;transform:scale(.85);transform-origin:top left;max-width:calc(100vw - 16px);font-family:-apple-system,sans-serif;';
-    const cab = document.createElement('div');
-    cab.textContent = grFmtDataCandle(candle);
-    cab.style.cssText = 'padding:6px 12px 4px;font-size:12px;font-weight:700;color:#6C6C70;';
-    menu.appendChild(cab);
-    infos.forEach(l => {
-        const r = document.createElement('div');
-        r.style.cssText = 'display:flex;justify-content:space-between;gap:16px;padding:3px 12px;font-size:13px;font-weight:400;color:#1C1C1E;';
-        const a = document.createElement('span'); a.textContent = l.label;
-        const b = document.createElement('span'); b.textContent = l.val; b.style.color = l.color || '#1C1C1E';
-        r.appendChild(a); r.appendChild(b); menu.appendChild(r);
-    });
-    if (infos.length || itens.length) {
-        const sep0 = document.createElement('div'); sep0.style.cssText = 'height:1px;background:#F2F2F7;margin:4px 2px;'; menu.appendChild(sep0);
-    }
-    if (!itens.length) {
-        const vazio = document.createElement('div');
-        vazio.textContent = 'Ligue o Fluxo (FX) para ver as ações do candle';
-        vazio.style.cssText = 'padding:8px 12px;font-size:13px;font-weight:400;color:#8E8E93;';
-        menu.appendChild(vazio);
-    }
-    itens.forEach(it => {
-        if (it.sep) { const sp = document.createElement('div'); sp.style.cssText = 'height:1px;background:#F2F2F7;margin:4px 2px;'; menu.appendChild(sp); return; }
-        const b = document.createElement('button');
-        b.type = 'button';
-        b.style.cssText = 'display:flex;align-items:center;gap:10px;width:100%;text-align:left;border:none;background:none;padding:10px 12px;font-size:14px;font-weight:400;color:#1C1C1E;border-radius:8px;';
-        b.innerHTML = grHeroSvgInline(it.icone, 16, '#1C1C1E');
-        const t = document.createElement('span'); t.textContent = it.txt; b.appendChild(t);
-        b.onclick = e => { e.stopPropagation(); cvFecharMenuCandle(); it.acao(); };
-        menu.appendChild(b);
-    });
-    document.body.appendChild(overlay);
-    document.body.appendChild(menu);
-    requestAnimationFrame(() => {
-        const r = menu.getBoundingClientRect();
-        const Wn = window.innerWidth, Hn = window.innerHeight;
-        let x = clientX, y = clientY + 14;
-        if (x + r.width > Wn - 8) x = Wn - r.width - 8;
-        if (y + r.height > Hn - 8) y = clientY - r.height - 14;
-        menu.style.left = Math.max(8, x) + 'px';
-        menu.style.top = Math.max(8, y) + 'px';
-    });
-}
 // Touch scroll, zoom e drag de linhas
 function grInitTouch() {
     if (window._grTouchInited) return;
@@ -8724,15 +8620,6 @@ function grInitTouch() {
                 if (tb && ex2 >= tb.x - 4 && ex2 <= tb.x + tb.w + 4 && ey2 >= tb.y - 4 && ey2 <= tb.y + tb.h + 4) {
                     window._grCrosshairMaximizada = !window._grCrosshairMaximizada;
                     grDrawChart(); e.preventDefault(); return;
-                }
-            }
-            // Toque no botão "Ver Footprint" da janela do crosshair
-            if (window._longPressActive && window._grCrosshairFootprintBtnArea) {
-                const t = window._grCrosshairFootprintBtnArea;
-                if (ex2 >= t.x && ex2 <= t.x + t.w && ey2 >= t.y && ey2 <= t.y + t.h) {
-                    if (window._grCrosshairCandleAtual) grFootprintAbrirCandleModal(window._grCrosshairCandleAtual);
-                    e.preventDefault();
-                    return;
                 }
             }
             // Toque no botão "Ver Métricas" da janela do crosshair
@@ -9433,7 +9320,7 @@ function grInitTouch() {
     if (window._longPressActive) {
             // Crosshair persiste — não desativa ao soltar. Próximo touchstart
             // limpa. Não abre mais o footprint sozinho aqui — isso agora só
-            // acontece pelo botão "Ver Footprint" dentro da janela do crosshair.
+            // acontece pelo botão "Ver Agregado" dentro da janela do crosshair.
     } else if (e.changedTouches.length === 1) {
             // Double tap para alertas
             const now = Date.now();
@@ -9510,13 +9397,21 @@ function grCrosshairZonaDeltaPreco(preco, pctZona) {
     return { mapa, compra, venda, delta: compra - venda, temVolume: (compra + venda) > 0, precoBaixo, precoAlto };
 }
 function grDrawChartWithCrosshair(yInterno) {
-    // Janela de Métricas aberta: acompanha o candle sob o crosshair (a janela fica, só os dados mudam).
-    if (_grMetricasTabTs != null && window._grCandlesDesenhados && window._grCandlesDesenhados.length && window._grChartW && window._grTotalSlots) {
+    // Métricas AUTOMÁTICAS: a tabela aparece na hora quando o crosshair está EXPLICITAMENTE em cima de um candle (dentro de máx–mín dele)
+    // e não em cima de mais nada (desenhos, caixas, âncoras, a própria tabela). Saiu do candle ou foi parar em outra coisa: some.
+    if (_grFootprintAtivo && _grFootprintBins && window._grCandlesDesenhados && window._grCandlesDesenhados.length && window._grChartW && window._grTotalSlots) {
         try {
             const dz = window._grCandlesDesenhados, slotW = window._grChartW / window._grTotalSlots;
-            const rawI = Math.max(0, Math.min(dz.length - 1, Math.floor((_grCrosshairX - grPadL()) / slotW)));
-            const cSel = dz[rawI];
-            if (cSel && cSel.t !== _grMetricasTabTs) { _grMetricasTabTs = cSel.t; _grMetricasCache = null; _grMetricasInfo = null; _grMetricasInfoScroll = 0; }
+            const rawI = Math.floor((_grCrosshairX - grPadL()) / slotW), cSel = (rawI >= 0 && rawI < dz.length) ? dz[rawI] : null;
+            const px = _grCrosshairX, py = yInterno, tol = 3;
+            let sobre = !!cSel && isFinite(py) && py >= grLineY(cSel.h) - tol && py <= grLineY(cSel.l) + tol;
+            if (sobre) {
+                const dentro = r => r && px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+                if ((window._grPosRects || []).some(dentro) || dentro(window._grMetricasRect)) sobre = false;
+            }
+            if (sobre) {
+                if (_grMetricasTabTs !== cSel.t) { const eraAberta = _grMetricasTabTs != null; _grMetricasTabTs = cSel.t; _grMetricasCache = null; _grMetricasInfo = null; _grMetricasInfoScroll = 0; if (!eraAberta) _grMetricasOff = { dx: 0, dy: 0 }; }
+            } else if (_grMetricasTabTs != null) grMetricasFecharTabela();
         } catch (e) {}
     }
     // Desenha o gráfico sem recursão
@@ -10192,7 +10087,7 @@ function cvCarregarFreehandLocal() {
 let _medidas = [];
 function _medidasKey() { return 'cv_medidas_' + (_ativoId || 'default'); }
 function cvCarregarMedidas() { try { const r = localStorage.getItem(_medidasKey()); _medidas = r ? JSON.parse(r) : []; } catch (e) { _medidas = []; } }
-function cvSalvarMedidas() { try { localStorage.setItem(_medidasKey(), JSON.stringify(_medidas)); } catch (e) {} }
+function cvSalvarMedidas() { try { localStorage.setItem(_medidasKey(), JSON.stringify(_medidas.filter(m => !m.efem))); } catch (e) {} }
 function grGatilhosDesenhar(ctx, fxT, fy) {   // ▲ (long) / ▼ (short) azul no candle do gatilho, na entrada real
     return;   // desligado a pedido do Huber: o triângulo azul ficava em cima do candle e atrapalhava
     const L = window._scRegistro; if (!Array.isArray(L)) return;
@@ -10507,7 +10402,14 @@ function grMdFinalizar() {   // soltou o dedo: se a Medida estava ativa, marca o
     const G = window._mdGesto; _mdDw = null; window._mdDwProg = 0; window._mdGesto = null;
     if (!G) return;
     const c = G.cur;
-    if (c && G.P1 && !(c.t === G.P1.t && Math.abs(c.p - G.P1.p) < 1e-9)) { _medidas.push({ id: Date.now(), t1: G.P1.t, p1: G.P1.p, t2: c.t, p2: c.p }); try { cvSalvarMedidas(); } catch (e) {} }
+    if (c && G.P1 && !(c.t === G.P1.t && Math.abs(c.p - G.P1.p) < 1e-9)) {
+        const mid = Date.now(); _medidas.push({ id: mid, t1: G.P1.t, p1: G.P1.p, t2: c.t, p2: c.p, efem: true });   // efêmera: só para ler; não é salva
+        setTimeout(() => {   // some sozinha depois de alguns segundos (se você não a selecionou)
+            const k = _medidas.findIndex(m => m.id === mid); if (k < 0) return;
+            if (_edSel && _edSel.tipo === 'md' && _edSel.idx === k) { delete _medidas[k].efem; try { cvSalvarMedidas(); } catch (e) {} return; }   // selecionada: vira permanente
+            _medidas.splice(k, 1); try { grDrawChart(); } catch (e) {}
+        }, 4000);
+    }
     _medidaAtual = null; try { grDrawChart(); } catch (e) {}
 }
 // ── Menu de contexto do desenho selecionado (olho/lixeira/fechar) e áreas de toque para selecionar pelo handle ──
@@ -12050,9 +11952,7 @@ function cvFecharSetupSheet() {
     <div style="width:36px;height:4px;border-radius:2px;background:rgba(255,255,255,0.2);margin:12px auto 0;flex-shrink:0;"></div>
     <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px 4px;flex-shrink:0;">
       <div style="display:flex;align-items:center;gap:8px;min-width:0;">
-        <button id="footprint-candle-prev-btn" onclick="grFootprintCandleNavegar(-1)" style="background:rgba(255,255,255,0.1);border:none;color:#FFFFFF;font-size:14px;width:28px;height:28px;border-radius:50%;flex-shrink:0;">‹</button>
         <div style="font-size:15px;font-weight:800;color:#FFFFFF;font-family:-apple-system,sans-serif;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" id="footprint-candle-titulo">—</div>
-        <button id="footprint-candle-next-btn" onclick="grFootprintCandleNavegar(1)" style="background:rgba(255,255,255,0.1);border:none;color:#FFFFFF;font-size:14px;width:28px;height:28px;border-radius:50%;flex-shrink:0;">›</button>
       </div>
       <button onclick="grFootprintFecharCandleModal()" style="background:rgba(255,255,255,0.1);border:none;color:#FFFFFF;font-size:16px;width:28px;height:28px;border-radius:50%;cursor:pointer;flex-shrink:0;">✕</button>
     </div>
@@ -13813,39 +13713,6 @@ function grFootprintTodosOsCandlesBrutos() {
     _grFootprintDiasAvulsos.forEach(candlesDoDia => { todos = todos.concat(candlesDoDia); });
     return todos;
 }
-// Candle fora da janela carregada ao ativar o Fluxo: busca o dia dele direto no
-// R2 (via worker), guarda em _grFootprintDiasAvulsos e reabre o modal do candle.
-// Se o R2 não tiver esse dia, avisa.
-async function grFootprintCarregarDiaDoR2(candle) {
-    const dia = new Date(candle.t).toISOString().slice(0, 10);
-    try {
-        const r = await fetch(grFootprintUrlDia(dia));
-        const dados = await r.json();
-        const candlesDoDia = Object.values(dados.candles || {});
-        if (candlesDoDia.length > 0) {
-            _grFootprintDiasAvulsos.set(dia, candlesDoDia.map(c => ({ ts: c.ts, niveis: c.niveis })));
-            grFootprintDadosAntigosMudaram();
-            window._grClusterCache = new Map(); // candles desse dia estavam marcados "sem dado"
-            grFootprintAbrirCandleModal(candle); // tenta de novo, agora já com o dado em mãos
-            return;
-        }
-    } catch (e) {
-        console.log('Worker sem esse dia:', e.message);
-    }
-    alert('Sem dados de footprint desse dia no R2.');
-}
-// Navegador de candles — setas ‹ › no modal, sem precisar fechar e tocar
-// noutro candle. Reaproveita o mesmo grFootprintAbrirCandleModal de sempre
-// (mesmo backfill automático, mesmo CVD, mesmas zonas de disputa) — só troca
-// QUAL candle é passado pra ele, achando o vizinho em _grAllCandles.
-function grFootprintCandleNavegar(direcao) {
-    if (!_grFootprintCandleContexto || !_grFootprintCandleContexto.candle) return;
-    const idxAtual = _grAllCandles.indexOf(_grFootprintCandleContexto.candle);
-    if (idxAtual < 0) return;
-    const novoIdx = idxAtual + direcao;
-    if (novoIdx < 0 || novoIdx >= _grAllCandles.length) return; // não tem vizinho nessa direção
-    grFootprintAbrirCandleModal(_grAllCandles[novoIdx]);
-}
 // ══ MÉTRICAS DO CANDLE — tabelinha minimalista desenhada no canvas, embaixo do candle escolhido ═════════════════════
 // Botão "Ver Métricas" da janela do crosshair liga/desliga a tabela daquele candle; o ✕ da tabela apaga; arrastando a tabela
 // ela muda de lugar (fica presa ao candle, acompanha o gráfico). Só com o Fluxo ligado.
@@ -14300,39 +14167,6 @@ function grMetricasToqueFim() { // soltou: se foi um toque (sem mover) num ⓘ/�
     if (d && d.tap && !d.moved) d.tap();
 }
 
-// Agrega os candles brutos (1min) de todas as fontes que caem dentro do
-// período do candle tocado (candle.t até candle.t + duração do timeframe atual).
-function grFootprintAbrirCandleModal(candle) {
-    const todos = grFootprintTodosOsCandlesBrutos();
-    if (todos.length === 0) return;
-    const msPorCandle = grFootprintMsPorCandle();
-    const de = candle.t, ate = candle.t + msPorCandle;
-    const mapaFino = new Map(); // tick $10, só os preços que realmente tiveram negociação
-    let encontrados = 0;
-    for (const c of todos) {
-        if (c.ts < de || c.ts >= ate) continue;
-        encontrados++;
-        (c.niveis || []).forEach(n => {
-            if (!mapaFino.has(n.p)) mapaFino.set(n.p, { c: 0, v: 0, nc: 0, nv: 0 });
-            const acc = mapaFino.get(n.p);
-            acc.c += n.c;
-            acc.v += n.v;
-            acc.nc += (n.nc || 0);
-            acc.nv += (n.nv || 0);
-        });
-    }
-    if (mapaFino.size === 0) {
-        grFootprintCarregarDiaDoR2(candle);
-        return;
-    }
-    const candleIdx = _grAllCandles.indexOf(candle);
-    const cvdAnterior = candleIdx >= 0 ? grFootprintCvdAcumuladoAntes(candleIdx) : null;
-    const zonasDisputa = grFootprintZonasAltoVolumeAgregado();
-    _grFootprintCandleContexto = { de, ate, candle, cvdAnterior, zonasDisputa };
-    _grFootprintModalModo = 'candle';
-    document.getElementById('footprint-fibo-selector').style.display = 'none';
-    grFootprintDesenharCandleLadder(candle, de, mapaFino, encontrados, false, { cvdAnterior, zonasDisputa }, true);
-}
 // Abre o mesmo ladder do candle, mas alimentado pelo histograma agregado dos
 // últimos N dias — calculado direto de grFootprintTodosOsCandlesBrutos() (que
 // já inclui o minuto em formação agora), não do _grFootprintBins do overlay
@@ -14343,9 +14177,11 @@ function grFootprintAbrirCandleModal(candle) {
 // Extraído de grFootprintAbrirHistogramaAgregado pra ser reaproveitado por
 // outras features (ex: detecção de zona de alto volume no candle único) sem
 // precisar abrir o modal do histograma pra isso.
-function grFootprintCalcularMapaAgregado() {
+// Início da janela do modal "Ver Agregado": a âncora do Volume Profile (a mesma do POC/VWAP/Value Area). Sem âncora, cai na "Janela de dias".
+function grFootprintAgregadoInicio() { return (typeof _grVpAncoraTs !== 'undefined' && _grVpAncoraTs > 0) ? _grVpAncoraTs : Date.now() - (_grFootprintLookbackDias * 24 * 60 * 60 * 1000); }
+function grFootprintCalcularMapaAgregado(ancorado) {
     const agora = Date.now();
-    const de = agora - (_grFootprintLookbackDias * 24 * 60 * 60 * 1000);
+    const de = ancorado ? grFootprintAgregadoInicio() : agora - (_grFootprintLookbackDias * 24 * 60 * 60 * 1000);
     const mapaBase = new Map();
     grFootprintTodosOsCandlesBrutos().forEach(c => {
         if (c.ts < de || c.ts > agora) return;
@@ -14433,9 +14269,9 @@ function grFootprintSelecionarFibo(idx) {
     grFootprintAbrirHistogramaAgregado();
 }
 function grFootprintAbrirHistogramaAgregado(refresco) {
-    const mapaBase = grFootprintCalcularMapaAgregado();
+    const mapaBase = grFootprintCalcularMapaAgregado(true);
     const agora = Date.now();
-    const de = agora - (_grFootprintLookbackDias * 24 * 60 * 60 * 1000);
+    const de = grFootprintAgregadoInicio();
     if (mapaBase.size === 0) {
         if (!refresco) alert('Sem dados de histograma carregados ainda.');
         return;
@@ -14513,9 +14349,7 @@ function grFootprintExplodirZona() {
     // De onde vem o dado bruto: se já tá dentro de uma explosão, herda a
     // origem do nível anterior; se é a 1ª explosão, detecta pelo modal aberto.
     const pilha = _grFootprintPilhaExplosao;
-    const candleTsOrigem = pilha.length > 0
-        ? pilha[pilha.length - 1].candleTsOrigem
-        : ((_grFootprintModalModo === 'candle' && _grFootprintCandleContexto) ? _grFootprintCandleContexto.candle.t : null);
+    const candleTsOrigem = null;   // só existe a origem agregada (o modo candle foi removido)
     // IMPORTANTE: usa os limites REAIS da linha (data-lo/data-hi, vindos de
     // v._loP/v._hiP), não p+tick — em modo Fibonacci as linhas têm largura
     // IRREGULAR (o corte do fibo quebra o tick uniforme em pedaços menores),
@@ -14545,7 +14379,7 @@ function grFootprintRenderizarExplosao(scrollParaPreco) {
     let contadorMinutos = 0;
     if (zona.candleTsOrigem == null) {
         // Origem = histograma agregado (últimos N dias) — mesma janela de lookback.
-        const de = Date.now() - (_grFootprintLookbackDias * 24 * 60 * 60 * 1000);
+        const de = grFootprintAgregadoInicio();
         grFootprintTodosOsCandlesBrutos().forEach(c => {
             if (c.ts < de) return;
             contadorMinutos++;
@@ -14582,8 +14416,6 @@ function grFootprintVoltarDaExplosao() {
     const zonaSaindo = pilha.pop();
     if (pilha.length > 0) {
         grFootprintRenderizarExplosao(true);
-    } else if (zonaSaindo.candleTsOrigem != null && _grFootprintCandleContexto) {
-        grFootprintAbrirCandleModal(_grFootprintCandleContexto.candle);
     } else {
         grFootprintAbrirHistogramaAgregado(false);
     }
@@ -15325,7 +15157,7 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
             (temIntensidade ? ' · cor mais sólida = trades maiores em média' : '');
         document.getElementById('footprint-ver-historico-btn').style.display = 'none';
     } else if (semCandle) {
-        document.getElementById('footprint-candle-titulo').textContent = `Histograma agregado — últimos ${_grFootprintLookbackDias} dias`;
+        document.getElementById('footprint-candle-titulo').textContent = (typeof _grVpAncoraTs !== 'undefined' && _grVpAncoraTs > 0) ? `Agregado — desde a âncora do VP (${grVpRotuloData(_grVpAncoraTs)})` : `Agregado — últimos ${_grFootprintLookbackDias} dias (sem âncora do VP)`;
         document.getElementById('footprint-candle-sub').innerHTML =
             `Abertura ${fmtN(candle.o)} · Máxima ${maxSpanHtml} · Mínima ${minSpanHtml} · Fechamento ${closeSpanHtml} (${pctSpanHtml}) · ` +
             `Faixa ${fmtN(lo)} – ${fmtN(hi)} · tick $${tick}` +
@@ -15702,7 +15534,7 @@ function grFootprintRastrearNivel(precoCentro, passo) {
             somar(c.niveis);
         });
     } else {
-        const de = Date.now() - (_grFootprintLookbackDias * 24 * 60 * 60 * 1000);
+        const de = grFootprintAgregadoInicio();
         grFootprintTodosOsCandlesBrutos().forEach(c => {
             if (c.ts < de) return;
             somar(c.niveis);
