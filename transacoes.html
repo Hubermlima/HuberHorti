@@ -3522,7 +3522,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v692';
+const APP_VERSAO = 'v694';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -6836,9 +6836,9 @@ if (_grTipoGrafico === 'linha') {
                         // faixa fixa no terço de baixo da área dos candles
                         const bandTop = PAD.top + chartH * 0.64, bandBot = PAD.top + chartH * 0.95, bandH = bandBot - bandTop;
                         const yMid = (bandTop + bandBot) / 2;                       // linha de zero do VD
-                        const rngC = Math.max(maxC - minC, 1e-9);
-                        const refC = (minC + maxC) / 2 + ((ultC != null ? ultC : (minC + maxC) / 2) - (minC + maxC) / 2) * (1 - 1 / Math.max(1, _cvdEscCv));   // com o escalar > 1 a curva se amplia em torno do ÚLTIMO valor (a ponta atual nunca sai da faixa)
-                        const yC = v => (bandTop + bandBot) / 2 - ((v - refC) / rngC) * bandH * _cvdEscCv;      // CVD: escala FIXA (âncora → último candle) × o escalar do menu do CVD; 1x = cabe tudo na faixa
+                        const rngC = Math.max(2 * Math.max(Math.abs(minC), Math.abs(maxC)), 1e-9);   // simétrica em torno do ZERO: o tracejado é o zero do CVD e do VD
+                        const refC = 0;
+                        const yC = v => yMid - ((v - refC) / rngC) * bandH * _cvdEscCv;      // zero do CVD = linha tracejada; o escalar só estica a ALTURA em torno dela
                         const xDoIdx = i => PAD.left + (i / totalSlots) * chartW + cW / 2;
                         ctx.save(); ctx.beginPath(); ctx.rect(PAD.left, PAD.top, chartW, chartH); ctx.clip();
                         // zero do VD
@@ -7072,6 +7072,10 @@ if (_grTipoGrafico === 'linha') {
             if (_freehandAtual && window._fhDwProg > 0 && _grCrosshairX != null && window._longPressY >= 0) {   // anel enchendo em volta do crosshair: falta pouco para marcar o ponto
                 ctx.save(); ctx.beginPath(); ctx.arc(_grCrosshairX, window._longPressY, 16, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * window._fhDwProg);
                 ctx.lineWidth = 3; ctx.lineCap = 'round'; ctx.strokeStyle = _freehandAtual.cor || '#FFB300'; ctx.stroke(); ctx.restore();
+            }
+            if (window._mdDwProg > 0 && !window._mdGesto && _grCrosshairX != null && window._longPressY >= 0) {   // Medida por permanência: anel roxo enchendo em volta do crosshair (cheio = é só mexer o dedo)
+                ctx.save(); ctx.beginPath(); ctx.arc(_grCrosshairX, window._longPressY, 16, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * window._mdDwProg);
+                ctx.lineWidth = 3; ctx.lineCap = 'round'; ctx.strokeStyle = '#8B5CF6'; ctx.stroke(); ctx.restore();
             }
         }
         const toXIdx2 = absIdx => PAD.left + ((absIdx - startIdx) / totalSlots) * chartW + cW / 2;
@@ -8689,6 +8693,10 @@ function grInitTouch() {
     // que o timer de toque longo dispare usando a posição velha do touchstart
     // (causava o "salto" do crosshair pra posição inicial do toque).
     let _liveTouchX = 0, _liveTouchY = 0;
+    // MEDIDA POR PERMANÊNCIA: "dedo na tela" para o relógio de permanência (grMdDwellTick) e fim do gesto (soltar = marca o ponto 2).
+    canvas.addEventListener('touchstart', e => { window._mdDedo = e.touches.length === 1; if (e.touches.length !== 1) grMdCancelar(); }, { passive: true });
+    canvas.addEventListener('touchend', () => { window._mdDedo = false; grMdFinalizar(); }, { passive: true });
+    canvas.addEventListener('touchcancel', () => { window._mdDedo = false; grMdCancelar(); }, { passive: true });
     canvas.addEventListener('touchstart', e => {
         if (e.touches.length !== 1) window._nfT = null;
         if (e.touches.length === 1) {
@@ -9109,6 +9117,7 @@ function grInitTouch() {
     const yInterno = toCanvasYCh(e.touches[0].clientY);
     _grCrosshairX = e.touches[0].clientX - canvas.getBoundingClientRect().left;
     window._longPressY = yInterno; // mantém atualizado p/ o redraw periódico do WS não voltar pra posição inicial
+    grMdMover();   // Medida por permanência: anel cheio + mexeu = liga a Medida com o ponto 1 onde parou; depois atualiza a prévia
     grAgendarDesenho(); // grDrawChart desenha com crosshair enquanto _longPressActive
 } else if (isDragging) {
                 // Cancela long press se rolou bastante em QUALQUER direção —
@@ -10465,6 +10474,42 @@ function grFhDwellTick() {
     try { grDrawChart(); } catch (e) {}
 }
 setInterval(grFhDwellTick, 100);
+// ── MEDIDA POR PERMANÊNCIA (crosshair normal) ──────────────────────────────────────────────────────────────────────────────────────────────
+// Crosshair aberto (toque longo) com o dedo PARADO por FH_DW_MS (mesma contagem do Desenho Livre, medida nos dados): o anel roxo enche e o celular vibra.
+// Com o anel cheio, mexer o dedo liga a Medida: o ponto 1 é onde parou, a prévia acompanha o crosshair e SOLTAR o dedo marca o ponto 2 e salva a medida.
+// Soltar sem mexer (ou antes do anel encher) não faz nada: é só a leitura normal do candle. Não age com ferramenta de desenho ligada.
+let _mdDw = null; window._mdDwProg = 0; window._mdDedo = false; window._mdGesto = null;
+function grMdCancelar() { const tinha = _mdDw || window._mdDwProg || window._mdGesto; _mdDw = null; window._mdDwProg = 0; window._mdGesto = null; if (tinha) { _medidaAtual = null; try { grDrawChart(); } catch (e) {} } }
+function grMdDwellTick() {
+    const ativo = window._mdDedo && window._longPressActive && !grPlAtivo() && !window._mdGesto && !_edDrag && _grCrosshairX != null && window._longPressY >= 0;
+    if (!ativo) { if (_mdDw || window._mdDwProg) { _mdDw = null; window._mdDwProg = 0; try { grDrawChart(); } catch (e) {} } return; }
+    if (_mdDw && _mdDw.pronto) return;   // anel cheio: espera o dedo mexer (grMdMover)
+    const x = _grCrosshairX, y = window._longPressY, agora = Date.now();
+    if (!_mdDw || Math.hypot(x - grIndexToX(_mdDw.i), y - grLineY(_mdDw.p)) > FH_DW_TOL) { _mdDw = { i: grXToIndex(x) - 0.5, p: grToPrice(y), t0: agora }; window._mdDwProg = 0; return; }   // mexeu (ou a tela rolou): recomeça
+    const prog = Math.min(1, (agora - _mdDw.t0) / FH_DW_MS); window._mdDwProg = prog;
+    if (prog >= 1) {
+        const cur = grPlCursor();
+        if (cur) { _mdDw.pronto = true; _mdDw.P1 = { t: cur.t, p: cur.p }; try { if (navigator.vibrate) navigator.vibrate(25); } catch (e) {} }
+        else { _mdDw = null; window._mdDwProg = 0; }
+    }
+    try { grDrawChart(); } catch (e) {}
+}
+setInterval(grMdDwellTick, 100);
+function grMdMover() {   // chamada a cada movimento do crosshair normal (dedo arrastando)
+    if (_mdDw && _mdDw.pronto && !window._mdGesto && Math.hypot(_grCrosshairX - grIndexToX(_mdDw.i), window._longPressY - grLineY(_mdDw.p)) > 8) {
+        window._mdGesto = { P1: _mdDw.P1, cur: null }; _mdDw = null; window._mdDwProg = 0;
+    }
+    const G = window._mdGesto; if (!G) return;
+    const cur = grPlCursor(); if (!cur) return;
+    G.cur = cur; _medidaAtual = { i1: grTimeToIndex(G.P1.t), p1: G.P1.p, i2: cur.ic, p2: cur.p };
+}
+function grMdFinalizar() {   // soltou o dedo: se a Medida estava ativa, marca o ponto 2 e salva
+    const G = window._mdGesto; _mdDw = null; window._mdDwProg = 0; window._mdGesto = null;
+    if (!G) return;
+    const c = G.cur;
+    if (c && G.P1 && !(c.t === G.P1.t && Math.abs(c.p - G.P1.p) < 1e-9)) { _medidas.push({ id: Date.now(), t1: G.P1.t, p1: G.P1.p, t2: c.t, p2: c.p }); try { cvSalvarMedidas(); } catch (e) {} }
+    _medidaAtual = null; try { grDrawChart(); } catch (e) {}
+}
 // ── Menu de contexto do desenho selecionado (olho/lixeira/fechar) e áreas de toque para selecionar pelo handle ──
 const GR_ED_CTX_TIPOS = ['nf', 'tl', 'fh', 'hl', 'md'];
 function grDistSeg(px, py, a, b) {   // distância do ponto ao segmento a–b (em px)
