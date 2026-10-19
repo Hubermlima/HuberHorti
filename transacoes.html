@@ -3534,7 +3534,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v719';
+const APP_VERSAO = 'v720';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -6959,17 +6959,22 @@ if (_grTipoGrafico === 'linha') {
                             //  • Força: posição de cada divergência entre TODAS as da série (percentil do CVD e do preço, média dos dois): tercil de baixo = Fraca, do meio = Média, de cima = Forte.
                             const atrEm = ix => { let sm = 0, ct = 0; for (let j = Math.max(1, ix - 13); j <= ix; j++) { const a0 = _grAllCandles[j], p0 = _grAllCandles[j - 1]; sm += Math.max(a0.h - a0.l, Math.abs(a0.h - p0.c), Math.abs(a0.l - p0.c)); ct++; } return ct ? sm / ct : 0; };
                             const divs = [];
-                            // Único piso: o preço tem de superar o pivô anterior em pelo menos 1 ATR (menos que isso é topo/fundo duplo, não extremo novo). Todo par de pivôs consecutivos em que o preço fez extremo NOVO e o CVD discordou (qualquer tamanho) é uma divergência.
+                            // SEM piso fixo: todo par de pivôs consecutivos em que o preço fez extremo NOVO e o CVD discordou (qualquer tamanho) é uma divergência.
                             // O peso vem dos próprios dados: a força (Fraca/Média/Forte) é a posição dela entre TODAS as da série (tercis do CVD e do preço) e as Fracas
                             // saem apagadas e só com o título, para não poluir; as Médias e Fortes saem cheias, com os números.
                             const todosPares = (L, baixa) => { for (let k = 1; k < L.length; k++) { const A = L[k - 1], B = L[k];
                                 const fx = limDifEm(B.ix) / 0.05, at = atrEm(B.ix); if (!(fx > 0) || !(at > 0)) continue;
                                 const dcs = baixa ? A.cv - B.cv : B.cv - A.cv, dps = baixa ? B.p - A.p : A.p - B.p;
-                                if (dcs > 0 && dps >= at) divs.push({ A, B, baixa, pc: dcs / fx, pp: dps / at, dp: B.p - A.p }); } };
+                                if (dcs > 0 && dps > 0) divs.push({ A, B, baixa, pc: dcs / fx, pp: dps / at, dp: B.p - A.p }); } };
                             todosPares(topos, true); todosPares(fundos, false);
-                            const pctl = (arr, key) => arr.map(d => { let m = 0; arr.forEach(o => { if (o[key] < d[key]) m++; else if (o[key] === d[key]) m += 0.5; }); return m / arr.length; });
-                            const rkC = pctl(divs, 'pc'), rkP = pctl(divs, 'pp');
-                            divs.forEach((d, i) => { d.f = (rkC[i] + rkP[i]) / 2; d.rot = divs.length < 3 ? '' : (d.f < 1 / 3 ? 'Fraca' : d.f < 2 / 3 ? 'Média' : 'Forte'); });
+                            // NOTA pela anormalidade, não pelo ranking: o CVD (pc) e o avanço do preço (pp) são medidos contra o NORMAL da própria série (mediana e dispersão robusta MAD, em escala log,
+                            // porque os tamanhos são muito assimétricos). z = média dos dois desvios. Forte: z >= 1 (bem acima do normal) · Média: z >= 0 (acima do normal) · Fraca: abaixo do normal.
+                            // Numa série só de ruído quase nada passa de Fraca; vale por TF, pois a série é a daquele TF.
+                            const medMad = arr => { const o = arr.slice().sort((x, y) => x - y), m = o[Math.floor(o.length / 2)], dv = o.map(v => Math.abs(v - m)).sort((x, y) => x - y); return { m, mad: dv[Math.floor(dv.length / 2)] * 1.4826 || 1e-9 }; };
+                            if (divs.length >= 3) {
+                                const sc = medMad(divs.map(d => Math.log(d.pc))), sp = medMad(divs.map(d => Math.log(d.pp)));
+                                divs.forEach(d => { d.f = ((Math.log(d.pc) - sc.m) / sc.mad + (Math.log(d.pp) - sp.m) / sp.mad) / 2; d.rot = d.f >= 1 ? 'Forte' : d.f >= 0 ? 'Média' : 'Fraca'; });
+                            } else divs.forEach(d => { d.f = 0; d.rot = ''; });
                             const marca = (d) => {
                                 const A = d.A, B = d.B, baixa = d.baixa;
                                 const cor = baixa ? '#D32F2F' : '#2E7D32', xa = xDoIdx(A.i), xb = xDoIdx(B.i), ypA = toY(A.p), ypB = toY(B.p), ycA = yC(A.cv), ycB = yC(B.cv);
