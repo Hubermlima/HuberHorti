@@ -1997,6 +1997,8 @@ function grSentValorEm(d, ts) {   // último valor NÃO POSTERIOR a ts (o candle
 let _cvdOculto = false, _sentOculto = false;
 try { _cvdOculto = localStorage.getItem('gr_cvd_oculto') === '1'; _sentOculto = localStorage.getItem('gr_sent_oculto') === '1'; } catch (e) {}
 let _cvdHistOculto = false; try { _cvdHistOculto = localStorage.getItem('gr_cvd_hist_oculto') === '1'; } catch (e) {}
+let _cvdJacare = true; try { _cvdJacare = localStorage.getItem('gr_cvd_jacare') !== '0'; } catch (e) {}
+function cvdJacareOlho() { _cvdJacare = !_cvdJacare; try { localStorage.setItem('gr_cvd_jacare', _cvdJacare ? '1' : '0'); } catch (e) {} try { cvRenderMenuFpCfg(); } catch (e) {} try { grDrawChart(); } catch (e) {} }
 let _cvdGradeOculta = false; try { _cvdGradeOculta = localStorage.getItem('gr_cvd_grade_oculta') === '1'; } catch (e) {}
 function cvdGradeOlho() { _cvdGradeOculta = !_cvdGradeOculta; try { localStorage.setItem('gr_cvd_grade_oculta', _cvdGradeOculta ? '1' : '0'); } catch (e) {} try { cvRenderMenuFpCfg(); } catch (e) {} try { grDrawChart(); } catch (e) {} }
 function cvdHistOlho() { _cvdHistOculto = !_cvdHistOculto; try { localStorage.setItem('gr_cvd_hist_oculto', _cvdHistOculto ? '1' : '0'); } catch (e) {} try { cvRenderMenuFpCfg(); } catch (e) {} try { grDrawChart(); } catch (e) {} }
@@ -2342,6 +2344,7 @@ function cvRenderMenuFpCfg() {
         menu.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;"><div style="font-size:13px;font-weight:700;color:#1C1C1E;">CVD / Delta</div>' + grOlhoBtn(_cvdOculto, 'cvdOlho') + '</div>'
             + '<div style="font-size:12px;color:#8E8E93;max-width:200px;padding-bottom:4px;">CVD (linha laranja) e VD (barras verde/vermelho), somados desde a âncora do VP.</div>'
             + (c ? '<div style="font-size:13px;font-weight:700;color:' + c.cor + ';">' + c.valor + '</div>' : '')
+            + '<div style="margin-top:10px;display:flex;align-items:center;justify-content:space-between;gap:10px;"><span style="font-size:13px;font-weight:600;color:#1C1C1E;">Jacaré (CVD no preço)</span>' + grOlhoBtn(!_cvdJacare, 'cvdJacareOlho') + '</div>'
             + '<div style="margin-top:10px;display:flex;align-items:center;justify-content:space-between;gap:10px;"><span style="font-size:13px;font-weight:600;color:#1C1C1E;">Grade de valores</span>' + grOlhoBtn(_cvdGradeOculta, 'cvdGradeOlho') + '</div>'
             + '<div style="margin-top:10px;display:flex;align-items:center;justify-content:space-between;gap:10px;"><span style="font-size:13px;font-weight:600;color:#1C1C1E;">Histograma (VD)</span>' + grOlhoBtn(_cvdHistOculto, 'cvdHistOlho') + '</div>'
             + (_cvdHistOculto ? '' : grConfigSliderInt('cv-cfg-cvd-vd', 'Altura do histograma', _cvdEscVd, 1, 20, 'cvdEscVdDefinir', '', 'x'))
@@ -3534,7 +3537,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v720';
+const APP_VERSAO = 'v721';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -6967,6 +6970,36 @@ if (_grTipoGrafico === 'linha') {
                                 const dcs = baixa ? A.cv - B.cv : B.cv - A.cv, dps = baixa ? B.p - A.p : A.p - B.p;
                                 if (dcs > 0 && dps > 0) divs.push({ A, B, baixa, pc: dcs / fx, pp: dps / at, dp: B.p - A.p }); } };
                             todosPares(topos, true); todosPares(fundos, false);
+                            // JACARÉ: o CVD convertido para a escala do preço numa janela móvel (só olha para trás) — acompanha o preço como uma média móvel; onde o fluxo
+                            // não confirma, a linha se afasta do preço e a "boca" abre (vermelho: preço acima do fluxo; verde: preço abaixo). N sai dos dados: a distância
+                            // mediana, em candles, entre pivôs consecutivos do mesmo tipo neste TF.
+                            if (_cvdJacare) try {
+                                const gaps = []; [topos, fundos].forEach(L => { for (let k = 1; k < L.length; k++) gaps.push(L[k].ix - L[k - 1].ix); });
+                                gaps.sort((a, b) => a - b);
+                                const N = Math.max(10, gaps.length ? gaps[Math.floor(gaps.length / 2)] : 20);
+                                const pts = [];
+                                for (let i = 0; i < visible; i++) {
+                                    const ix = startIdx + i; if (ix < iAnc + 3 || ix >= nA || cvdAll[ix] == null) { pts.push(null); continue; }
+                                    const j0 = Math.max(iAnc, ix - N + 1); let n = 0, sp = 0, sc = 0;
+                                    for (let j = j0; j <= ix; j++) { sp += _grAllCandles[j].c; sc += cvdAll[j]; n++; }
+                                    const mp = sp / n, mc = sc / n; let vp = 0, vc = 0;
+                                    for (let j = j0; j <= ix; j++) { vp += (_grAllCandles[j].c - mp) ** 2; vc += (cvdAll[j] - mc) ** 2; }
+                                    const dpv = Math.sqrt(vp / n), dcv = Math.sqrt(vc / n);
+                                    if (!(dcv > 0) || !(dpv > 0)) { pts.push(null); continue; }
+                                    const conv = mp + (cvdAll[ix] - mc) / dcv * dpv, pr = _grAllCandles[ix].c;
+                                    pts.push({ x: xDoIdx(i), yc: toY(conv), yp: toY(pr), d: pr - conv });
+                                }
+                                ctx.save(); ctx.beginPath(); ctx.rect(PAD.left, PAD.top, chartW, chartH); ctx.clip();
+                                for (let i = 1; i < pts.length; i++) {
+                                    const a = pts[i - 1], b = pts[i]; if (!a || !b) continue;
+                                    const dm = (a.d + b.d) / 2;
+                                    ctx.fillStyle = dm > 0 ? 'rgba(239,83,80,0.22)' : 'rgba(38,166,154,0.22)';
+                                    ctx.beginPath(); ctx.moveTo(a.x, a.yp); ctx.lineTo(b.x, b.yp); ctx.lineTo(b.x, b.yc); ctx.lineTo(a.x, a.yc); ctx.closePath(); ctx.fill();
+                                }
+                                ctx.strokeStyle = '#FF9800'; ctx.lineWidth = 1.8; ctx.lineJoin = 'round'; ctx.setLineDash([]); ctx.beginPath(); let ini2 = false;
+                                pts.forEach(q => { if (!q) { ini2 = false; return; } if (!ini2) { ctx.moveTo(q.x, q.yc); ini2 = true; } else ctx.lineTo(q.x, q.yc); });
+                                ctx.stroke(); ctx.restore();
+                            } catch (eJc) { try { ctx.restore(); } catch (e2) {} }
                             // NOTA pela anormalidade, não pelo ranking: o CVD (pc) e o avanço do preço (pp) são medidos contra o NORMAL da própria série (mediana e dispersão robusta MAD, em escala log,
                             // porque os tamanhos são muito assimétricos). z = média dos dois desvios. Forte: z >= 1 (bem acima do normal) · Média: z >= 0 (acima do normal) · Fraca: abaixo do normal.
                             // Numa série só de ruído quase nada passa de Fraca; vale por TF, pois a série é a daquele TF.
