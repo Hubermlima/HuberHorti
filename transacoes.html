@@ -3535,7 +3535,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v710';
+const APP_VERSAO = 'v713';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -6265,8 +6265,8 @@ function grDrawCandles(candles, emptyRight) {
         // Guarda o valor atual no próprio item (item.valorTxt) pra lista do modal mostrar sem recalcular.
         _grEmaCustom.forEach(item => {
             const vals = extrairJanela(grEMA(allCloses, item.periodo), item.periodo);
-            item._janela = vals;   // guardada pra área de toque / bolinhas da seleção (registradas mais abaixo)
-            desenharLinha(vals, item.cor, item.esp > 0 ? item.esp : 1.2);
+            item._janela = item.oculta ? null : vals;   // guardada pra área de toque / bolinhas da seleção (registradas mais abaixo); escondida = sem toque
+            if (!item.oculta) desenharLinha(vals, item.cor, item.esp > 0 ? item.esp : 1.2);
             const v = vals.filter(v=>v!=null).pop();
             item.valorTxt = v != null ? fmtN(v) : null;
             if (item._valEl) item._valEl.textContent = item.valorTxt || '—';   // modal das EMAs aberto: valor acompanha o último candle
@@ -6961,8 +6961,10 @@ if (_grTipoGrafico === 'linha') {
                             const atrEm = ix => { let sm = 0, ct = 0; for (let j = Math.max(1, ix - 13); j <= ix; j++) { const a0 = _grAllCandles[j], p0 = _grAllCandles[j - 1]; sm += Math.max(a0.h - a0.l, Math.abs(a0.h - p0.c), Math.abs(a0.l - p0.c)); ct++; } return ct ? sm / ct : 0; };
                             const divs = [];
                             const coleta = (L, baixa) => { for (let k = 1; k < L.length; k++) { const A = L[k - 1], B = L[k];
-                                const ok = baixa ? (B.p > A.p && B.cv < A.cv && A.cv - B.cv > limDifEm(B.ix)) : (B.p < A.p && B.cv > A.cv && B.cv - A.cv > limDifEm(B.ix));
-                                if (!ok) continue; const fx = limDifEm(B.ix) / 0.05, at = atrEm(B.ix);
+                                // Regra do DESENHO (mais sensível que a do benchmark): o CVD precisa discordar > 5% da faixa, OU — se o preço andou ≥ 1 ATR entre os pivôs — > 2% da faixa.
+                                const lim5 = limDifEm(B.ix), at = atrEm(B.ix), dc = baixa ? A.cv - B.cv : B.cv - A.cv, precoOk = baixa ? B.p > A.p : B.p < A.p;
+                                const ok = precoOk && dc > 0 && (dc > lim5 || (at > 0 && Math.abs(B.p - A.p) / at >= 1 && dc > lim5 * 0.4));
+                                if (!ok) continue; const fx = lim5 / 0.05;
                                 divs.push({ A, B, baixa, pc: fx > 0 ? Math.abs(A.cv - B.cv) / fx : 0, pp: at > 0 ? Math.abs(B.p - A.p) / at : 0, dp: B.p - A.p }); } };
                             coleta(topos, true); coleta(fundos, false);
                             const pctl = (arr, key) => arr.map(d => { let m = 0; arr.forEach(o => { if (o[key] < d[key]) m++; else if (o[key] === d[key]) m += 0.5; }); return m / arr.length; });
@@ -10743,7 +10745,7 @@ let _grEmaCustomSeq = 0;
 const _grEmaCustomCores = ['#4CAF50', '#FF5722', '#3F51B5', '#8BC34A', '#E040FB', '#00A3B4', '#F5A623', '#795548'];
 function grEmaCustomSalvar() {
     try {
-        localStorage.setItem(GR_EMA_CUSTOM_KEY, JSON.stringify(_grEmaCustom.map(e => ({ periodo: e.periodo, cor: e.cor, esp: e.esp }))));
+        localStorage.setItem(GR_EMA_CUSTOM_KEY, JSON.stringify(_grEmaCustom.map(e => ({ periodo: e.periodo, cor: e.cor, esp: e.esp, oculta: e.oculta === true }))));
     } catch(e) {}
 }
 function grEmaCustomCarregar() {
@@ -10755,7 +10757,7 @@ function grEmaCustomCarregar() {
         arr.forEach(item => {
             if (!item || typeof item.periodo !== 'number') return;
             const cor = item.cor || _grEmaCustomCores[_grEmaCustomSeq % _grEmaCustomCores.length];
-            _grEmaCustom.push({ id: _grEmaCustomSeq++, periodo: item.periodo, cor, esp: item.esp > 0 ? item.esp : 1.2, valorTxt: null });
+            _grEmaCustom.push({ id: _grEmaCustomSeq++, periodo: item.periodo, cor, esp: item.esp > 0 ? item.esp : 1.2, valorTxt: null, oculta: item.oculta === true });
         });
     } catch(e) {}
 }
@@ -10908,7 +10910,7 @@ function grAmbienteColetar() {
         footprint: raiz.footprint,
         reguaLockS: _grReguaLock.S,
         reguaLockA: _grReguaLock.A,
-        emaCustom: _grEmaCustom.map(e => ({ periodo: e.periodo, cor: e.cor, esp: e.esp })),
+        emaCustom: _grEmaCustom.map(e => ({ periodo: e.periodo, cor: e.cor, esp: e.esp, oculta: e.oculta === true })),
         zoom: raiz.zoom,
         yFatorMapa: raiz.yFatorMapa,
         tfCustom: raiz.tfCustom,
@@ -11013,7 +11015,7 @@ async function grAmbienteCarregar() {
         ambiente.emaCustom.forEach(item => {
             if (item && typeof item.periodo === 'number') {
                 const cor = item.cor || _grEmaCustomCores[_grEmaCustomSeq % _grEmaCustomCores.length];
-                _grEmaCustom.push({ id: _grEmaCustomSeq++, periodo: item.periodo, cor, esp: item.esp > 0 ? item.esp : 1.2, valorTxt: null });
+                _grEmaCustom.push({ id: _grEmaCustomSeq++, periodo: item.periodo, cor, esp: item.esp > 0 ? item.esp : 1.2, valorTxt: null, oculta: item.oculta === true });
             }
         });
         grEmaCustomSalvar();
@@ -11079,11 +11081,20 @@ function cvRenderEmaCustomLista() {
         val.textContent = item.valorTxt || '—';
         item._valEl = val;
         esq.appendChild(cp); esq.appendChild(lbl); esq.appendChild(per); esq.appendChild(esp); esq.appendChild(val);
+        const olho = document.createElement('button'); olho.type = 'button';
+        olho.style.cssText = 'border:none;background:none;padding:2px 4px;color:#1C1C1E;display:flex;align-items:center;cursor:pointer;flex-shrink:0;';
+        const pintaOlho = () => { olho.innerHTML = grHeroicon(item.oculta ? 'eye-slash' : 'eye', 18); olho.title = item.oculta ? 'Mostrar esta EMA' : 'Esconder esta EMA'; linha.style.opacity = item.oculta ? '0.55' : '1'; };
+        olho.onclick = e => {
+            e.stopPropagation(); item.oculta = !item.oculta;
+            if (item.oculta && window._grAncSel && window._grAncSel.tipo === 'ema' && window._grAncSel.ts === item.id) window._grAncSel = null;
+            pintaOlho(); grEmaCustomSalvar(); grAmbienteSalvar(); grDrawChart();
+        };
+        pintaOlho();
         const rm = document.createElement('span');
         rm.textContent = '✕';
         rm.style.cssText = 'color:#8E8E93;font-size:14px;font-weight:700;padding:2px 6px;cursor:pointer;';
         rm.onclick = e => { e.stopPropagation(); cvRemoverEmaCustom(item.id); };
-        linha.appendChild(esq); linha.appendChild(rm);
+        linha.appendChild(esq); linha.appendChild(olho); linha.appendChild(rm);
         wrap.appendChild(linha);
     });
 }
