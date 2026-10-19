@@ -3522,7 +3522,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v688';
+const APP_VERSAO = 'v690';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4818,9 +4818,33 @@ function grPosAjustarLargura() {
     });
 }
 function grPosEscalarZoom() { grPosAjustarLargura(); }   // compatibilidade: a pinça chama isto depois de mudar _grZoom
+// CRIAÇÃO da caixa (início e fim originais). A caixa agora ANDA com os candles (grPosAcompanhar), então t1/t2 deixam de ser a data de criação;
+// tudo que lê "desde quando a caixa existe" (tese invalidada, perdida, relatório, dedupe de zona) usa estes dois, que ficam parados.
+function grPosT0(pz) { return pz.tCri > 0 ? pz.tCri : Math.min(pz.t1 || 0, pz.t2 || 0); }
+function grPosTFim(pz) { return pz.tFimCri > 0 ? pz.tFimCri : Math.max(pz.t1 || 0, pz.t2 || 0); }
+// ACOMPANHAR OS CANDLES: a caixa é uma janela de largura fixa que anda com o tempo. A cada candle novo (e ao reabrir o app, de uma vez só) o início e o fim
+// avançam juntos, então ela nunca fica pra trás nem alarga. Se o usuário mexe na largura ou na posição, vale o novo tamanho e ela segue acompanhando.
+// t1/t2 são SÓ posição na tela; criação/abertura/fim ficam à parte (tCri, tFimCri). Exceções: trade encerrado (histórico, congelado) e caixa de teste/prévia.
+function grPosAcompanhar(pz) {
+    if (!pz || pz.previa || pz.teste || !(pz.t1 > 0) || !(pz.t2 > 0)) return;
+    const tr = pz.tradeId && window._grPosTrades && window._grPosTrades[pz.tradeId];
+    if (tr && tr.data_fechamento) return;
+    const arr = _grAllCandles, n = arr ? arr.length : 0; if (!n) return;
+    const u = arr[n - 1].t;
+    if (!(pz.acRef > 0)) { pz.acRef = u; pz.tCri = pz.tCri > 0 ? pz.tCri : Math.min(pz.t1, pz.t2); pz.tFimCri = pz.tFimCri > 0 ? pz.tFimCri : Math.max(pz.t1, pz.t2); return; }
+    if (_edDrag && _edSel && _edSel.tipo === 'ps' && grPosicoes()[_edSel.idx] === pz) { pz.acRef = u; return; }   // o usuário está mexendo nela: nada anda agora
+    let dt = 0; try { dt = cvTfMsGrafico() || 0; } catch (e) {}
+    if (!(dt > 0) && n > 1) dt = arr[n - 1].t - arr[n - 2].t;
+    if (!(dt > 0)) return;
+    const passos = Math.floor((u - pz.acRef) / dt); if (passos < 1) return;
+    const d = passos * dt;
+    pz.t1 += d; pz.t2 += d; pz.acRef += d;   // movimento só visual: os dados (tCri, tFimCri, abertura do trade) não mudam
+    try { grPosSalvar(); } catch (e) {}
+}
 function grPosAplicarLimite(pz) {
     const n = _grAllCandles.length;
     pz.t2v = null;
+    try { grPosAcompanhar(pz); } catch (e) {}
     return;   // SEM limite de largura/posição (pedido do usuário). Código abaixo mantido só como referência.
     if (pz.origem === 'melhor') return;   // caixas do Melhor (par lado a lado) não são cortadas: o limite muda com o zoom e achatava a caixa criada em outro zoom
     if (!n || !(pz.t1 > 0) || !(pz.t2 > 0)) return;
@@ -5049,7 +5073,7 @@ async function cvPosCarregarAportes(pz) {
     window._grPosAportes[pz.id] = data.map(t => ({ id: t.id, tipo: String(t.tipo_operacao).endsWith('F') ? 'D' : 'R', data: String(t.data).slice(0, 10), preco: t.valor_total_usd / t.quantidade_ativo, aporte: null, qtd: t.quantidade_ativo, taxa: t.taxa_operacao, taxaManual: true }));
     return true;
 }
-// Caixa com trade (Ativo/Encerrado): borda esquerda fixa no candle do 1º aporte; a direita continua livre.
+// Caixa com trade (Ativo/Encerrado): a abertura do trade (1º aporte) é guardada como DADO (tCri); a borda esquerda só é posta ali na 1ª vez, depois a caixa anda como as outras.
 function cvPosAncorar(pz) {
     if (!pz || !pz.tradeId) return false;
     const ap = window._grPosAportes[pz.id], tr = window._grPosTrades[pz.tradeId];
@@ -5059,10 +5083,15 @@ function cvPosAncorar(pz) {
     let t = new Date(dia + 'T12:00:00-04:00').getTime(); if (!(t > 0)) return false;
     const arr = _grAllCandles;
     if (arr && arr.length) { let k = -1; for (let i = arr.length - 1; i >= 0; i--) if (arr[i].t <= t) { k = i; break; } if (k >= 0) t = arr[k].t; }
+    // DADO x VISUAL: a abertura do trade é um DADO e fica em pz.tCri (vem do banco, não muda com TF nem com a posição na tela).
+    // t1/t2 são só VISUAIS: a caixa anda sozinha com os candles (grPosAcompanhar). Aqui o início só é posto na 1ª vez (caixa ainda sem acRef).
+    const tDado = new Date(dia + 'T12:00:00-04:00').getTime(), mudouDado = pz.tCri !== tDado;
+    pz.tCri = tDado;
+    if (pz.acRef > 0) return mudouDado;
     const mudou = pz.t1 !== t;
     pz.t1 = t;
     if (grTimeToIndex(pz.t2) < grTimeToIndex(t) + 14) pz.t2 = grIndexToTime(grTimeToIndex(t) + 14);
-    return mudou;
+    return mudou || mudouDado;
 }
 // O BANCO MANDA: os números de uma caixa com trade (PM, quantidade, entrada, alvos, stops, alavancagem, risco) vêm sempre
 // de trades/transacoes/alvos. O JSON de preferências guarda só o desenho (lado, início/fim no gráfico, id do trade).
@@ -5094,7 +5123,7 @@ function cvPosDesvincular(pz) {
 // Versão enxuta para o JSON de preferências: caixa com trade guarda só o desenho (+ últimos preços, usados só se o trade sumir)
 function cvPosParaSalvar() {
     const out = {};
-    Object.keys(_grPosMapa).forEach(k => { out[k] = (_grPosMapa[k] || []).filter(z => !z.teste).map(z => z.tradeId ? { id: z.id, lado: z.lado, t1: z.t1, t2: z.t2, tradeId: z.tradeId, entrada: z.entrada, alvo: z.alvo, stop: z.stop, trancada: z.trancada || undefined } : Object.assign({}, z, { oculta: undefined })); });
+    Object.keys(_grPosMapa).forEach(k => { out[k] = (_grPosMapa[k] || []).filter(z => !z.teste).map(z => z.tradeId ? { id: z.id, lado: z.lado, t1: z.t1, t2: z.t2, acRef: z.acRef, tCri: z.tCri, tradeId: z.tradeId, entrada: z.entrada, alvo: z.alvo, stop: z.stop, trancada: z.trancada || undefined } : Object.assign({}, z, { oculta: undefined })); });
     return out;
 }
 // Trade ativo sem caixa no gráfico (ex.: o short antigo, ligado por SQL): cria a caixa a partir do trade.
@@ -5183,7 +5212,7 @@ function grTeseInvalida(pz, soPreco) {
     if (!soPreco && pz && (window._scRegistro || []).some(r => r.id === pz.id && r.st === 'desfeita')) return true;   // M14: o motor revisou e a tese da caixa armada se desfez
     const arr = SCX.candlesTela;
     if (!arr || !arr.length || pz.tradeId || pz.previa || !(pz.entrada > 0) || !(pz.stop > 0) || pz.stop === pz.entrada) return false;
-    const t0 = Math.min(pz.t1, pz.t2), u = arr[arr.length - 1];
+    const t0 = grPosT0(pz), u = arr[arr.length - 1];
     const k = [pz.id, t0, pz.entrada, pz.stop, arr.length, u.h, u.l, _grTf].join('|');
     if (_grTeseCache.has(k)) return _grTeseCache.get(k);
     const curto = pz.stop > pz.entrada; let ent = false, inv = false;
@@ -5201,7 +5230,7 @@ const _grPerdidaCache = new Map();
 function grEntradaPerdida(pz) {
     const arr = _grAllCandles;
     if (!arr || !arr.length || pz.tradeId || pz.previa || !(pz.entrada > 0) || !(pz.alvo > 0) || pz.alvo === pz.entrada) return false;
-    const t0 = Math.min(pz.t1, pz.t2), u = arr[arr.length - 1];
+    const t0 = grPosT0(pz), u = arr[arr.length - 1];
     const k = [pz.id, t0, pz.entrada, pz.alvo, arr.length, u.h, u.l, _grTf].join('|');
     if (_grPerdidaCache.has(k)) return _grPerdidaCache.get(k);
     const curto = pz.alvo < pz.entrada; let res = false;
@@ -8227,7 +8256,7 @@ async function cvPosCopiarTudo(i) {
     const pz = grPosicoes()[i]; if (!pz) return;
     try { if (!pz._stat && scStatusElegivel(pz)) pz._stat = await scStatusCalcular(pz); } catch (e) {}
     const f = x => x > 0 ? Math.round(x).toLocaleString('pt-BR') : '—', dh = t => new Date(t).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
-    const L = [], t0 = Math.min(pz.t1 || 0, pz.t2 || 0);
+    const L = [], t0 = grPosT0(pz);
     L.push('CAIXA · ' + (pz.lado === 'long' ? 'Long' : 'Short') + ' · ' + (pz.origem === 'setup' ? 'motor ' + (pz.motorV || 'antigo') : pz.pm > 0 ? 'posição real' : 'manual') + (t0 > 0 ? ' · criada ' + dh(t0) : '') + ' · copiado ' + dh(Date.now()));
     L.push('Entrada ' + f(pz.entrada) + (pz.pm > 0 ? ' · PM ' + f(pz.pm) : '') + ' · Stop ' + f(pz.stop) + ' · Alvo ' + f(pz.alvo) + ' · preço agora ' + f(_precoAtual));
     if (pz.tfAcomp) L.push('Acompanhar no ' + pz.tfAcomp.rot);
@@ -8241,7 +8270,7 @@ async function cvPosCopiarTudo(i) {
 // Linha de TEMPO do Status: data de início (armada: criação · em trade: entrada · encerrada: criação) e quanto tempo passou
 // (intraday: "3 h 25 min"; a partir de 24 h: "2 dias"). Encerrada: tempo até o fim.
 function cvPosTempoLinha(pz, x) {
-    const r = (window._scRegistro || []).find(q => q.id === pz.id), t0b = Math.min(pz.t1 || Infinity, pz.t2 || Infinity);
+    const r = (window._scRegistro || []).find(q => q.id === pz.id), t0b = grPosT0(pz) || Infinity;
     const fmtT = ms => { const min = Math.round(Math.max(0, ms) / 60000); return ms >= 86400000 ? Math.floor(ms / 86400000) + (ms >= 2 * 86400000 ? ' dias' : ' dia') : (min >= 60 ? Math.floor(min / 60) + ' h ' + (min % 60) + ' min' : min + ' min'); };
     const fmtD = t => { const d = new Date(t); return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' }) + ' ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }); };
     const lin = (rot, t, tempoRot, ms) => '<div style="line-height:1.35;color:#6B6B70;margin-top:3px;">' + rot + ': <b style="color:#1C1C1E;">' + fmtD(t) + '</b> · ' + tempoRot + ': <b style="color:#1C1C1E;">' + fmtT(ms) + '</b></div>';
@@ -16073,7 +16102,7 @@ function scDesfechoCaixa(pz) {
     if (reg && ['alvo', 'stop', 'perdida', 'expirou', 'semGatilho', 'zero', 'desfeita', 'saida'].indexOf(reg.st) >= 0) return { st: reg.st, tFim: reg.tFim, R: reg.st === 'zero' ? 0 : reg.st === 'saida' ? (reg.Rsaida != null ? reg.Rsaida : null) : R(reg.st) };
     if (pz.gat) return null;   // com gatilho, o desfecho vem só do registro (tocar a zona não é entrar)
     if (!(pz.alvo > 0) || !(pz.stop > 0) || !(ent > 0)) return null;
-    const arr = SCX.candlesTela || [], t0 = Math.min(pz.t1 || 0, pz.t2 || 0), lg = pz.lado === 'long'; let dentro = false;
+    const arr = SCX.candlesTela || [], t0 = grPosT0(pz), lg = pz.lado === 'long'; let dentro = false;
     for (const c of arr) {
         if (!(c.t >= t0)) continue;
         const toca = lg ? c.l <= ent : c.h >= ent, bStop = lg ? c.l <= pz.stop : c.h >= pz.stop, bAlvo = lg ? c.h >= pz.alvo : c.l <= pz.alvo;
@@ -16366,7 +16395,7 @@ function scDefesaNivel(lado, de, ate, tick) {
 function scZonaQueimada(lado, entrada, tick) {
     try {
         const tLim = Date.now() - scDefTf(SCX.cfg.micro).blocoMs;   // M9: memória de 1 candle do micro (antes 1 do macro = 3 dias, longo demais pro 5 min)
-        return grPosicoes().some(z => z.origem === 'setup' && !z.tradeId && !z.teste && z.lado === lado && Math.max(z.t1, z.t2) >= tLim && Math.abs(z.entrada - entrada) <= tick && grTeseInvalida(z, true));
+        return grPosicoes().some(z => z.origem === 'setup' && !z.tradeId && !z.teste && z.lado === lado && grPosTFim(z) >= tLim && Math.abs(z.entrada - entrada) <= tick && grTeseInvalida(z, true));
     } catch (e) { return false; }
 }
 // Tamanho típico (mediana de máxima − mínima) dos candles de um TF nos últimos 7 dias
@@ -16469,7 +16498,7 @@ async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fecha
         let t1 = Date.now(), t2 = t1 + Math.min(dur, extraSlots * candleMs);
         if (opts.scalp) {   // scalp: nasce no candle micro atual e vale por 12 candles micro; as vencidas (6 candles além da validade) somem; caixa igual à anterior não duplica
             t1 = Math.floor(Date.now() / dMi.blocoMs) * dMi.blocoMs; t2 = t1 + 12 * dMi.blocoMs;
-            for (let k = lista.length - 1; k >= 0; k--) { const z = lista[k]; if (z.scalp && !z.tradeId && Math.max(z.t1, z.t2) < Date.now() - 6 * dMi.blocoMs && !(_edSel && _edSel.tipo === 'ps' && _edSel.idx === k)) lista.splice(k, 1); }
+            for (let k = lista.length - 1; k >= 0; k--) { const z = lista[k]; if (z.scalp && !z.tradeId && grPosTFim(z) < Date.now() - 6 * dMi.blocoMs && !(_edSel && _edSel.tipo === 'ps' && _edSel.idx === k)) lista.splice(k, 1); }
             dup = lista.some(z => z.scalp && z.lado === lado && Math.abs(z.entrada - entrada) < rm.tick && Math.abs(z.stop - stop) < rm.tick);
         }
         let tfSug = null;   // em que TF acompanhar: o maior em que um candle típico cabe na zona de captura (entrada→stop)
@@ -17081,7 +17110,7 @@ async function scForaSino(lado) {
     const lista = grPosicoes(), nC = _grAllCandles.length, cs0 = _grAllCandles, candleMs = nC > 1 ? Math.max(60000, cs0[nC - 1].t - cs0[nC - 2].t) : 300000;
     const dur = Math.max(2, Math.floor((_grZoom || 15) * 0.1)) * candleMs, extra = Math.max(1, Math.floor(grComputarZoomEfetivo() * 0.15));
     const t1 = Date.now(), t2 = t1 + Math.min(dur, extra * candleMs);
-    if (lista.some(z => z.origem === 'setup' && z.foraSino && z.lado === lado && Math.abs(z.entrada - entrada) < tip && Math.max(z.t1, z.t2) > Date.now() - 2 * 3600000)) return { msg: 'já armei essa mesma área' };
+    if (lista.some(z => z.origem === 'setup' && z.foraSino && z.lado === lado && Math.abs(z.entrada - entrada) < tip && grPosTFim(z) > Date.now() - 2 * 3600000)) return { msg: 'já armei essa mesma área' };
     const pz = grPosNova(lado, nC, entrada);
     pz.entrada = entrada; pz.stop = stop; pz.alvo = alvo; pz.origem = 'setup'; pz.tAbs = true; pz.t1 = t1; pz.t2 = t2; pz.foraSino = true;
     pz.rotulo = 'Fora do sino · ' + abs.length + ' ' + (lg ? 'AC' : 'AV'); pz.score = null; pz.motorV = SC_MOTOR_VERSAO; pz.gat = true;
@@ -17211,7 +17240,7 @@ async function scRelatorioCaixa(pz) {
     let base;
     if (Array.isArray(pz.relatorio) && pz.relatorio.length) base = pz.relatorio.slice();
     else {
-        const t0 = Math.min(pz.t1 || 0, pz.t2 || 0);
+        const t0 = grPosT0(pz);
         base = [(pz.lado === 'long' ? 'LONG' : 'SHORT') + ' · ' + (pz.origem === 'setup' ? 'motor ' + (pz.motorV || 'antigo') : pz.pm > 0 ? 'posição real' : 'caixa manual') + (t0 > 0 ? ' · criada ' + dh(t0) : ''),
             'Entrada ' + f(pz.entrada) + (pz.pm > 0 ? ' · PM ' + f(pz.pm) : '') + ' · Stop ' + f(pz.stop) + ' · Alvo ' + f(pz.alvo)];
         if (pz.rotulo) base.push(pz.rotulo);
