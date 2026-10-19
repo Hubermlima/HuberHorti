@@ -3537,7 +3537,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v726';
+const APP_VERSAO = 'v727';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -10459,7 +10459,7 @@ setInterval(grFhDwellTick, 100);
 // Com o anel cheio, mexer o dedo liga a Medida: o ponto 1 é onde parou, a prévia acompanha o crosshair e SOLTAR o dedo marca o ponto 2 e salva a medida.
 // Soltar sem mexer (ou antes do anel encher) não faz nada: é só a leitura normal do candle. Não age com ferramenta de desenho ligada.
 let _mdDw = null; window._mdDwProg = 0; window._mdDedo = false; window._mdGesto = null;
-function grMdCancelar() { grNfAutoParar(); const tinha = _mdDw || window._mdDwProg || window._mdGesto; _mdDw = null; window._mdDwProg = 0; window._mdGesto = null; if (tinha) { _medidaAtual = null; try { grDrawChart(); } catch (e) {} } }
+function grMdCancelar() { grNfAutoParar(); const tinha = _mdDw || window._mdDwProg || window._mdGesto; _mdDw = null; window._mdDwProg = 0; window._mdGesto = null; if (tinha) { _medidaAtual = null; _trendAtual = null; _freehandAtual = null; try { grDrawChart(); } catch (e) {} } }
 function grMdDwellTick() {
     const ativo = window._mdDedo && window._longPressActive && !grPlAtivo() && !window._mdGesto && !_edDrag && _grCrosshairX != null && window._longPressY >= 0;
     if (!ativo) { if (_mdDw || window._mdDwProg) { _mdDw = null; window._mdDwProg = 0; try { grDrawChart(); } catch (e) {} } return; }
@@ -10475,28 +10475,69 @@ function grMdDwellTick() {
     try { grDrawChart(); } catch (e) {}
 }
 setInterval(grMdDwellTick, 100);
+// GESTO ÚNICO (depois do anel roxo, arrastar): o formato do traço decide o desenho.
+//  reta quase vertical (até ~15° da vertical) = Medida · reta inclinada = Tendência · inclinada e depois para baixo = Canal de regressão · qualquer outro = Desenho livre.
+// A prévia muda de forma ao vivo conforme o traço; ao soltar o dedo, vale o último formato.
+function grGestoClassificar(pts) {
+    if (!pts || pts.length < 2) return { tipo: 'medida', simp: pts || [] };
+    const simp = grSimplificarTraco(pts.map(q => ({ i: q.i, p: q.p })));
+    const sc = simp.map(q => ({ x: grIndexToX(q.i), y: grLineY(q.p), i: q.i, p: q.p }));
+    const vert = (a, b) => { const dx = Math.abs(b.x - a.x), dy = Math.abs(b.y - a.y); return dy > 0 && dx <= dy * 0.27; };   // 0,27 = tan 15°
+    if (sc.length === 2) return { tipo: vert(sc[0], sc[1]) ? 'medida' : 'tendencia', simp };
+    if (sc.length === 3 && !vert(sc[0], sc[1]) && vert(sc[1], sc[2]) && sc[2].y > sc[1].y) return { tipo: 'canal', simp };
+    return { tipo: 'livre', simp };
+}
+function grMdPrevia(G) {
+    _medidaAtual = null; _trendAtual = null; _freehandAtual = null;
+    const c = G.cur, i0 = grTimeToIndex(G.P1.t);
+    if (G.tipo === 'medida' && c) _medidaAtual = { i1: i0, p1: G.P1.p, i2: c.ic, p2: c.p };
+    else if (G.tipo === 'tendencia' && c) _trendAtual = { i1: i0, p1: G.P1.p, i2: c.ic, p2: c.p, cor: _trendColor, canal: false };
+    else if (G.tipo === 'canal') { const a = G.cl.simp[0], b = G.cl.simp[1]; _trendAtual = { i1: Math.min(a.i, b.i), i2: Math.max(a.i, b.i), p1: a.p, p2: b.p, cor: _trendColor, canal: true }; }
+    else _freehandAtual = { pontos: G.pts.map(q => ({ i: q.i, p: q.p })), cor: _freehandColor };
+}
 function grMdMover() {   // chamada a cada movimento do crosshair normal (dedo arrastando)
     if (_mdDw && _mdDw.pronto && !window._mdGesto && Math.hypot(_grCrosshairX - grIndexToX(_mdDw.i), window._longPressY - grLineY(_mdDw.p)) > 8) {
-        window._mdGesto = { P1: _mdDw.P1, cur: null }; _mdDw = null; window._mdDwProg = 0;
+        window._mdGesto = { P1: _mdDw.P1, cur: null, pts: [{ i: _mdDw.i, p: _mdDw.p }], tipo: 'medida', cl: null }; _mdDw = null; window._mdDwProg = 0;
         grNfAutoIniciar();   // dedo perto da borda: a tela rola sozinha enquanto você procura o ponto 2 (só UMA vez, ao começar: o tick chama grMdMover e não pode criar outro timer)
     }
     const G = window._mdGesto; if (!G) return;
     const cur = grPlCursor(); if (!cur) return;
-    G.cur = cur; _medidaAtual = { i1: grTimeToIndex(G.P1.t), p1: G.P1.p, i2: cur.ic, p2: cur.p };
+    G.cur = cur;
+    const q = { i: grXToIndex(_grCrosshairX) - 0.5, p: grToPrice(window._longPressY) }, u = G.pts[G.pts.length - 1];
+    if (!u || Math.hypot(grIndexToX(q.i) - grIndexToX(u.i), grLineY(q.p) - grLineY(u.p)) >= 4) G.pts.push(q); else G.pts[G.pts.length - 1] = q;
+    G.cl = grGestoClassificar(G.pts); G.tipo = G.cl.tipo;
+    grMdPrevia(G);
 }
-function grMdFinalizar() {   // soltou o dedo: se a Medida estava ativa, marca o ponto 2 e salva
+function grMdFinalizar() {   // soltou o dedo: cria o desenho do formato atual
     const G = window._mdGesto; _mdDw = null; window._mdDwProg = 0; window._mdGesto = null; grNfAutoParar();
     if (!G) return;
-    const c = G.cur;
-    if (c && G.P1 && !(c.t === G.P1.t && Math.abs(c.p - G.P1.p) < 1e-9)) {
-        const mid = Date.now(); _medidas.push({ id: mid, t1: G.P1.t, p1: G.P1.p, t2: c.t, p2: c.p, efem: true });   // efêmera: só para ler; não é salva
-        setTimeout(() => {   // some sozinha depois de alguns segundos (se você não a selecionou)
-            const k = _medidas.findIndex(m => m.id === mid); if (k < 0) return;
-            if (_edSel && _edSel.tipo === 'md' && _edSel.idx === k) { delete _medidas[k].efem; try { cvSalvarMedidas(); } catch (e) {} return; }   // selecionada: vira permanente
-            _medidas.splice(k, 1); try { grDrawChart(); } catch (e) {}
-        }, 3000);
-    }
-    _medidaAtual = null; try { grDrawChart(); } catch (e) {}
+    _medidaAtual = null; _trendAtual = null; _freehandAtual = null;
+    const c = G.cur, P1 = G.P1, cl = G.cl, n = (_grAllCandles || []).length;
+    const tIdx = i => grIndexToTime(Math.max(0, Math.min(n - 1, Math.round(i))));
+    let tipo = G.tipo;
+    try {
+        if (tipo === 'canal') {   // canal precisa de pelo menos 5 candles no trecho diagonal; senão vira tendência
+            const a = cl.simp[0], b = cl.simp[1], i1 = Math.round(Math.min(a.i, b.i)), i2 = Math.round(Math.max(a.i, b.i));
+            const novo = { id: null, t1: tIdx(i1), p1: 0, t2: tIdx(i2), p2: 0, cor: _trendColor, canal: true };
+            if (grCanalCalc(grTimeToIndex(novo.t1), grTimeToIndex(novo.t2))) { grCanalAjustar(novo); _trendlines.push(novo); cvSalvarTrendline(novo); tipo = null; }
+            else tipo = 'tendencia';
+        }
+        if (tipo === 'tendencia' && c && P1 && !(c.t === P1.t && Math.abs(c.p - P1.p) < 1e-9)) {
+            const novo = { id: null, t1: P1.t, p1: P1.p, t2: c.t, p2: c.p, cor: _trendColor, canal: false };
+            _trendlines.push(novo); cvSalvarTrendline(novo);
+        } else if (tipo === 'livre' && cl && cl.simp.length >= 2) {
+            const novo = { id: null, pontos: cl.simp.map(pt => ({ t: grIndexToTime(pt.i), p: pt.p })), cor: _freehandColor, seg: true };
+            _freehands.push(novo); cvSalvarFreehand(novo);
+        } else if (tipo === 'medida' && c && P1 && !(c.t === P1.t && Math.abs(c.p - P1.p) < 1e-9)) {
+            const mid = Date.now(); _medidas.push({ id: mid, t1: P1.t, p1: P1.p, t2: c.t, p2: c.p, efem: true });   // efêmera: só para ler; não é salva
+            setTimeout(() => {   // some sozinha depois de 3 segundos (se você não a selecionou)
+                const k = _medidas.findIndex(m => m.id === mid); if (k < 0) return;
+                if (_edSel && _edSel.tipo === 'md' && _edSel.idx === k) { delete _medidas[k].efem; try { cvSalvarMedidas(); } catch (e) {} return; }   // selecionada: vira permanente
+                _medidas.splice(k, 1); try { grDrawChart(); } catch (e) {}
+            }, 3000);
+        }
+    } catch (e) {}
+    try { grDrawChart(); } catch (e) {}
 }
 // ── Menu de contexto do desenho selecionado (olho/lixeira/fechar) e áreas de toque para selecionar pelo handle ──
 const GR_ED_CTX_TIPOS = ['nf', 'tl', 'fh', 'hl', 'md'];
