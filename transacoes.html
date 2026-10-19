@@ -3537,7 +3537,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v733';
+const APP_VERSAO = 'v736';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -7991,9 +7991,15 @@ function grEdObjeto(sel) {
     return sel.tipo === 'tl' ? _trendlines[sel.idx] : sel.tipo === 'md' ? _medidas[sel.idx] : sel.tipo === 'nf' ? _novosFibos[sel.idx] : sel.tipo === 'fh' ? _freehands[sel.idx] : sel.tipo === 'hl' ? grHLinhas()[sel.idx] : sel.tipo === 'al' ? _grAlertas[sel.idx] : sel.tipo === 'ps' ? grPosicoes()[sel.idx] : null;
 }
 // fx(t) → x em tela, fy(preço) → y em tela. O desenho e o toque passam funções equivalentes.
+function grCanalDeTl(o) { return grCanalCalc(grTimeToIndex(o.t1), grTimeToIndex(o.t2), o.pi, o.pe, o.hor, o.geo ? { p1: o.p1, p2: o.p2, w: o.geo.w } : null, o.larg); }
 function grEdAlcas(fx, fy) {
     const o = grEdObjeto(); if (!o) return [];
     const t = _edSel.tipo;
+    if (t === 'tl' && o.canal) {   // canal: além das pontas, uma alça em cada banda externa (meio do canal) para alargar/estreitar
+        const hs = [{ k: 'a', x: fx(o.t1), y: fy(o.p1) }, { k: 'b', x: fx(o.t2), y: fy(o.p2) }], c = grCanalDeTl(o);
+        if (c) { const km = (c.n - 1) / 2, cen = c.inter + c.slope * km, xm = fx(grIndexToTime(c.a + km)); hs.push({ k: 'u', x: xm, y: fy(Math.exp(cen + c.q[3])) }, { k: 'd', x: xm, y: fy(Math.exp(cen + c.q[0])) }); const kr = (c.n - 1) * 0.75; hs.push({ k: 'r', x: fx(grIndexToTime(c.a + kr)), y: fy(Math.exp(c.inter + c.slope * kr)) }); }   // 'r' = alça de ÂNGULO (na linha central, a 3/4 do canal)
+        return hs;
+    }
     if (t === 'tl' || t === 'nf' || t === 'md') return [{ k: 'a', x: fx(o.t1), y: fy(o.p1) }, { k: 'b', x: fx(o.t2), y: fy(o.p2) }];
     if (t === 'fh' && o.seg) { const vs = []; (o.pontos || []).forEach((p, n) => { if (n === o.pontos.length - 1 && n > 0 && p.t === o.pontos[0].t && p.p === o.pontos[0].p) return; vs.push({ k: 'v' + n, x: fx(p.t), y: fy(p.p) }); }); return vs; }   // sequência: um vértice por bolinha (figura fechada: o último é o primeiro)
     if (t === 'fh') { const p = o.pontos[Math.floor(o.pontos.length / 2)]; return p ? [{ k: 'm', x: fx(p.t), y: fy(p.p) }] : []; }
@@ -8016,6 +8022,18 @@ function grEdAlcasDesenhar(ctx, fx, fy) {
         ctx.beginPath(); ctx.arc(a.x, a.y, 16, 0, Math.PI * 2); ctx.fillStyle = 'rgba(255,255,255,0.18)'; ctx.fill();
         ctx.beginPath(); ctx.arc(a.x, a.y, 9, 0, Math.PI * 2); ctx.fillStyle = '#FFFFFF'; ctx.fill();
         ctx.lineWidth = 3; ctx.strokeStyle = cor; ctx.stroke();
+        if (a.k === 'r' && _edSel.tipo === 'tl') {   // ícone de ângulo (∠) e, durante o arrasto, o valor em graus
+            ctx.strokeStyle = cor; ctx.lineWidth = 1.6; ctx.beginPath(); ctx.moveTo(a.x - 5, a.y + 4); ctx.lineTo(a.x + 5, a.y + 4); ctx.moveTo(a.x - 5, a.y + 4); ctx.lineTo(a.x + 3, a.y - 4); ctx.stroke();
+            ctx.beginPath(); ctx.arc(a.x - 5, a.y + 4, 5, -Math.PI / 4, 0); ctx.stroke();
+            if (_edDrag && _edDrag.k === 'r' && _edDrag.moved) {
+                const oo = grEdObjeto(); if (oo) {
+                    const dg = Math.atan2(fy(oo.p1) - fy(oo.p2), fx(oo.t2) - fx(oo.t1)) * 180 / Math.PI, tx = (Math.abs(dg) < 0.05 ? 0 : dg).toFixed(1).replace('.', ',') + '°';
+                    ctx.font = 'bold 11px -apple-system'; const tw = ctx.measureText(tx).width + 10;
+                    ctx.fillStyle = 'rgba(20,20,24,0.85)'; ctx.beginPath(); ctx.roundRect(a.x - tw / 2, a.y - 40, tw, 18, 4); ctx.fill();
+                    ctx.fillStyle = '#FFFFFF'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(tx, a.x, a.y - 31);
+                }
+            }
+        }
         ctx.restore();
     });
 }
@@ -8087,6 +8105,28 @@ function grEdToqueMove(x, y) {
     if (_edSel.tipo === 'ps' && (d.k === 'a' || d.k === 's' || d.k === 'e')) preco = grMagnetRegua(ny, preco);   // stop/entrada/alvo grudam nas bordas da régua
     if (!(preco > 0)) return true;
     const tp = _edSel.tipo;
+    if (tp === 'tl' && d.k === 'r') {   // ALÇA DE ÂNGULO: gira o canal em torno do meio dele, de modo que a linha central passe pelo dedo; perto da horizontal (±2,5°) ele trava reto
+        const c = grCanalDeTl(o);
+        if (c) {
+            const i1 = grTimeToIndex(o.t1), i2 = grTimeToIndex(o.t2), im = (i1 + i2) / 2;
+            if (!o.geo) {   // canal de regressão vira geométrico (inclinação livre), mantendo a posição e a largura atuais
+                o.geo = { w: Math.max(1e-6, (c.q[3] - c.q[0]) / 2) }; o.larg = undefined; o.hor = undefined;
+                o.p1 = Math.exp(c.inter + c.slope * (i1 - c.a)); o.p2 = Math.exp(c.inter + c.slope * (i2 - c.a));
+            }
+            const lnM = (Math.log(o.p1) + Math.log(o.p2)) / 2, mx = grIndexToX(im), my = grLineY(Math.exp(lnM)), fi = grXToIndex(nx);
+            if (Math.abs(nx - mx) > 6) {
+                let ang = Math.atan2(-(ny - my), nx - mx) * 180 / Math.PI; if (ang > 90) ang -= 180; else if (ang < -90) ang += 180;
+                const sl = (Math.abs(ang) < 2.5) ? 0 : (Math.log(preco) - lnM) / (fi - im);
+                if (isFinite(sl)) { o.p1 = Math.exp(lnM + sl * (i1 - im)); o.p2 = Math.exp(lnM + sl * (i2 - im)); }
+            }
+        }
+        grDrawChart(); return true;
+    }
+    if (tp === 'tl' && (d.k === 'u' || d.k === 'd')) {   // alça da banda externa do canal: a largura (simétrica) vira a distância do dedo à linha central
+        const c = grCanalDeTl(o);
+        if (c) { const w = Math.abs(Math.log(preco) - (c.inter + c.slope * (c.n - 1) / 2)); if (w > 1e-6) { if (o.geo) o.geo.w = w; else o.larg = w; } }
+        grDrawChart(); return true;
+    }
     if (tp === 'tl' || tp === 'md') { if (d.k === 'a') { o.t1 = grIndexToTime(idx); o.p1 = preco; } else { o.t2 = grIndexToTime(idx); o.p2 = preco; } if (o.canal) grCanalAjustar(o); if (tp === 'md') { _nfDedo = { x, y }; if (!_nfTimer) grNfAutoIniciar(); } }   // Medida: rola a tela sozinha com o dedo perto da borda
     else if (tp === 'nf') { _nfDedo = { x, y }; grNfPonto(x, y); if (!_nfTimer) grNfAutoIniciar(); }
     else if (tp === 'fh' && /^v\d+$/.test(d.k)) {   // arrasta UM vértice da sequência (figura fechada: o último acompanha o primeiro)
@@ -10078,20 +10118,19 @@ function grCanalCfgAbrir(idx) {
     ov.innerHTML = '<div style="background:#fff;width:100%;max-width:320px;border-radius:16px;padding:14px;box-shadow:0 8px 28px rgba(0,0,0,0.28);">' +
         '<div style="font-size:16px;font-weight:700;color:#1C1C1E;margin-bottom:4px;">Canal de regressão</div>' +
         '<div style="font-size:12px;color:#8E8E93;margin-bottom:10px;">% dos candles que ficam dentro de cada par de bandas. Menor % = bandas mais estreitas.</div>' +
-        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;"><label for="cc-hor" style="font-size:13px;color:#1C1C1E;">Canal horizontal</label><input id="cc-hor" type="checkbox" style="width:22px;height:22px;"></div>' +
         '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;"><label for="cc-pi" style="font-size:13px;color:#1C1C1E;">Banda interna (%)</label><input id="cc-pi" type="text" inputmode="numeric" style="' + inp + '"></div>' +
         '<div style="display:flex;align-items:center;justify-content:space-between;"><label for="cc-pe" style="font-size:13px;color:#1C1C1E;">Banda externa (%)</label><input id="cc-pe" type="text" inputmode="numeric" style="' + inp + '"></div>' +
         '<div id="cc-erro" style="color:#EF5350;font-size:12px;min-height:16px;margin-top:6px;"></div>' +
         '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px;"><button id="cc-cancel" type="button" style="height:38px;border-radius:11px;border:none;background:#F2F2F7;font-size:15px;color:#007AFF;">Cancelar</button><button id="cc-ok" type="button" style="height:38px;border-radius:11px;border:none;background:#007AFF;font-size:15px;font-weight:600;color:#fff;">Ok</button></div></div>';
     document.body.appendChild(ov);
     const g = id => document.getElementById(id);
-    g('cc-hor').checked = !!tl.hor; g('cc-pi').value = String(tl.pi || GR_CANAL_PADRAO.pi); g('cc-pe').value = String(tl.pe || GR_CANAL_PADRAO.pe);
+    g('cc-pi').value = String(tl.pi || GR_CANAL_PADRAO.pi); g('cc-pe').value = String(tl.pe || GR_CANAL_PADRAO.pe);
     ['cc-pi', 'cc-pe'].forEach(id => g(id).addEventListener('input', e => { e.target.value = e.target.value.replace(/\D/g, '').slice(0, 2); }));
     g('cc-cancel').onclick = () => ov.remove();
     g('cc-ok').onclick = () => {
         const pi = parseInt(g('cc-pi').value, 10), pe = parseInt(g('cc-pe').value, 10);
         if (!(pi >= 10 && pe <= 99 && pi < pe)) { g('cc-erro').textContent = 'Use valores de 10 a 99, com a interna menor que a externa.'; return; }
-        tl.pi = pi; tl.pe = pe; tl.larg = undefined; tl.hor = g('cc-hor').checked; try { grCanalAjustar(tl); } catch (e) {} try { cvSalvarTrendline(tl); } catch (e) {}
+        tl.pi = pi; tl.pe = pe; tl.larg = undefined; try { grCanalAjustar(tl); } catch (e) {} try { cvSalvarTrendline(tl); } catch (e) {}
         ov.remove(); grDrawChart();
     };
 }
