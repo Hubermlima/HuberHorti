@@ -1708,7 +1708,6 @@ function grConfigRender() {
         + '<button onclick="grConfigFechar()" style="border:none;background:#1C1C1E;color:#FFFFFF;border-radius:8px;padding:6px 12px;font-size:13px;font-weight:700;">Fechar</button></div>'
         + '<div style="flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:2px 16px calc(32px + env(safe-area-inset-bottom));">'
         + S('Gráfico')
-        + R('cv-cfg-modallinhas-value', ICO.modal, 'Linhas nos modais', 'Footprint e histograma agregado', 'grModalAlternarLinhasModo()')
         + R('cv-cfg-yfator-value', ICO.escala, 'Escala vertical', null, 'grYFatorResetar()')
         + grConfigVelocidadeBloco(ICO.velocidade)
         + '</div></div>';
@@ -3535,7 +3534,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v715';
+const APP_VERSAO = 'v717';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -13242,7 +13241,6 @@ function grAmbienteAtualizarRotulos() {
     grFluxoStatusAtualizar();
     const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
     set('cv-cfg-vplinhas-value', GR_VP_LINHAS_MODO === 'atr' ? 'ATR' : 'Auto (mais níveis)');
-    set('cv-cfg-modallinhas-value', GR_MODAL_LINHAS_MODO === 'atr' ? 'ATR (~14)' : 'Micro ($10)');
     set('cv-cfg-vpcomp-value', Math.round(GR_VP_COMPRIMENTO_PCT) + '%');
     set('cv-cfg-yfator-value', '×' + _grYFator.toFixed(2).replace('.', ',') + (_grYFator === 1 ? ' (automática)' : ' — tocar p/ resetar'));
     set('cv-cfg-vpancora-value', _grVpAncoraTs == null ? 'Sem âncora' : '⚓ ' + grVpRotuloData(_grVpAncoraTs));
@@ -14990,20 +14988,17 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
         fronteiras = [];
         for (let i = 0; i <= targetLinhas; i++) fronteiras.push(lo + i * tick);
     } else {
-        if (GR_MODAL_LINHAS_MODO === 'micro') {
-            let n = Math.max(1, Math.ceil(Math.ceil((hi - lo) / 10) / GR_MODAL_MICRO_MAX_LINHAS));
-            if (n % 2 === 0) n += 1;
-            tick = 10 * n;
-        } else {
-            let m = Math.max(1, Math.round(((hi - lo) / targetLinhas) / TICK_BASE));
-            if (m % 2 === 0) m += 1;
-            tick = TICK_BASE * m;
-        }
-        const beginP = Math.floor(lo / tick) * tick;
-        const endP = Math.ceil(hi / tick) * tick;
-        // Fronteiras do tick uniforme (N+1 bordas pra N linhas, borda = centro ± tick/2).
+        // Herda o modo de linhas do Fluxo (ATR / Auto / Manual): o degrau-base é o mesmo do gráfico; no ATR e no Manual o agregado
+        // inteiro é tratado como UM candle (teto de FOOTPRINT_NIVEIS_MAX degraus, agrupando vizinhos); no Auto não há esse teto
+        // (só um limite de segurança de 300 linhas).
+        const baseT = FOOTPRINT_LINHAS_MODO === 'auto' ? 10 : (FOOTPRINT_LINHAS_MODO === 'manual' ? Math.max(10, Math.round(FOOTPRINT_TICK_MANUAL / 10) * 10) : TICK_BASE);
+        const teto = FOOTPRINT_LINHAS_MODO === 'auto' ? 300 : FOOTPRINT_NIVEIS_MAX;
+        const kMinG = Math.floor((lo + baseT / 2) / baseT), kMaxG = Math.floor((hi + baseT / 2) / baseT);
+        let agrup = Math.max(1, Math.floor((kMaxG - kMinG + 1) / teto) - 1);
+        while (Math.floor(kMaxG / agrup) - Math.floor(kMinG / agrup) + 1 > teto) agrup++;
+        tick = baseT * agrup;
         fronteiras = [];
-        for (let p = beginP - tick / 2; p <= endP + tick / 2 + 1e-6; p += tick) fronteiras.push(p);
+        for (let j = Math.floor(kMinG / agrup); j <= Math.floor(kMaxG / agrup) + 1; j++) fronteiras.push(j * agrup * baseT - baseT / 2);
     }
     // Insere as fronteiras de fibo que caem dentro do range visível, mescla e
     // remove duplicata (dentro de $1 de diferença — evita linha de 1px).
@@ -15079,24 +15074,21 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
         document.getElementById('footprint-candle-sub').innerHTML =
             `Abertura ${fmtN(candle.o)} · Máxima ${maxSpanHtml} · Mínima ${minSpanHtml} · Fechamento ${closeSpanHtml} (${pctSpanHtml}) · ` +
             `Faixa ${fmtN(lo)} – ${fmtN(hi)} · tick $${tick}` +
-            (temIntensidade ? ' · cor mais sólida = trades maiores em média' : '');
+            '';
     } else {
         document.getElementById('footprint-candle-titulo').textContent = `Candle ${dataStr} · TF ${_grTf}`;
         document.getElementById('footprint-candle-sub').innerHTML =
             `Abertura ${fmtN(candle.o)} · Máxima ${maxSpanHtml} · Mínima ${minSpanHtml} · Fechamento ${closeSpanHtml} (${pctSpanHtml}) · ` +
             `${numCandles1min} candles (1min) agregados · tick $${tick}` +
-            (temIntensidade ? ' · cor mais sólida = trades maiores em média' : '');
+            '';
     }
     const pctCompraCandle = totalGeral > 0 ? (totalCompra / totalGeral * 100) : 0;
     const pctVendaCandle = totalGeral > 0 ? (totalVenda / totalGeral * 100) : 0;
     const avgCompraCandle = totalNc > 0 ? totalCompra / totalNc : null;
     const avgVendaCandle = totalNv > 0 ? totalVenda / totalNv : null;
     const forcaDemanda = (avgCompraCandle != null && avgVendaCandle != null) ? avgCompraCandle - avgVendaCandle : null;
-    const linhaDelta = `<span style="color:${delta >= 0 ? '#4CAF50' : '#EF5350'};">` +
-        `Delta ${delta >= 0 ? '+' : ''}${fmtBtc2(delta)} BTC · Total ${fmtBtc2(totalGeral)} BTC · ` +
-        `Compra ${fmtBtc2(totalCompra)} BTC (${pctCompraCandle.toFixed(0)}%) · Venda ${fmtBtc2(totalVenda)} BTC (${pctVendaCandle.toFixed(0)}%)` +
-        (forcaDemanda != null ? ` · Força ${forcaDemanda >= 0 ? '+' : ''}${fmtBtc2(forcaDemanda)}` : '') +
-        `</span>`;
+    const linhaDelta = `<span style="color:${delta >= 0 ? '#4CAF50' : '#EF5350'};">Delta ${delta >= 0 ? '+' : ''}${fmtBtc2(delta)} BTC</span>` +
+        `<br><span style="font-size:11px;font-weight:600;color:#1C1C1E;">Volume ${fmtBtc2(totalGeral)} BTC</span>`;
     // CVD anterior (candles já fechados) → CVD atual (anterior + delta desse candle, que já
     // vem ao vivo). Só existe pro candle único — no histograma agregado não
     // tem um "candle anterior" bem definido pra ancorar isso.
@@ -15144,32 +15136,58 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
         canvas.style.height = H + 'px';
         const ctx = canvas.getContext('2d');
         ctx.clearRect(0, 0, W, H);
-        // Colunas fixas — o candle real fica no vão central, e cada texto de
-        // quantidade fica confinado ao seu próprio lado (nunca cruza o gutter,
-        // mesmo com barra de 0px — foi isso que causava a sobreposição de antes).
-        const centroX = W / 2;
-        const candleHalfW = 10;               // metade da largura do corpo do candle desenhado
-        const gutterHalf = candleHalfW + 54;   // vão reservado pro candle + a plaquinha de preço
-        const margemBorda = 56;                // reserva de espaço pro texto na ponta da barra
-        const meiaLarguraMax = Math.max(20, centroX - gutterHalf - margemBorda);
-        const maxQtd = Math.max(maxCompra, maxVenda, 0.0001);
-        // Mapeamento preço -> y contínuo (mesma escala usada pelas linhas E pelo candle).
-        // Interpola pelos preços reais das linhas (grFootprintYParaPreco) em vez de
-        // assumir grade uniforme — precisa disso pra continuar certo mesmo quando
-        // tem marcador de fibo inserido no meio, quebrando a uniformidade do tick.
+        // Herda as configs do Fluxo: skin (Cores / Cinza / TradingView), "Níveis exibidos" (só os N de maior volume),
+        // contorno e cor da POC. Cada degrau do agregado vira uma "célula" igual à do footprint do gráfico.
+        const skin = FOOTPRINT_SKIN, ehTv = skin === 'tv', ehCinza = skin === 'cinza';
+        const margemPreco = 56;
+        const xCel0 = ehTv ? margemPreco : margemPreco + 14, xCel1 = W - 4, wCel = Math.max(20, xCel1 - xCel0);
+        const centroX = ehTv ? (xCel0 + xCel1) / 2 : margemPreco + 6;
+        const candleHalfW = ehTv ? 2.5 : 3;
+        const tvGap = 3;
+        const nN = niveis.length;
+        const bidI = i => niveis[i][1].v, askI = i => niveis[i][1].c;   // bid = venda, ask = compra
+        let maxTot = 0, pocIdx = 0, tvMaxB = 0, tvMaxA = 0;
+        niveis.forEach(([, v], i) => { const t = v.c + v.v; if (t > maxTot) { maxTot = t; pocIdx = i; } });
+        let zonaVis = null;
+        if (false && nN > 0) {   // "Níveis exibidos" não vale pro agregado: quem manda é o "Máximo de degraus"
+            const idx = niveis.map((_, i) => i).sort((a, b) => (niveis[b][1].c + niveis[b][1].v) - (niveis[a][1].c + niveis[a][1].v) || a - b);
+            zonaVis = new Set(idx.slice(0, FOOTPRINT_NIVEIS_VIS));
+        }
+        const visivel = i => !zonaVis || zonaVis.has(i);
+        niveis.forEach(([, v], i) => { if (visivel(i)) { tvMaxB = Math.max(tvMaxB, v.v); tvMaxA = Math.max(tvMaxA, v.c); } });
+        // desequilíbrio diagonal (mesma regra do Fluxo): ask contra o bid da linha de baixo; bid contra o ask da linha de cima
+        const imbAsk = i => i + 1 < nN && askI(i) > 0 && askI(i) >= FOOTPRINT_IMBALANCE_RATIO * bidI(i + 1);
+        const imbBid = i => i - 1 >= 0 && bidI(i) > 0 && bidI(i) >= FOOTPRINT_IMBALANCE_RATIO * askI(i - 1);
+        // formato/tamanho do texto: o número mais preciso que caiba, senão compacta (igual ao Fluxo)
+        ctx.font = '600 10px -apple-system';
+        const larguraX = ctx.measureText(' x ').width;
+        const wTxt = ehTv ? (wCel / 2 - tvGap - 6) : (wCel - 8);
+        const fsMax = Math.min(15, rowH - 10);
+        let nivelTxt = -1, fs = 0;
+        for (let nivel = 0; nivel <= 2 && nivelTxt < 0; nivel++) {
+            let maior = 1;
+            niveis.forEach(([, v], i) => {
+                if (!visivel(i)) return;
+                const w = ehTv ? Math.max(ctx.measureText(grFmtVolCompacto(v.v, nivel)).width, ctx.measureText(grFmtVolCompacto(v.c, nivel)).width)
+                    : ehCinza ? ctx.measureText(grFmtVolCompacto(v.c + v.v, nivel)).width
+                    : ctx.measureText(grFmtVolCompacto(v.v, nivel)).width + larguraX + ctx.measureText(grFmtVolCompacto(v.c, nivel)).width;
+                if (w > maior) maior = w;
+            });
+            const fsU = Math.min(fsMax, 10 * wTxt / maior);
+            if (fsU >= (nivel < 2 ? 6.5 : 5)) { nivelTxt = nivel; fs = fsU; }
+        }
+        const fonteN = '600 ' + fs + 'px -apple-system', fonteB = '800 ' + fs + 'px -apple-system';
+        const lum = c => { const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(c); if (!m) return 255; return 0.299 * parseInt(m[1], 16) + 0.587 * parseInt(m[2], 16) + 0.114 * parseInt(m[3], 16); };
+        const contraste = c => lum(c) < 140 ? '#FFFFFF' : '#000000';
         const niveisPrecos = niveis.map(([p]) => p);
         const yForPrice = p => grFootprintYParaPreco(niveisPrecos, tick, rowH, p);
         _grFootprintCandleLinhas = [];
         const holder = document.getElementById('footprint-candle-canvas-holder');
+        let yTopoBloco = Infinity, yBaseBloco = -Infinity;
         niveis.forEach(([p, v], i) => {
             const y = i * rowH;
             const total = v.c + v.v;
-            const deltaLinha = v.c - v.v;
-            const isPocCompra = p === pocCompraPreco && maxCompra > 0;
-            const isPocVenda = p === pocVendaPreco && maxVenda > 0;
-            // Linha que nasceu de um corte de fibo (fronteira dela é um nível de
-            // fibo) — borda tracejada laranja em cima, só pra destacar. O dado
-            // dela continua normal, real, igual qualquer outra linha.
+            // Linha que nasceu de um corte de fibo — borda tracejada laranja em cima (o dado dela é normal).
             if (v.isFibRow) {
                 ctx.strokeStyle = 'rgba(255,167,38,0.7)';
                 ctx.lineWidth = 1.5;
@@ -15179,59 +15197,85 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
                 ctx.stroke();
                 ctx.setLineDash([]);
             }
-            const rowLo = v._loP != null ? v._loP : p - tick / 2;
-            const rowHi = v._hiP != null ? v._hiP : p + tick / 2;
-            const intensCompra = (temIntensidade && v.nc > 0 && maxAvgCompra > 0) ? Math.min(1, (v.c / v.nc) / maxAvgCompra) : null;
-            const intensVenda = (temIntensidade && v.nv > 0 && maxAvgVenda > 0) ? Math.min(1, (v.v / v.nv) / maxAvgVenda) : null;
-            // compra (verde) — ESQUERDA, cresce do gutter pra fora
-            const wCompra = (v.c / maxQtd) * meiaLarguraMax;
-            const xCompraDireita = centroX - gutterHalf;
-            ctx.fillStyle = intensCompra != null
-                ? `rgba(76,175,80,${(0.3 + intensCompra * 0.65).toFixed(2)})`
-                : (isPocCompra ? 'rgba(76,175,80,0.9)' : 'rgba(76,175,80,0.6)');
-            ctx.fillRect(xCompraDireita - wCompra, y + 1, wCompra, rowH - 2);
-            // venda (vermelho) — DIREITA, cresce do gutter pra fora
-            const wVenda = (v.v / maxQtd) * meiaLarguraMax;
-            const xVendaEsquerda = centroX + gutterHalf;
-            ctx.fillStyle = intensVenda != null
-                ? `rgba(239,83,80,${(0.3 + intensVenda * 0.65).toFixed(2)})`
-                : (isPocVenda ? 'rgba(239,83,80,0.9)' : 'rgba(239,83,80,0.6)');
-            ctx.fillRect(xVendaEsquerda, y + 1, wVenda, rowH - 2);
-            if (isPocCompra) {
-                ctx.strokeStyle = '#4CAF50'; ctx.lineWidth = 1.5;
-                ctx.strokeRect(4, y + 1, xCompraDireita - 4, rowH - 2);
-            }
-            if (isPocVenda) {
-                ctx.strokeStyle = '#EF5350'; ctx.lineWidth = 1.5;
-                ctx.strokeRect(xVendaEsquerda, y + 1, (W - 4) - xVendaEsquerda, rowH - 2);
-            }
-            // Texto de quantidade — sempre na ponta da barra, nunca cruza o gutter central
-            ctx.font = '10px -apple-system';
-            ctx.fillStyle = '#000';
+            // Preço — coluna fixa à esquerda
+            ctx.font = 'bold 9px -apple-system';
             ctx.textAlign = 'right';
-            ctx.fillText(fmtBtc2(v.c), xCompraDireita - wCompra - 4, y + rowH / 2 + 3);
-            ctx.textAlign = 'left';
-            ctx.fillText(fmtBtc2(v.v), xVendaEsquerda + wVenda + 4, y + rowH / 2 + 3);
-            // Preço — plaquinha escura colada na borda do candle (dentro do vão livre
-            // entre o candle e a barra de compra), pra nunca colidir com a barra.
-            ctx.font = 'bold 9px -apple-system';
-            const txt = p.toLocaleString('pt-BR');
-            const tw = ctx.measureText(txt).width;
-            const candleLeftEdge = centroX - candleHalfW;
-            ctx.textAlign = 'left';
             ctx.fillStyle = v.isFibRow ? '#E65100' : '#000';
-            ctx.fillText(txt, candleLeftEdge - tw - 8, y + rowH / 2 + 3);
-            // Delta (compra − venda) — espelhando o chip de preço, do lado direito
-            // do candle. Verde = compra venceu ali, vermelho = venda venceu ali.
-            ctx.font = 'bold 9px -apple-system';
-            const deltaTxt = (deltaLinha >= 0 ? '+' : '') + fmtBtc2(deltaLinha);
-            const dtw = ctx.measureText(deltaTxt).width;
-            const candleRightEdge = centroX + candleHalfW;
+            ctx.fillText(p.toLocaleString('pt-BR'), margemPreco - 6, y + rowH / 2 + 3);
             ctx.textAlign = 'left';
-            ctx.fillStyle = '#000';
-            ctx.fillText(deltaTxt, candleRightEdge + 8, y + rowH / 2 + 3);
             _grFootprintCandleLinhas.push({ p, v, total, tick, yTop: y, yBottom: y + rowH });
+            if (!visivel(i) || total <= 0) return;
+            yTopoBloco = Math.min(yTopoBloco, y); yBaseBloco = Math.max(yBaseBloco, y + rowH);
+            const yc = y + rowH / 2;
+            const fpTxt = (txt, x) => ctx.fillText(txt, x, yc + fs * 0.35);
+            if (ehTv) {
+                const half = wCel / 2, cx = xCel0 + half, avail = Math.max(1, half - tvGap), ancL = cx - tvGap, ancR = cx + tvGap;
+                const ePoc = i === pocIdx;
+                const rb = tvMaxB > 0 ? v.v / tvMaxB : 0, ra = tvMaxA > 0 ? v.c / tvMaxA : 0;
+                const wB = avail * rb, wA = avail * ra;
+                const pocC = FOOTPRINT_POC_COR || '#FFFFFF';
+                const corB = ePoc ? pocC : (rb >= 0.75 ? '#7E1F27' : rb >= 0.5 ? '#D32F3C' : '#9E4A52');
+                const corA = ePoc ? pocC : (ra >= 0.75 ? '#05503F' : ra >= 0.5 ? '#089981' : '#FFFFFF');
+                const hh = Math.max(1, rowH - 2);
+                const borda = (x0, w0) => { ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.lineWidth = 1; ctx.strokeRect(x0 + 0.5, y + 1.5, Math.max(0, w0 - 1), Math.max(0, hh - 1)); };
+                if (wB >= 0.5) { ctx.fillStyle = corB; ctx.fillRect(ancL - wB, y + 1, wB, hh); if (corB === '#FFFFFF') borda(ancL - wB, wB); }
+                if (wA >= 0.5) { ctx.fillStyle = corA; ctx.fillRect(ancR, y + 1, wA, hh); if (corA === '#FFFFFF') borda(ancR, wA); }
+                if (nivelTxt >= 0) {
+                    const desenha = (txt, xIni, dentro) => {   // cor decidida caractere a caractere pelo que está atrás dele
+                        let x = xIni;
+                        for (const ch of txt) {
+                            const w = ctx.measureText(ch).width;
+                            const cb = dentro(x + w / 2);
+                            ctx.fillStyle = contraste(cb || '#FFFFFF');
+                            fpTxt(ch, x);
+                            x += w;
+                        }
+                    };
+                    const tb = grFmtVolCompacto(v.v, nivelTxt), ta = grFmtVolCompacto(v.c, nivelTxt);
+                    ctx.textAlign = 'left';
+                    ctx.font = imbBid(i) ? fonteB : fonteN;
+                    desenha(tb, ancL - 2 - ctx.measureText(tb).width, x => (wB >= 0.5 && x >= ancL - wB && x <= ancL) ? corB : null);
+                    ctx.font = imbAsk(i) ? fonteB : fonteN;
+                    desenha(ta, ancR + 2, x => (wA >= 0.5 && x >= ancR && x <= ancR + wA) ? corA : null);
+                }
+            } else {
+                // Cores / Cinza: fundo da célula pela escala relativa ao maior degrau (o agregado não tem a densidade por candle do Fluxo)
+                const cc = grFootprintCorRelativa(v.v, v.c, maxTot);
+                ctx.fillStyle = cc.cor;
+                ctx.fillRect(xCel0, y, wCel, rowH);
+                if (nivelTxt >= 0) {
+                    const corTxt = cc.escura ? '#FFFFFF' : '#000000', corImb = cc.escura ? '#8FA5FF' : '#1A2BD8';
+                    if (ehCinza) {
+                        const imb = imbAsk(i) || imbBid(i);
+                        ctx.font = imb ? fonteB : fonteN;
+                        ctx.fillStyle = imb ? corImb : corTxt;
+                        ctx.textAlign = 'right';
+                        fpTxt(grFmtVolCompacto(total, nivelTxt), xCel0 + wCel - 4);
+                        ctx.textAlign = 'left';
+                    } else {
+                        const a = grFmtVolCompacto(v.v, nivelTxt), b = grFmtVolCompacto(v.c, nivelTxt);
+                        ctx.font = imbBid(i) ? fonteB : fonteN; const wa = ctx.measureText(a).width;
+                        ctx.font = fonteN; const wx = ctx.measureText(' x ').width;
+                        ctx.font = imbAsk(i) ? fonteB : fonteN; const wb = ctx.measureText(b).width;
+                        let x = xCel0 + (wCel - (wa + wx + wb)) / 2;
+                        ctx.font = imbBid(i) ? fonteB : fonteN; ctx.fillStyle = imbBid(i) ? corImb : corTxt; fpTxt(a, x); x += wa;
+                        ctx.font = fonteN; ctx.fillStyle = corTxt; fpTxt(' x ', x); x += wx;
+                        ctx.font = imbAsk(i) ? fonteB : fonteN; ctx.fillStyle = imbAsk(i) ? corImb : corTxt; fpTxt(b, x);
+                    }
+                }
+            }
         });
+        // Contorno do bloco inteiro (só na skin Cores, cor pela direção do agregado) e da POC (se o contorno estiver ligado no Fluxo)
+        if (skin === 'cores' && yBaseBloco > yTopoBloco) {
+            const forte = candle.c >= candle.o ? FOOTPRINT_COR_VERDE.forte : FOOTPRINT_COR_VERMELHO.forte;
+            ctx.strokeStyle = 'rgb(' + forte[0] + ',' + forte[1] + ',' + forte[2] + ')';
+            ctx.lineWidth = 1; ctx.setLineDash([]);
+            ctx.strokeRect(xCel0 + 0.5, yTopoBloco + 0.5, wCel - 1, yBaseBloco - yTopoBloco - 1);
+        }
+        if (FOOTPRINT_POC_CONTORNO && maxTot > 0 && visivel(pocIdx)) {
+            ctx.strokeStyle = '#111111'; ctx.lineWidth = 1.5; ctx.setLineDash([]);
+            ctx.strokeRect(xCel0 + 0.75, pocIdx * rowH + 0.75, wCel - 1.5, rowH - 1.5);
+        }
         // Guarda o range + o que o updater da linha/candle ao vivo precisa.
         // Dois modos "ao vivo":
         // - 'real': o candle aberto é o MESMO objeto que tá no topo de
