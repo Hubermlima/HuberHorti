@@ -2045,7 +2045,7 @@ function sentRelatorio() {
     const ex = grSentExtraGarantir();
     if (n < N + 2 || !lsr || !fn || !oi || !ex.ts) return null;
     const ts = cs[n - 1].t, ls = grSentValorEm(lsr, ts), mm = grSentMediaEm(lsr, ts, 21), fr = grSentValorEm(fn, ts);
-    const oiA = grSentValorEm(oi, ts), oiB = grSentValorEm(oi, cs[n - 1 - N].t), dp = cs[n - 1].c - cs[n - 1 - N].c, oiSobe = oiA != null && oiB != null && oiA > oiB;
+    const oiA = grSentValorEm(oi, ts), oiB = grSentValorEm(oi, cs[n - 1 - 12].t), dp = cs[n - 1].c - cs[n - 1 - N].c, oiSobe = oiA != null && oiB != null && oiA > oiB;
     const v1 = x => x == null ? 0 : x > 1 ? 1 : x < 1 ? -1 : 0, v0 = x => x == null ? 0 : x > 0 ? 1 : x < 0 ? -1 : 0;
     const vc = v1(ex.ttc), vp = v1(ex.ttp), vr = v0(ex.prem), tot = vc + vp + vr, totB = v1(ex.ttcB) + v1(ex.ttpB) + v0(ex.premB);
     const sg = tot > 0 ? 1 : tot < 0 ? -1 : (tot - totB) > 0 ? 1 : (tot - totB) < 0 ? -1 : v0((ex.ttp || 1) - 1) || v0((ex.ttc || 1) - 1), ab = Math.abs(tot);
@@ -2053,7 +2053,11 @@ function sentRelatorio() {
     const forca = sg === 0 ? '' : (tot - totB) * sg < 0 ? 'perdendo força' : (tot - totB) * sg > 0 ? 'ganhando força' : 'estável';
     const rF = sg > 0 ? fr != null && fr > 0.0001 : sg < 0 ? fr != null && fr < 0 : false;
     const rL = sg > 0 ? ls != null && mm != null && ls > mm && ls > 1 : sg < 0 ? ls != null && mm != null && ls < mm && ls < 1 : false;
-    const rO = !oiSobe && oiA != null && oiB != null;
+    // "NORMAL" do OI e do preço: média da variação absoluta em janelas de 12 candles nos últimos ~300 candles (sai dos dados, por ativo e timeframe)
+    let sP = 0, sO = 0, m = 0;
+    try { for (let e = Math.max(12, n - 300); e < n - 1; e++) { const a = grSentValorEm(oi, cs[e].t), b = grSentValorEm(oi, cs[e - 12].t); if (a == null || !(b > 0)) continue; sP += Math.abs(cs[e].c - cs[e - 12].c) / cs[e - 12].c * 100; sO += Math.abs(a - b) / b * 100; m++; } } catch (e) {}
+    const oiNorm = m >= 20 && sO > 0 ? sO / m : 0, oiPc12 = oiA != null && oiB > 0 ? (oiA - oiB) / oiB * 100 : null;
+    const rO = oiPc12 != null && oiPc12 <= -oiNorm && oiPc12 < 0;   // só conta como "caindo" se a queda é pelo menos um OI "normal" de variação
     const nr = (rF ? 1 : 0) + (rL ? 1 : 0) + (rO ? 1 : 0), risco = nr >= 2 ? 'alto' : nr === 1 ? 'médio' : 'baixo';
     // PREÇO × OPEN INTEREST (últimos 12 candles): os 4 casos clássicos; OI caindo + preço andando forte vira squeeze (fraco / médio / brutal).
     // Régua ao estilo ATR: o "normal" de cada um (preço e OI) é a média da variação absoluta em janelas de 12 candles nos últimos ~300 candles.
@@ -2063,14 +2067,9 @@ function sentRelatorio() {
         const K = 12, i0 = n - 1 - K, oiK = grSentValorEm(oi, cs[i0].t), dpK = cs[n - 1].c - cs[i0].c;
         if (Math.abs(dpK) / cs[n - 1].c > 0.001 && oiA != null && oiK > 0) {
             const sobe = dpK > 0, oiPc = (oiA - oiK) / oiK * 100, pPc = Math.abs(dpK) / cs[i0].c * 100;
-            if (oiPc >= 0) qual = { k: sobe ? 'compra' : 'venda' };
+            if (oiPc >= oiNorm && oiPc > 0) qual = { k: sobe ? 'compra' : 'venda' };
+            else if (oiPc > -oiNorm || oiPc >= 0) qual = null;   // OI parado (variação menor que o normal): preço andou sem entrada nem saída relevante de posições
             else {
-                let sP = 0, sO = 0, m = 0;
-                for (let e = Math.max(K, n - 300); e < n - 1; e++) {
-                    const a = grSentValorEm(oi, cs[e].t), b = grSentValorEm(oi, cs[e - K].t);
-                    if (a == null || !(b > 0)) continue;
-                    sP += Math.abs(cs[e].c - cs[e - K].c) / cs[e - K].c * 100; sO += Math.abs(a - b) / b * 100; m++;
-                }
                 let q = null;
                 if (m >= 20 && sP > 0 && sO > 0) {
                     const nv = r => r >= 3 ? 3 : r >= 2 ? 2 : r >= 1 ? 1 : 0, lv = Math.min(nv(pPc / (sP / m)), nv(-oiPc / (sO / m)));
@@ -3537,7 +3536,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v737';
+const APP_VERSAO = 'v739';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
