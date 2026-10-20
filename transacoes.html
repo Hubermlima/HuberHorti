@@ -3546,7 +3546,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v752';
+const APP_VERSAO = 'v753';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3981,38 +3981,46 @@ function grDaDefinirPeriodo(v) { _grDaPeriodo = v === 'vp' ? 'vp' : 'dias'; try 
 //  · ROMPIMENTO = o preço (média ponderada por volume de cada minuto) ficou firme de um lado do nível (a mais de 1 faixa de distância) e depois firme do outro. Rompeu: o que foi negociado antes deixa de contar.
 //  · VOLUME VIVO = volume negociado no nível desde o último rompimento (e o delta vivo, comprador − vendedor).
 //  · TOQUES = visitas ao nível desde o último rompimento (nova visita = voltou a negociar ali depois de 15 min parado).
-// Classificação RELATIVA ao conjunto de níveis (sem número fixo de volume): saudável = vivo ≥ mediana e toques ≤ mediana; gasto = vivo ≤ 25º percentil ou toques > 75º percentil; testado = o resto.
+//  · REAÇÃO = o quanto o preço se afastou do nível (em faixas da régua) entre uma visita e a seguinte; a média das reações mostra se os testes ESTÃO FORTALECENDO (preço reage forte) ou DESGASTANDO o nível.
+// Classificação RELATIVA ao conjunto de níveis (sem número fixo): gasto = volume vivo ≤ 25º percentil, ou toques acima do 75º percentil com reação abaixo da mediana; saudável = volume vivo ≥ mediana e (poucos toques ou reação ≥ mediana); testado = o resto.
 function grSaudeNiveis(mins, tick, totais) {
     if (!mins.length) return null;
     mins.sort((a, b) => a.ts - b.ts);
-    const S = new Map(), GAP = 15 * 60000; let prevK = null;
+    const S = new Map(), GAP = 15 * 60000; let prevK = null, lastTs = 0;
     for (const m of mins) {
         const ns = m.niveis || []; if (!ns.length) continue;
         let sv = 0, sp = 0; for (const n of ns) { const v = n.c + n.v; sv += v; sp += v * n.p; }
         if (!(sv > 0)) continue;
         const kc = Math.round(sp / sv / tick), a = (prevK == null ? kc : Math.min(prevK, kc)) - 1, b = (prevK == null ? kc : Math.max(prevK, kc)) + 1;
+        S.forEach((o, k) => { const d = Math.abs(kc - k); if (d > o.afast) o.afast = d; });   // quanto o preço já se afastou de cada nível desde a última visita
+        lastTs = m.ts;
         for (let kk = a; kk <= b; kk++) {
             const o = S.get(kk); if (!o) continue;
             const sd = kc > kk + 1 ? 1 : kc < kk - 1 ? -1 : 0;
-            if (sd !== 0) { if (o.side !== 0 && o.side !== sd) { o.vivo = 0; o.dl = 0; o.toq = 0; o.quebras++; o.tQ = m.ts; } o.side = sd; }
+            if (sd !== 0) { if (o.side !== 0 && o.side !== sd) { o.vivo = 0; o.dl = 0; o.toq = 0; o.rs = 0; o.rn = 0; o.afast = 0; o.quebras++; o.tQ = m.ts; } o.side = sd; }
         }
         for (const n of ns) {
             const k = Math.round(n.p / tick); let o = S.get(k);
-            if (!o) { o = { side: kc > k + 1 ? 1 : kc < k - 1 ? -1 : 0, vivo: 0, dl: 0, toq: 0, quebras: 0, ult: 0, tQ: 0 }; S.set(k, o); }
-            if (m.ts - o.ult > GAP) o.toq++;
+            if (!o) { o = { side: kc > k + 1 ? 1 : kc < k - 1 ? -1 : 0, vivo: 0, dl: 0, toq: 0, quebras: 0, ult: 0, tQ: 0, afast: 0, rs: 0, rn: 0 }; S.set(k, o); }
+            if (m.ts - o.ult > GAP) { if (o.ult > 0) { o.rs += o.afast; o.rn++; } o.afast = 0; o.toq++; }
             o.ult = m.ts; o.vivo += n.c + n.v; o.dl += n.c - n.v;
         }
         prevK = kc;
     }
-    const vs = [], ts = [];
-    S.forEach((o, k) => { if (o.vivo > 0) { vs.push(o.vivo); ts.push(o.toq); } });
+    const vs = [], ts = [], rs = [];
+    S.forEach((o, k) => {
+        const pend = o.ult > 0 && lastTs - o.ult > GAP ? 1 : 0, nR = o.rn + pend;   // a excursão em curso só conta quando a visita já terminou
+        o.reac = nR > 0 ? (o.rs + (pend ? o.afast : 0)) / nR : null;
+        if (o.vivo > 0) { vs.push(o.vivo); ts.push(o.toq); if (o.reac != null) rs.push(o.reac); }
+    });
     if (vs.length < 3) return null;
-    vs.sort((x, y) => x - y); ts.sort((x, y) => x - y);
-    const pc = (arr, q) => arr[Math.min(arr.length - 1, Math.floor((arr.length - 1) * q))];
-    const v25 = pc(vs, 0.25), v50 = pc(vs, 0.5), t50 = pc(ts, 0.5), t75 = pc(ts, 0.75);
+    vs.sort((x, y) => x - y); ts.sort((x, y) => x - y); rs.sort((x, y) => x - y);
+    const pc = (arr, q) => arr.length ? arr[Math.min(arr.length - 1, Math.floor((arr.length - 1) * q))] : 0;
+    const v25 = pc(vs, 0.25), v50 = pc(vs, 0.5), t50 = pc(ts, 0.5), t75 = pc(ts, 0.75), r50 = pc(rs, 0.5);
     S.forEach((o, k) => {
         const tot = totais.get(k) || 0; o.total = tot; o.pct = tot > 0 ? o.vivo / tot : 0;
-        o.estado = (o.vivo <= v25 || o.toq > t75) ? 2 : (o.vivo >= v50 && o.toq <= t50) ? 0 : 1;   // 0 saudável · 1 testado · 2 gasto
+        const reagiu = o.reac != null && o.reac >= r50, fracaR = o.reac == null || o.reac < r50;
+        o.estado = (o.vivo <= v25 || (o.toq > t75 && fracaR)) ? 2 : (o.vivo >= v50 && (o.toq <= t50 || reagiu)) ? 0 : 1;   // 0 saudável · 1 testado · 2 gasto
     });
     return S;
 }
@@ -4041,7 +4049,7 @@ function grSaudeModal(k, tick, sd, cy) {
     d.style.cssText = 'position:fixed;z-index:9700;background:#FFFFFF;border-radius:10px;box-shadow:0 4px 18px rgba(0,0,0,0.28);padding:9px 11px;font:12px -apple-system,sans-serif;min-width:190px;max-width:240px;box-sizing:border-box;';
     d.innerHTML = '<div style="font-size:13px;font-weight:800;color:' + cor + ';">' + nome + ' · ' + fmtP(preco) + '</div>'
         + lin('Volume vivo', fv(sd.vivo) + ' (' + Math.round(sd.pct * 100) + '%)') + lin('Volume total', fv(sd.total)) + lin('Delta vivo', (sd.dl >= 0 ? '+' : '−') + fv(Math.abs(sd.dl)))
-        + lin('Toques', String(sd.toq)) + lin('Rompimentos', String(sd.quebras) + (sd.quebras ? ' (há ' + ago(sd.tQ) + ')' : '')) + lin('Último toque', 'há ' + ago(sd.ult));
+        + lin('Toques', String(sd.toq)) + lin('Reação média', sd.reac != null ? '$ ' + fmtP(sd.reac * tick) : '—') + lin('Rompimentos', String(sd.quebras) + (sd.quebras ? ' (há ' + ago(sd.tQ) + ')' : '')) + lin('Último toque', 'há ' + ago(sd.ult));
     document.body.appendChild(d);
     const w = d.offsetWidth, h = d.offsetHeight;
     let left = rc.left + 36, top = rc.top + cy * f - h / 2; left = Math.max(6, Math.min(window.innerWidth - w - 6, left)); top = Math.max(6, Math.min(window.innerHeight - h - 6, top));
