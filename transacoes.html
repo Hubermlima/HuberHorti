@@ -3546,7 +3546,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v793';
+const APP_VERSAO = 'v794';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -5054,9 +5054,26 @@ function grPosAplicarLimite(pz) {
     const i1 = grTimeToIndex(Math.min(pz.t1, pz.t2)), i2 = grTimeToIndex(Math.max(pz.t1, pz.t2));
     // (sem corte: a caixa vai até onde o usuário arrastar; o limite de largura foi removido a pedido)
 }
+function grTfChaveAtual() {   // chave do TF do gráfico agora (mesmas chaves do robô: 5m, 30m, 1h, 4h, 1d, 1w, 3d…); null se não der para saber
+    try {
+        if (_grTf === 'custom') { const a = Number(_grTfCustomAmount); if (!(a >= 1)) return null; if (_grTfCustomUnit === 'dia') return a + 'd'; return a % 60 === 0 ? (a / 60) + 'h' : a + 'm'; }
+        const m = { '1day': '1d', '1week': '1w', '1month': null }; return _grTf in m ? m[_grTf] : (/^\d+[mhdw]$/.test(String(_grTf)) ? String(_grTf) : null);
+    } catch (e) { return null; }
+}
+function cvIrParaTfChave(ch) {   // põe o gráfico no TF da caixa; devolve uma promessa (ou null se já está nele / não sabe ir)
+    if (!ch || ch === grTfChaveAtual()) return null;
+    const m = /^(\d+)([mhdw])$/.exec(String(ch)); if (!m) return null;
+    const a = parseInt(m[1]), u = m[2];
+    const custom = (n, un) => { _grTfCustomAmount = n; _grTfCustomUnit = un; try { localStorage.setItem('cvTfCustom', JSON.stringify({ amount: n, unit: un })); } catch (e) {} return cvSetTf('custom'); };
+    if (u === 'm') return custom(a, 'min');
+    if (u === 'h') return (a === 1 || a === 4) ? cvSetTf(a + 'h') : custom(a * 60, 'min');
+    if (u === 'd') return a === 1 ? cvSetTf('1day') : custom(a, 'dia');
+    if (u === 'w') return a === 1 ? cvSetTf('1week') : null;
+    return null;
+}
 function grPosNova(lado, i1, p) {
     const s = lado === 'short' ? -1 : 1;
-    return { id: Date.now() + Math.floor(Math.random() * 1000), lado, t1: grIndexToTime(i1), t2: grIndexToTime(i1 + 14), entrada: p, alvo: p * (1 + s * 0.04), stop: p * (1 - s * 0.02) };
+    return { id: Date.now() + Math.floor(Math.random() * 1000), tf: grTfChaveAtual(), lado, t1: grIndexToTime(i1), t2: grIndexToTime(i1 + 14), entrada: p, alvo: p * (1 + s * 0.04), stop: p * (1 - s * 0.02) };
 }
 // ── Formulário de valores da Posição (estilo TradingView). Fase 2: só campos e sincronia de preços com a caixa; sem cálculo de risco/qtd. ──
 // Ícones Heroicons v2 (outline, 24x24, stroke 1.5) — sempre por aqui, para manter o padrão
@@ -8754,13 +8771,20 @@ function cvAbrirMenuDesenhos(clientX, clientY) {
     const pos = mantida ? { x: parseFloat(mantida.style.left), y: parseFloat(mantida.style.top) } : null;
     cvFecharMenuDesenhos();
     const fmtD = t => { const d = new Date(t); const p = n => String(n).padStart(2, '0'); return p(d.getDate()) + '/' + p(d.getMonth() + 1) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()); };
-    const linhas = [];
+    const linhas = [], marca = (g, n0) => { for (let q = n0; q < linhas.length; q++) linhas[q].grupo = g; };
+    let nG = linhas.length;
     _trendlines.forEach((tl, i) => linhas.push({ cor: tl.cor, nome: (tl.canal ? 'Canal de regressão ' : 'Tendência ') + (i + 1), det: fmtN(tl.p1) + ' → ' + fmtN(tl.p2) + ' · ' + fmtD(tl.t1), edit: () => cvEdicaoIniciar('tl', i), oculta: !!tl.oculta, olho: () => { tl.oculta = !tl.oculta; if (tl.oculta && _edSel && _edSel.tipo === 'tl' && _edSel.idx === i) cvEdicaoSair(true); grAmbienteSalvar(); }, cfg: tl.canal ? (() => grCanalCfgAbrir(i)) : null, dot: !!tl.canal, apagar: () => cvApagarTrendline(i), setCor: async c => { tl.cor = c; try { await cvSalvarTrendline(tl); } catch (e) {} } }));
+    marca('Tendências', nG); nG = linhas.length;
     grHLinhas().forEach((h, i) => linhas.push({ cor: h.cor, nome: 'Linha horizontal ' + (i + 1), det: fmtN(h.p), edit: () => cvEdicaoIniciar('hl', i), oculta: !!h.oculta, olho: () => { h.oculta = !h.oculta; if (h.oculta && _edSel && _edSel.tipo === 'hl' && _edSel.idx === i) cvEdicaoSair(true); grHLinhasSalvar(); }, apagar: () => { grHLinhas().splice(i, 1); grHLinhasSalvar(); }, setCor: c => { h.cor = c; grHLinhasSalvar(); } }));
+    marca('Linhas', nG); nG = linhas.length;
     grPosicoes().forEach((pz, i) => linhas.push({ cor: pz.lado === 'short' ? '#EF5350' : '#26A69A', nome: 'Posição ' + (pz.lado === 'short' ? 'Short ' : 'Long ') + grPosId(pz.id) + (pz.origem === 'melhor' ? ' · Melhor C' + (pz.camada || 1) : (pz.origem === 'setup' ? ' · ' + (pz.rotulo || 'Setup') : '')), det: (pz.pm > 0 ? 'PM ' + fmtN(pz.pm) : 'Entrada ' + fmtN(pz.entrada)) + (pz.alvo > 0 ? ' · Alvo ' + fmtN(pz.alvo) : '') + (pz.stop > 0 ? ' · Stop ' + fmtN(pz.stop) : ''), edit: () => cvEdicaoIniciar('ps', i), cfg: () => cvPosFormAbrir(i), oculta: !!pz.oculta, olho: () => { pz.oculta = !pz.oculta; if (pz.oculta && _edSel && _edSel.tipo === 'ps' && _edSel.idx === i) cvEdicaoSair(true); }, apagar: () => cvPosApagarCaixa(i) }));
+    marca('Caixas', nG); nG = linhas.length;
     _freehands.forEach((fh, i) => { const p0 = fh.pontos && fh.pontos[0]; linhas.push({ cor: fh.cor, nome: 'Desenho livre ' + (i + 1), det: p0 ? fmtN(p0.p) + ' · ' + fmtD(p0.t) : '', edit: () => cvEdicaoIniciar('fh', i), oculta: !!fh.oculta, olho: () => { fh.oculta = !fh.oculta; if (fh.oculta && _edSel && _edSel.tipo === 'fh' && _edSel.idx === i) cvEdicaoSair(true); cvSalvarFreehandLocal(); }, apagar: () => cvApagarFreehand(i), setCor: c => { fh.cor = c; cvSalvarFreehandLocal(); } }); });
+    marca('Desenho livre', nG); nG = linhas.length;
     _novosFibos.forEach((f, i) => linhas.push({ cor: '#2962FF', nome: 'Fibonacci ' + (i + 1), det: fmtN(f.p1) + ' → ' + fmtN(f.p2) + ' · ' + fmtD(f.t1), edit: () => cvEdicaoIniciar('nf', i), oculta: !!f.oculta, olho: () => { f.oculta = !f.oculta; if (f.oculta && _edSel && _edSel.tipo === 'nf' && _edSel.idx === i) cvEdicaoSair(true); grAmbienteSalvar(); }, apagar: () => { _novosFibos.splice(i, 1); grAmbienteSalvar(); grDrawChart(); } }));
+    marca('Fibonacci', nG); nG = linhas.length;
     _medidas.forEach((m, i) => linhas.push({ cor: m.p2 >= m.p1 ? '#26A69A' : '#EF5350', nome: 'Medida ' + (i + 1), det: fmtN(m.p1) + ' → ' + fmtN(m.p2) + ' · ' + fmtD(Math.min(m.t1, m.t2)), edit: () => cvEdicaoIniciar('md', i), oculta: !!m.oculta, olho: () => { m.oculta = !m.oculta; if (m.oculta && _edSel && _edSel.tipo === 'md' && _edSel.idx === i) cvEdicaoSair(true); cvSalvarMedidas(); }, apagar: () => { _medidas.splice(i, 1); cvSalvarMedidas(); } }));
+    marca('Medidas', nG); nG = linhas.length;
     const overlay = document.createElement('div');
     overlay.id = 'cv-desenhos-menu-overlay';
     overlay.style.cssText = 'position:fixed;inset:0;z-index:9700;background:transparent;';
@@ -8803,7 +8827,23 @@ function cvAbrirMenuDesenhos(clientX, clientY) {
     imaRow.innerHTML = grConfigComboCab(null, 'Ímã nas alças da caixa', null, 'cv-cfg-ima', [['1', 'Ligado'], ['0', 'Desligado']], window._grImaOff ? '0' : '1', 'grDesignDefinirIma');
     imaRow.onclick = ev => ev.stopPropagation();
     // (opção do ímã removida: ímã desligado de vez)
-    linhas.forEach(l => {
+    // ABAS por tipo de componente, montadas na hora: só existe aba de quem tem pelo menos 1 item
+    const ORDEM_ABAS = ['Caixas', 'Tendências', 'Linhas', 'Medidas', 'Desenho livre', 'Fibonacci'], abas = ORDEM_ABAS.filter(g => linhas.some(l => l.grupo === g));
+    const abaAtiva = abas.indexOf(window._cvDesenhosAba) >= 0 ? window._cvDesenhosAba : abas[0];
+    if (abas.length) {
+        const barra = document.createElement('div');
+        barra.style.cssText = 'display:flex;gap:4px;padding:5px 8px 5px;border-top:1px solid #F2F2F7;overflow-x:auto;';
+        abas.forEach(g => {
+            const n = linhas.filter(l => l.grupo === g).length, on = g === abaAtiva, b = document.createElement('button'); b.type = 'button'; b.textContent = g + ' ' + n;
+            b.style.cssText = 'flex-shrink:0;border:1px solid ' + (on ? '#1C1C1E' : '#D1D1D6') + ';background:' + (on ? '#1C1C1E' : '#FFFFFF') + ';color:' + (on ? '#FFFFFF' : '#1C1C1E') + ';border-radius:7px;padding:4px 9px;font-size:11px;font-weight:700;font-family:inherit;cursor:pointer;white-space:nowrap;';
+            b.onclick = ev => { ev.stopPropagation(); window._cvDesenhosAba = g; cvAbrirMenuDesenhos(); };
+            barra.appendChild(b);
+        });
+        menu.appendChild(barra);
+    }
+    const ST_CX = { aguardando: 'armada', entrou: 'em trade', alvo: 'alvo', stop: 'stop', perdida: 'entrada perdida', expirou: 'expirou', zero: 'saiu no zero', saida: 'encerrada', desfeita: 'tese inválida', semGatilho: 'sem gatilho', apagada: 'apagada' };
+    const regL = (typeof scRegLista === 'function') ? scRegLista() : [];
+    linhas.filter(l => l.grupo === abaAtiva).forEach(l => {
         const row = document.createElement('div');
         row.style.cssText = 'display:flex;align-items:center;gap:4px;padding:0 2px 0 10px;border-top:1px solid #F2F2F7;';
         const dot = document.createElement(l.setCor ? 'button' : 'span');
@@ -8811,8 +8851,22 @@ function cvAbrirMenuDesenhos(clientX, clientY) {
         if (l.setCor) { dot.type = 'button'; dot.setAttribute('aria-label', 'Cor de ' + l.nome); dot.onclick = ev => { ev.stopPropagation(); const r = dot.getBoundingClientRect(); cvAbrirPaletaCor(r.left, r.bottom + 6, l.cor, async c => { await l.setCor(c); grDrawChart(); cvAbrirMenuDesenhos(); }); }; }
         const txt = document.createElement('div');
         txt.style.cssText = 'flex:1;min-width:0;padding:4px 0;cursor:pointer;';
-        if (l.edit) txt.onclick = ev => { ev.stopPropagation(); cvFecharMenuDesenhos(); l.edit(); };
-        txt.innerHTML = '<div style="font-size:12px;font-weight:400;color:#1C1C1E;">' + l.nome + '</div><div style="font-size:9.5px;color:#8E8E93;">' + l.det + '</div>';
+        let detHtml = '<div style="font-size:9.5px;color:#8E8E93;">' + l.det + '</div>', tfCx = null;
+        if (l.grupo === 'Caixas') {   // caixa: Tipo, Lado, Time frame, Criada e Status
+            const pz = grPosicoes()[linhas.indexOf(l) - linhas.findIndex(x => x.grupo === 'Caixas')], reg = pz ? regL.find(r => r.id === pz.id) : null;
+            if (pz) {
+                const tipo = pz.origem === 'setup' ? 'Robô' : pz.origem === 'melhor' ? 'Sugestão' : 'Manual', lado = pz.lado === 'short' ? 'Short' : 'Long';
+                tfCx = (reg && reg.tfAk) || pz.tf || null;
+                const tCria = (reg && reg.t0) || (pz.id > 1e12 ? pz.id : 0);
+                let st = reg ? (ST_CX[reg.st] || reg.st) : (pz.tradeId ? 'trade real' : (pz.pm > 0 ? 'posição' : 'sem monitoramento'));
+                if (reg && reg.tFim && reg.st !== 'aguardando' && reg.st !== 'entrou') st += ' ' + fmtD(reg.tFim).slice(-5);
+                const stCor = reg && reg.st === 'entrou' ? '#E65100' : reg && reg.st === 'aguardando' ? '#2962FF' : reg && reg.st === 'alvo' ? '#26A69A' : reg && reg.st === 'stop' ? '#EF5350' : '#6B6B70';
+                detHtml = '<div style="font-size:9.5px;color:#8E8E93;">Tipo: <b style="color:#1C1C1E;">' + tipo + '</b> · ' + lado + ' · Time frame: <b style="color:#1C1C1E;">' + (tfCx || '—') + '</b></div>'
+                    + '<div style="font-size:9.5px;color:#8E8E93;">Criada: <b style="color:#1C1C1E;">' + (tCria ? fmtD(tCria) : '—') + '</b> · Status: <b style="color:' + stCor + ';">' + st + '</b></div>' + detHtml;
+            }
+        }
+        if (l.edit) txt.onclick = ev => { ev.stopPropagation(); cvFecharMenuDesenhos(); const ir = tfCx ? cvIrParaTfChave(tfCx) : null; if (ir && ir.then) ir.then(() => l.edit()); else l.edit(); };   // tocar na caixa: seleciona e põe o gráfico no TF dela
+        txt.innerHTML = '<div style="font-size:12px;font-weight:400;color:#1C1C1E;">' + l.nome + '</div>' + detHtml;
         const x = document.createElement('button');
         x.type = 'button'; x.innerHTML = grHeroicon('x-mark', 20); x.setAttribute('aria-label', 'Apagar ' + l.nome);
         x.style.cssText = 'flex-shrink:0;width:44px;height:44px;background:none;border:none;color:#EF5350;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;';
@@ -8821,7 +8875,7 @@ function cvAbrirMenuDesenhos(clientX, clientY) {
         if (l.olho) { const ol = document.createElement('button'); ol.type = 'button'; ol.innerHTML = grHeroicon(l.oculta ? 'eye-slash' : 'eye', 17); ol.setAttribute('aria-label', (l.oculta ? 'Mostrar ' : 'Esconder ') + l.nome); ol.style.cssText = 'flex-shrink:0;width:30px;height:32px;background:none;border:none;color:#1C1C1E;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;'; ol.onclick = ev => { ev.stopPropagation(); l.olho(); grDrawChart(); cvAbrirMenuDesenhos(); }; if (l.oculta) txt.style.opacity = '.4'; row.appendChild(ol); }
         menu.appendChild(row);
     });
-    if (_medidas.length) {   // apaga todas as medidas deste ativo de uma vez
+    if (_medidas.length && abaAtiva === 'Medidas') {   // apaga todas as medidas deste ativo de uma vez
         const ex = document.createElement('button'); ex.type = 'button';
         ex.textContent = 'Excluir todas as medidas (' + _medidas.length + ')';
         ex.style.cssText = 'display:block;width:100%;border:none;border-top:1px solid #F2F2F7;background:none;color:#EF5350;font-size:12px;font-weight:600;text-align:left;padding:9px 10px;cursor:pointer;font-family:inherit;';
