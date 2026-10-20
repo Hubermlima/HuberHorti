@@ -3546,7 +3546,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v742';
+const APP_VERSAO = 'v746';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -8098,7 +8098,7 @@ function grZonaCelIma(o) {
     // folga do stop = 2 pavios típicos de 5 min (a mesma regra do robô) além da borda oposta
     const pv = window._scPavio, fS = pv ? 2 * (pv.sup || 0) : 0, fL = pv ? 2 * (pv.inf || 0) : 0;
     if (!pv && !window._grPavioBuscando) { window._grPavioBuscando = true; scPavioTf(SC_ORDEM[0]).then(r => { if (r) window._scPavio = r; }).catch(() => {}).finally(() => { window._grPavioBuscando = false; }); }
-    if (o.lado === 'short') { o.entrada = best.lo; o.stop = best.hi + fS; } else { o.entrada = best.hi; o.stop = best.lo - fL; }
+    if (o.alvo > 0 ? o.alvo < o.entrada : o.lado === 'short') { o.entrada = best.lo; o.stop = best.hi + fS; } else { o.entrada = best.hi; o.stop = best.lo - fL; }   // lado pela GEOMETRIA (alvo abaixo da entrada = short), não pelo rótulo
 }
 function grEdToqueMove(x, y) {
     if (!_edDrag || !_edSel) return false;
@@ -8160,6 +8160,17 @@ function grEdToqueMove(x, y) {
             let dI = dIdx;
             if (!o.tradeId) { o.t1 = grIndexToTime(grTimeToIndex(d.snap.t1) + dI); o.t2 = grIndexToTime(grTimeToIndex(d.snap.t2) + dI); }
             if (!cvPosEmTrade(o) && !cvPosTravaV(o)) { o.entrada = mv(d.snap.entrada); o.alvo = mv(d.snap.alvo); o.stop = mv(d.snap.stop); grZonaCelIma(o); }   // Melhor e Setup: corpo só anda na horizontal, os preços calculados não saem do lugar   // com PM: só desloca na horizontal
+        }
+        // TRAVA DE GEOMETRIA: o stop tem que ficar do lado oposto ao alvo, e a entrada entre os dois (long: stop < entrada < alvo; short: alvo < entrada < stop).
+        // Se o arrasto quebrar isso, a caixa volta ao último desenho válido e o app avisa. Caixa que já nasceu quebrada pode ser consertada (sem trava).
+        const sn = d.snap, geom = (e0, s0, a0) => !(e0 > 0 && s0 > 0 && a0 > 0) || (a0 > e0 ? (s0 < e0) : (a0 < e0 && s0 > e0));
+        if (sn && geom(sn.entrada, sn.stop, sn.alvo)) {
+            const ok = (a0 => a0 && a0.l === (sn.alvo > sn.entrada))(((e0, s0, a0) => ({ l: a0 > e0 }))(o.entrada, o.stop, o.alvo));
+            if (geom(o.entrada, o.stop, o.alvo) && ok) d.ultOk = { entrada: o.entrada, stop: o.stop, alvo: o.alvo };
+            else {
+                const u = d.ultOk || { entrada: sn.entrada, stop: sn.stop, alvo: sn.alvo }; o.entrada = u.entrada; o.stop = u.stop; o.alvo = u.alvo;
+                if (!d.avisou) { d.avisou = true; try { scAviso(sn.alvo > sn.entrada ? 'Dimensionamento travado: num LONG o stop precisa ficar ABAIXO da entrada e o alvo ACIMA.' : 'Dimensionamento travado: num SHORT o stop precisa ficar ACIMA da entrada e o alvo ABAIXO.', '#EF5350'); } catch (e) {} }
+            }
         }
     }
     grDrawChart();
@@ -16702,7 +16713,9 @@ function scRegSincCaixas() {
     L.forEach(r => {
         if (r.st !== 'aguardando' && r.st !== 'entrou') return;
         const z = mapa.get(r.id); if (!z || (z.origem !== 'setup' && !r.manual)) return;
-        const dE = r.st === 'aguardando' && dif(z.entrada, r.ent), dS = dif(z.stop, r.stp), dA = dif(z.alvo, r.alvo);
+        const dE = r.st === 'aguardando' && dif(z.entrada, r.ent), dA = dif(z.alvo, r.alvo);
+        const entRef = dE ? z.entrada : r.ent, stopOk = r.lado === 'long' ? z.stop < entRef : z.stop > entRef;   // stop do outro lado da entrada (arrastado errado) NÃO vai pro registro: senão o robô marca STOP na hora
+        const dS = stopOk && dif(z.stop, r.stp);
         if (!dE && !dS && !dA) return;
         if (!r.ref) { r.ref = true; r.entOrig = r.ent; r.stpOrig = r.stp; r.alvoOrig = r.alvo; r.tRef = Date.now(); }
         if (!(r.r0 > 0)) r.r0 = Math.abs((r.entReal || r.ent) - r.stp);   // risco de antes de você mexer: é a régua do R
@@ -17282,7 +17295,7 @@ async function scRegRaioX(reg) {
       if (reg.tFim) pass.push([SC_REG_ROT[reg.st].charAt(0).toUpperCase() + SC_REG_ROT[reg.st].slice(1), reg.tFim]);
       const fimT = reg.tFim || Date.now();
       if (reg.sinal1R) L.push('Sinal em +1R (o 1º visto): ' + ({ verde: '🟢 Deixar correr', amarelo: '🟡 Atenção', vermelho: '🔴 Proteger no zero' })[reg.sinal1R.cor] + ' · ' + reg.sinal1R.txt + (reg.tFim ? ' → terminou ' + SC_REG_ROT[reg.st] : ''));
-      L.push('Linha do tempo: ' + pass.map((p0, k) => p0[0] + ' ' + hm(p0[1]) + (k ? ' (+' + dur(p0[1] - pass[k - 1][1]) + ')' : '')).join(' → ') + ' · total ' + dur(fimT - reg.t0) + (reg.tFim ? '' : ' (ainda aberta)')); }
+      L.push('Linha do tempo: ' + pass.map((p0, k) => { const dd = x => new Date(x).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }), comData = !k || dd(p0[1]) !== dd(pass[k - 1][1]); return p0[0] + ' ' + (comData ? dd(p0[1]) + ' ' : '') + hm(p0[1]) + (k ? ' (' + (p0[1] < pass[k - 1][1] ? '−' : '+') + dur(Math.abs(p0[1] - pass[k - 1][1])) + ')' : ''); }).join(' → ') + ' · total ' + dur(fimT - reg.t0) + (reg.tFim ? '' : ' (ainda aberta)')); }
     if (reg.varrida) L.push('Gatilho na VARRIDA (M18): o candle de ' + dh(reg.varrida.t) + ' passou do stop (' + f(reg.varrida.stpAntes) + ') até ' + f(reg.varrida.ext) + ' e fechou de volta a favor · stop novo ' + f(reg.stp) + ' (além do pavio + 2 pavios)');
     if (reg.st === 'desfeita') L.push('Tese inválida em ' + dh(reg.tFim) + ': ' + (reg.motivo || 'a revisão não achou mais a tese') + (reg.fant ? ' · sem cancelar: ' + SC_REG_ROT[reg.fant.st] + (reg.fant.ign ? ' (ignição ✓)' : '') + (reg.fant.tFim ? ' ' + dh(reg.fant.tFim) : '') : ''));
     if (!cs.length || !(risco > 0)) return L.concat(['sem candles para analisar']);
@@ -17413,7 +17426,17 @@ async function scRelatoriosCaixa(k) {
     if (pz) return scRelatorioCaixa(pz);
     const f = x => Math.round(x).toLocaleString('pt-BR'), L = [(r.lado === 'long' ? 'LONG' : 'SHORT') + ' · ' + (r.mv || '') + ' · caixa apagada da tela (só o histórico)', 'Entrada ' + f(r.ent) + ' · Stop ' + f(r.stp) + ' · Alvo ' + f(r.alvo) + (r.ref ? ' · assistida (motor: E ' + f(r.entOrig) + ' S ' + f(r.stpOrig) + ')' : ''), 'Histórico: ' + SC_REG_ROT[r.st] + (r.ign ? ' · IGNIÇÃO ✓' : '')];
     try { (await scRegRaioX(r)).forEach(l => L.push(l)); } catch (e) {}
-    scRelatorioMostrar({ lado: r.lado, linhas: L });
+    scRelatorioMostrar({ lado: r.lado, linhas: L, restaurar: r.id });
+}
+// TRAZER DE VOLTA: recria no gráfico uma caixa que só existe no histórico. Entrada e alvo do registro; stop do registro se estiver do lado certo, senão o stop original do motor, senão 2% (padrão da caixa). Nasce SEM monitoramento (você liga se quiser).
+function scCaixaTrazer(id) {
+    const r = (window._scRegistro || []).find(x => x.id === id); if (!r) return;
+    const lg = r.alvo > r.ent, ok = v => v > 0 && (lg ? v < r.ent : v > r.ent);
+    const stop = ok(r.stp) ? r.stp : ok(r.stpOrig) ? r.stpOrig : r.ent * (lg ? 0.98 : 1.02);
+    let i0 = 0; try { i0 = grTimeToIndex(r.t0); } catch (e) {}
+    const pz = grPosNova(lg ? 'long' : 'short', i0, r.ent); pz.entrada = r.ent; pz.alvo = r.alvo; pz.stop = stop;
+    grPosicoes().push(pz); grPosSalvar(); scRelatorioFechar(); try { grDrawChart(); } catch (e) {}
+    try { scAviso('Caixa de volta no gráfico' + (stop !== r.stp ? ' (o stop do registro estava do lado errado: usei ' + Math.round(stop) + ')' : ''), '#16A34A'); } catch (e) {}
 }
 function scRelatorioFechar() { const ov = document.getElementById('sc-relatorio-overlay'); if (ov) ov.style.display = 'none'; }
 const SC_RES = { segurou: 'segurou', rompeu: 'rompeu', semToque: 'sem toque', indef: 'sem desfecho' };
@@ -17442,6 +17465,7 @@ function scRelatorioMostrar(o) {
         + '<div style="font-size:15px;font-weight:800;line-height:1.4;margin-top:6px;">' + L[1] + '</div>'
         + L.slice(2).map(x => '<div style="font-size:12.5px;line-height:1.4;margin-top:6px;color:' + (/^Atenção/.test(x) ? '#B45309' : '#3A3A3C') + ';">' + x + '</div>').join('')
         + (o.casos && o.casos.length ? '<div style="font-size:12px;font-weight:800;margin-top:12px;">CASOS · toque para ver a caixa no gráfico</div>' + o.casos.map((c, i) => '<div onclick="scCasoMostrar(' + i + ')" style="font-size:12px;line-height:1.35;padding:7px 8px;margin-top:4px;border-radius:8px;background:#F2F2F7;color:' + (c.r === 'segurou' ? '#16A34A' : c.r === 'rompeu' ? '#DC2626' : '#6B6B70') + ';">' + scCasoTxt(c) + '</div>').join('') : '')
+        + (o.restaurar ? '<button onclick="scCaixaTrazer(' + o.restaurar + ')" style="display:block;width:100%;margin-top:12px;border:none;background:#007AFF;color:#FFFFFF;border-radius:8px;padding:10px;font-size:14px;font-weight:800;">Trazer a caixa de volta ao gráfico</button>' : '')
         + '<div style="display:flex;gap:8px;margin-top:12px;"><button onclick="scRelatorioCopiar()" style="flex:1;border:none;background:#E5E5EA;color:#1C1C1E;border-radius:8px;padding:9px;font-size:13px;font-weight:700;">Copiar</button>'
         + '<button onclick="scRelatorioFechar()" style="flex:1;border:none;background:#1C1C1E;color:#FFFFFF;border-radius:8px;padding:9px;font-size:13px;font-weight:700;">Fechar</button></div></div>';
     ov.style.display = 'flex';
