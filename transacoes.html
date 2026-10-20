@@ -3546,7 +3546,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v750';
+const APP_VERSAO = 'v752';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3977,6 +3977,78 @@ function grOiValorEm(dados, ts) {
 let _grDaPeriodo = (() => { try { return localStorage.getItem('grDaPeriodo') === 'vp' ? 'vp' : 'dias'; } catch (e) { return 'dias'; } })();
 function grDaInicio() { const a = (typeof _grVpAncoraTs !== 'undefined') ? _grVpAncoraTs : null; return _grDaPeriodo === 'vp' && a > 0 ? a : Date.now() - (_grFootprintLookbackDias || 7) * 86400000; }
 function grDaDefinirPeriodo(v) { _grDaPeriodo = v === 'vp' ? 'vp' : 'dias'; try { localStorage.setItem('grDaPeriodo', _grDaPeriodo); } catch (e) {} window._grDeltaAtrCache = {}; try { grAmbienteSalvar(); } catch (e) {} try { cvRenderMenuFpCfg(); } catch (e) {} grDrawChart(); }
+// SAÚDE DO NÍVEL (régua Delta ATR). Percorre os minutos do footprint em ordem. Para cada nível (faixa da régua):
+//  · ROMPIMENTO = o preço (média ponderada por volume de cada minuto) ficou firme de um lado do nível (a mais de 1 faixa de distância) e depois firme do outro. Rompeu: o que foi negociado antes deixa de contar.
+//  · VOLUME VIVO = volume negociado no nível desde o último rompimento (e o delta vivo, comprador − vendedor).
+//  · TOQUES = visitas ao nível desde o último rompimento (nova visita = voltou a negociar ali depois de 15 min parado).
+// Classificação RELATIVA ao conjunto de níveis (sem número fixo de volume): saudável = vivo ≥ mediana e toques ≤ mediana; gasto = vivo ≤ 25º percentil ou toques > 75º percentil; testado = o resto.
+function grSaudeNiveis(mins, tick, totais) {
+    if (!mins.length) return null;
+    mins.sort((a, b) => a.ts - b.ts);
+    const S = new Map(), GAP = 15 * 60000; let prevK = null;
+    for (const m of mins) {
+        const ns = m.niveis || []; if (!ns.length) continue;
+        let sv = 0, sp = 0; for (const n of ns) { const v = n.c + n.v; sv += v; sp += v * n.p; }
+        if (!(sv > 0)) continue;
+        const kc = Math.round(sp / sv / tick), a = (prevK == null ? kc : Math.min(prevK, kc)) - 1, b = (prevK == null ? kc : Math.max(prevK, kc)) + 1;
+        for (let kk = a; kk <= b; kk++) {
+            const o = S.get(kk); if (!o) continue;
+            const sd = kc > kk + 1 ? 1 : kc < kk - 1 ? -1 : 0;
+            if (sd !== 0) { if (o.side !== 0 && o.side !== sd) { o.vivo = 0; o.dl = 0; o.toq = 0; o.quebras++; o.tQ = m.ts; } o.side = sd; }
+        }
+        for (const n of ns) {
+            const k = Math.round(n.p / tick); let o = S.get(k);
+            if (!o) { o = { side: kc > k + 1 ? 1 : kc < k - 1 ? -1 : 0, vivo: 0, dl: 0, toq: 0, quebras: 0, ult: 0, tQ: 0 }; S.set(k, o); }
+            if (m.ts - o.ult > GAP) o.toq++;
+            o.ult = m.ts; o.vivo += n.c + n.v; o.dl += n.c - n.v;
+        }
+        prevK = kc;
+    }
+    const vs = [], ts = [];
+    S.forEach((o, k) => { if (o.vivo > 0) { vs.push(o.vivo); ts.push(o.toq); } });
+    if (vs.length < 3) return null;
+    vs.sort((x, y) => x - y); ts.sort((x, y) => x - y);
+    const pc = (arr, q) => arr[Math.min(arr.length - 1, Math.floor((arr.length - 1) * q))];
+    const v25 = pc(vs, 0.25), v50 = pc(vs, 0.5), t50 = pc(ts, 0.5), t75 = pc(ts, 0.75);
+    S.forEach((o, k) => {
+        const tot = totais.get(k) || 0; o.total = tot; o.pct = tot > 0 ? o.vivo / tot : 0;
+        o.estado = (o.vivo <= v25 || o.toq > t75) ? 2 : (o.vivo >= v50 && o.toq <= t50) ? 0 : 1;   // 0 saudável · 1 testado · 2 gasto
+    });
+    return S;
+}
+// Coração (neutro, longe do verde/vermelho do delta): cheio rosa = saudável · metade = testado · cinza com rachadura = gasto
+function grCoracaoDesenhar(ctx, cx, cy, sz, estado) {
+    const w = sz, h = sz * 0.92, caminho = () => { ctx.beginPath(); ctx.moveTo(cx, cy + h * 0.5); ctx.bezierCurveTo(cx - w * 0.85, cy - h * 0.02, cx - w * 0.5, cy - h * 0.62, cx, cy - h * 0.2); ctx.bezierCurveTo(cx + w * 0.5, cy - h * 0.62, cx + w * 0.85, cy - h * 0.02, cx, cy + h * 0.5); ctx.closePath(); };
+    ctx.save();
+    caminho();
+    if (estado === 0) { ctx.fillStyle = '#E91E8C'; ctx.fill(); }
+    else if (estado === 1) { ctx.fillStyle = 'rgba(255,255,255,0.9)'; ctx.fill(); ctx.save(); caminho(); ctx.clip(); ctx.fillStyle = '#E91E8C'; ctx.fillRect(cx - w, cy - h, w, h * 2); ctx.restore(); }
+    else { ctx.fillStyle = '#9A9AA0'; ctx.fill(); }
+    caminho(); ctx.lineWidth = 1; ctx.strokeStyle = estado === 2 ? '#5C5C62' : '#9D174D'; ctx.stroke();
+    if (estado === 2) { ctx.beginPath(); ctx.moveTo(cx + w * 0.05, cy - h * 0.25); ctx.lineTo(cx - w * 0.12, cy - h * 0.02); ctx.lineTo(cx + w * 0.1, cy + h * 0.12); ctx.lineTo(cx - w * 0.04, cy + h * 0.45); ctx.lineWidth = 1.2; ctx.strokeStyle = '#FFFFFF'; ctx.stroke(); }
+    ctx.restore();
+}
+// Modal pequeno ao lado do coração com os números do nível
+function grSaudeModal(k, tick, sd, cy) {
+    const old = document.getElementById('gr-saude-modal'); if (old) old.remove();
+    const cv = document.getElementById('gr-chart-canvas'); if (!cv) return;
+    const rc = cv.getBoundingClientRect(), f = (rc.height / (grLH(cv) || rc.height)) || 1;
+    const preco = k * tick, fmtP = v => Math.round(v).toLocaleString('pt-BR'), fv = v => grFmtVolCompacto(v, 0);
+    const ago = ts => { if (!(ts > 0)) return '—'; const m = Math.round((Date.now() - ts) / 60000); return m < 60 ? m + ' min' : m < 2880 ? Math.round(m / 60) + ' h' : Math.round(m / 1440) + ' d'; };
+    const nome = ['Saudável', 'Testado', 'Gasto'][sd.estado], cor = ['#E91E8C', '#C026D3', '#6B6B70'][sd.estado];
+    const lin = (a, b) => '<div style="display:flex;justify-content:space-between;gap:14px;margin-top:3px;"><span style="color:#6B6B70;">' + a + '</span><span style="font-weight:700;color:#1C1C1E;">' + b + '</span></div>';
+    const d = document.createElement('div'); d.id = 'gr-saude-modal';
+    d.style.cssText = 'position:fixed;z-index:9700;background:#FFFFFF;border-radius:10px;box-shadow:0 4px 18px rgba(0,0,0,0.28);padding:9px 11px;font:12px -apple-system,sans-serif;min-width:190px;max-width:240px;box-sizing:border-box;';
+    d.innerHTML = '<div style="font-size:13px;font-weight:800;color:' + cor + ';">' + nome + ' · ' + fmtP(preco) + '</div>'
+        + lin('Volume vivo', fv(sd.vivo) + ' (' + Math.round(sd.pct * 100) + '%)') + lin('Volume total', fv(sd.total)) + lin('Delta vivo', (sd.dl >= 0 ? '+' : '−') + fv(Math.abs(sd.dl)))
+        + lin('Toques', String(sd.toq)) + lin('Rompimentos', String(sd.quebras) + (sd.quebras ? ' (há ' + ago(sd.tQ) + ')' : '')) + lin('Último toque', 'há ' + ago(sd.ult));
+    document.body.appendChild(d);
+    const w = d.offsetWidth, h = d.offsetHeight;
+    let left = rc.left + 36, top = rc.top + cy * f - h / 2; left = Math.max(6, Math.min(window.innerWidth - w - 6, left)); top = Math.max(6, Math.min(window.innerHeight - h - 6, top));
+    d.style.left = left + 'px'; d.style.top = top + 'px';
+    const fechar = e => { if (d.contains(e.target)) return; d.remove(); document.removeEventListener('touchstart', fechar, true); document.removeEventListener('mousedown', fechar, true); };
+    setTimeout(() => { document.addEventListener('touchstart', fechar, true); document.addEventListener('mousedown', fechar, true); }, 50);
+}
 function grDeltaPorFaixaATR(tick) {
     if (!_grFootprintCandlesRaw || !_grFootprintAtivo) return null;
     const janelaDias = _grFootprintLookbackDias || 7, inicio0 = grDaInicio();
@@ -3987,7 +4059,9 @@ function grDeltaPorFaixaATR(tick) {
     const inicio = inicio0;
     const mapa = new Map(); // chave: Math.round(preco / tick) -> delta (compra - venda) acumulado na faixa
     const totais = new Map(); // mesma chave -> volume TOTAL (compra + venda) da faixa, mostrado embaixo do delta
+    const minsSaude = [];
     grFootprintParaCadaMinuto(inicio, Date.now(), m => {
+        minsSaude.push(m);
         (m.niveis || []).forEach(n => {
             const k = Math.round(n.p / tick);
             mapa.set(k, (mapa.get(k) || 0) + (n.c - n.v));
@@ -3998,7 +4072,8 @@ function grDeltaPorFaixaATR(tick) {
     mapa.forEach(v => { const a = Math.abs(v); if (a > maxAbs) maxAbs = a; });
     let pocK = null, pocVol = 0;   // POC: faixa de maior volume total (compra + venda) em TODA a janela, não só no que está visível
     totais.forEach((v, k) => { if (v > pocVol) { pocVol = v; pocK = k; } });
-    const resultado = { mapa, totais, maxAbs, pocK };
+    let saude = null; try { saude = grSaudeNiveis(minsSaude, tick, totais); } catch (e) {}
+    const resultado = { mapa, totais, maxAbs, pocK, saude };
     window._grDeltaAtrCache[tick] = { chave, resultado };
     return resultado;
 }
@@ -5964,7 +6039,7 @@ function grDrawCandles(candles, emptyRight) {
         const PAD = { ..._grPAD };
         const _altPan = grAlturasPaineis(H);
         if (_altPan.total > 0) PAD.bottom = _altPan.total + _grPAD.bottom;
-        if (_indState.deltaAtr) PAD.left += 20; // regua de Delta ATR (agora na ESQUERDA): precisa de espaço real pro número ficar legível (7.5px/15px ficava ilegível)
+        if (_indState.deltaAtr) PAD.left += 32; // regua de Delta ATR (agora na ESQUERDA): precisa de espaço real pro número ficar legível (7.5px/15px ficava ilegível)
         let chartW = W - PAD.left - PAD.right;
         const chartH = H - PAD.top - PAD.bottom;
         // ── Calcula indicadores sobre todos os candles ───────────────
@@ -6154,6 +6229,9 @@ function grDrawCandles(candles, emptyRight) {
                     const corInfoDA = grFootprintCorRelativa(deltaFaixa < 0 ? -deltaFaixa : 0, deltaFaixa > 0 ? deltaFaixa : 0, maxAbsDA);
                     ctx.fillStyle = corInfoDA.cor;
                     ctx.fillRect(2, yTopoDA, larguraFaixaDA, yBaseDA - yTopoDA);
+                    if (resultadoDA && resultadoDA.saude) { const sd = resultadoDA.saude.get(k);   // CORAÇÃO DE SAÚDE do nível (cheio = saudável · metade = testado · partido = gasto); toque abre os números
+                        if (sd) { const szH = Math.max(5, Math.min(10, (yBaseDA - yTopoDA) - 2)), cxH = 9, cyH = (yTopoDA + yBaseDA) / 2; grCoracaoDesenhar(ctx, cxH, cyH, szH, sd.estado);
+                            window._grDAHits.push({ x: 0, y: yTopoDA, w: 17, h: Math.max(8, yBaseDA - yTopoDA), abrir: () => grSaudeModal(k, tickDA, sd, cyH) }); } }
                     { const loDA = k * tickDA - tickDA / 2, hiDA = k * tickDA + tickDA / 2, sDA = deltaFaixa >= 0 ? 1 : -1;
                       window._grDAHits.push({ x: 0, y: yTopoDA, w: PAD.left, h: Math.max(4, yBaseDA - yTopoDA), abrir: () => grFaixaDAAlternar(loDA, hiDA, sDA, corInfoDA.cor) }); }
                     // Fundo abaixo do piso vira branco puro (sem tom) -- aí o sinal sumia. Em vez de preto neutro,
@@ -7156,7 +7234,7 @@ if (_grTipoGrafico === 'linha') {
         // ── Desenho Livre: vários traços em sequência (dedo não sai da tela) ──
         const freehandsParaMostrar = [
             ..._freehands.filter(fh => !fh.oculta).map(fh => ({ pontos: fh.pontos.map(pt => ({ i: grTimeToIndex(pt.t), p: pt.p })), cor: fh.cor, esp: fh.esp })),
-            ...(_freehandAtual ? [{ pontos: _freehandAtual.cursor ? _freehandAtual.pontos.concat([_freehandAtual.cursor]) : _freehandAtual.pontos, cor: _freehandAtual.cor, vert: _freehandAtual.pontos }] : [])
+            ...(_freehandAtual ? [{ pontos: _freehandAtual.cursor ? _freehandAtual.pontos.concat([_freehandAtual.cursor]) : _freehandAtual.pontos, cor: _freehandAtual.cor, esp: 1, vert: _freehandAtual.pontos }] : [])
         ];
         if (freehandsParaMostrar.length > 0) {
             const toXIdxFH = absIdx => PAD.left + ((absIdx - startIdx) / totalSlots) * chartW + cW / 2;
