@@ -3546,7 +3546,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v755';
+const APP_VERSAO = 'v756';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4001,26 +4001,29 @@ function grSaudeNiveis(mins, tick, totais) {
         }
         for (const n of ns) {
             const k = Math.round(n.p / tick); let o = S.get(k);
-            if (!o) { o = { side: kc > k + 1 ? 1 : kc < k - 1 ? -1 : 0, vivo: 0, dl: 0, toq: 0, quebras: 0, qCima: 0, qBaixo: 0, dirQ: 0, ult: 0, tQ: 0, afast: 0, rs: 0, rn: 0 }; S.set(k, o); }
+            if (!o) { o = { side: kc > k + 1 ? 1 : kc < k - 1 ? -1 : 0, vivo: 0, dl: 0, toq: 0, quebras: 0, qCima: 0, qBaixo: 0, dirQ: 0, ult: 0, tQ: 0, afast: 0, rs: 0, rn: 0, ct: 0, vt: 0 }; S.set(k, o); }
             if (m.ts - o.ult > GAP) { if (o.ult > 0) { o.rs += o.afast; o.rn++; } o.afast = 0; o.toq++; }
-            o.ult = m.ts; o.vivo += n.c + n.v; o.dl += n.c - n.v;
+            o.ult = m.ts; o.vivo += n.c + n.v; o.dl += n.c - n.v; o.ct += n.c; o.vt += n.v;   // ct/vt: compra e venda agressoras da janela inteira (não zeram no rompimento)
         }
         prevK = kc;
     }
-    const vs = [], ts = [], rs = [], qs = [];
+    const vs = [], ts = [], rs = [], qs = [], kAgora = prevK;
     S.forEach((o, k) => {
+        o.vol = o.ct + o.vt;
+        o.presoC = kAgora != null && kAgora < k ? o.ct : 0;   // preço de agora ABAIXO do nível: quem comprou ali está no prejuízo (compradores presos)
+        o.presoV = kAgora != null && kAgora > k ? o.vt : 0;   // preço de agora ACIMA do nível: quem vendeu ali está no prejuízo (vendedores presos)
         const pend = o.ult > 0 && lastTs - o.ult > GAP ? 1 : 0, nR = o.rn + pend;   // a excursão em curso só conta quando a visita já terminou
         o.reac = nR > 0 ? (o.rs + (pend ? o.afast : 0)) / nR : null;
-        if (o.vivo > 0) { vs.push(o.vivo); ts.push(o.toq); qs.push(o.quebras); if (o.reac != null) rs.push(o.reac); }
+        if (o.vol > 0) { vs.push(o.vol); ts.push(o.toq); qs.push(o.quebras); if (o.reac != null) rs.push(o.reac); }
     });
     if (vs.length < 3) return null;
     vs.sort((x, y) => x - y); ts.sort((x, y) => x - y); rs.sort((x, y) => x - y); qs.sort((x, y) => x - y);
     const pc = (arr, q) => arr.length ? arr[Math.min(arr.length - 1, Math.floor((arr.length - 1) * q))] : 0;
     const v25 = pc(vs, 0.25), v50 = pc(vs, 0.5), t50 = pc(ts, 0.5), t75 = pc(ts, 0.75), r50 = pc(rs, 0.5), q75 = pc(qs, 0.75);
     S.forEach((o, k) => {
-        const tot = totais.get(k) || 0; o.total = tot; o.pct = tot > 0 ? o.vivo / tot : 0;
+        const tot = totais.get(k) || 0; o.total = tot; o.pct = tot > 0 ? o.vol / tot : 0;
         const reagiu = o.reac != null && o.reac >= r50, fracaR = o.reac == null || o.reac < r50;
-        o.estado = (o.vivo <= v25 || (o.toq > t75 && fracaR)) ? 2 : (o.vivo >= v50 && (o.toq <= t50 || reagiu)) ? 0 : 1;   // 0 saudável · 1 testado · 2 gasto
+        o.estado = (o.vol <= v25 || (o.toq > t75 && fracaR)) ? 2 : (o.vol >= v50 && (o.toq <= t50 || reagiu)) ? 0 : 1;   // 0 saudável · 1 testado · 2 gasto
         if (o.estado === 0 && o.quebras > q75) o.estado = 1;   // nível que o preço atravessa mais do que a maioria é lugar de passagem: no máximo 'testado'
     });
     return S;
@@ -4049,7 +4052,7 @@ function grSaudeModal(k, tick, sd, cy) {
     const d = document.createElement('div'); d.id = 'gr-saude-modal';
     d.style.cssText = 'position:fixed;z-index:9700;background:#FFFFFF;border-radius:10px;box-shadow:0 4px 18px rgba(0,0,0,0.28);padding:9px 11px;font:12px -apple-system,sans-serif;min-width:190px;max-width:240px;box-sizing:border-box;';
     d.innerHTML = '<div style="font-size:13px;font-weight:800;color:' + cor + ';">' + nome + ' · ' + fmtP(preco) + '</div>'
-        + lin('Volume vivo', fv(sd.vivo) + ' (' + Math.round(sd.pct * 100) + '%)') + lin('Volume total', fv(sd.total)) + lin('Delta vivo', (sd.dl >= 0 ? '+' : '−') + fv(Math.abs(sd.dl)))
+        + lin('Volume total', fv(sd.total)) + lin('Compradores presos', sd.presoC > 0 ? fv(sd.presoC) + ' (' + Math.round(sd.presoC / (sd.total || 1) * 100) + '%)' : '—') + lin('Vendedores presos', sd.presoV > 0 ? fv(sd.presoV) + ' (' + Math.round(sd.presoV / (sd.total || 1) * 100) + '%)' : '—')
         + lin('Toques', String(sd.toq)) + lin('Reação média', sd.reac != null ? '$ ' + fmtP(sd.reac * tick) : '—') + lin('Suporte rompido', String(sd.qBaixo)) + lin('Resistência rompida', String(sd.qCima)) + (sd.quebras ? lin('Último rompimento', (sd.dirQ > 0 ? 'resistência' : 'suporte') + ', há ' + ago(sd.tQ)) : '') + lin('Papel agora', sd.side > 0 ? 'suporte (preço acima)' : sd.side < 0 ? 'resistência (preço abaixo)' : '—') + lin('Último toque', 'há ' + ago(sd.ult));
     document.body.appendChild(d);
     const w = d.offsetWidth, h = d.offsetHeight;
