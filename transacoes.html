@@ -3546,7 +3546,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v748';
+const APP_VERSAO = 'v750';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -7196,6 +7196,25 @@ if (_grTipoGrafico === 'linha') {
             ctx.save(); ctx.beginPath(); ctx.arc(_grCrosshairX, window._longPressY, 16, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * window._mdDwProg);
             ctx.lineWidth = 3; ctx.lineCap = 'round'; ctx.strokeStyle = '#8B5CF6'; ctx.stroke(); ctx.restore();
         }
+        if (window._mdGesto && !window._mdGesto.done && _grCrosshairX != null && window._longPressY >= 0) {   // ÍCONE DA FIGURA junto do crosshair: Medida (reta vertical), Tendência (inclinou) ou Canal (curva fechada)
+            const G = window._mdGesto, tp = G.stage === 5 ? 'livre' : ((G.stage === 3 || G.stage === 4) && G.canal && G.canal.ok) ? 'canal' : (G.tipo === 'tendencia' ? 'tendencia' : 'medida'), R = 13;
+            let cx = _grCrosshairX + 30, cy = window._longPressY - 30; if (cx + R > W - PAD.right) cx = _grCrosshairX - 30; if (cy - R < PAD.top) cy = window._longPressY + 30;
+            ctx.save(); ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fillStyle = 'rgba(255,255,255,0.94)'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#8B5CF6'; ctx.stroke();
+            ctx.lineWidth = 1.7; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#6D28D9'; ctx.fillStyle = '#6D28D9'; ctx.beginPath();
+            if (tp === 'medida') {   // duas linhas horizontais e uma seta vertical entre elas
+                ctx.moveTo(cx - 7, cy - 6); ctx.lineTo(cx + 7, cy - 6); ctx.moveTo(cx - 7, cy + 6); ctx.lineTo(cx + 7, cy + 6);
+                ctx.moveTo(cx, cy - 5); ctx.lineTo(cx, cy + 5); ctx.moveTo(cx - 2.5, cy + 2.5); ctx.lineTo(cx, cy + 5); ctx.lineTo(cx + 2.5, cy + 2.5); ctx.stroke();
+            } else if (tp === 'livre') {   // traço à mão: zigue-zague com ponta
+                ctx.moveTo(cx - 7, cy + 4); ctx.lineTo(cx - 3, cy - 4); ctx.lineTo(cx + 1, cy + 3); ctx.lineTo(cx + 7, cy - 5); ctx.stroke();
+            } else if (tp === 'tendencia') {   // reta inclinada com as duas pontas marcadas
+                ctx.moveTo(cx - 6, cy + 5); ctx.lineTo(cx + 6, cy - 5); ctx.stroke();
+                ctx.beginPath(); ctx.arc(cx - 6, cy + 5, 2, 0, Math.PI * 2); ctx.arc(cx + 6, cy - 5, 2, 0, Math.PI * 2); ctx.fill();
+            } else {   // canal: duas retas paralelas inclinadas e a linha central tracejada
+                ctx.moveTo(cx - 7, cy + 1); ctx.lineTo(cx + 5, cy - 7); ctx.moveTo(cx - 5, cy + 7); ctx.lineTo(cx + 7, cy - 1); ctx.stroke();
+                ctx.beginPath(); ctx.setLineDash([2, 2]); ctx.lineWidth = 1.2; ctx.moveTo(cx - 6, cy + 4); ctx.lineTo(cx + 6, cy - 4); ctx.stroke(); ctx.setLineDash([]);
+            }
+            ctx.restore();
+        }
         const toXIdx2 = absIdx => PAD.left + ((absIdx - startIdx) / totalSlots) * chartW + cW / 2;
         // ── Linhas horizontais (fixas + a que está sendo posicionada): linha em toda a largura + pílula de preço no eixo ──
         {
@@ -10544,7 +10563,7 @@ setInterval(grMdDwellTick, 100);
 //  2ª parada (durante o arrasto) = trava o ponto 2 e arma o CANAL: sem soltar, ao mexer o dedo a 2ª linha do canal aparece e acompanha o dedo; 3ª parada finaliza o canal.
 //  Soltar o dedo antes da 3ª parada cria só a figura (Medida/Tendência) do ponto 1 ao ponto 2.
 function grMdGestoDwell(G) {
-    if (G.done || G.stage === 2 || !window._mdDedo || !window._longPressActive || _grCrosshairX == null || !(window._longPressY >= 0)) return;
+    if (G.done || G.stage === 2 || G.stage === 4 || !window._mdDedo || !window._longPressActive || _grCrosshairX == null || !(window._longPressY >= 0)) return;
     const x = _grCrosshairX, y = window._longPressY, agora = Date.now();
     if (!G.dw || Math.hypot(x - grIndexToX(G.dw.i), y - grLineY(G.dw.p)) > FH_DW_TOL) { G.dw = { i: grXToIndex(x) - 0.5, p: grToPrice(y), t0: agora }; if (window._mdDwProg) { window._mdDwProg = 0; try { grDrawChart(); } catch (e) {} } return; }
     const prog = Math.min(1, (agora - G.dw.t0) / FH_DW_MS); window._mdDwProg = prog;
@@ -10554,9 +10573,13 @@ function grMdGestoDwell(G) {
             const cur = grPlCursor();
             if (cur && grGestoTipo(G.P1, cur) === 'medida') { G.cur = cur; G.tipo = 'medida'; grMdPrevia(G); try { grDrawChart(); } catch (e) {} return; }   // MEDIDA (reta vertical) não tem canal: parar o dedo não trava o ponto 2, a medida segue o dedo até soltar
             if (cur) { G.cur = cur; G.stage = 2; G.fingerAt = { x, y }; G.tipo = grGestoTipo(G.P1, cur); grMdPrevia(G); try { if (navigator.vibrate) navigator.vibrate(25); } catch (e) {} }
-        } else if (G.stage === 3 && G.canal && G.canal.ok) {   // 3ª parada: finaliza o canal
-            grMdCriarCanal(G); G.done = true; _medidaAtual = null; _trendAtual = null; _freehandAtual = null;
+        } else if (G.stage === 3 && G.canal && G.canal.ok) {   // 3ª parada: o canal fica PRONTO (soltar o dedo cria). Se o dedo continuar a mover sem soltar, vira Desenho Livre
+            G.stage = 4; G.fingerAt = { x, y };
             try { if (navigator.vibrate) navigator.vibrate([25, 40, 25]); } catch (e) {}
+        } else if (G.stage === 5 && G.pts) {   // Desenho Livre em andamento: cada parada marca um vértice
+            const pt = { i: grXToIndex(x) - 0.5, p: grToPrice(y) }, ult = G.pts[G.pts.length - 1];
+            if (!ult || Math.hypot(x - grIndexToX(ult.i), y - grLineY(ult.p)) >= FH_DW_MIN_DIST) { G.pts.push(pt); try { if (navigator.vibrate) navigator.vibrate(25); } catch (e) {} }
+            grMdPrevia(G);
         }
     }
     try { grDrawChart(); } catch (e) {}
@@ -10583,7 +10606,8 @@ function grGestoCanal(G) {   // canal do ponto 1 ao ponto 2, com a largura até 
 }
 function grMdPrevia(G) {
     _medidaAtual = null; _trendAtual = null; _freehandAtual = null;
-    if (G.stage === 3 && G.canal && G.canal.ok) { const k = G.canal; _trendAtual = { i1: k.i1, i2: k.i2, p1: k.p1, p2: k.p2, cor: _trendColor, canal: true, hor: k.hor, geo: k.geo, larg: k.larg, esp: 1 }; return; }
+    if (G.stage === 5 && G.pts) { _freehandAtual = { pontos: G.pts, cor: _freehandColor, cursor: G.cursor || null }; return; }
+    if ((G.stage === 3 || G.stage === 4) && G.canal && G.canal.ok) { const k = G.canal; _trendAtual = { i1: k.i1, i2: k.i2, p1: k.p1, p2: k.p2, cor: _trendColor, canal: true, hor: k.hor, geo: k.geo, larg: k.larg, esp: 1 }; return; }
     const c = G.cur, i0 = grTimeToIndex(G.P1.t); if (!c) return;
     if (G.tipo === 'medida') _medidaAtual = { i1: i0, p1: G.P1.p, i2: c.ic, p2: c.p };
     else _trendAtual = { i1: i0, p1: G.P1.p, i2: c.ic, p2: c.p, cor: _trendColor, canal: false, esp: 1 };
@@ -10597,6 +10621,12 @@ function grMdMover() {   // chamada a cada movimento do crosshair normal (dedo a
     const cur = grPlCursor(); if (!cur) return;
     if (G.stage === 1) { G.cur = cur; G.tipo = grGestoTipo(G.P1, cur); grMdPrevia(G); return; }
     if (G.stage === 2 && Math.hypot(_grCrosshairX - G.fingerAt.x, window._longPressY - G.fingerAt.y) > 8) { G.stage = 3; G.dw = null; }   // mexeu depois da 2ª parada: é canal
+    if (G.stage === 4) {   // canal pronto: continuar mexendo sem soltar = nem Medida, nem Tendência, nem Canal → DESENHO LIVRE (os pontos já marcados viram os primeiros vértices)
+        if (Math.hypot(_grCrosshairX - G.fingerAt.x, window._longPressY - G.fingerAt.y) <= 8) return;
+        G.stage = 5; G.tipo = 'livre'; G.dw = null;
+        G.pts = [{ i: grTimeToIndex(G.P1.t), p: G.P1.p }, { i: G.cur.ic, p: G.cur.p }, { i: grXToIndex(G.fingerAt.x) - 0.5, p: grToPrice(G.fingerAt.y) }];
+    }
+    if (G.stage === 5) { G.cursor = { i: grXToIndex(_grCrosshairX) - 0.5, p: cur.p }; grMdPrevia(G); return; }
     if (G.stage === 3) { G.canal = grGestoCanal(G); grMdPrevia(G); }
 }
 function grMdCriarCanal(G) {
@@ -10610,6 +10640,15 @@ function grMdFinalizar() {   // soltou o dedo: cria a figura (Medida ou Tendênc
     if (!G) return;
     _medidaAtual = null; _trendAtual = null; _freehandAtual = null;
     if (G.done) { try { grDrawChart(); } catch (e) {} return; }
+    if (G.stage === 4 && G.canal && G.canal.ok) { try { grMdCriarCanal(G); } catch (e) {} try { grDrawChart(); } catch (e) {} return; }   // soltou com o canal pronto: cria o canal
+    if (G.stage === 5 && G.pts) {   // soltou no Desenho Livre: o ponto onde o dedo saiu fecha o traço
+        try {
+            const pts = G.pts.slice(), ult = pts[pts.length - 1], f = G.cursor;
+            if (f && (!ult || Math.hypot(grIndexToX(f.i) - grIndexToX(ult.i), grLineY(f.p) - grLineY(ult.p)) >= FH_DW_MIN_DIST)) pts.push({ i: f.i, p: f.p });
+            if (pts.length >= 2) { const novo = { id: null, pontos: pts.map(pt => ({ t: grIndexToTime(pt.i), p: pt.p })), cor: _freehandColor, seg: true }; _freehands.push(novo); try { cvSalvarFreehand(novo); } catch (e) {} }
+        } catch (e) {}
+        try { grDrawChart(); } catch (e) {} return;
+    }
     const c = G.cur, P1 = G.P1;
     try {
         if (c && P1 && !(c.t === P1.t && Math.abs(c.p - P1.p) < 1e-9)) {
