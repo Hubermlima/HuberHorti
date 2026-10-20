@@ -3546,7 +3546,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v756';
+const APP_VERSAO = 'v757';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3986,11 +3986,12 @@ function grDaDefinirPeriodo(v) { _grDaPeriodo = v === 'vp' ? 'vp' : 'dias'; try 
 function grSaudeNiveis(mins, tick, totais) {
     if (!mins.length) return null;
     mins.sort((a, b) => a.ts - b.ts);
-    const S = new Map(), GAP = 15 * 60000; let prevK = null, lastTs = 0;
+    const S = new Map(), GAP = 15 * 60000; let prevK = null, lastTs = 0, pmAgora = null;
     for (const m of mins) {
         const ns = m.niveis || []; if (!ns.length) continue;
         let sv = 0, sp = 0; for (const n of ns) { const v = n.c + n.v; sv += v; sp += v * n.p; }
         if (!(sv > 0)) continue;
+        pmAgora = sp / sv;
         const kc = Math.round(sp / sv / tick), a = (prevK == null ? kc : Math.min(prevK, kc)) - 1, b = (prevK == null ? kc : Math.max(prevK, kc)) + 1;
         S.forEach((o, k) => { const d = Math.abs(kc - k); if (d > o.afast) o.afast = d; });   // quanto o preço já se afastou de cada nível desde a última visita
         lastTs = m.ts;
@@ -4003,15 +4004,15 @@ function grSaudeNiveis(mins, tick, totais) {
             const k = Math.round(n.p / tick); let o = S.get(k);
             if (!o) { o = { side: kc > k + 1 ? 1 : kc < k - 1 ? -1 : 0, vivo: 0, dl: 0, toq: 0, quebras: 0, qCima: 0, qBaixo: 0, dirQ: 0, ult: 0, tQ: 0, afast: 0, rs: 0, rn: 0, ct: 0, vt: 0 }; S.set(k, o); }
             if (m.ts - o.ult > GAP) { if (o.ult > 0) { o.rs += o.afast; o.rn++; } o.afast = 0; o.toq++; }
-            o.ult = m.ts; o.vivo += n.c + n.v; o.dl += n.c - n.v; o.ct += n.c; o.vt += n.v;   // ct/vt: compra e venda agressoras da janela inteira (não zeram no rompimento)
+            o.ult = m.ts; o.vivo += n.c + n.v; o.dl += n.c - n.v; if (!o.pp) o.pp = new Map(); const e0 = o.pp.get(n.p); if (e0) { e0[0] += n.c; e0[1] += n.v; } else o.pp.set(n.p, [n.c, n.v]); o.ct += n.c; o.vt += n.v;   // pp: volume por preço exato (para os presos); ct/vt: compra e venda agressoras da janela inteira (não zeram no rompimento)
         }
         prevK = kc;
     }
     const vs = [], ts = [], rs = [], qs = [], kAgora = prevK;
     S.forEach((o, k) => {
         o.vol = o.ct + o.vt;
-        o.presoC = kAgora != null && kAgora < k ? o.ct : 0;   // preço de agora ABAIXO do nível: quem comprou ali está no prejuízo (compradores presos)
-        o.presoV = kAgora != null && kAgora > k ? o.vt : 0;   // preço de agora ACIMA do nível: quem vendeu ali está no prejuízo (vendedores presos)
+        o.presoC = 0; o.presoV = 0;   // por PREÇO EXATO dentro do nível: comprou acima do preço de agora = comprador preso; vendeu abaixo do preço de agora = vendedor preso (mesma regra da 'compra presa' / 'venda presa' do candle)
+        if (pmAgora != null && o.pp) o.pp.forEach((cv, pr) => { if (pr > pmAgora) o.presoC += cv[0]; else if (pr < pmAgora) o.presoV += cv[1]; });
         const pend = o.ult > 0 && lastTs - o.ult > GAP ? 1 : 0, nR = o.rn + pend;   // a excursão em curso só conta quando a visita já terminou
         o.reac = nR > 0 ? (o.rs + (pend ? o.afast : 0)) / nR : null;
         if (o.vol > 0) { vs.push(o.vol); ts.push(o.toq); qs.push(o.quebras); if (o.reac != null) rs.push(o.reac); }
