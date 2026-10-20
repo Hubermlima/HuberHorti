@@ -3546,7 +3546,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v757';
+const APP_VERSAO = 'v763';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -3977,55 +3977,54 @@ function grOiValorEm(dados, ts) {
 let _grDaPeriodo = (() => { try { return localStorage.getItem('grDaPeriodo') === 'vp' ? 'vp' : 'dias'; } catch (e) { return 'dias'; } })();
 function grDaInicio() { const a = (typeof _grVpAncoraTs !== 'undefined') ? _grVpAncoraTs : null; return _grDaPeriodo === 'vp' && a > 0 ? a : Date.now() - (_grFootprintLookbackDias || 7) * 86400000; }
 function grDaDefinirPeriodo(v) { _grDaPeriodo = v === 'vp' ? 'vp' : 'dias'; try { localStorage.setItem('grDaPeriodo', _grDaPeriodo); } catch (e) {} window._grDeltaAtrCache = {}; try { grAmbienteSalvar(); } catch (e) {} try { cvRenderMenuFpCfg(); } catch (e) {} grDrawChart(); }
-// SAÚDE DO NÍVEL (régua Delta ATR). Percorre os minutos do footprint em ordem. Para cada nível (faixa da régua):
-//  · ROMPIMENTO = o preço (média ponderada por volume de cada minuto) ficou firme de um lado do nível (a mais de 1 faixa de distância) e depois firme do outro. Rompeu: o que foi negociado antes deixa de contar.
-//  · VOLUME VIVO = volume negociado no nível desde o último rompimento (e o delta vivo, comprador − vendedor).
-//  · TOQUES = visitas ao nível desde o último rompimento (nova visita = voltou a negociar ali depois de 15 min parado).
-//  · REAÇÃO = o quanto o preço se afastou do nível (em faixas da régua) entre uma visita e a seguinte; a média das reações mostra se os testes ESTÃO FORTALECENDO (preço reage forte) ou DESGASTANDO o nível.
-// Classificação RELATIVA ao conjunto de níveis (sem número fixo): gasto = volume vivo ≤ 25º percentil, ou toques acima do 75º percentil com reação abaixo da mediana; saudável = volume vivo ≥ mediana e (poucos toques ou reação ≥ mediana); testado = o resto.
+// SAÚDE DO NÍVEL (régua Delta ATR). Percorre os minutos do footprint em ordem. A ZONA de cada nível = a faixa dele ± 1 faixa da régua. Preço usado = média do minuto ponderada por volume.
+//  · FIRME = o preço está fora da zona (a mais de 1 faixa do nível), por cima ou por baixo.
+//  · TOQUE = o preço vem de fora, entra na zona e é REPELIDO de volta para o mesmo lado de onde veio. Veio de cima e voltou para cima = Toque de Suporte; veio de baixo e voltou para baixo = Toque de Resistência.
+//  · ROMPIMENTO = o preço vem de fora, passa pela zona e fica firme do OUTRO lado. De cima para baixo = Suporte rompido; de baixo para cima = Resistência rompida.
+//  · PRESOS (por preço exato dentro do nível): comprou acima do preço de agora = comprador preso; vendeu abaixo do preço de agora = vendedor preso.
+// Todas as contagens valem para a janela inteira da régua (não zeram). Classificação do coração, RELATIVA ao conjunto de níveis para o volume:
+//  gasto = volume no 25% mais baixo OU mais rompimentos do que toques (cedeu mais do que segurou); saudável = volume ≥ mediana E mais toques do que rompimentos; testado = o resto.
 function grSaudeNiveis(mins, tick, totais) {
     if (!mins.length) return null;
     mins.sort((a, b) => a.ts - b.ts);
-    const S = new Map(), GAP = 15 * 60000; let prevK = null, lastTs = 0, pmAgora = null;
+    const S = new Map(); let prevK = null, pmAgora = null;
     for (const m of mins) {
         const ns = m.niveis || []; if (!ns.length) continue;
         let sv = 0, sp = 0; for (const n of ns) { const v = n.c + n.v; sv += v; sp += v * n.p; }
         if (!(sv > 0)) continue;
         pmAgora = sp / sv;
         const kc = Math.round(sp / sv / tick), a = (prevK == null ? kc : Math.min(prevK, kc)) - 1, b = (prevK == null ? kc : Math.max(prevK, kc)) + 1;
-        S.forEach((o, k) => { const d = Math.abs(kc - k); if (d > o.afast) o.afast = d; });   // quanto o preço já se afastou de cada nível desde a última visita
-        lastTs = m.ts;
         for (let kk = a; kk <= b; kk++) {
             const o = S.get(kk); if (!o) continue;
             const sd = kc > kk + 1 ? 1 : kc < kk - 1 ? -1 : 0;
-            if (sd !== 0) { if (o.side !== 0 && o.side !== sd) { o.vivo = 0; o.dl = 0; o.toq = 0; o.rs = 0; o.rn = 0; o.afast = 0; o.quebras++; o.tQ = m.ts; o.dirQ = sd; if (sd > 0) o.qCima++; else o.qBaixo++; } o.side = sd; }
+            if (sd !== 0) {
+                if (o.side !== 0 && o.side !== sd) { o.quebras++; o.tQ = m.ts; o.dirQ = sd; if (sd > 0) o.qCima++; else o.qBaixo++; }   // atravessou: firme do outro lado
+                else if (o.inZona && o.side === sd) { if (sd > 0) o.toqS++; else o.toqR++; o.tToq = m.ts; o.tipoToq = sd > 0 ? 'suporte' : 'resistência'; }   // entrou na zona e voltou para o mesmo lado
+                o.side = sd; o.inZona = false;
+            } else if (!o.inZona) o.inZona = true;
         }
         for (const n of ns) {
             const k = Math.round(n.p / tick); let o = S.get(k);
-            if (!o) { o = { side: kc > k + 1 ? 1 : kc < k - 1 ? -1 : 0, vivo: 0, dl: 0, toq: 0, quebras: 0, qCima: 0, qBaixo: 0, dirQ: 0, ult: 0, tQ: 0, afast: 0, rs: 0, rn: 0, ct: 0, vt: 0 }; S.set(k, o); }
-            if (m.ts - o.ult > GAP) { if (o.ult > 0) { o.rs += o.afast; o.rn++; } o.afast = 0; o.toq++; }
-            o.ult = m.ts; o.vivo += n.c + n.v; o.dl += n.c - n.v; if (!o.pp) o.pp = new Map(); const e0 = o.pp.get(n.p); if (e0) { e0[0] += n.c; e0[1] += n.v; } else o.pp.set(n.p, [n.c, n.v]); o.ct += n.c; o.vt += n.v;   // pp: volume por preço exato (para os presos); ct/vt: compra e venda agressoras da janela inteira (não zeram no rompimento)
+            if (!o) { const sd0 = kc > k + 1 ? 1 : kc < k - 1 ? -1 : 0; o = { side: sd0, inZona: sd0 === 0, quebras: 0, qCima: 0, qBaixo: 0, dirQ: 0, tQ: 0, toqS: 0, toqR: 0, tToq: 0, tipoToq: '', ct: 0, vt: 0 }; S.set(k, o); }
+            if (!o.pp) o.pp = new Map(); const e0 = o.pp.get(n.p); if (e0) { e0[0] += n.c; e0[1] += n.v; } else o.pp.set(n.p, [n.c, n.v]); o.ct += n.c; o.vt += n.v;   // pp: volume por preço exato (para os presos)
         }
         prevK = kc;
     }
-    const vs = [], ts = [], rs = [], qs = [], kAgora = prevK;
+    const vs = [];
     S.forEach((o, k) => {
         o.vol = o.ct + o.vt;
-        o.presoC = 0; o.presoV = 0;   // por PREÇO EXATO dentro do nível: comprou acima do preço de agora = comprador preso; vendeu abaixo do preço de agora = vendedor preso (mesma regra da 'compra presa' / 'venda presa' do candle)
+        o.presoC = 0; o.presoV = 0;
         if (pmAgora != null && o.pp) o.pp.forEach((cv, pr) => { if (pr > pmAgora) o.presoC += cv[0]; else if (pr < pmAgora) o.presoV += cv[1]; });
-        const pend = o.ult > 0 && lastTs - o.ult > GAP ? 1 : 0, nR = o.rn + pend;   // a excursão em curso só conta quando a visita já terminou
-        o.reac = nR > 0 ? (o.rs + (pend ? o.afast : 0)) / nR : null;
-        if (o.vol > 0) { vs.push(o.vol); ts.push(o.toq); qs.push(o.quebras); if (o.reac != null) rs.push(o.reac); }
+        if (o.vol > 0) vs.push(o.vol);
     });
     if (vs.length < 3) return null;
-    vs.sort((x, y) => x - y); ts.sort((x, y) => x - y); rs.sort((x, y) => x - y); qs.sort((x, y) => x - y);
-    const pc = (arr, q) => arr.length ? arr[Math.min(arr.length - 1, Math.floor((arr.length - 1) * q))] : 0;
-    const v25 = pc(vs, 0.25), v50 = pc(vs, 0.5), t50 = pc(ts, 0.5), t75 = pc(ts, 0.75), r50 = pc(rs, 0.5), q75 = pc(qs, 0.75);
+    vs.sort((x, y) => x - y);
+    const pc = (arr, q) => arr[Math.min(arr.length - 1, Math.floor((arr.length - 1) * q))];
+    const v25 = pc(vs, 0.25), v50 = pc(vs, 0.5);
     S.forEach((o, k) => {
         const tot = totais.get(k) || 0; o.total = tot; o.pct = tot > 0 ? o.vol / tot : 0;
-        const reagiu = o.reac != null && o.reac >= r50, fracaR = o.reac == null || o.reac < r50;
-        o.estado = (o.vol <= v25 || (o.toq > t75 && fracaR)) ? 2 : (o.vol >= v50 && (o.toq <= t50 || reagiu)) ? 0 : 1;   // 0 saudável · 1 testado · 2 gasto
-        if (o.estado === 0 && o.quebras > q75) o.estado = 1;   // nível que o preço atravessa mais do que a maioria é lugar de passagem: no máximo 'testado'
+        const T = o.toqS + o.toqR, Q = o.quebras;
+        o.estado = (o.vol <= v25 || Q > T) ? 2 : (o.vol >= v50 && T > Q) ? 0 : 1;   // 0 saudável · 1 testado · 2 gasto
     });
     return S;
 }
@@ -4051,10 +4050,11 @@ function grSaudeModal(k, tick, sd, cy) {
     const nome = ['Saudável', 'Testado', 'Gasto'][sd.estado], cor = ['#E91E8C', '#C026D3', '#6B6B70'][sd.estado];
     const lin = (a, b) => '<div style="display:flex;justify-content:space-between;gap:14px;margin-top:3px;"><span style="color:#6B6B70;">' + a + '</span><span style="font-weight:700;color:#1C1C1E;">' + b + '</span></div>';
     const d = document.createElement('div'); d.id = 'gr-saude-modal';
-    d.style.cssText = 'position:fixed;z-index:9700;background:#FFFFFF;border-radius:10px;box-shadow:0 4px 18px rgba(0,0,0,0.28);padding:9px 11px;font:12px -apple-system,sans-serif;min-width:190px;max-width:240px;box-sizing:border-box;';
+    d.style.cssText = 'position:fixed;z-index:9700;background:#FFFFFF;border-radius:10px;box-shadow:0 4px 18px rgba(0,0,0,0.28);padding:9px 11px;font:12px -apple-system,sans-serif;min-width:270px;max-width:340px;white-space:nowrap;box-sizing:border-box;';
     d.innerHTML = '<div style="font-size:13px;font-weight:800;color:' + cor + ';">' + nome + ' · ' + fmtP(preco) + '</div>'
         + lin('Volume total', fv(sd.total)) + lin('Compradores presos', sd.presoC > 0 ? fv(sd.presoC) + ' (' + Math.round(sd.presoC / (sd.total || 1) * 100) + '%)' : '—') + lin('Vendedores presos', sd.presoV > 0 ? fv(sd.presoV) + ' (' + Math.round(sd.presoV / (sd.total || 1) * 100) + '%)' : '—')
-        + lin('Toques', String(sd.toq)) + lin('Reação média', sd.reac != null ? '$ ' + fmtP(sd.reac * tick) : '—') + lin('Suporte rompido', String(sd.qBaixo)) + lin('Resistência rompida', String(sd.qCima)) + (sd.quebras ? lin('Último rompimento', (sd.dirQ > 0 ? 'resistência' : 'suporte') + ', há ' + ago(sd.tQ)) : '') + lin('Papel agora', sd.side > 0 ? 'suporte (preço acima)' : sd.side < 0 ? 'resistência (preço abaixo)' : '—') + lin('Último toque', 'há ' + ago(sd.ult));
+        + lin('Toques Suporte', String(sd.toqS)) + lin('Toques Resistência', String(sd.toqR)) + lin('Rompimentos Suporte', String(sd.qBaixo)) + lin('Rompimentos Resistência', String(sd.qCima))
+        + (sd.tToq > 0 ? lin('Último toque', sd.tipoToq + ', há ' + ago(sd.tToq)) : lin('Último toque', '—'));
     document.body.appendChild(d);
     const w = d.offsetWidth, h = d.offsetHeight;
     let left = rc.left + 36, top = rc.top + cy * f - h / 2; left = Math.max(6, Math.min(window.innerWidth - w - 6, left)); top = Math.max(6, Math.min(window.innerHeight - h - 6, top));
