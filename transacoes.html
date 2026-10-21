@@ -3434,12 +3434,12 @@ function grAbsBaloesFlush(ctx) {
     });
 }
 function grAbsBalao(ctx, a, soMedir) {
-    // BALÃO: sigla (AC/AV) e o excesso (× o normal da série) em fonte grande; a ponta aponta para o candle que originou a absorção.
+    // BALÃO: sigla (AC/AV) e o excesso sobre o normal da série (%) em fonte grande; a ponta aponta para o candle que originou a absorção.
     const { x, yBorda, tipo, pct, yMin, yMax, esc } = a;
     const compradora = tipo === 'compradora';
     const cor = compradora ? CorDivergAlta : CorDivergBaixa;
     const sigla = compradora ? 'AC' : 'AV';
-    const pctTxt = '×' + (Math.abs(pct) / 100 + 1).toFixed(1).replace('.', ',');
+    const pctTxt = '+' + Math.round(Math.abs(pct)) + '%';   // excesso sobre o normal (mediana) da série
     const f1 = 9 * esc, f2 = 12 * esc, tail = 6 * esc, padX = 5 * esc, padY = 3 * esc, gap = 3 * esc;
     ctx.save();
     ctx.font = 'bold ' + f2 + 'px -apple-system';
@@ -3681,7 +3681,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v818';
+const APP_VERSAO = 'v821';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -8095,7 +8095,12 @@ if (_grTipoGrafico === 'linha') {
                     const intensidade = nmA && razao > 0 ? Math.max(0, Math.min(1, (Math.log(razao) * 1 + 0 - 0) / (3 * nmA.sg))) : 0;   // força = z / 3
                     // LADO: roxo = absorção compradora (subiu com delta negativo), azul = vendedora (caiu com delta positivo), amarelo = acima da média mas sem divergência de delta
                     let corB = '255,193,7';
-                    try { const cB = _grAllCandles[startIdx + i - absOffset]; if (cB && deltaPorCandle && razao > 1) { const dB = deltaPorCandle.get(cB.t) || 0, upB = cB.c >= cB.o; if (upB && dB < 0) corB = '123,31,162'; else if (!upB && dB > 0) corB = '30,136,229'; } } catch (eB) {}
+                    try { const cB = _grAllCandles[startIdx + i - absOffset], rawB = (typeof _grFootprintCandlesRaw !== 'undefined') ? _grFootprintCandlesRaw : null;
+                        if (cB && rawB && rawB.length && razao > 1) {
+                            const msB = grFootprintMsPorCandle(), mkB = cB.t + '_' + msB; let dB = _grDeltaMemo.get(mkB); if (dB === undefined) { dB = grDeltaCalcularCandle(cB.t, msB, rawB); _grDeltaMemo.set(mkB, dB); }
+                            const upB = cB.c >= cB.o;   // mesma regra do balão: divergência de delta + acima do normal + delta relevante
+                            if (dB && grAbsorcaoExcessoPct(cB, dB) != null) { if (upB && dB < 0) corB = '123,31,162'; else if (!upB && dB > 0) corB = '30,136,229'; }
+                        } } catch (eB) {}
                     ctx.fillStyle = razao > 1 ? `rgba(${corB},${0.45 + intensidade * 0.50})` : 'rgba(150,150,150,0.35)';
                     ctx.fillRect(x - cW * 0.4, baseY - alturaPx, cW * 0.8, alturaPx);
                     if (razao > TETO_ABS) { ctx.fillStyle = '' + (_absClaro ? 'rgba(60,60,67,0.9)' : 'rgba(255,255,255,0.9)') + ''; ctx.fillRect(x - cW * 0.4, baseY - alturaPx, cW * 0.8, 2); }
@@ -8119,7 +8124,20 @@ if (_grTipoGrafico === 'linha') {
                 ctx.fillText('ABSORÇÃO', PAD.left + 4, panY + panPad.top + 12);
                 ctx.font = '9px -apple-system';
                 ctx.fillStyle = '' + (_absClaro ? 'rgba(60,60,67,0.55)' : 'rgba(255,255,255,0.55)') + '';
-                ctx.fillText('roxo AC · azul AV · amarelo sem lado', PAD.left + 84, panY + panPad.top + 12);
+                ctx.fillText('roxo AC · azul AV · amarelo sem lado', PAD.left + 4, panY + panPad.top + 25);
+                try {   // BALANÇO desde a âncora do VP: quem absorveu mais (volume absorvido normalizado) — barra roxo × azul e as contagens
+                    const B = grAbsorcaoBalanco();
+                    if (B && B.ac.vn + B.av.vn > 0) {
+                        const tB = B.ac.vn + B.av.vn, paB = Math.round(B.ac.vn / tB * 100), yB = panY + panPad.top + 38, wB = 90, xB = PAD.left + 4;
+                        ctx.save(); ctx.fillStyle = '#1E88E5'; ctx.beginPath(); ctx.roundRect(xB, yB - 4, wB, 8, 4); ctx.fill();
+                        ctx.fillStyle = '#7B1FA2'; ctx.beginPath(); ctx.roundRect(xB, yB - 4, Math.max(4, wB * paB / 100), 8, 4); ctx.fill();
+                        ctx.font = 'bold 10px -apple-system'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+                        ctx.fillStyle = '#7B1FA2'; ctx.fillText('AC ' + paB + '% · ' + B.ac.n, xB + wB + 8, yB);
+                        const wAc = ctx.measureText('AC ' + paB + '% · ' + B.ac.n).width;
+                        ctx.fillStyle = '#1E88E5'; ctx.fillText(B.av.n + ' · AV ' + (100 - paB) + '%', xB + wB + 8 + wAc + 10, yB);
+                        ctx.restore();
+                    }
+                } catch (eBal) {}
                 // último candle da tela, à direita: quantas vezes o normal (e o valor bruto da fórmula)
                 ctx.font = 'bold 10px -apple-system';
                 ctx.textAlign = 'right';
