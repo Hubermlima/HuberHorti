@@ -2152,6 +2152,83 @@ function sentRelatorioHtml() {
         + al(r.rL, r.rL ? (r.sg > 0 ? 'Varejo muito comprado' : 'Varejo muito vendido') : 'Varejo na média', f(r.ls, 2) + (r.mm != null ? ' · méd ' + f(r.mm, 2) : ''))
         + al(r.rO, r.rO ? 'Open Interest caindo (posições fechando)' : (r.oiPct != null && r.oiPct >= r.oiNorm && r.oiPct > 0) ? 'Open Interest subindo' : 'Open Interest estável', f(r.oiPct, 1, '%')) + '</div></details>';
 }
+// BALANÇO AC × AV desde a âncora do VP: soma, de cada lado, do volume absorvido (|delta| do candle que o balão marca) NORMALIZADO pelo volume mediano da janela
+// ("candles de volume normal"), para a hora agitada não pesar mais só por ter negociado mais. Também devolve contagem e volume cru. Só informativo.
+function grAbsorcaoBalanco() {
+    const cs = _grAllCandles, n = cs.length, anc = (typeof _grVpAncoraTs !== 'undefined' && _grVpAncoraTs > 0) ? _grVpAncoraTs : null;
+    const raw = (typeof _grFootprintCandlesRaw !== 'undefined') ? _grFootprintCandlesRaw : null;
+    if (n < 10 || anc == null || !raw || !raw.length) return null;
+    const ms = grFootprintMsPorCandle(); let i0 = 0; while (i0 < n && cs[i0].t < anc) i0++;
+    if (n - i0 < 5) return null;
+    const vs = []; for (let i = i0; i < n - 1; i++) if (cs[i].v > 0) vs.push(cs[i].v);
+    if (vs.length < 5) return null; vs.sort((a, b) => a - b); const medV = vs[Math.floor(vs.length / 2)];
+    const ac = { n: 0, v: 0, vn: 0 }, av = { n: 0, v: 0, vn: 0 };
+    for (let i = i0; i < n - 1; i++) {
+        const c = cs[i], mk = c.t + '_' + ms; let d = _grDeltaMemo.get(mk);
+        if (d === undefined) { d = grDeltaCalcularCandle(c.t, ms, raw); _grDeltaMemo.set(mk, d); }
+        if (!d) continue; const up = c.c >= c.o, o = (up && d < 0) ? ac : (!up && d > 0) ? av : null; if (!o) continue;
+        if (grAbsorcaoExcessoPct(c, d) == null) continue;
+        o.n++; o.v += Math.abs(d); o.vn += Math.abs(d) / medV;
+    }
+    return { ac, av, candles: n - i0 };
+}
+// BENCHMARK DA ABSORÇÃO: o lado que mais absorveu desde a âncora, medido de 4 jeitos (contagem de balões, soma do excesso, volume cru, volume normalizado) e em 3 versões
+// do critério (range só com o sinal do delta · range com delta relevante · corpo com delta relevante), diz para onde o preço saiu? A cada balão novo, o líder de cada métrica
+// "entra" no fechamento do candle (líder = AC → long, AV → short), alvo e stop de 1 ATR em até 12 candles — a mesma régua do benchmark do CVD.
+function absBenchmark() {
+    try { cvFecharMenuFpCfg(); } catch (e) {}
+    const aviso = t => { try { scAviso(t, '#8E8E93'); } catch (e) { alert(t); } };
+    const arr = _grAllCandles, anc = (typeof _grVpAncoraTs !== 'undefined' && _grVpAncoraTs > 0) ? _grVpAncoraTs : null, raw = (typeof _grFootprintCandlesRaw !== 'undefined') ? _grFootprintCandlesRaw : null;
+    if (!arr || arr.length < 60) return aviso('Benchmark da absorção: poucos candles carregados.');
+    if (anc == null) return aviso('Benchmark da absorção: sem âncora do VP.');
+    if (!raw || !raw.length) return aviso('Benchmark da absorção: sem dados de delta (ligue o Fluxo).');
+    const n = arr.length, ms = grFootprintMsPorCandle(), H = 12; let i0 = 0; while (i0 < n && arr[i0].t < anc) i0++;
+    if (n - i0 < 60) return aviso('Benchmark da absorção: a âncora é muito recente (' + (n - i0) + ' candles).');
+    const dl = arr.map(c => { const mk = c.t + '_' + ms; let d = _grDeltaMemo.get(mk); if (d === undefined) { d = grDeltaCalcularCandle(c.t, ms, raw); _grDeltaMemo.set(mk, d); } return d; });
+    const tr = i => i === 0 ? arr[0].h - arr[0].l : Math.max(arr[i].h - arr[i].l, Math.abs(arr[i].h - arr[i - 1].c), Math.abs(arr[i].l - arr[i - 1].c));
+    const atr = new Array(n).fill(null); for (let i = 14; i < n; i++) { let t = 0; for (let j = i - 13; j <= i; j++) t += tr(j); atr[i] = t / 14; }
+    const aval = (s0, dir) => {
+        const a = atr[s0]; if (!(a > 0) || s0 >= n) return null; if (s0 + H >= n) return { aberto: true };
+        const e = arr[s0].c, alvo = e + dir * a, stp = e - dir * a;
+        for (let j = s0 + 1; j <= s0 + H; j++) { const c = arr[j], hitA = dir > 0 ? c.h >= alvo : c.l <= alvo, hitS = dir > 0 ? c.l <= stp : c.h >= stp; if (hitS) return { r: 'p', mv: -1 }; if (hitA) return { r: 'g', mv: 1 }; }
+        return { r: 't', mv: dir * (arr[s0 + H].c - e) / a };
+    };
+    const resumo = lista => { let g = 0, p = 0, t = 0, ab = 0, soma = 0, nn = 0; lista.forEach(x => { if (!x) return; if (x.aberto) { ab++; return; } nn++; soma += x.mv; if (x.r === 'g') g++; else if (x.r === 'p') p++; else t++; }); return { n: nn, g, p, t, ab, ac: (g + p) > 0 ? g / (g + p) : null, mv: nn ? soma / nn : 0 }; };
+    const fmt = r => r.n ? (r.g + ' ganhou · ' + r.p + ' perdeu · ' + r.t + ' sem resolver · acerto ' + (r.ac == null ? '—' : Math.round(r.ac * 100) + '%') + ' · média ' + (r.mv >= 0 ? '+' : '') + r.mv.toFixed(2).replace('.', ',') + ' ATR') : 'sem sinais';
+    const med = a => { const o = a.slice().sort((x, y) => x - y); return o[Math.floor(o.length / 2)]; };
+    const norm = L => { if (L.length < 8) return null; const m = med(L); let sg = 1.4826 * med(L.map(x => Math.abs(x - m))); if (!(sg > 0)) sg = 1e-6; return { m, sg }; };
+    const jan = f => { const o = []; for (let i = i0; i < n - 1; i++) { const v = f(i); if (v != null && isFinite(v)) o.push(v); } return o; };
+    const vr = arr.map(c => { const rp = c.o > 0 ? (c.h - c.l) / c.o * 100 : 0; return rp > 0 ? (c.v || 0) / rp / 1000 : 0; });
+    const bp = arr.map(c => c.o > 0 ? Math.abs(c.c - c.o) / c.o * 100 : 0);
+    const bps = jan(i => bp[i] > 0 ? bp[i] : null).sort((a, b) => a - b), piso = bps.length ? bps[Math.floor(bps.length * 0.1)] : 0;   // piso do corpo: o 10º percentil da própria série (doji não vira infinito)
+    const vb = arr.map((c, i) => (piso > 0 || bp[i] > 0) ? (c.v || 0) / Math.max(bp[i], piso) / 1000 : 0);
+    const sh = arr.map((c, i) => dl[i] && c.v > 0 ? Math.log(Math.abs(dl[i]) / c.v) : null);
+    const nsh = norm(jan(i => sh[i])), vs = jan(i => arr[i].v > 0 ? arr[i].v : null), medV = vs.length ? med(vs) : 1;
+    const CFG = [{ nome: 'Range · só o sinal do delta', ser: vr, rel: false }, { nome: 'Range · delta relevante (a regra de hoje)', ser: vr, rel: true }, { nome: 'Corpo · delta relevante', ser: vb, rel: true }];
+    const MET = [['Contagem de balões', o => o.n], ['Soma do excesso', o => o.pct], ['Volume absorvido cru', o => o.v], ['Volume absorvido normalizado', o => o.vn]];
+    const dias = ((arr[n - 1].t - arr[i0].t) / 86400000).toFixed(1).replace('.', ','), tfRot = (typeof _grTf !== 'undefined' ? _grTf : '');
+    const L = ['BENCHMARK DA ABSORÇÃO · TF ' + tfRot + ' · ' + (n - i0) + ' candles (' + dias + ' dias desde a âncora)',
+        'A cada balão novo, o lado que mais absorveu até ali (em cada métrica) entra no fechamento do candle: AC líder → long, AV líder → short. Alvo e stop de 1 ATR em até ' + H + ' candles. Empate não entra.'];
+    CFG.forEach(cf => {
+        const nm = norm(jan(i => vr === cf.ser ? (cf.ser[i] > 0 ? Math.log(cf.ser[i]) : null) : (cf.ser[i] > 0 ? Math.log(cf.ser[i]) : null)));
+        L.push(''); L.push('▸ ' + cf.nome);
+        if (!nm) { L.push('   sem dados suficientes'); return; }
+        const ac = { n: 0, pct: 0, v: 0, vn: 0 }, av = { n: 0, pct: 0, v: 0, vn: 0 }, ev = [];
+        for (let i = i0; i < n - 1; i++) {
+            const d = dl[i]; if (!d) continue; const c = arr[i], up = c.c >= c.o, o = (up && d < 0) ? ac : (!up && d > 0) ? av : null; if (!o) continue;
+            if (!(cf.ser[i] > 0)) continue; const lv = Math.log(cf.ser[i]); if (!((lv - nm.m) / nm.sg > 0)) continue;
+            if (cf.rel && !(nsh && sh[i] != null && (sh[i] - nsh.m) / nsh.sg > 0)) continue;
+            o.n++; o.pct += (Math.exp(lv - nm.m) - 1) * 100; o.v += Math.abs(d); o.vn += Math.abs(d) / medV;
+            ev.push({ i, ac: Object.assign({}, ac), av: Object.assign({}, av) });
+        }
+        L.push('   balões: ' + ac.n + ' AC · ' + av.n + ' AV');
+        MET.forEach(([rot, g]) => { const rs = resumo(ev.map(e => { const a = g(e.ac), b = g(e.av); if (a === b) return null; return aval(e.i, a > b ? 1 : -1); })); L.push('   ' + rot + ': ' + fmt(rs) + (rs.n && rs.n < 30 ? '  (amostra pequena)' : '')); });
+    });
+    const rl = [], rsh = []; for (let i = Math.max(i0, 14); i < n; i++) { rl.push(aval(i, 1)); rsh.push(aval(i, -1)); }
+    L.push(''); L.push('Referência (qualquer candle): long ' + fmt(resumo(rl)) + '  |  short ' + fmt(resumo(rsh)));
+    L.push('Atenção: os eventos de um mesmo trecho se repetem e se sobrepõem, então a amostra efetiva é menor que a contagem. Vale só para este TF e esta âncora. Só tem valor a métrica que ficar claramente acima de 50% e acima da referência, com amostra de 30 ou mais.');
+    scRelatorioMostrar({ lado: null, linhas: L });
+}
 function cvdBenchmark() {
     try { cvFecharMenuFpCfg(); } catch (e) {}
     const aviso = t => { try { scAviso(t, '#8E8E93'); } catch (e) { alert(t); } };
@@ -2371,7 +2448,13 @@ function cvRenderMenuFpCfg() {
             + '<div style="margin-top:10px;display:flex;align-items:center;justify-content:space-between;gap:10px;"><span style="font-size:13px;font-weight:600;color:#1C1C1E;">CVD</span>' + grOlhoBtn(!_cvdJacare, 'cvdJacareOlho') + '</div>'
             + '<div style="margin-top:10px;display:flex;align-items:center;justify-content:space-between;gap:10px;"><span style="font-size:13px;font-weight:600;color:#1C1C1E;">Histograma (VD)</span>' + grOlhoBtn(_cvdHistOculto, 'cvdHistOlho') + '</div>'
             + (_cvdHistOculto ? '' : grConfigSliderInt('cv-cfg-cvd-vd', 'Altura do histograma', _cvdEscVd, 1, 20, 'cvdEscVdDefinir', '', 'x'))
+            + (() => { let B = null; try { B = grAbsorcaoBalanco(); } catch (e) {} if (!B || !(B.ac.vn + B.av.vn > 0)) return ''; const t = B.ac.vn + B.av.vn, pa = Math.round(B.ac.vn / t * 100);
+                return '<div style="margin-top:10px;padding-top:8px;border-top:1px solid #F2F2F7;"><div style="font-size:12.5px;font-weight:700;color:#1C1C1E;">Absorção desde a âncora</div>'
+                    + '<div style="display:flex;height:8px;border-radius:4px;overflow:hidden;margin-top:6px;"><div style="width:' + pa + '%;background:#7B1FA2;"></div><div style="flex:1;background:#1E88E5;"></div></div>'
+                    + '<div style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;margin-top:4px;"><span style="color:#7B1FA2;">AC ' + pa + '% · ' + B.ac.n + '</span><span style="color:#1E88E5;">' + B.av.n + ' · AV ' + (100 - pa) + '%</span></div>'
+                    + '<div style="font-size:10.5px;color:#8E8E93;margin-top:2px;">volume absorvido, em candles de volume normal · informativo</div></div>'; })()
             + '<button type="button" onclick="cvdBenchmark()" style="margin-top:8px;width:100%;border:1px solid #D1D1D6;background:#FFFFFF;border-radius:8px;padding:7px 10px;font-size:12.5px;font-weight:700;color:#1C1C1E;">Benchmark das divergências</button>'
+            + '<button type="button" onclick="absBenchmark()" style="margin-top:6px;width:100%;border:1px solid #D1D1D6;background:#FFFFFF;border-radius:8px;padding:7px 10px;font-size:12.5px;font-weight:700;color:#1C1C1E;">Benchmark da absorção</button>'
             + (window._compValores.conclusaoOiCvd
                 ? '<div style="margin-top:8px;padding-top:8px;border-top:1px solid #F2F2F7;"><div style="font-size:12.5px;font-weight:700;color:#1C1C1E;">' + window._compValores.conclusaoOiCvd.titulo + '</div><div style="font-size:11.5px;color:#8E8E93;margin-top:2px;">' + window._compValores.conclusaoOiCvd.texto + '</div><div style="font-size:11px;color:#AEAEB2;margin-top:4px;font-style:italic;">' + window._compValores.conclusaoOiCvd.nota + '</div></div>'
                 : '');
@@ -3288,13 +3371,46 @@ function grAbsorcaoSerie() {
 // Quanto a absorção do candle passa da média, em % ((valor ÷ média − 1) × 100): é o número que vai embaixo do losango. Devolve
 // null se a absorção NÃO está acima da média (ou não há média ainda) — e aí não há losango (a divergência preço × delta sozinha
 // não basta). Mesma fórmula e mesma média (SMA 20) do painel ABSORÇÃO.
-function grAbsorcaoExcessoPct(candle) {
+// "NORMAL" da absorção, tirado dos próprios dados (sem número fixo): mediana e dispersão robusta (MAD × 1,4826) do log da série, na janela desde a âncora do VP
+// (se não há âncora, ou há menos de 20 candles nela, usa tudo que está carregado; o candle em formação fica de fora). Devolve { m, sg } em escala log, ou null sem dados.
+function grAbsorcaoNormal() {
+    const cs = _grAllCandles, n = cs.length; if (n < 10) return null;
+    const sr = grAbsorcaoSerie(), anc = (typeof _grVpAncoraTs !== 'undefined' && _grVpAncoraTs > 0) ? _grVpAncoraTs : null;
+    const key = n + '|' + anc + '|' + cs[0].t + '|' + cs[n - 2].t + '|' + (typeof _grFootprintCandlesRaw !== 'undefined' && _grFootprintCandlesRaw ? _grFootprintCandlesRaw.length : 0);
+    if (window._grAbsNorm && window._grAbsNorm.key === key) return window._grAbsNorm.v;
+    const med = a => { const o = a.slice().sort((x, y) => x - y); return o[Math.floor(o.length / 2)]; };
+    const pega = i0 => { const o = []; for (let i = i0; i < n - 1; i++) if (sr.vals[i] > 0) o.push(Math.log(sr.vals[i])); return o; };
+    let i0 = 0; if (anc) { while (i0 < n && cs[i0].t < anc) i0++; }
+    let L = pega(i0); if (L.length < 20) L = pega(0);
+    let v = null;
+    if (L.length >= 8) {
+        const m = med(L); let sg = 1.4826 * med(L.map(x => Math.abs(x - m))); if (!(sg > 0)) sg = 1e-6; v = { m, sg, sh: null };
+        // RELEVÂNCIA DO DELTA: fatia do volume que o delta representa (|delta| ÷ volume) — também com normal tirado dos dados (mediana e MAD do log, mesma janela).
+        // Delta de sinal contrário mas minúsculo perto do volume do candle não é absorção.
+        try {
+            const raw = (typeof _grFootprintCandlesRaw !== 'undefined') ? _grFootprintCandlesRaw : null, ms = grFootprintMsPorCandle(), S = [];
+            if (raw && raw.length) for (let i = i0; i < n - 1; i++) {
+                const c = cs[i]; if (!(c.v > 0)) continue;
+                const mk = c.t + '_' + ms; let d = _grDeltaMemo.get(mk);
+                if (d === undefined) { d = grDeltaCalcularCandle(c.t, ms, raw); _grDeltaMemo.set(mk, d); }
+                if (d) S.push(Math.log(Math.abs(d) / c.v));
+            }
+            if (S.length >= 20) { const ms2 = med(S); let sg2 = 1.4826 * med(S.map(x => Math.abs(x - ms2))); if (!(sg2 > 0)) sg2 = 1e-6; v.sh = { m: ms2, sg: sg2 }; }
+        } catch (eSh) {}
+    }
+    window._grAbsNorm = { key, v };
+    return v;
+}
+function grAbsorcaoExcessoPct(candle, delta) {
     const cs = _grAllCandles;
     let lo = 0, hi = cs.length - 1, idx = -1;
     while (lo <= hi) { const mid = (lo + hi) >> 1; if (cs[mid].t === candle.t) { idx = mid; break; } if (cs[mid].t < candle.t) lo = mid + 1; else hi = mid - 1; }
     if (idx < 0) return null;
-    const s = grAbsorcaoSerie(), m = s.sma[idx];
-    return (m != null && m > 0 && s.vals[idx] > m) ? (s.vals[idx] / m - 1) * 100 : null;
+    const s = grAbsorcaoSerie(), nm = grAbsorcaoNormal(), v = s.vals[idx];
+    if (!nm || !(v > 0)) return null;
+    if (!((Math.log(v) - nm.m) / nm.sg > 0)) return null;
+    if (delta != null && nm.sh && candle.v > 0 && (delta === 0 || !((Math.log(Math.abs(delta) / candle.v) - nm.sh.m) / nm.sh.sg > 0))) return null;   // delta pequeno demais perto do volume: não é absorção
+    return (v / Math.exp(nm.m) - 1) * 100;   // z robusto > 0 (acima do normal da própria série); o valor é o excesso sobre a mediana, em %
 }
 // O losango carrega o veredito EMBAIXO dele: "AC" (Absorção Compradora: losango roxo, abaixo do candle, que subiu com
 // delta negativo) ou "AV" (Absorção Vendedora: losango azul, acima do candle, que caiu com delta positivo) e a variação
@@ -3303,12 +3419,27 @@ function grAbsorcaoExcessoPct(candle) {
 // linha EM PÉ ("AC 0.39%" girado, precisa só de ~7px de largura), com a fonte reduzida até caber na coluna. Com o
 // losango ACIMA do candle ele sobe o tanto que o rótulo ocupa, pra o texto caber entre ele e o candle.
 function grDesenharSimboloAbsorcao(ctx, x, yBorda, tipo, pct, slotW, yMin, yMax, esc) {
-    // BALÃO: sigla (AC/AV) e o % do excesso em fonte grande; a ponta do balão aponta para o candle que originou a absorção.
-    esc = esc > 0 ? esc : 1;
+    const a = { x, yBorda, tipo, pct, yMin, yMax, esc: esc > 0 ? esc : 1 };
+    if (window._grAbsColeta) { window._grAbsColeta.push(a); return; }   // dentro do desenho dos candles: coleta e desenha depois, do mais forte ao mais fraco, sem sobrepor
+    grAbsBalao(ctx, a, false);
+}
+function grAbsBaloesFlush(ctx) {
+    const L = window._grAbsColeta; window._grAbsColeta = null; if (!L || !L.length) return;
+    L.sort((p, q) => Math.abs(q.pct) - Math.abs(p.pct));
+    const usados = [];
+    L.forEach(a => {
+        const R = grAbsBalao(ctx, a, true);
+        if (usados.some(u => R.bx < u.bx + u.bw + 2 && R.bx + R.bw + 2 > u.bx && R.by < u.by + u.bh + 2 && R.by + R.bh + 2 > u.by)) return;
+        usados.push(R); grAbsBalao(ctx, a, false);
+    });
+}
+function grAbsBalao(ctx, a, soMedir) {
+    // BALÃO: sigla (AC/AV) e o excesso (× o normal da série) em fonte grande; a ponta aponta para o candle que originou a absorção.
+    const { x, yBorda, tipo, pct, yMin, yMax, esc } = a;
     const compradora = tipo === 'compradora';
     const cor = compradora ? CorDivergAlta : CorDivergBaixa;
     const sigla = compradora ? 'AC' : 'AV';
-    const pctTxt = Math.abs(pct).toFixed(2).replace('.', ',') + '%';
+    const pctTxt = '×' + (Math.abs(pct) / 100 + 1).toFixed(1).replace('.', ',');
     const f1 = 9 * esc, f2 = 12 * esc, tail = 6 * esc, padX = 5 * esc, padY = 3 * esc, gap = 3 * esc;
     ctx.save();
     ctx.font = 'bold ' + f2 + 'px -apple-system';
@@ -3318,7 +3449,8 @@ function grDesenharSimboloAbsorcao(ctx, x, yBorda, tipo, pct, slotW, yMin, yMax,
     let by, yPonta;
     if (compradora) { yPonta = yBorda + gap; by = yPonta + tail; by = Math.min(yMax - 3 - bh, by); }
     else { yPonta = yBorda - gap; by = yPonta - tail - bh; by = Math.max(yMin + 3, by); }
-    const xT = Math.max(bx + 6 * esc, Math.min(bx + bw - 6 * esc, x)), hw = 4 * esc;   // base da ponta (dentro do balão)
+    if (soMedir) { ctx.restore(); return { bx, by, bw, bh }; }
+    const xT = Math.max(bx + 6 * esc, Math.min(bx + bw - 6 * esc, x)), hw = 4 * esc;
     const yBase = compradora ? by : by + bh;
     ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 5 * esc);
     ctx.moveTo(xT - hw, yBase); ctx.lineTo(x, yPonta); ctx.lineTo(xT + hw, yBase);
@@ -3330,6 +3462,7 @@ function grDesenharSimboloAbsorcao(ctx, x, yBorda, tipo, pct, slotW, yMin, yMax,
     ctx.font = 'bold ' + f1 + 'px -apple-system'; ctx.fillText(sigla, bx + bw / 2, by + padY + f1 * 0.9);
     ctx.font = 'bold ' + f2 + 'px -apple-system'; ctx.fillText(pctTxt, bx + bw / 2, by + padY + f1 + f2 * 0.9);
     ctx.restore();
+    return { bx, by, bw, bh };
 }
 let _grYAxisCenter = null;      // preço no centro vertical da tela
 let _grYAxisPxPerDollar = null; // tick fixo — pixels por dólar (DERIVADO, não acumulado — ver grAtualizarPxPerDollar)
@@ -3548,7 +3681,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v812';
+const APP_VERSAO = 'v818';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4772,7 +4905,7 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
     }
     // Absorção: sobe com delta negativo → símbolo ABAIXO do cluster; cai com delta positivo → ACIMA
     const divergiu = (sobe && cl.delta < 0) || (!sobe && cl.delta > 0);
-    const excessoPct = divergiu ? grAbsorcaoExcessoPct(candle) : null;
+    const excessoPct = divergiu ? grAbsorcaoExcessoPct(candle, cl.delta) : null;
     if (excessoPct == null) return true; // sem divergência, ou absorção abaixo da média: sem losango
     const escAbs = cfg.fs > 0 ? Math.max(0.6, Math.min(3.5, cfg.fs / 7)) : Math.max(0.6, Math.min(1, cW / 14));   // mesma escala dos números dos níveis
     if (sobe && cl.delta < 0) {
@@ -6808,6 +6941,7 @@ if (_grTipoGrafico === 'linha') {
         ? grFootprintPrepararClusters(ctx, candles, pxDolar, cW) : null;
     if (clustersCfg) clustersCfg.tSel = grCrosshairCandleSelecionadoT(candles, totalSlots, chartW);
     window._grFpTotalPx = (clustersCfg && clustersCfg.nivelTxt >= 0) ? Math.ceil(clustersCfg.fs * 1.4 + 6) : 0; // altura da linha de totais bid x ask abaixo do candle (EV desce além dela)
+    window._grAbsColeta = [];
     candles.forEach((cReal, i) => {
         const c = grCandleVisual(cReal); // o candle em formação segue só a linha da cotação (ver grCandleVisual)
         const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
@@ -6825,7 +6959,7 @@ if (_grTipoGrafico === 'linha') {
             if (isUp && delta < 0) absorcao = 'alta';
             else if (!isUp && delta > 0) absorcao = 'baixa';
             // Divergência sozinha não é absorção: o candle também precisa ter absorção ACIMA DA MÉDIA (critério combinado)
-            absExcessoPct = absorcao ? grAbsorcaoExcessoPct(c) : null;
+            absExcessoPct = absorcao ? grAbsorcaoExcessoPct(c, delta) : null;
             if (absExcessoPct == null) absorcao = null;
         }
         let color, strokeColor;
@@ -6920,6 +7054,7 @@ if (_grTipoGrafico === 'linha') {
             }
         }
     });
+    try { grAbsBaloesFlush(ctx); } catch (eFl) { window._grAbsColeta = null; }
 }
         window._grDesenharReguaDA = desenharReguaDA;   // chamada no FIM de grDrawCandles (depois de candles, canal, tendências, áreas...)
         // ── Barra Superior: TF, EMA e todos os indicadores ativos ──────────────────────────────────
@@ -7912,9 +8047,10 @@ if (_grTipoGrafico === 'linha') {
             const panY = H - panH;
             const panW = chartW;
             // Fundo e divisória
-            ctx.fillStyle = '#0E1117';
+            const _absClaro = _indState.subInd === 'absorcao' && _grTemaClaro;   // Absorção no tema claro: sem fundo preto (fundo branco, textos e linhas escuros)
+            ctx.fillStyle = _absClaro ? '#FFFFFF' : '#0E1117';
             ctx.fillRect(0, panY, W, panH);
-            ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+            ctx.strokeStyle = _absClaro ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.08)';
             ctx.lineWidth = 1;
             ctx.setLineDash([]);
             ctx.beginPath(); ctx.moveTo(0, panY); ctx.lineTo(W, panY); ctx.stroke();
@@ -7953,51 +8089,43 @@ if (_grTipoGrafico === 'linha') {
                 // Histograma vertical — sempre pra cima, sem verde/vermelho.
                 absVals.forEach((v, i) => {
                     const x = PAD.left + (i / totalSlots) * panChartW + cW / 2;
-                    const razao = v / refAbs;
+                    const nmA = grAbsorcaoNormal();
+                    const razao = (nmA && v > 0) ? v / Math.exp(nmA.m) : 0;   // MESMA referência do balão: 1× = a mediana da própria série (acima de 1× = z > 0 = tem balão)
                     const alturaPx = Math.min(razao, TETO_ABS) * escala;
-                    const intensidade = Math.max(0, Math.min(1, (razao - 1) / 2)); // 1× → 3×
-                    ctx.fillStyle = `rgba(255,193,7,${0.30 + intensidade * 0.60})`;
+                    const intensidade = nmA && razao > 0 ? Math.max(0, Math.min(1, (Math.log(razao) * 1 + 0 - 0) / (3 * nmA.sg))) : 0;   // força = z / 3
+                    // LADO: roxo = absorção compradora (subiu com delta negativo), azul = vendedora (caiu com delta positivo), amarelo = acima da média mas sem divergência de delta
+                    let corB = '255,193,7';
+                    try { const cB = _grAllCandles[startIdx + i - absOffset]; if (cB && deltaPorCandle && razao > 1) { const dB = deltaPorCandle.get(cB.t) || 0, upB = cB.c >= cB.o; if (upB && dB < 0) corB = '123,31,162'; else if (!upB && dB > 0) corB = '30,136,229'; } } catch (eB) {}
+                    ctx.fillStyle = razao > 1 ? `rgba(${corB},${0.45 + intensidade * 0.50})` : 'rgba(150,150,150,0.35)';
                     ctx.fillRect(x - cW * 0.4, baseY - alturaPx, cW * 0.8, alturaPx);
-                    if (razao > TETO_ABS) { ctx.fillStyle = 'rgba(255,255,255,0.9)'; ctx.fillRect(x - cW * 0.4, baseY - alturaPx, cW * 0.8, 2); }
+                    if (razao > TETO_ABS) { ctx.fillStyle = '' + (_absClaro ? 'rgba(60,60,67,0.9)' : 'rgba(255,255,255,0.9)') + ''; ctx.fillRect(x - cW * 0.4, baseY - alturaPx, cW * 0.8, 2); }
                 });
                 // Linha do "normal" (1×)
                 const yNormal = baseY - escala;
                 ctx.save();
-                ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+                ctx.strokeStyle = '' + (_absClaro ? 'rgba(60,60,67,0.35)' : 'rgba(255,255,255,0.35)') + '';
                 ctx.lineWidth = 1;
                 ctx.setLineDash([4, 3]);
                 ctx.beginPath(); ctx.moveTo(PAD.left, yNormal); ctx.lineTo(PAD.left + panChartW, yNormal); ctx.stroke();
                 ctx.restore();
                 ctx.font = '9px -apple-system';
                 ctx.textAlign = 'left';
-                ctx.fillStyle = 'rgba(255,255,255,0.55)';
-                ctx.fillText('1× normal', PAD.left + 4, yNormal - 3);
-                // Média móvel única (também normalizada)
-                ctx.strokeStyle = 'rgba(255,255,255,0.55)';
-                ctx.lineWidth = 1.2;
-                ctx.beginPath();
-                let started = false;
-                absSma.forEach((v, i) => {
-                    if (v === null) { started = false; return; }
-                    const x = PAD.left + (i / totalSlots) * panChartW + cW / 2;
-                    const y = baseY - Math.min(v / refAbs, TETO_ABS) * escala;
-                    if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
-                });
-                ctx.stroke();
+                ctx.fillStyle = '' + (_absClaro ? 'rgba(60,60,67,0.55)' : 'rgba(255,255,255,0.55)') + '';
+                ctx.fillText('1× normal (mediana)', PAD.left + 4, yNormal - 3);
                 // Label
                 ctx.font = 'bold 11px -apple-system';
                 ctx.textAlign = 'left';
                 ctx.fillStyle = '#FFC107';
                 ctx.fillText('ABSORÇÃO', PAD.left + 4, panY + panPad.top + 12);
                 ctx.font = '9px -apple-system';
-                ctx.fillStyle = 'rgba(255,255,255,0.55)';
-                ctx.fillText('vol ÷ range% ÷ 1000, em × do normal', PAD.left + 84, panY + panPad.top + 12);
+                ctx.fillStyle = '' + (_absClaro ? 'rgba(60,60,67,0.55)' : 'rgba(255,255,255,0.55)') + '';
+                ctx.fillText('roxo AC · azul AV · amarelo sem lado', PAD.left + 84, panY + panPad.top + 12);
                 // último candle da tela, à direita: quantas vezes o normal (e o valor bruto da fórmula)
                 ctx.font = 'bold 10px -apple-system';
                 ctx.textAlign = 'right';
                 ctx.fillStyle = '#FFC107';
                 const absUlt = absVals[absVals.length - 1];
-                ctx.fillText('×' + (absUlt / refAbs).toFixed(1).replace('.', ',') + ' (' + (absUlt < 10 ? absUlt.toFixed(2) : absUlt.toFixed(1)).replace('.', ',') + ')', PAD.left + panChartW - 2, panY + panPad.top + 12);
+                ctx.fillText('×' + ((grAbsorcaoNormal() && absUlt > 0) ? absUlt / Math.exp(grAbsorcaoNormal().m) : 0).toFixed(1).replace('.', ',') + ' (' + (absUlt < 10 ? absUlt.toFixed(2) : absUlt.toFixed(1)).replace('.', ',') + ')', PAD.left + panChartW - 2, panY + panPad.top + 12);
         }
     }
     // Régua Delta ATR por ÚLTIMO no canvas principal: nada do que foi desenhado antes (candles, canal de regressão, tendências,
@@ -17105,17 +17233,38 @@ function scDeltaPorBloco(bloco, ini) {
 // GATILHO (M7): armada → um candle do TF de acompanhamento que TOQUE a zona, FECHE a favor (long: verde; short: vermelho), com DELTA a favor e sem
 // romper o stop → entrou no fechamento dele (entrada real). Antes do gatilho: tocar o stop = "sem gatilho" (a faca passou sem confirmação, não é perda);
 // ir ao alvo = entrada perdida; passar 1 candle do macro = expirou. Depois de entrar: stop / alvo (stop primeiro no mesmo candle).
-// Absorção CONTRA no candle i (mesma conta do losango do gráfico: volume ÷ amplitude acima da média de 20): Long → AV (caiu com delta +); Short → AC (subiu com delta −)
+// Absorção CONTRA no candle i (mesma conta do losango do gráfico: volume ÷ amplitude acima do normal da série, mediana + MAD, ver scAbsExcesso): Long → AV (caiu com delta +); Short → AC (subiu com delta −)
 // M21: o ZERO é o BREAKEVEN de verdade (entrada + taxas de ida e volta), não o preço de entrada. Taxa = a da caixa (painel Dados) ou o padrão.
 // risco medido do BE: o risco original (entrada→stop) + as taxas (entrada→BE). Stop original = −1R; BE = 0R.
 function scRegRiscoBE(r) { const e0 = r.entReal || r.ent, be = scRegBE(r), r0 = r.r0 > 0 ? r.r0 : Math.abs(e0 - r.stp); return { e0, be, rB: r0 + Math.abs(be - e0) }; }
 function scRegBE(r) { const e0 = r.entReal || r.ent; let pz = null; try { pz = grPosicoes().find(z => z.id === r.id); } catch (e) {} const be = grBreakeven(e0, r.lado, grTaxaLado(pz)); return be > 0 ? be : e0; }
+// Excesso da absorção do candle i sobre o NORMAL da série, a MESMA regra do gráfico (grAbsorcaoNormal): mediana e MAD×1,4826 do log da absorção (volume ÷ range%),
+// só dos candles ANTERIORES a i (sem olhar o futuro). Acima do normal = z > 0. Devolve o excesso sobre a mediana em %, ou null.
+function scAbsExcesso(cs, i, D) {
+    const vd = x => { const rp = x.o > 0 ? (x.h - x.l) / x.o * 100 : 0; return rp > 0 ? (x.v || 0) / rp / 1000 : 0; };
+    const dOf = x => D && D.has(x.t) ? D.get(x.t) : (x.bv != null && x.v > 0 ? 2 * x.bv - x.v : null);
+    let ch = scAbsExcesso._c; if (!ch || ch.cs !== cs || ch.n !== cs.length || ch.D !== D) ch = scAbsExcesso._c = { cs, D, n: cs.length, lv: cs.map(x => { const v = vd(x); return v > 0 ? Math.log(v) : null; }), ls: cs.map(x => { const d = dOf(x); return d && x.v > 0 ? Math.log(Math.abs(d) / x.v) : null; }), r: new Map() };
+    if (ch.r.has(i)) return ch.r.get(i);
+    let out = null; const lv = ch.lv[i];
+    if (lv != null) {
+        const L = []; for (let j = 0; j < i; j++) if (ch.lv[j] != null) L.push(ch.lv[j]);
+        if (L.length >= 20) {
+            const med = a => { const o = a.slice().sort((x, y) => x - y); return o[Math.floor(o.length / 2)]; };
+            const m = med(L); let sg = 1.4826 * med(L.map(x => Math.abs(x - m))); if (!(sg > 0)) sg = 1e-6;
+            if ((lv - m) / sg > 0) {
+                out = Math.round((Math.exp(lv - m) - 1) * 100);
+                // delta relevante: a fatia |delta| ÷ volume também acima do normal dela (mesma regra do gráfico)
+                const S = []; for (let j = 0; j < i; j++) if (ch.ls[j] != null) S.push(ch.ls[j]);
+                if (S.length >= 20) { const ms = med(S); let sg2 = 1.4826 * med(S.map(x => Math.abs(x - ms))); if (!(sg2 > 0)) sg2 = 1e-6; if (!(ch.ls[i] != null && (ch.ls[i] - ms) / sg2 > 0)) out = null; }
+            }
+        }
+    }
+    ch.r.set(i, out); return out;
+}
 function scAbsContra(cs, i, D, lg) {
     if (i < 20) return null; const c = cs[i], d = D.has(c.t) ? D.get(c.t) : (c.bv != null && c.v > 0 ? 2 * c.bv - c.v : null); if (d == null) return null;
     if (lg ? !(c.c < c.o && d > 0) : !(c.c > c.o && d < 0)) return null;
-    const vd = x => { const rp = x.o > 0 ? (x.h - x.l) / x.o * 100 : 0; return rp > 0 ? (x.v || 0) / rp / 1000 : 0; };
-    let sm = 0; for (let j = i - 19; j <= i; j++) sm += vd(cs[j]); sm /= 20; const v = vd(c);
-    return sm > 0 && v > sm ? Math.round((v / sm - 1) * 100) : null;
+    return scAbsExcesso(cs, i, D);
 }
 function scRegAvaliarGatilho(r, cs, D, bloco, real) {
     const lg = r.lado === 'long', s = lg ? 1 : -1;
@@ -17376,9 +17525,7 @@ function scPlayToggle() {
 function scAbsFavor(cs, i, D, lg) {   // absorção A FAVOR do lado no candle i (mesma conta do losango do gráfico)
     if (i < 20) return null; const c = cs[i], d = D.has(c.t) ? D.get(c.t) : (c.bv != null && c.v > 0 ? 2 * c.bv - c.v : null); if (d == null) return null;
     if (lg ? !(c.c > c.o && d < 0) : !(c.c < c.o && d > 0)) return null;
-    const vd = x => { const rp = x.o > 0 ? (x.h - x.l) / x.o * 100 : 0; return rp > 0 ? (x.v || 0) / rp / 1000 : 0; };
-    let sm = 0; for (let j = i - 19; j <= i; j++) sm += vd(cs[j]); sm /= 20; const v = vd(c);
-    return sm > 0 && v > sm ? Math.round((v / sm - 1) * 100) : null;
+    return scAbsExcesso(cs, i, D);
 }
 async function scForaSino(lado) {
     const lg = lado === 'long', s = lg ? 1 : -1, nm = lg ? 'Long' : 'Short', f = x => Math.round(x).toLocaleString('pt-BR');
