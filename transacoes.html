@@ -3681,7 +3681,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v823';
+const APP_VERSAO = 'v824';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -7551,6 +7551,13 @@ if (_grTipoGrafico === 'linha') {
             ctx.save(); ctx.beginPath(); ctx.arc(_grCrosshairX, window._longPressY, 16, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * window._mdDwProg);
             ctx.lineWidth = 3; ctx.lineCap = 'round'; ctx.strokeStyle = '#8B5CF6'; ctx.stroke(); ctx.restore();
         }
+        if (window._longPressActive && !window._mdGesto && _grCrosshairX != null && window._longPressY >= 0 && !grPlAtivo()) {   // LÁPIS na intersecção: liga/desliga o modo desenho
+            const on = !!window._mdDesenhoOn, lx = _grCrosshairX, ly = window._longPressY, R = 12;
+            ctx.save(); ctx.beginPath(); ctx.arc(lx, ly, R, 0, Math.PI * 2); ctx.fillStyle = on ? '#8B5CF6' : 'rgba(255,255,255,0.94)'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#8B5CF6'; ctx.stroke();
+            ctx.translate(lx, ly); ctx.rotate(Math.PI / 4); ctx.lineWidth = 1.5; ctx.lineJoin = 'round'; ctx.strokeStyle = on ? '#FFFFFF' : '#6D28D9'; ctx.fillStyle = on ? '#FFFFFF' : '#6D28D9';
+            ctx.strokeRect(-2.3, -7, 4.6, 9); ctx.beginPath(); ctx.moveTo(-2.3, 2); ctx.lineTo(2.3, 2); ctx.lineTo(0, 7); ctx.closePath(); ctx.fill();
+            ctx.restore();
+        }
         if (window._mdGesto && !window._mdGesto.done && _grCrosshairX != null && window._longPressY >= 0) {   // ÍCONE DA FIGURA junto do crosshair: Medida (reta vertical), Tendência (inclinou) ou Canal (curva fechada)
             const G = window._mdGesto, tp = G.stage === 5 ? 'livre' : ((G.stage === 3 || G.stage === 4) && G.canal && G.canal.ok) ? 'canal' : (G.tipo === 'tendencia' ? 'tendencia' : 'medida'), R = 13;
             let cx = _grCrosshairX + 30, cy = window._longPressY - 30; if (cx + R > W - PAD.right) cx = _grCrosshairX - 30; if (cy - R < PAD.top) cy = window._longPressY + 30;
@@ -9237,6 +9244,14 @@ function grInitTouch() {
                     grVpAncorarNoCandle(window._grCrosshairVpIdx); // redesenha por dentro
                     e.preventDefault();
                     return;
+                }
+            }
+            // LÁPIS na intersecção do crosshair: toque nele liga/desliga o modo desenho (o crosshair continua aberto). Com o modo ligado, tocar em outro ponto leva o crosshair até lá.
+            if (window._longPressActive && !grPlAtivo() && !window._mdGesto && _grCrosshairX != null && window._longPressY >= 0) {
+                if (Math.hypot(ex2 - _grCrosshairX, ey2 - window._longPressY) <= 22) { mdDesenhoAlternar(); e.preventDefault(); return; }
+                if (window._mdDesenhoOn) {
+                    _grCrosshairX = e.touches[0].clientX - canvas.getBoundingClientRect().left; window._longPressY = toCanvasYCh(e.touches[0].clientY);
+                    isDragging = false; clearTimeout(_longPressTimer); _mdDw = null; window._mdDwProg = 0; grDrawChartWithCrosshair(window._longPressY); e.preventDefault(); return;
                 }
             }
             // Toque simples fecha o crosshair se estava ativo
@@ -10956,10 +10971,19 @@ setInterval(grFhDwellTick, 100);
 // Com o anel cheio, mexer o dedo liga a Medida: o ponto 1 é onde parou, a prévia acompanha o crosshair e SOLTAR o dedo marca o ponto 2 e salva a medida.
 // Soltar sem mexer (ou antes do anel encher) não faz nada: é só a leitura normal do candle. Não age com ferramenta de desenho ligada.
 let _mdDw = null; window._mdDwProg = 0; window._mdDedo = false; window._mdGesto = null;
+// MODO DESENHO do crosshair: por padrão o crosshair é só LEITURA (sem pressa, o anel não arma). O lápis na intersecção liga o modo desenho; com ele ligado o gesto é o de sempre
+// (parar o dedo até o anel encher, mexer, soltar cria a figura). Terminada a figura, ou fechado o crosshair, o modo desliga sozinho.
+window._mdDesenhoOn = false;
+function mdDesenhoAlternar() {
+    window._mdDesenhoOn = !window._mdDesenhoOn; _mdDw = null; window._mdDwProg = 0;
+    try { grToast(window._mdDesenhoOn ? 'Desenho ligado: toque onde quer começar, pare o dedo até o anel encher, mexa e solte' : 'Desenho desligado: só leitura', '#8B5CF6'); } catch (e) {}
+    try { grDrawChart(); } catch (e) {}
+}
 function grMdCancelar() { grNfAutoParar(); const tinha = _mdDw || window._mdDwProg || window._mdGesto; _mdDw = null; window._mdDwProg = 0; window._mdGesto = null; if (tinha) { _medidaAtual = null; _trendAtual = null; _freehandAtual = null; try { grDrawChart(); } catch (e) {} } }
 function grMdDwellTick() {
     if (window._mdGesto) { try { grMdGestoDwell(window._mdGesto); } catch (e) {} return; }
-    const ativo = window._mdDedo && window._longPressActive && !grPlAtivo() && !_edDrag && _grCrosshairX != null && window._longPressY >= 0;
+    if (!window._longPressActive && window._mdDesenhoOn) window._mdDesenhoOn = false;   // crosshair fechado: volta ao modo leitura
+    const ativo = window._mdDesenhoOn && window._mdDedo && window._longPressActive && !grPlAtivo() && !_edDrag && _grCrosshairX != null && window._longPressY >= 0;
     if (!ativo) { if (_mdDw || window._mdDwProg) { _mdDw = null; window._mdDwProg = 0; try { grDrawChart(); } catch (e) {} } return; }
     if (_mdDw && _mdDw.pronto) return;   // anel cheio: espera o dedo mexer (grMdMover)
     const x = _grCrosshairX, y = window._longPressY, agora = Date.now();
@@ -11053,6 +11077,7 @@ function grMdCriarCanal(G) {
 function grMdFinalizar() {   // soltou o dedo: cria a figura (Medida ou Tendência) do ponto 1 ao ponto 2 — a menos que o canal já tenha sido finalizado
     const G = window._mdGesto; _mdDw = null; window._mdDwProg = 0; window._mdGesto = null; grNfAutoParar();
     if (!G) return;
+    window._mdDesenhoOn = false;   // figura terminada (ou gesto encerrado): volta ao modo leitura
     _medidaAtual = null; _trendAtual = null; _freehandAtual = null;
     if (G.done) { try { grDrawChart(); } catch (e) {} return; }
     if (G.stage === 4 && G.canal && G.canal.ok) { try { grMdCriarCanal(G); } catch (e) {} try { grDrawChart(); } catch (e) {} return; }   // soltou com o canal pronto: cria o canal
