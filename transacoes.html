@@ -1998,6 +1998,35 @@ let _cvdOculto = false, _sentOculto = false;
 try { _cvdOculto = localStorage.getItem('gr_cvd_oculto') === '1'; _sentOculto = localStorage.getItem('gr_sent_oculto') === '1'; } catch (e) {}
 let _cvdHistOculto = false; try { _cvdHistOculto = localStorage.getItem('gr_cvd_hist_oculto') === '1'; } catch (e) {}
 let _cvdJacDist = 40; try { const q = parseInt(localStorage.getItem('gr_cvd_jac_dist')); if (!isNaN(q)) _cvdJacDist = q; } catch (e) {}
+// TIMEFRAME PRÓPRIO do CVD no preço e das divergências ('' = igual ao gráfico). Só vale para um TF MAIOR que o do gráfico e múltiplo dele (os candles do TF maior são montados
+// juntando os do gráfico). O CVD acumulado é o mesmo em qualquer TF; no TF maior ele só é amostrado de bloco em bloco (vira degrau), e os pivôs (topos e fundos) saem dos blocos.
+let _cvdTf = ''; try { _cvdTf = localStorage.getItem('gr_cvd_tf') || ''; } catch (e) {}
+function cvdTfMsAtivo() {
+    if (!_cvdTf) return null;
+    const e = CV_TF_ESCADA.find(x => x.tf === _cvdTf); if (!e) return null;
+    let g = null; try { g = cvTfMsGrafico(); } catch (er) {} if (!(g > 0)) { try { g = grFootprintMsPorCandle(); } catch (er) {} }
+    const ms = cvTfMs(e.u, e.a); return (g > 0 && ms > g * 1.0001 && Math.abs(ms / g - Math.round(ms / g)) < 1e-6) ? ms : null;
+}
+function cvdOpcoesTf() {
+    let g = null; try { g = cvTfMsGrafico(); } catch (er) {} if (!(g > 0)) { try { g = grFootprintMsPorCandle(); } catch (er) {} }
+    const o = [['', 'Igual ao gráfico']];
+    CV_TF_ESCADA.forEach(e => { if (e.u === 'sem' || e.u === 'mes' || e.tf === '3d') return; const ms = cvTfMs(e.u, e.a); if (g > 0 && ms > g * 1.0001 && Math.abs(ms / g - Math.round(ms / g)) < 1e-6) { const lb = GR_DA_TFS.find(t => t.tf === e.tf); o.push([e.tf, lb ? lb.label : e.tf]); } });
+    return o;
+}
+function cvdDefinirTf(v) { _cvdTf = v || ''; try { localStorage.setItem('gr_cvd_tf', _cvdTf); } catch (e) {} try { cvRenderMenuFpCfg(); } catch (e) {} try { grDrawChart(); } catch (e) {} }
+// Série (do TF do CVD) sobre a qual saem as divergências e o CVD no preço. Sem TF próprio devolve a do gráfico, candle a candle.
+function cvdSerieTf(cvdAll) {
+    const cs = _grAllCandles, ms = cvdTfMsAtivo();
+    if (!ms) return { n: cs.length, C: cs, cvd: cvdAll, iH: null, iL: null, bk: null };
+    const C = [], cvd = [], iH = [], iL = [], bk = new Array(cs.length); let kAtual = null, b = null;
+    for (let i = 0; i < cs.length; i++) {
+        const c = cs[i], key = Math.floor(c.t / ms) * ms;
+        if (key !== kAtual) { kAtual = key; b = { t: key, o: c.o, h: c.h, l: c.l, c: c.c, v: c.v || 0 }; C.push(b); cvd.push(null); iH.push(i); iL.push(i); }
+        const k = C.length - 1;
+        if (c.h > b.h) { b.h = c.h; iH[k] = i; } if (c.l < b.l) { b.l = c.l; iL[k] = i; } b.c = c.c; b.v += c.v || 0; cvd[k] = cvdAll[i]; bk[i] = k;
+    }
+    return { n: C.length, C, cvd, iH, iL, bk };
+}
 window._cvdJacSel = false; window._cvdJacDrag = null; window._cvdJacHit = null;
 function cvdJacToqueInicio(x, y) {   // toque em cima do CVD no preço: seleciona e já deixa arrastar na vertical
     const H = window._cvdJacHit;
@@ -2010,8 +2039,10 @@ function cvdJacToqueInicio(x, y) {   // toque em cima do CVD no preço: selecion
     if (window._cvdJacSel) { window._cvdJacSel = false; grDrawChart(); }
     return false;
 }
-function cvdJacToqueMove(x, y) { const d = window._cvdJacDrag; if (!d) return false; _cvdJacDist = Math.max(-400, Math.min(400, Math.round(d.d0 + (y - d.y0)))); grDrawChart(); return true; }
-function cvdJacToqueFim() { if (!window._cvdJacDrag) return; window._cvdJacDrag = null; try { localStorage.setItem('gr_cvd_jac_dist', String(_cvdJacDist)); } catch (e) {} }
+function cvdJacToqueMove(x, y) { const d = window._cvdJacDrag; if (!d) return false; if (Math.abs(y - d.y0) > 8) d.moved = true; _cvdJacDist = Math.max(-400, Math.min(400, Math.round(d.d0 + (y - d.y0)))); grDrawChart(); return true; }
+function cvdJacToqueFim(ev) { const d = window._cvdJacDrag; if (!d) return; window._cvdJacDrag = null; try { localStorage.setItem('gr_cvd_jac_dist', String(_cvdJacDist)); } catch (e) {}
+    if (!d.moved) { const tc = ev && ev.changedTouches && ev.changedTouches[0]; try { cvAbrirMenuFpCfg('cvd', tc ? tc.clientX : 40, tc ? tc.clientY : 120); } catch (e) {} }   // toque sem arrastar: abre o menu do CVD (Timeframe etc.)
+}
 let _cvdJacare = true; try { _cvdJacare = localStorage.getItem('gr_cvd_jacare') !== '0'; } catch (e) {}
 function cvdJacareOlho() { _cvdJacare = !_cvdJacare; try { localStorage.setItem('gr_cvd_jacare', _cvdJacare ? '1' : '0'); } catch (e) {} try { cvRenderMenuFpCfg(); } catch (e) {} try { grDrawChart(); } catch (e) {} }
 let _cvdGradeOculta = false; try { _cvdGradeOculta = localStorage.getItem('gr_cvd_grade_oculta') === '1'; } catch (e) {}
@@ -2445,6 +2476,7 @@ function cvRenderMenuFpCfg() {
         menu.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;"><div style="font-size:13px;font-weight:700;color:#1C1C1E;">CVD / Delta</div>' + grOlhoBtn(_cvdOculto, 'cvdOlho') + '</div>'
             + '<div style="font-size:12px;color:#8E8E93;max-width:200px;padding-bottom:4px;">CVD (linha laranja no preço — toque e arraste para mover) e VD (barras verde/vermelho), somados desde a âncora do VP.</div>'
             + (c ? '<div style="font-size:13px;font-weight:700;color:' + c.cor + ';">' + c.valor + '</div>' : '')
+            + grConfigCombo('<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/>', 'Timeframe', 'Só o CVD no preço e as divergências; os candles não mudam', 'cv-cfg-cvdtf', cvdOpcoesTf(), cvdTfMsAtivo() ? _cvdTf : '', 'cvdDefinirTf')
             + '<div style="margin-top:10px;display:flex;align-items:center;justify-content:space-between;gap:10px;"><span style="font-size:13px;font-weight:600;color:#1C1C1E;">CVD</span>' + grOlhoBtn(!_cvdJacare, 'cvdJacareOlho') + '</div>'
             + '<div style="margin-top:10px;display:flex;align-items:center;justify-content:space-between;gap:10px;"><span style="font-size:13px;font-weight:600;color:#1C1C1E;">Histograma (VD)</span>' + grOlhoBtn(_cvdHistOculto, 'cvdHistOlho') + '</div>'
             + (_cvdHistOculto ? '' : grConfigSliderInt('cv-cfg-cvd-vd', 'Altura do histograma', _cvdEscVd, 1, 20, 'cvdEscVdDefinir', '', 'x'))
@@ -3681,7 +3713,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v824';
+const APP_VERSAO = 'v825';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -7283,31 +7315,32 @@ if (_grTipoGrafico === 'linha') {
                         try {
                             // Calculadas na série INTEIRA com regra fixa (a mesma do benchmark: pivô de 3 candles, diferença > 5% da faixa do CVD nos 100 candles anteriores):
                             // não dependem do zoom nem do trecho visível, então rolar não faz a divergência sumir.
-                            const kP = 3, nA = _grAllCandles.length, topos = [], fundos = [];
-                            let iAnc = 0; while (iAnc < nA && cvdAll[iAnc] == null) iAnc++;
+                            const kP = 3, SR = cvdSerieTf(cvdAll), nA = SR.n, topos = [], fundos = [];
+                            const ixH = k => SR.iH ? SR.iH[k] : k, ixL = k => SR.iL ? SR.iL[k] : k;
+                            let iAnc = 0; while (iAnc < nA && SR.cvd[iAnc] == null) iAnc++;
                             for (let ix = Math.max(iAnc, kP); ix + kP < nA; ix++) {
-                                const c0 = _grAllCandles[ix]; let eT = true, eF = true;
+                                const c0 = SR.C[ix]; let eT = true, eF = true;
                                 for (let j = 1; j <= kP && (eT || eF); j++) {
-                                    const a1 = _grAllCandles[ix - j], b1 = _grAllCandles[ix + j];
+                                    const a1 = SR.C[ix - j], b1 = SR.C[ix + j];
                                     if (!(c0.h > a1.h && c0.h >= b1.h)) eT = false;
                                     if (!(c0.l < a1.l && c0.l <= b1.l)) eF = false;
                                 }
-                                if (eT) topos.push({ i: ix - startIdx, ix, p: c0.h, cv: cvdAll[ix] });
-                                if (eF) fundos.push({ i: ix - startIdx, ix, p: c0.l, cv: cvdAll[ix] });
+                                if (eT) topos.push({ k: ix, i: ixH(ix) - startIdx, ix: ixH(ix), p: c0.h, cv: SR.cvd[ix] });
+                                if (eF) fundos.push({ k: ix, i: ixL(ix) - startIdx, ix: ixL(ix), p: c0.l, cv: SR.cvd[ix] });
                             }
-                            const limDifEm = ix => { let lo = Infinity, hi = -Infinity; for (let j = Math.max(iAnc, ix - 99); j <= ix; j++) { const v = cvdAll[j]; if (v < lo) lo = v; if (v > hi) hi = v; } return (hi - lo) * 0.05; };
+                            const limDifEm = ix => { let lo = Infinity, hi = -Infinity; for (let j = Math.max(iAnc, ix - 99); j <= ix; j++) { const v = SR.cvd[j]; if (v < lo) lo = v; if (v > hi) hi = v; } return (hi - lo) * 0.05; };
                             const noVis = (A, B) => B.ix >= startIdx && A.ix < startIdx + visible;
                             // GRAU da divergência = duas porcentagens + rótulo de força, tudo da própria série (sem corte fixo):
                             //  • CVD: quanto o CVD discordou, em % da faixa do CVD nos 100 candles anteriores (o mesmo número do corte de 5%);
                             //  • Preço: quanto o 2º pivô passou do 1º, em % do ATR(14) daquele ponto;
                             //  • Força: posição de cada divergência entre TODAS as da série (percentil do CVD e do preço, média dos dois): tercil de baixo = Fraca, do meio = Média, de cima = Forte.
-                            const atrEm = ix => { let sm = 0, ct = 0; for (let j = Math.max(1, ix - 13); j <= ix; j++) { const a0 = _grAllCandles[j], p0 = _grAllCandles[j - 1]; sm += Math.max(a0.h - a0.l, Math.abs(a0.h - p0.c), Math.abs(a0.l - p0.c)); ct++; } return ct ? sm / ct : 0; };
+                            const atrEm = ix => { let sm = 0, ct = 0; for (let j = Math.max(1, ix - 13); j <= ix; j++) { const a0 = SR.C[j], p0 = SR.C[j - 1]; sm += Math.max(a0.h - a0.l, Math.abs(a0.h - p0.c), Math.abs(a0.l - p0.c)); ct++; } return ct ? sm / ct : 0; };
                             const divs = [];
                             // SEM piso fixo: todo par de pivôs consecutivos em que o preço fez extremo NOVO e o CVD discordou (qualquer tamanho) é uma divergência.
                             // O peso vem dos próprios dados: a força (Fraca/Média/Forte) é a posição dela entre TODAS as da série (tercis do CVD e do preço) e as Fracas
                             // saem apagadas e só com o título, para não poluir; as Médias e Fortes saem cheias, com os números.
                             const todosPares = (L, baixa) => { for (let k = 1; k < L.length; k++) { const A = L[k - 1], B = L[k];
-                                const fx = limDifEm(B.ix) / 0.05, at = atrEm(B.ix); if (!(fx > 0) || !(at > 0)) continue;
+                                const fx = limDifEm(B.k) / 0.05, at = atrEm(B.k); if (!(fx > 0) || !(at > 0)) continue;
                                 const dcs = baixa ? A.cv - B.cv : B.cv - A.cv, dps = baixa ? B.p - A.p : A.p - B.p;
                                 if (dcs > 0 && dps > 0) divs.push({ A, B, baixa, pc: dcs / fx, pp: dps / at, dp: B.p - A.p }); } };
                             todosPares(topos, true); todosPares(fundos, false);
@@ -7316,20 +7349,21 @@ if (_grTipoGrafico === 'linha') {
                             // mediana, em candles, entre pivôs consecutivos do mesmo tipo neste TF.
                             window._cvdJacHit = null;
                             if (_cvdJacare) try {
-                                const gaps = []; [topos, fundos].forEach(L => { for (let k = 1; k < L.length; k++) gaps.push(L[k].ix - L[k - 1].ix); });
+                                const gaps = []; [topos, fundos].forEach(L => { for (let k = 1; k < L.length; k++) gaps.push(L[k].k - L[k - 1].k); });
                                 gaps.sort((a, b) => a - b);
                                 const N = Math.max(10, gaps.length ? gaps[Math.floor(gaps.length / 2)] : 20);
                                 const pts = [];
                                 for (let i = 0; i < visible; i++) {
-                                    const ix = startIdx + i; if (ix < iAnc + 3 || ix >= nA || cvdAll[ix] == null) { pts.push(null); continue; }
+                                    const ixC = startIdx + i; if (ixC >= _grAllCandles.length) { pts.push(null); continue; }
+                                    const ix = SR.bk ? SR.bk[ixC] : ixC; if (ix == null || ix < iAnc + 3 || ix >= nA || SR.cvd[ix] == null) { pts.push(null); continue; }
                                     const j0 = Math.max(iAnc, ix - N + 1); let n = 0, sp = 0, sc = 0;
-                                    for (let j = j0; j <= ix; j++) { sp += _grAllCandles[j].c; sc += cvdAll[j]; n++; }
+                                    for (let j = j0; j <= ix; j++) { sp += SR.C[j].c; sc += SR.cvd[j]; n++; }
                                     const mp = sp / n, mc = sc / n; let vp = 0, vc = 0;
-                                    for (let j = j0; j <= ix; j++) { vp += (_grAllCandles[j].c - mp) ** 2; vc += (cvdAll[j] - mc) ** 2; }
+                                    for (let j = j0; j <= ix; j++) { vp += (SR.C[j].c - mp) ** 2; vc += (SR.cvd[j] - mc) ** 2; }
                                     const dpv = Math.sqrt(vp / n), dcv = Math.sqrt(vc / n);
                                     if (!(dcv > 0) || !(dpv > 0)) { pts.push(null); continue; }
-                                    const conv = mp + (cvdAll[ix] - mc) / dcv * dpv, pr = _grAllCandles[ix].c;
-                                    pts.push({ x: xDoIdx(i), yc: toY(conv) + _cvdJacDist, yp: toY(pr) + _cvdJacDist, d: pr - conv, v: cvdAll[ix] });
+                                    const conv = mp + (SR.cvd[ix] - mc) / dcv * dpv, pr = _grAllCandles[ixC].c;
+                                    pts.push({ x: xDoIdx(i), yc: toY(conv) + _cvdJacDist, yp: toY(pr) + _cvdJacDist, d: pr - conv, v: SR.cvd[ix] });
                                 }
                                 ctx.save(); ctx.beginPath(); ctx.rect(PAD.left, PAD.top, chartW, chartH); ctx.clip();
                                 for (let i = 1; i < pts.length; i++) {
@@ -9769,7 +9803,7 @@ function grInitTouch() {
             return;
         }
     }
-    if (window._cvdJacDrag) { cvdJacToqueFim(); isDragging = false; return; }
+    if (window._cvdJacDrag) { cvdJacToqueFim(e); isDragging = false; return; }
     if (window._grMetricasDrag) { grMetricasToqueFim(); isDragging = false; return; } // soltou a tabela de métricas (ou tocou num ⓘ/✕)
     if (window._grPincaY && e.touches.length < 2) { window._grPincaY = null; grYFatorSalvar(); } // fim da pinça no eixo Y: guarda o fator
     if (window._grPincaX && e.touches.length < 2) { window._grPincaX = null; grYFatorSalvar(); } // fim da pinça no eixo X: guarda o fator (compensado)
