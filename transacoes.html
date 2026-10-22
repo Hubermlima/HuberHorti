@@ -3719,7 +3719,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v859';
+const APP_VERSAO = 'v861';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -8244,6 +8244,59 @@ if (_grTipoGrafico === 'linha') {
                 ctx.restore();
             }
         } catch (eSent) { try { console.error('sentimento', eSent); } catch (e2) {} } }
+    // ── Cunhas automáticas (ascendente / descendente) na janela visível: pivôs por zigue-zague (tamanho mínimo = 1,5 ATR), duas linhas
+    //    (últimos 2 topos e últimos 2 fundos) inclinadas pro mesmo lado e convergindo. Só desenha a mais recente. ──
+    try {
+        const n = candles.length;
+        if (n >= 20) {
+            let somaTR = 0; for (let i = 1; i < n; i++) somaTR += Math.max(candles[i].h - candles[i].l, Math.abs(candles[i].h - candles[i - 1].c), Math.abs(candles[i].l - candles[i - 1].c));
+            const th = 1.5 * (somaTR / (n - 1));
+            const piv = [];   // {i, p, tipo:'H'|'L'}
+            let dir = 0, ext = { i: 0, p: candles[0].h }, extL = { i: 0, p: candles[0].l };
+            for (let i = 1; i < n; i++) {
+                const c = candles[i];
+                if (c.h > ext.p) ext = { i, p: c.h };
+                if (c.l < extL.p) extL = { i, p: c.l };
+                if (dir >= 0 && ext.p - c.l >= th && ext.i !== i) { if (dir === 0 && extL.i < ext.i && ext.p - extL.p >= th) piv.push({ i: extL.i, p: extL.p, tipo: 'L' }); piv.push({ i: ext.i, p: ext.p, tipo: 'H' }); dir = -1; extL = { i, p: c.l }; ext = { i, p: c.h }; }
+                else if (dir <= 0 && c.h - extL.p >= th && extL.i !== i) { if (dir === 0 && ext.i < extL.i && ext.p - extL.p >= th) piv.push({ i: ext.i, p: ext.p, tipo: 'H' }); piv.push({ i: extL.i, p: extL.p, tipo: 'L' }); dir = 1; ext = { i, p: c.h }; extL = { i, p: c.l }; }
+            }
+            // Linha de MAIOR ESFORÇO de cada lado: a reta entre dois pivôs que encosta em mais pivôs (tolerância 0,3 ATR) sem candle fechando além dela; empate: a mais recente.
+            const tol = th / 5;
+            const melhor = (tipo) => {
+                const ps = piv.filter(q => q.tipo === tipo).slice(-12); let best = null;
+                for (let x = 0; x < ps.length - 1; x++) for (let y = x + 1; y < ps.length; y++) {
+                    const A = ps[x], B = ps[y], sl = (B.p - A.p) / (B.i - A.i), f = i => A.p + sl * (i - A.i);
+                    const toca = ps.filter(q => q.i >= A.i && Math.abs(q.p - f(q.i)) <= tol);
+                    if (toca.length < 2) continue;
+                    const ult = toca[toca.length - 1];
+                    let furou = false; for (let i = A.i; i <= ult.i; i++) { if (tipo === 'H' ? candles[i].c > f(i) + tol : candles[i].c < f(i) - tol) { furou = true; break; } }
+                    if (furou) continue;
+                    if (!best || toca.length > best.nt || (toca.length === best.nt && ult.i > best.pts[best.pts.length - 1].i)) best = { nt: toca.length, pts: toca };
+                }
+                return best;
+            };
+            const bH = melhor('H'), bL = melhor('L');
+            const H = bH ? [bH.pts[0], bH.pts[bH.pts.length - 1]] : [], Lo = bL ? [bL.pts[0], bL.pts[bL.pts.length - 1]] : [];
+            if (bH && bL && H[1].i > H[0].i && Lo[1].i > Lo[0].i) {
+                const sH = (H[1].p - H[0].p) / (H[1].i - H[0].i), sL = (Lo[1].p - Lo[0].p) / (Lo[1].i - Lo[0].i);
+                const yH = i => H[0].p + sH * (i - H[0].i), yL = i => Lo[0].p + sL * (i - Lo[0].i);
+                const i0 = Math.min(H[0].i, Lo[0].i), i1 = Math.max(H[1].i, Lo[1].i);
+                const larg0 = yH(i0) - yL(i0), larg1 = yH(i1) - yL(i1);
+                const asc = sH > 0 && sL > 0, desc = sH < 0 && sL < 0;
+                if ((asc || desc) && larg0 > 0 && larg1 > 0 && larg1 < larg0 * 0.9) {
+                    let iFim = n - 1;
+                    for (let i = i1 + 1; i < n; i++) { if (candles[i].c > yH(i) || candles[i].c < yL(i)) { iFim = i; break; } }
+                    const xi = i => PAD.left + (i / totalSlots) * chartW + cW / 2;
+                    ctx.save();
+                    ctx.beginPath(); ctx.rect(PAD.left, PAD.top, chartW, chartH); ctx.clip();
+                    ctx.strokeStyle = asc ? '#F5A623' : '#2962FF'; ctx.lineWidth = 1.5; ctx.setLineDash([]);
+                    ctx.beginPath(); ctx.moveTo(xi(H[0].i), toY(H[0].p)); ctx.lineTo(xi(iFim), toY(yH(iFim)));
+                    ctx.moveTo(xi(Lo[0].i), toY(Lo[0].p)); ctx.lineTo(xi(iFim), toY(yL(iFim)));
+                    ctx.stroke(); ctx.restore();
+                }
+            }
+        }
+    } catch (eCunha) {}
     // Régua Delta ATR por ÚLTIMO no canvas principal: nada do que foi desenhado antes (candles, canal de regressão, tendências,
     // áreas, zonas, linhas) aparece por cima nem por baixo dela. Fundo opaco na faixa inteira.
     try { ctx.save(); ctx.globalAlpha = 1; ctx.setLineDash([]); if (window._grDesenharReguaDA) window._grDesenharReguaDA(); ctx.restore(); } catch (e) { console.log('Régua DA error:', e.message); }
