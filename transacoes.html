@@ -3460,10 +3460,13 @@ function grCunhasSincronizar() {
     lista.forEach(w => {
         const wk = todas[w.H0i].t + '_' + todas[w.L0i].t + '_' + (w.asc ? 'a' : 'd');
         if (apag.has(wk) || _trendlines.some(t => t.wk === wk)) return;
-        const tF = todas[w.iFim].t;
-        const yH = w.H0p + w.sH * (w.iFim - w.H0i), yL = w.L0p + w.sL * (w.iFim - w.L0i);
-        _trendlines.push({ id: null, t1: todas[w.H0i].t, p1: w.H0p, t2: tF, p2: yH, cor: '#8E8E93', esp: 0.5, auto: true, wk, _o: [todas[w.H0i].t, w.H0p, tF, yH] });
-        _trendlines.push({ id: null, t1: todas[w.L0i].t, p1: w.L0p, t2: tF, p2: yL, cor: '#8E8E93', esp: 0.5, auto: true, wk, _o: [todas[w.L0i].t, w.L0p, tF, yL] });
+        // projeta as retas no futuro: até o vértice (se as linhas se encontram à frente) ou, no máximo, metade do tamanho da figura
+        const span = w.iFim - w.i0, dAp = w.apex != null ? w.apex - w.iFim : Infinity;
+        const k = Math.max(2, Math.round(Math.min(dAp > 0 ? dAp : Infinity, 0.5 * span, 100)));
+        const iP = w.iFim + k, tF = grIndexToTime(iP);
+        const yH = w.H0p + w.sH * (iP - w.H0i), yL = w.L0p + w.sL * (iP - w.L0i);
+        _trendlines.push({ id: null, t1: todas[w.H0i].t, p1: w.H0p, t2: tF, p2: yH, cor: '#8E8E93', esp: 0.5, auto: true, trac: !w.firme, wk, _o: [todas[w.H0i].t, w.H0p, tF, yH] });
+        _trendlines.push({ id: null, t1: todas[w.L0i].t, p1: w.L0p, t2: tF, p2: yL, cor: '#8E8E93', esp: 0.5, auto: true, trac: !w.firme, wk, _o: [todas[w.L0i].t, w.L0p, tF, yL] });
     });
     window._grCunhasSync = { chave: ch, ref: _trendlines };
 }
@@ -3478,12 +3481,12 @@ function grCunhasDetectar() {
     let a0 = 0; while (a0 < N && all[a0].t < anc) a0++;
     const nSeg = N - a0 + 1, chave = N + '|' + anc + '|' + all[N - 1].t + '|' + (typeof _grTf !== 'undefined' ? _grTf : '');
     if (window._grCunhasCache && window._grCunhasCache.chave === chave) return window._grCunhasCache.lista;
-    if (nSeg < 20) { window._grCunhasCache = { chave, lista: [] }; return []; }
+    if (nSeg < 12) { window._grCunhasCache = { chave, lista: [] }; return []; }
     const lista = [];
     // Figura de duas linhas pela RETA DE MAIOR ESFORÇO, tolerante: pivôs por zigue-zague (1 ATR); cada linha é a reta entre 2 pivôs que encosta em mais pivôs
     // (tolerância = 5% da altura da janela) e que menos se afasta dos candles; até 10% dos fechamentos podem passar da reta (upthrust/spring/bull trap/bear trap).
     const janela = (b, e) => {
-        const cs = all.slice(b, e), n = cs.length; if (n < 20) return null;
+        const cs = all.slice(b, e), n = cs.length; if (n < 12) return null;
         let som = 0; for (let i = 1; i < n; i++) som += Math.max(cs[i].h - cs[i].l, Math.abs(cs[i].h - cs[i - 1].c), Math.abs(cs[i].l - cs[i - 1].c));
         const atr = som / (n - 1), th = atr;
         let hi = -Infinity, lo = Infinity; cs.forEach(c => { if (c.h > hi) hi = c.h; if (c.l < lo) lo = c.l; });
@@ -3527,11 +3530,12 @@ function grCunhasDetectar() {
             if (!perna || (perna === 'alta' && sH > 0) || (perna === 'baixa' && sH < 0)) return null;
         }
         // nota: toques por largura média da figura (figura justa e bem tocada vence; alargamento solto perde), com bônus para figura que converge
-        const nota = (bH.nt + bL.nt) / (wsum / tot / Hh) * (conv ? 1 + 2 * Math.min(1, 1 - l1 / l0) : 1);   // quanto mais as linhas convergem para o preço atual, maior o bônus
-        return { i0: b + i0, iFim: b + n - 1, H0i: b + H[0].i, H0p: H[0].p, L0i: b + Lo[0].i, L0p: Lo[0].p, sH, sL, asc: sH > 0, nt: bH.nt + bL.nt, nota };
+        const firme = bH.nt >= 3 && bL.nt >= 3;   // 3+ toques em cada linha = figura firme; menos que isso = palpite (linhas tracejadas)
+        const nota = (bH.nt + bL.nt) / (wsum / tot / Hh) * (conv ? 1 + 2 * Math.min(1, 1 - l1 / l0) : 1) * (firme ? 1 : 0.6);   // quanto mais as linhas convergem para o preço atual, maior o bônus
+        return { i0: b + i0, iFim: b + n - 1, H0i: b + H[0].i, H0p: H[0].p, L0i: b + Lo[0].i, L0p: Lo[0].p, sH, sL, asc: sH > 0, nt: bH.nt + bL.nt, nota, firme, apex: sH !== sL ? b + (Lo[0].p - H[0].p + sH * H[0].i - sL * Lo[0].i) / (sH - sL) : null };
     };
     // Trecho = da âncora do VP até o último candle fechado, de qualquer tamanho: testa janelas que terminam agora (30 candles até o trecho inteiro) e fica com a melhor nota.
-    const tams = [30, 45, 70, 100, 150, 220, 320, 480].filter(L => L < nSeg).concat([Math.min(nSeg, 600)]);
+    const tams = [12, 20, 30, 45, 70, 100, 150, 220, 320, 480].filter(L => L < nSeg).concat([Math.min(nSeg, 600)]);
     let melhorW = null;
     tams.forEach(L => {
         const w = janela(N + 1 - L, N + 1); if (!w) return;
@@ -3827,7 +3831,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v875';
+const APP_VERSAO = 'v876';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -7782,7 +7786,7 @@ if (_grTipoGrafico === 'linha') {
         // ── Linhas de Tendência ────────────────────────────────────
         try { grCunhasSincronizar(); } catch (eCs) {}
         const trendsSalvasComoIdx = _trendlines.map(tl => ({
-            i1: grTimeToIndex(tl.t1), p1: tl.p1, i2: grTimeToIndex(tl.t2), p2: tl.p2, cor: tl.cor || '#000000', esp: tl.esp, canal: !!tl.canal, pi: tl.pi, pe: tl.pe, hor: !!tl.hor, geo: tl.geo, larg: tl.larg, incl: tl.incl, oculta: !!tl.oculta
+            i1: grTimeToIndex(tl.t1), p1: tl.p1, i2: grTimeToIndex(tl.t2), p2: tl.p2, cor: tl.cor || '#000000', esp: tl.esp, canal: !!tl.canal, pi: tl.pi, pe: tl.pe, hor: !!tl.hor, geo: tl.geo, larg: tl.larg, incl: tl.incl, trac: !!tl.trac, oculta: !!tl.oculta
         }));
         const trendsParaDesenhar = [...trendsSalvasComoIdx, ...(_trendAtual ? [_trendAtual] : [])];
         if (trendsParaDesenhar.length > 0) {
@@ -7796,7 +7800,7 @@ if (_grTipoGrafico === 'linha') {
                 ctx.save();
                 ctx.strokeStyle = cor;
                 ctx.lineWidth = tl.esp || 2;
-                ctx.setLineDash([]);
+                ctx.setLineDash(tl.trac ? [5, 4] : []);   // cunha automática provisória (poucos toques): tracejada
                 ctx.beginPath();
                 ctx.moveTo(x1, y1);
                 ctx.lineTo(x2, y2);
