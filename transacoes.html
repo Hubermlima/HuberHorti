@@ -3713,7 +3713,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v843';
+const APP_VERSAO = 'v850';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4008,6 +4008,7 @@ function grMeMontarRelatorio(r) {
 function grMelhorCriarCaixa() {
     const r = _grMeUltimo; if (!r || r.erro) return;
     const n = _grAllCandles.length; if (!n) return;
+    if (grSlotBloqueia()) return;
     if (!(r.s * (r.stop - r.entrada) > 0) || !(r.s * (r.entrada - r.alvo1) > 0)) { alert('Os números do relatório não formam uma caixa válida (entrada, stop e alvo fora de ordem).'); return; }
     const lista = grPosicoes();
     // EMPILHA: nenhuma caixa do Melhor é apagada. A nova (mais refinada) nasce nas MESMAS coordenadas de tempo da camada anterior (macro -> micro),
@@ -4279,20 +4280,49 @@ function grCoracaoDesenhar(ctx, cx, cy, sz, estado) {
     ctx.restore();
 }
 // Caixa que recebe o stop da tabela: só a selecionada, em análise
-function grPilhasCaixaSel() {   // caixa selecionada no gráfico (qualquer uma) ou null
-    try { const ps = grPosicoes(); return (typeof _edSel !== 'undefined' && _edSel && _edSel.tipo === 'ps' && ps[_edSel.idx]) || null; } catch (e) { return null; }
+function grPilhasCaixaSel() { const o = grSlotOcupante(); return o ? o.z : null; }   // slot único: a caixa ativa é a única que existe
+function grPilhasCaixaAlvo() {   // a caixa do slot, em qualquer fase menos encerrada (em trade também: o stop continua livre pra você mexer)
+    const o = grSlotOcupante(); return o && o.fase !== 'encerrada' ? o.z : null;
 }
-function grPilhasCaixaAlvo() {   // só a caixa SELECIONADA e em análise (sem trade gravado) recebe o stop
-    const z = grPilhasCaixaSel(); return z && !z.tradeId ? z : null;
+// Stop mais distante de uma caixa de trade (o "stop" dela é o mais afastado da lista de stops gravada no banco)
+function grPilhasIdxStopTrade(pz) {
+    const arr = pz.stops; if (!arr || !arr.length) return -1; const curto = pz.lado === 'short'; let idx = 0;
+    arr.forEach((x, k) => { if (curto ? x.preco > arr[idx].preco : x.preco < arr[idx].preco) idx = k; });
+    return idx;
 }
-// Põe o stop da tabela na caixa: long usa o stop de suporte, short o de resistência; recusa se cair do lado errado da entrada
-function grPilhasAplicarStop(pz, nSup, nRes, silencioso) {
-    const curto = pz.stop > pz.entrada, v = curto ? nRes : nSup, av = m => { if (!silencioso) { try { grToast(m); } catch (e) {} } return false; };
+// Põe o stop da tabela na caixa (é só uma SUGESTÃO: depois você mexe no stop e no alvo como quiser). Long usa o stop de suporte, short o de resistência.
+// Caixa com trade gravado: o stop é gravado no banco (mesma linha do stop mais distante), como se você tivesse editado no formulário.
+async function grPilhasAplicarStop(pz, nSup, nRes, silencioso) {
+    const tr = !!pz.tradeId, curto = tr ? pz.lado === 'short' : pz.stop > pz.entrada, ref = tr ? (pz.pm > 0 ? pz.pm : pz.entrada) : pz.entrada, v = curto ? nRes : nSup;
+    const av = m => { if (!silencioso) { try { grToast(m); } catch (e) {} } return false; };
     if (!(v > 0)) return av(curto ? 'A tabela não tem resistência pra caixa de short' : 'A tabela não tem suporte pra caixa de long');
-    if (!(curto ? v > pz.entrada : v < pz.entrada)) return av('O stop da tabela fica do lado errado da entrada');
-    if (pz._stopAnt == null) pz._stopAnt = pz.stop;
-    pz.stop = v; try { grPosSalvar(); grDrawChart(); } catch (e) {}
-    return true;
+    if (!(ref > 0) || !(curto ? v > ref : v < ref)) return av('O stop da tabela fica do lado errado da entrada');
+    if (!tr) {
+        if (pz._stopAnt == null) pz._stopAnt = pz.stop;
+        pz.stop = v; pz._stopTab = v; try { grPosSalvar(); grDrawChart(); } catch (e) {}
+        return true;
+    }
+    if (pz.stop > 0 && Math.abs(pz.stop - v) < 0.5) { if (pz._stopAnt == null) pz._stopAnt = pz.stop; pz._stopTab = v; return true; }   // já está nesse preço: não regrava
+    try {
+        const idx = grPilhasIdxStopTrade(pz);
+        if (idx >= 0) { const r = await db.from('alvos').update({ preco: v }).eq('trade_id', pz.tradeId).eq('tipo', 'stop').eq('ordem', idx + 1); if (r.error) throw r.error; if (pz._stopAnt == null) pz._stopAnt = pz.stops[idx].preco; pz.stops[idx].preco = v; }
+        else { const r = await db.from('alvos').insert({ trade_id: pz.tradeId, ativo_id: _ativoId, tipo: 'stop', ordem: 1, preco: v, percentual: 100, habilitado: true, atingido: false }); if (r.error) throw r.error; if (pz._stopAnt == null) pz._stopAnt = 0; pz.stops = [{ preco: v, pct: 100, notif: true, atg: false }]; }
+        pz.stop = pz.stops[grPilhasIdxStopTrade(pz)].preco; pz._stopTab = pz.stop; try { grPosSalvar(); grDrawChart(); } catch (e) {}
+        return true;
+    } catch (e) { return av('Não consegui gravar o stop: ' + ((e && e.message) || e)); }
+}
+// Desmarcar: devolve o stop que a caixa tinha antes
+async function grPilhasDesfazerStop(pz) {
+    if (pz._stopAnt == null) return;
+    if (!(Math.abs((pz.stop || 0) - (pz._stopTab || 0)) < 0.5)) { delete pz._stopAnt; delete pz._stopTab; return; }   // o stop atual é do usuário: não mexe
+    try {
+        if (pz.tradeId) {
+            const idx = grPilhasIdxStopTrade(pz);
+            if (pz._stopAnt === 0) { const r = await db.from('alvos').delete().eq('trade_id', pz.tradeId).eq('tipo', 'stop').eq('ordem', 1); if (r.error) throw r.error; delete pz.stops; pz.stop = null; }
+            else if (idx >= 0) { const r = await db.from('alvos').update({ preco: pz._stopAnt }).eq('trade_id', pz.tradeId).eq('tipo', 'stop').eq('ordem', idx + 1); if (r.error) throw r.error; pz.stops[idx].preco = pz._stopAnt; pz.stop = pz.stops[grPilhasIdxStopTrade(pz)].preco; }
+        } else pz.stop = pz._stopAnt;
+        delete pz._stopAnt; delete pz._stopTab; try { grPosSalvar(); grDrawChart(); } catch (e) {}
+    } catch (e) { try { grToast('Não consegui devolver o stop: ' + ((e && e.message) || e)); } catch (e2) {} }
 }
 // Linhas da tabela comparativa: uma por faixa marcada na régua (toque que já existia: _grFaixasDA), calculadas na hora com os números atuais
 function grPilhasLinhas() {
@@ -4314,6 +4344,7 @@ function grPilhasLinhas() {
 }
 // Tabela comparativa dos níveis escolhidos no modal das pilhas (botão "+ Tabela"): modal próprio com copiar, remover e limpar
 async function grPilhasTabelaModal() {
+    if (!(window._scMedMin > 0)) { try { window._scMedMin = await scMedRangeTf(SC_ORDEM[0]); } catch (e) {} }
     let pv = window._scPavio; if (!pv) { try { pv = await scPavioTf(SC_ORDEM[0]); if (pv) window._scPavio = pv; } catch (e) {} }   // pavio típico de 5 min (o mesmo do robô); sem ele, cai em 1 faixa
     const old = document.getElementById('gr-pilhas-tab'); if (old) old.remove();
     const rows0 = grPilhasLinhas(); if (!rows0.length) return;
@@ -4329,25 +4360,29 @@ async function grPilhasTabelaModal() {
         const sup = rows.filter(r => r.lado > 0), res = rows.filter(r => r.lado < 0), stops = [];   // stop = limite do último nível da pilha ± 1 faixa (o app só conta rompimento com o preço firme a mais de 1 faixa fora da zona)
         const so1 = sup.length && res.length;
         const fInf = pv && pv.inf > 0 ? 2 * pv.inf : (sup.length ? sup[0].tick : 0), fSup = pv && pv.sup > 0 ? 2 * pv.sup : (res.length ? res[0].tick : 0);   // folga = 2 pavios típicos de 5 min além da borda (regra M11 do robô)
-        if (sup.length) { const lo = Math.min.apply(null, sup.map(r => r.preco - r.tick / 2)); stops.push((so1 ? 'Stop suporte: ' : 'Stop: ') + fP(lo - fInf)); }
-        if (res.length) { const hi = Math.max.apply(null, res.map(r => r.preco + r.tick / 2)); stops.push((so1 ? 'Stop resistência: ' : 'Stop: ') + fP(hi + fSup)); }
-        const nSup = sup.length ? Math.min.apply(null, sup.map(r => r.preco - r.tick / 2)) - fInf : null, nRes = res.length ? Math.max.apply(null, res.map(r => r.preco + r.tick / 2)) + fSup : null;
-        const pzA = grPilhasCaixaAlvo(), pzOn = !!(pzA && pzA._stopAnt != null);
-        if (pzOn) grPilhasAplicarStop(pzA, nSup, nRes, true);   // checkbox ligado: a caixa acompanha o stop da tabela atual
+        const minR = window._scMedMin > 0 ? 2 * window._scMedMin : 0;   // distância mínima: 2 candles típicos de 5 min entre a entrada (aqui, a cotação) e o stop (regra do robô)
+        let nSup = sup.length ? Math.min.apply(null, sup.map(r => r.preco - r.tick / 2)) - fInf : null, nRes = res.length ? Math.max.apply(null, res.map(r => r.preco + r.tick / 2)) + fSup : null;
+        const pzE = grPilhasCaixaAlvo(), refE = pzE && pzE.entrada > 0 ? pzE.entrada : pAg;   // entrada da caixa selecionada; sem caixa, a cotação
+        if (refE && minR > 0) { if (nSup != null) nSup = Math.min(nSup, refE - minR); if (nRes != null) nRes = Math.max(nRes, refE + minR); }
+        if (nSup != null) stops.push((so1 ? 'Stop suporte: ' : 'Stop: ') + fP(nSup));
+        if (nRes != null) stops.push((so1 ? 'Stop resistência: ' : 'Stop: ') + fP(nRes));
+        const pzA = grPilhasCaixaAlvo();
+        if (pzA && pzA._stopAnt != null && !(Math.abs((pzA.stop || 0) - (pzA._stopTab || 0)) < 0.5)) { delete pzA._stopAnt; delete pzA._stopTab; }   // o stop foi mexido depois da sugestão: o do usuário manda, a marca cai
+        const pzOn = !!(pzA && pzA._stopAnt != null);
         const td = (x, h, al) => '<td style="padding:3px 6px;text-align:' + al + ';white-space:nowrap;' + (h ? 'color:#6B6B70;' : 'color:#1C1C1E;') + '">' + x + '</td>';
         box.innerHTML = '<div style="font-size:13px;color:#1C1C1E;">Tabela de níveis (' + rows.length + ')</div>'
             + '<table style="border-collapse:collapse;margin-top:6px;"><tr>' + CAB.map((x, i) => td(x, 1, i ? 'right' : 'left')).join('') + '</tr>'
             + rows.map(r => '<tr>' + r.cols.map((x, i) => td(x, 0, i ? 'right' : 'left')).join('') + '</tr>').join('') + '</table>'
             + (stops.length ? '<div style="margin-top:8px;padding:6px 8px;background:#FFF4E5;border-radius:7px;color:#1C1C1E;white-space:normal;max-width:340px;">' + stops.join('<br>') + '</div>' : '')
-            + (stops.length ? '<label style="display:flex;align-items:center;gap:7px;margin-top:8px;color:#1C1C1E;' + (pzA ? 'cursor:pointer;' : 'opacity:0.55;') + '"><input type="checkbox" data-b="cx"' + (pzOn ? ' checked' : '') + (pzA ? '' : ' disabled') + '>Posicionar a caixa no stop' + (pzA ? '' : ' <span style="font-size:11px;color:#B45309;">(selecione uma caixa primeiro)</span>') + '</label>' : '')
+            + (stops.length ? '<label style="display:flex;align-items:center;gap:7px;margin-top:8px;color:#1C1C1E;' + (pzA ? 'cursor:pointer;' : 'opacity:0.55;') + '"><input type="checkbox" data-b="cx"' + (pzOn ? ' checked' : '') + (pzA ? '' : ' disabled') + '>Posicionar a caixa no stop' + (pzA ? '' : ' <span style="font-size:11px;color:#B45309;">(sem caixa ativa)</span>') + '</label>' : '')
             + '<div style="display:flex;gap:6px;margin-top:9px;"><div data-b="cp" style="' + est + 'background:#E8F0FE;">Copiar</div><div data-b="fc" style="' + est + '">Fechar</div></div>';
         const g = c => box.querySelector('[data-b="' + c + '"]');
         g('fc').onclick = () => ov.remove();
-        { const cx = g('cx'); if (cx) cx.onchange = () => {
+        { const cx = g('cx'); if (cx) cx.onchange = async () => {
             const pz = grPilhasCaixaAlvo();
-            if (!pz) { cx.checked = false; try { grToast('Sem caixa em análise no gráfico'); } catch (e) {} return; }
-            if (cx.checked) { if (!grPilhasAplicarStop(pz, nSup, nRes, false)) { cx.checked = false; return; } }
-            else if (pz._stopAnt != null) { pz.stop = pz._stopAnt; delete pz._stopAnt; try { grPosSalvar(); grDrawChart(); } catch (e) {} }
+            if (!pz) { cx.checked = false; try { grToast('Sem caixa ativa no gráfico'); } catch (e) {} return; }
+            if (cx.checked) { if (!(await grPilhasAplicarStop(pz, nSup, nRes, false))) cx.checked = false; }
+            else await grPilhasDesfazerStop(pz);
         }; }
         g('cp').onclick = () => {
             const todas = [CAB].concat(rows.map(r => r.cols)), w = CAB.map((_, c) => Math.max.apply(null, todas.map(r => String(r[c]).length)));
@@ -5232,7 +5267,7 @@ async function cvIrParaCaixa(id, segunda) {
             grAtualizarPxPerDollar(); grYFatorSalvar();
         }
     }
-    _edSel = { tipo: 'ps', idx: idx };
+    _edSel = { tipo: 'ps', idx: idx }; try { const z0 = grPosicoes()[idx]; if (z0) window._grCaixaUltId = z0.id; } catch (e) {}
     grDrawChart();
     // Se o timeframe mudou nesta chamada, repete uma vez (o primeiro enquadramento se perdia; o segundo toque sempre funcionava)
     if (!segunda && _tfAntes !== _grTf) await cvIrParaCaixa(id, true);
@@ -8717,7 +8752,7 @@ function cvEdicaoIniciar(tipo, idx) {
     cvEdicaoSair(true);
     if (tipo === 'ps') { cvPosMenuLimpar(); try { cvPosFormFechar(); } catch (e) {} }   // caixa selecionada: o menu nasce limpo, sem modal herdado da caixa anterior
     window._grCtxFechado = false;   // selecionar a caixa de novo traz a barra de volta
-    _edSel = { tipo, idx };
+    _edSel = { tipo, idx }; if (tipo === 'ps') { try { const z0 = grPosicoes()[idx]; if (z0) window._grCaixaUltId = z0.id; } catch (e) {} }
     window._nfCtxAberto = GR_ED_CTX_TIPOS.indexOf(tipo) >= 0;   // selecionou (pela alça ou pela lista): o menu de contexto já aparece
     grDrawChart();
 }
@@ -9902,6 +9937,7 @@ function grInitTouch() {
         _indState.posLong = false; _indState.posShort = false;
         { const b1 = document.getElementById('cv-ind-poslong'); if (b1) b1.classList.remove('active'); const b2 = document.getElementById('cv-ind-posshort'); if (b2) b2.classList.remove('active'); }
         if (a && isFinite(a.p) && a.p > 0 && isFinite(a.i1)) {
+            if (grSlotBloqueia()) { grDrawChart(); return; }
             const lista = grPosicoes(); lista.push(Object.assign(grPosNova(a.lado, a.i1, a.p), { monitorar: true })); grPosSalvar();   // caixa manual já nasce sob o monitoramento do robô (o botão 'Parar monitoramento' desfaz)
             if (cvAtivoEhVirtual()) cvAtivoGarantirReal();   // criou a caixa: só agora o ativo entra no cadastro
             cvEdicaoIniciar('ps', lista.length - 1);   // já abre com as alças pra ajustar
@@ -11449,6 +11485,7 @@ function cvTogglePos(lado) {
     ['cv-ind-poslong', 'cv-ind-posshort'].forEach(id => { const b = document.getElementById(id); if (b) b.classList.remove('active'); });
     try { cvFecharMenuGrupo(); } catch (e) {}
     if (!(n > 0 && p > 0)) { try { grToast('Sem candles carregados para posicionar a caixa', '#8E8E93'); } catch (e) {} grDrawChart(); return; }
+    if (grSlotBloqueia()) { grDrawChart(); return; }
     const pz = Object.assign(grPosNova(lado, n, p), { monitorar: true }), sg = lado === 'short' ? -1 : 1, rec = _grAllCandles.slice(-14);   // já nasce monitorada pelo robô (o botão 'Parar monitoramento' desfaz)
     const atr = rec.reduce((a, c) => a + (c.h - c.l), 0) / Math.max(1, rec.length);   // tamanho normal de um candle: a caixa já nasce visível na escala do gráfico
     if (atr > 0) { pz.stop = p - sg * 2 * atr; pz.alvo = p + sg * 4 * atr; }
@@ -16979,6 +17016,7 @@ function scBandaQuente(rM, tick) {
 async function scRodar(lado, opts) {   // opts.silencioso: sem alerta, sem fechar o menu, sem selecionar a caixa (usado pelo Play) · opts.scalp: caixa de scalp (só contorno), à direita, sem duplicar
     opts = opts || {}; const sil = !!opts.silencioso;
     if (_scCalculando) return { ocupado: true };
+    if (!opts.soAvaliar) { const oc = grSlotOcupante(); if (oc) { if (!sil) { try { grToast(grSlotTexto(oc), '#DC2626'); } catch (e) {} } return { erro: true, msg: grSlotTexto(oc) }; } }   // slot único: com caixa viva (ou encerrada à vista) ninguém cria outra
     if (!sil && _scPlay.on) _scPlay.prox = scPlayProxima();   // análise manual reinicia a contagem do Play
     if (!_grFootprintAtivo || !_grFootprintCandlesRaw) { if (!sil) alert('Ligue o Fluxo (FX) e aguarde os dados carregarem.'); return { erro: true, msg: 'Fluxo desligado ou sem dados.' }; }
     _scCalculando = true; cvRenderMenuFpCfg();
@@ -17255,6 +17293,33 @@ function scRegSincCaixas() {
 // LIMPEZA DA TELA: caixa do robô que terminou SEM ENTRAR (sem gatilho, entrada perdida, expirou, tese inválida) sai do gráfico sozinha.
 // O histórico dela fica (Central de Relatórios). Caixas armadas, em trade e as que entraram e terminaram continuam na tela.
 const GR_ST_DESCARTE = ['semGatilho', 'perdida', 'expirou', 'desfeita'];
+// SLOT ÚNICO DE CAIXA (por ativo): só UMA caixa pode existir no price action, manual ou do robô, e ela cumpre a vida inteira (análise/armada → em trade → encerrada).
+// Enquanto ocupa o slot, ninguém cria outra: nem o robô, nem você. Libera quando a caixa é apagada, termina SEM entrar (sem gatilho, expirou, tese inválida, entrada perdida)
+// ou, estando ENCERRADA (alvo, stop, zero), quando é apagada ou ocultada (olho).
+function grSlotFase(z) {
+    if (z.tradeId) { const t = window._grPosTrades && window._grPosTrades[z.tradeId]; return t && t.data_fechamento ? 'encerrada' : 'trade'; }
+    const r = (window._scRegistro || []).find(x => x.id === z.id);
+    if (r) {
+        if (['alvo', 'stop', 'zero', 'saida'].indexOf(r.st) >= 0) return 'encerrada';
+        if (r.st === 'entrou') return 'trade';
+        if (r.st === 'aguardando') return 'armada';
+        if (GR_ST_DESCARTE.indexOf(r.st) >= 0 || r.st === 'apagada') return null;   // terminou sem entrar: já está de saída, não ocupa
+    }
+    return 'analise';
+}
+function grSlotOcupante() {
+    try { const P = grPosicoes(); for (let i = 0; i < P.length; i++) { const z = P[i]; if (!z || z.previa || z.teste) continue; const f = grSlotFase(z); if (!f) continue; if (f === 'encerrada' && z.oculta) continue; return { z, fase: f }; } } catch (e) {}
+    return null;
+}
+function grSlotTexto(o) {
+    const fz = { analise: 'em análise', armada: 'armada', trade: 'em trade', encerrada: 'encerrada' }[o.fase];
+    return 'Slot ocupado pela caixa ' + (o.z.lado === 'short' ? 'Short' : 'Long') + ' ' + fz + '. ' + (o.fase === 'encerrada' ? 'Apague ou oculte ela pra liberar.' : 'Só uma caixa por vez.');
+}
+function grSlotBloqueia(silencioso) {   // true = bloqueou (já avisou)
+    const o = grSlotOcupante(); if (!o) return false;
+    if (!silencioso) { try { grToast(grSlotTexto(o), '#DC2626'); } catch (e) {} }
+    return true;
+}
 function grLimparDescartadas() {
     if (typeof _grAmbienteCarregado === 'undefined' || !_grAmbienteCarregado) return;
     const L = window._scRegistro; if (!Array.isArray(L) || !L.length) return;
@@ -17531,6 +17596,7 @@ let _scMotorOn = false, _scTraderAberto = false;
 async function scMotor() {
     if (_scMotorOn || _scCalculando) return;
     if (!_grFootprintAtivo || !_grFootprintCandlesRaw) { alert('Ligue o Fluxo (FX) e aguarde os dados carregarem.'); return; }
+    { const oc = grSlotOcupante(); if (oc) { try { scAviso('Motor: ' + grSlotTexto(oc), '#DC2626'); } catch (e) {} return; } }
     _scMotorOn = true; window._scPerf = {}; const _t0Motor = performance.now();
     let a = null, b = null;
     // relatório também quando nada é criado: o que cada lado achou (ou por que não achou)
@@ -17583,15 +17649,6 @@ async function scMotor() {
         const vir = x => x.toFixed(1).replace('.', ',');
         const rot = 'Motor → ' + (lado === 'short' ? 'Short' : 'Long') + ' (short ' + (ns == null ? 'sem entrada' : ns) + ' × long ' + (nl == null ? 'sem entrada' : nl) + (porRR === 'alvo' ? '; empate na nota, vence o lado com alvo no pico do sino (volta ao valor)' : porRR ? '; empate na nota, desempate pelo R/R ' + vir(rrDe(a.aval)) + ' × ' + vir(rrDe(b.aval)) : '') + ')';
         if (_scUltimo && !_scUltimo.erro && _scUltimo.linhas) { _scUltimo.txt = rot + ' · ' + _scUltimo.txt; _scUltimo.linhas.splice(2, 0, rot); foraTxt.concat(['short', 'long'].filter(l => ocup[l]).map(l => (l === 'short' ? 'Short: ' : 'Long: ') + ocup[l])).reverse().forEach(x => _scUltimo.linhas.splice(3, 0, x)); const pzM = grPosicoes().find(z => z.id === _scUltimo.pzId); if (pzM) { pzM.relatorio = _scUltimo.linhas.slice(); pzM.modo = 'motor'; } }   // o relatório guardado na caixa também diz que foi o Motor
-        // M13 — AS DUAS CAIXAS: se o outro lado também tem entrada válida, ele é armado também. O gatilho decide qual entra (a que confirmar primeiro).
-        const outro = lado === 'short' ? 'long' : 'short', vO = outro === 'short' ? (a && a.aval) : (b && b.aval);
-        if (vO && _scCfg.doisTrades === true) {   // diretriz: 2 trades simultâneos só com o switch ligado
-            const pz1 = _scUltimo && _scUltimo.pzId;
-            await scRodar(outro, { modo: 'motor' });
-            const rot2 = 'Motor → também ' + (outro === 'short' ? 'Short' : 'Long') + ' (2ª caixa, nota ' + vO.nota + '): os dois lados têm entrada, o gatilho decide qual entra';
-            if (_scUltimo && !_scUltimo.erro && _scUltimo.linhas && _scUltimo.pzId !== pz1) { _scUltimo.linhas.splice(2, 0, rot2); const pz2 = grPosicoes().find(z => z.id === _scUltimo.pzId); if (pz2) { pz2.relatorio = _scUltimo.linhas.slice(); try { grPosSalvar(); } catch (e) {} } }
-            try { scAviso('Motor: armou as duas caixas (Long e Short)', '#2962FF'); } catch (e) {}
-        }
     } finally {
         _scMotorOn = false;
         try { const tx = null; if (false && _scUltimo && _scUltimo.linhas) { _scUltimo.linhas.push(tx); const pzP = _scUltimo.pzId != null ? grPosicoes().find(z => z.id === _scUltimo.pzId) : null; if (pzP && Array.isArray(pzP.relatorio)) { pzP.relatorio.push(tx); try { grPosSalvar(); } catch (e) {} } } } catch (e) {}
@@ -17626,6 +17683,7 @@ function scAbsFavor(cs, i, D, lg) {   // absorção A FAVOR do lado no candle i 
 async function scForaSino(lado) {
     const lg = lado === 'long', s = lg ? 1 : -1, nm = lg ? 'Long' : 'Short', f = x => Math.round(x).toLocaleString('pt-BR');
     if (!SCX.fpAtivo || !SCX.fpRaw) return { msg: 'sem Fluxo' };
+    { const oc = grSlotOcupante(); if (oc) return { msg: grSlotTexto(oc) }; }
     const sym = grBinSymbolAtual(), def = scDefTf('5m');
     const todos = (await scKlines(sym, def.bin, 300)).map(grMapearKline), cs = todos.slice(0, -1);   // só candles fechados
     if (cs.length < 60) return { msg: 'poucos candles de 5 min' };
@@ -17685,7 +17743,7 @@ function scAutoLogMostrar() {
 function scSelecionarCaixa(id) {   // seleciona a caixa no gráfico; se estiver fora da tela, rola até ela (sem mudar o timeframe)
     const lista = grPosicoes(), idx = lista.findIndex(z => String(z.id) === String(id)), pz = lista[idx];
     if (!pz) { try { grToast('Essa caixa não está mais no gráfico', '#8E8E93'); } catch (e) {} return; }
-    pz.oculta = false; window._grCtxFechado = false; _edSel = { tipo: 'ps', idx };
+    pz.oculta = false; window._grCtxFechado = false; _edSel = { tipo: 'ps', idx }; try { const z0 = grPosicoes()[idx]; if (z0) window._grCaixaUltId = z0.id; } catch (e) {}
     try {
         const i1 = grTimeToIndex(Math.min(pz.t1, pz.t2)), i2 = grTimeToIndex(Math.max(pz.t1, pz.t2)), ini = window._grStartIdx, tot = window._grTotalSlots, z = _grZoom || 15;
         if (ini != null && tot && (i2 < ini || i1 > ini + tot)) {
@@ -17750,6 +17808,7 @@ async function scPlayTick() {
           const caiu = scRegLista().filter(r => r.st === 'desfeita' && !antes.has(r.id + '|' + r.t0));
           const arm = scRegLista().filter(r => r.st === 'aguardando' && r.zero && grPosicoes().some(z => z.id === r.id)).length;
           log.push('revisão: ' + (caiu.length ? caiu.map(r => (r.lado === 'long' ? 'Long' : 'Short') + ' → tese inválida (' + (r.motivo || '') + ')').join('; ') : arm ? arm + ' armada(s) conferida(s), tese ok' : 'nenhuma armada')); }
+        { const oc = grSlotOcupante(); if (oc) { partes.push('slot'); log.push('slot ocupado: ' + grSlotTexto(oc) + ' (o robô não arma nada)'); throw { pausa: true }; } }   // slot único: a revisão das armadas acima continua, mas nenhuma caixa nova nasce
         const sym = grBinSymbolAtual(), ids = new Set(grPosicoes().map(z => z.id));
         for (const lado of ['short', 'long']) {
             const nm = lado === 'short' ? 'Short' : 'Long', ja = scRegLista().find(r => (r.lado === lado || _scCfg.doisTrades !== true) && (r.st === 'aguardando' || r.st === 'entrou') && (!r.sym || r.sym === sym) && !r.semTela);   // switch desligado: UMA caixa por vez (qualquer lado)
@@ -17975,6 +18034,7 @@ async function scRelatoriosCaixa(k) {
 // TRAZER DE VOLTA: recria no gráfico uma caixa que só existe no histórico. Entrada e alvo do registro; stop do registro se estiver do lado certo, senão o stop original do motor, senão 2% (padrão da caixa). Nasce SEM monitoramento (você liga se quiser).
 function scCaixaTrazer(id) {
     const r = (window._scRegistro || []).find(x => x.id === id); if (!r) return;
+    if (grSlotBloqueia()) return;
     const lg = r.alvo > r.ent, ok = v => v > 0 && (lg ? v < r.ent : v > r.ent);
     const stop = ok(r.stp) ? r.stp : ok(r.stpOrig) ? r.stpOrig : r.ent * (lg ? 0.98 : 1.02);
     let i0 = 0; try { i0 = grTimeToIndex(r.t0); } catch (e) {}
@@ -18110,8 +18170,7 @@ function scRenderPopup(menu) {
     const op = _scCalculando ? '<div style="font-size:12.5px;color:#8E8E93;padding:10px 0;">Calculando…</div>'
         : grConfigCombo(ico.alvo, 'Trader', 'Você escolhe o lado; o robô posiciona a caixa', 'cv-cfg-sc-trader', [['', 'Escolher…'], ['short', 'Short'], ['long', 'Long']], '', 'scTraderEscolher')
           + '<button type="button" onclick="scMotor()" style="width:100%;margin-top:10px;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:800;background:#1C1C1E;color:#FFFFFF;">Robô</button>'
-          + grSwitchHtml('Breakeven automático', _scCfg.beAuto !== false, 'scBeAutoAlternar()')
-          + grSwitchHtml('2 trades simultâneos', _scCfg.doisTrades === true, 'scDoisTradesAlternar()');
+          + grSwitchHtml('Breakeven automático', _scCfg.beAuto !== false, 'scBeAutoAlternar()');
     // 4) Central de Relatórios (inline)
     const rel = '<div style="display:flex;flex-direction:column;gap:8px;">' + [['caixas', 'Caixas'], ['hist', 'Históricos'], ['reg', 'Registro'], ['ver', 'Versão'], ['testes', 'Testes']].map(([k, n]) =>
         '<button type="button" onclick="window._scRelAba=\'' + k + '\';scRelatoriosAbrir()" style="width:100%;border:none;border-radius:22px;padding:12px 14px;font-size:15px;font-weight:600;background:#F2F2F7;color:#1C1C1E;">' + n + '</button>').join('') + '</div>';
