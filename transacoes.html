@@ -3713,7 +3713,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v850';
+const APP_VERSAO = 'v853';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4362,8 +4362,11 @@ async function grPilhasTabelaModal() {
         const fInf = pv && pv.inf > 0 ? 2 * pv.inf : (sup.length ? sup[0].tick : 0), fSup = pv && pv.sup > 0 ? 2 * pv.sup : (res.length ? res[0].tick : 0);   // folga = 2 pavios típicos de 5 min além da borda (regra M11 do robô)
         const minR = window._scMedMin > 0 ? 2 * window._scMedMin : 0;   // distância mínima: 2 candles típicos de 5 min entre a entrada (aqui, a cotação) e o stop (regra do robô)
         let nSup = sup.length ? Math.min.apply(null, sup.map(r => r.preco - r.tick / 2)) - fInf : null, nRes = res.length ? Math.max.apply(null, res.map(r => r.preco + r.tick / 2)) + fSup : null;
-        const pzE = grPilhasCaixaAlvo(), refE = pzE && pzE.entrada > 0 ? pzE.entrada : pAg;   // entrada da caixa selecionada; sem caixa, a cotação
-        if (refE && minR > 0) { if (nSup != null) nSup = Math.min(nSup, refE - minR); if (nRes != null) nRes = Math.max(nRes, refE + minR); }
+        const pzE = grPilhasCaixaAlvo(), eC = pzE ? (pzE.tradeId && pzE.pm > 0 ? pzE.pm : pzE.entrada) : 0;   // entrada da caixa do slot; sem caixa (ou caixa do outro lado do stop, ex.: velha), a cotação
+        if (minR > 0) {
+            if (nSup != null) { const ref = eC > nSup ? eC : pAg; if (ref) nSup = Math.min(nSup, ref - minR); }
+            if (nRes != null) { const ref = eC > 0 && eC < nRes ? eC : pAg; if (ref) nRes = Math.max(nRes, ref + minR); }
+        }
         if (nSup != null) stops.push((so1 ? 'Stop suporte: ' : 'Stop: ') + fP(nSup));
         if (nRes != null) stops.push((so1 ? 'Stop resistência: ' : 'Stop: ') + fP(nRes));
         const pzA = grPilhasCaixaAlvo();
@@ -5653,7 +5656,7 @@ function cvPosDesvincular(pz) {
 // Versão enxuta para o JSON de preferências: caixa com trade guarda só o desenho (+ últimos preços, usados só se o trade sumir)
 function cvPosParaSalvar() {
     const out = {};
-    Object.keys(_grPosMapa).forEach(k => { out[k] = (_grPosMapa[k] || []).filter(z => !z.teste).map(z => z.tradeId ? { id: z.id, lado: z.lado, t1: z.t1, t2: z.t2, acRef: z.acRef, tCri: z.tCri, tradeId: z.tradeId, entrada: z.entrada, alvo: z.alvo, stop: z.stop, trancada: z.trancada || undefined } : Object.assign({}, z, { oculta: undefined })); });
+    Object.keys(_grPosMapa).forEach(k => { out[k] = (_grPosMapa[k] || []).filter(z => !z.teste).map(z => z.tradeId ? { id: z.id, lado: z.lado, t1: z.t1, t2: z.t2, acRef: z.acRef, tCri: z.tCri, tradeId: z.tradeId, entrada: z.entrada, alvo: z.alvo, stop: z.stop, trancada: z.trancada || undefined, renegada: z.renegada || undefined } : Object.assign({}, z, { oculta: undefined })); });
     return out;
 }
 // Trade ativo sem caixa no gráfico (ex.: o short antigo, ligado por SQL): cria a caixa a partir do trade.
@@ -7606,6 +7609,7 @@ if (_grTipoGrafico === 'linha') {
                 window._grFpItens.push({ rot: 'Eficiência', abrir: (cx, cy) => cvAbrirMenuFpCfg('eficiencia', cx, cy) });
                 }
             }
+            if (_indState.deltaAtr && window._grFaixasDA && window._grFaixasDA.length) grBarraChip('Tabela', '#2962FF', () => { try { grPilhasTabelaModal(); } catch (e) {} });   // há níveis selecionados na régua: o chip abre a tabela comparativa
             if (_indState.sent) grBarraChip('Sentimento', '#000000', (cx, cy) => cvAbrirMenuFpCfg('sent', cx, cy));   // chip PRÓPRIO na barra superior (não fica dentro do menu Footprint)
             if (window._grFpItens.length) { const _fpIt = window._grFpItens; grBarraChip('Footprint ▾', '#000000', (cx, cy) => cvDropGrupoAbrir(cx, cy, _fpIt)); }
             window._grBarraSuperiorBottom = chipY + 4; // a linha OHLC é desenhada logo abaixo dos chips
@@ -8933,6 +8937,7 @@ function cvPosCtxMenu(i, rx, ry, rw, rh) {   // menu de contexto da caixa seleci
             z.monitorar = true; try { scManualSync(); } catch (e) {}
         });
         mkBt('cv-pos-ctx-pct', z => { z.pctMargem = !z.pctMargem; });
+        mkBt('cv-pos-ctx-renegada', z => { z.renegada = !z.renegada; try { grPosSalvar(); } catch (e) {} grDrawChart(); });   // caixa renegada: não conta no slot nem em cálculo nenhum (ex.: trade antigo ainda aberto na corretora)
         [dd, sb, st].forEach(b => { b.style.margin = '0'; b.style.height = '26px'; b.style.fontSize = '12px'; b.style.justifyContent = 'flex-start'; });
         if (!window._grStatusTimer) window._grStatusTimer = setInterval(() => { const mm = document.getElementById('cv-pos-ctx'); if (!mm) return; const z = grPosicoes()[mm._i]; if (z && scStatusElegivel(z)) cvPosStatusIniciar(z); }, 30000);   // enquanto o menu da caixa está aberto, relê o Status a cada 30 s
         bt('cv-pos-ctx-x', grHeroicon('x-mark', 16), '#6B6B70', () => { window._grCtxFechado = true; cvPosMenuLimpar(); cvPosCtxRemover(); try { cvPosFormFechar(); } catch (e) {} });   // fecha a barra E todos os modais dos itens (Dados, Score, Status, cadeado, engrenagem); fecha só a barra (a caixa continua selecionada); ao selecionar a caixa de novo ela volta
@@ -8947,6 +8952,7 @@ function cvPosCtxMenu(i, rx, ry, rw, rh) {   // menu de contexto da caixa seleci
     { const sb = m.querySelector('#cv-pos-ctx-score'); if (sb) { sb.style.display = (typeof scScoreElegivel === 'function' && scScoreElegivel(pz)) ? 'flex' : 'none'; sb.textContent = pz.score ? 'Score ' + pz.score.n + '/' + pz.score.total : 'Score'; } }
     { const st = m.querySelector('#cv-pos-ctx-status'); if (st) { const ok = scStatusElegivel(pz); st.style.display = ok ? 'flex' : 'none'; if (ok) { cvPosStatusBotao(pz, st); if (!pz._statCalc && (!pz._stat || Date.now() - pz._stat.t > 30000)) cvPosStatusIniciar(pz); } } }
     { const bm = m.querySelector('#cv-pos-ctx-monit'); if (bm) { const man = !pz.origem && !pz.tradeId && !(pz.pm > 0) && !pz.previa && !pz.teste; const vivo = (window._scRegistro || []).some(r => r.id === pz.id && r.manual && (r.st === 'aguardando' || r.st === 'entrou')); bm.style.display = man ? 'flex' : 'none'; bm.textContent = vivo ? 'Parar monitoramento' : 'Iniciar monitoramento'; bm.style.color = vivo ? '#DC2626' : '#16A34A'; bm.style.fontWeight = '700'; } }
+    { const br = m.querySelector('#cv-pos-ctx-renegada'); if (br) { br.style.display = 'flex'; br.textContent = pz.renegada ? 'Renegada: sim (fora dos cálculos)' : 'Marcar como renegada'; } }
     { const bp = m.querySelector('#cv-pos-ctx-pct'); if (bp) { bp.style.display = 'flex'; bp.textContent = '% do alvo/stop: ' + (pz.pctMargem ? 'Margem' : 'Preço'); } }
     { const sx = m.querySelector('#cv-pos-ctx-sair'); if (sx) { const rg = (window._scRegistro || []).find(r => r.id === pz.id); sx.style.display = rg && rg.st === 'entrou' ? 'flex' : 'none'; } }
     { const dt = m.querySelector('#cv-pos-ctx-painel-dot'); if (dt) dt.innerHTML = pz._stat ? '<span style="color:' + scStatusCor(pz._stat) + ';font-size:12px;line-height:1;">&#9679;</span>' : ''; }
@@ -17308,7 +17314,8 @@ function grSlotFase(z) {
     return 'analise';
 }
 function grSlotOcupante() {
-    try { const P = grPosicoes(); for (let i = 0; i < P.length; i++) { const z = P[i]; if (!z || z.previa || z.teste) continue; const f = grSlotFase(z); if (!f) continue; if (f === 'encerrada' && z.oculta) continue; return { z, fase: f }; } } catch (e) {}
+    try { const P = grPosicoes(); for (let i = 0; i < P.length; i++) { const z = P[i]; if (!z || z.previa || z.teste || z.renegada) continue; const f = grSlotFase(z);   // renegada: fora de tudo, como se não existisse
+ if (!f) continue; if (f === 'encerrada' && z.oculta) continue; return { z, fase: f }; } } catch (e) {}
     return null;
 }
 function grSlotTexto(o) {
