@@ -3713,7 +3713,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v853';
+const APP_VERSAO = 'v854';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -10096,6 +10096,7 @@ function grDrawChart() {
     // Crosshair inativo: o overlay do crosshair já foi limpo e redesenhado (só com a linha OHLC do último candle) no fim do grDrawCandles.
 }
 function grToast(msg, cor) {
+    if (!/…\s*$/.test(String(msg == null ? '' : msg))) { try { scAviso(msg, cor, null, 'Aviso'); return; } catch (e) {} }   // toda mensagem do app é um modal com OK; só o aviso de andamento (termina em …) segue como faixa rápida
     try {
         let t = document.getElementById('area-toast');
         if (!t) { t = document.createElement('div'); t.id = 'area-toast'; t.style.cssText = 'position:fixed;left:50%;top:calc(env(safe-area-inset-top) + 70px);transform:translateX(-50%);z-index:99999;padding:10px 16px;border-radius:12px;font:700 14px -apple-system,sans-serif;color:#fff;max-width:88vw;text-align:center;pointer-events:none;'; document.body.appendChild(t); }
@@ -17164,11 +17165,11 @@ let _scRevisando = false;
 function scRevTxt(r) { if (!r || !r.revT) return ''; return 'tese conferida às ' + new Date(r.revT).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) + ' · ' + (r.st === 'desfeita' ? 'caiu' : 'ok'); }
 // ── MENSAGENS DO ROBÔ: modal com botão OK (nada de aviso que some sozinho). Várias mensagens entram numa fila e aparecem uma de cada vez. ──
 window._scAvisoFila = window._scAvisoFila || [];
-function scAviso(msg, cor, linhas) {
+function scAviso(msg, cor, linhas, titulo) {
     try {
         const f = window._scAvisoFila, ult = f[f.length - 1];
         if (!(linhas && linhas.length) && ult && ult.msg === msg) return;   // a mesma mensagem já esperando na fila: não repete
-        f.push({ msg: String(msg == null ? '' : msg), cor: cor || '#1C1C1E', linhas: linhas || null, hora: new Date() });
+        f.push({ msg: String(msg == null ? '' : msg), cor: cor || '#1C1C1E', linhas: linhas || null, hora: new Date(), titulo: titulo || 'Robô' });
         if (!document.getElementById('sc-aviso-ov')) scAvisoMostrar();
     } catch (e) {}
 }
@@ -17181,7 +17182,7 @@ function scAvisoMostrar() {
     const hd = document.createElement('div');
     hd.style.cssText = 'padding:10px 16px;font-size:12px;font-weight:700;color:#FFFFFF;background:' + a.cor + ';display:flex;justify-content:space-between;';
     const hh = a.hora.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-    hd.innerHTML = '<span>Robô</span><span></span>'; hd.lastChild.textContent = hh + (f.length > 1 ? ' · 1 de ' + f.length : '');
+    hd.innerHTML = '<span></span><span></span>'; hd.firstChild.textContent = a.titulo || 'Robô'; hd.lastChild.textContent = hh + (f.length > 1 ? ' · 1 de ' + f.length : '');
     const bd = document.createElement('div'); bd.style.cssText = 'padding:14px 16px;overflow:auto;font-size:14px;line-height:1.45;color:#1C1C1E;white-space:pre-wrap;word-break:break-word;';
     bd.textContent = a.msg;
     if (a.linhas && a.linhas.length) {
@@ -17301,7 +17302,7 @@ function scRegSincCaixas() {
 const GR_ST_DESCARTE = ['semGatilho', 'perdida', 'expirou', 'desfeita'];
 // SLOT ÚNICO DE CAIXA (por ativo): só UMA caixa pode existir no price action, manual ou do robô, e ela cumpre a vida inteira (análise/armada → em trade → encerrada).
 // Enquanto ocupa o slot, ninguém cria outra: nem o robô, nem você. Libera quando a caixa é apagada, termina SEM entrar (sem gatilho, expirou, tese inválida, entrada perdida)
-// ou, estando ENCERRADA (alvo, stop, zero), quando é apagada ou ocultada (olho).
+// A ENCERRADA (alvo, stop, zero, saída) NÃO ocupa o slot: fica na tela até existir outra caixa viva, e aí sai sozinha (grLimparDescartadas); o histórico fica.
 function grSlotFase(z) {
     if (z.tradeId) { const t = window._grPosTrades && window._grPosTrades[z.tradeId]; return t && t.data_fechamento ? 'encerrada' : 'trade'; }
     const r = (window._scRegistro || []).find(x => x.id === z.id);
@@ -17315,7 +17316,7 @@ function grSlotFase(z) {
 }
 function grSlotOcupante() {
     try { const P = grPosicoes(); for (let i = 0; i < P.length; i++) { const z = P[i]; if (!z || z.previa || z.teste || z.renegada) continue; const f = grSlotFase(z);   // renegada: fora de tudo, como se não existisse
- if (!f) continue; if (f === 'encerrada' && z.oculta) continue; return { z, fase: f }; } } catch (e) {}
+ if (!f || f === 'encerrada') continue; return { z, fase: f }; } } catch (e) {}   // encerrada não ocupa o slot: sai da tela quando nasce outra caixa
     return null;
 }
 function grSlotTexto(o) {
@@ -17340,6 +17341,8 @@ function grLimparDescartadas() {
     P0.forEach(z => { if (!z || z.tradeId || z.previa) return; const r = reg.get(z.id); if (z.origem !== 'setup') return; if (r && (r.st === 'aguardando' || r.st === 'entrou')) return;   // sai sozinha: caixa do ROBÔ ou manual que você pôs em monitoramento. Manual sem monitorar nunca é apagada pelo app
        
         let inv = false; try { inv = grTeseInvalida(z) || grEntradaPerdida(z); } catch (e) {} if (inv) desc.add(z.id); });
+    // slot único: com uma caixa viva (análise, armada, em trade), toda caixa ENCERRADA sai da tela: a de trade gravado só fica oculta (o trade fica no banco), as outras são tiradas
+    if (grSlotOcupante()) P0.forEach(z => { if (!z || z.previa || z.teste || z.renegada || z.oculta) return; if (grSlotFase(z) !== 'encerrada') return; if (z.tradeId) z.oculta = true; else desc.add(z.id); });
     if (!desc.size) return;
     const P = grPosicoes(), selId = (typeof _edSel !== 'undefined' && _edSel && _edSel.tipo === 'ps' && P[_edSel.idx]) ? P[_edSel.idx].id : null;
     let tirou = 0;
