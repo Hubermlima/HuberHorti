@@ -3449,6 +3449,24 @@ function grAbsorcaoExcessoPct(candle, delta) {
     if (delta != null && nm.sh && candle.v > 0 && (delta === 0 || !((Math.log(Math.abs(delta) / candle.v) - nm.sh.m) / nm.sh.sg > 0))) return null;   // delta pequeno demais perto do volume: não é absorção
     return (v / Math.exp(nm.m) - 1) * 100;   // z robusto > 0 (acima do normal da própria série); o valor é o excesso sobre a mediana, em %
 }
+// Cunhas como linhas de TENDÊNCIA de verdade (as mesmas do indicador Tendência: tocar, arrastar, apagar), mas AUTOMÁTICAS e sem salvar (flag `auto`).
+// Recria as automáticas quando entra candle novo / troca TF ou ativo. Arrastar uma ponta "adota" a linha (vira comum e fica salva). Apagar uma não a recria.
+function grCunhasSincronizar() {
+    const lista = grCunhasDetectar(), ch = window._grCunhasCache ? window._grCunhasCache.chave : '';
+    const sy = window._grCunhasSync;
+    if (sy && sy.chave === ch && sy.ref === _trendlines) return;
+    for (let i = _trendlines.length - 1; i >= 0; i--) if (_trendlines[i].auto) _trendlines.splice(i, 1);
+    const todas = _grAllCandles, apag = window._grCunhaApagadas || (window._grCunhaApagadas = new Set());
+    lista.forEach(w => {
+        const wk = todas[w.H0i].t + '_' + todas[w.L0i].t + '_' + (w.asc ? 'a' : 'd');
+        if (apag.has(wk) || _trendlines.some(t => t.wk === wk)) return;
+        const tF = todas[w.iFim].t;
+        const yH = w.H0p + w.sH * (w.iFim - w.H0i), yL = w.L0p + w.sL * (w.iFim - w.L0i);
+        _trendlines.push({ id: null, t1: todas[w.H0i].t, p1: w.H0p, t2: tF, p2: yH, cor: '#8E8E93', esp: 0.5, auto: true, wk });
+        _trendlines.push({ id: null, t1: todas[w.L0i].t, p1: w.L0p, t2: tF, p2: yL, cor: '#8E8E93', esp: 0.5, auto: true, wk });
+    });
+    window._grCunhasSync = { chave: ch, ref: _trendlines };
+}
 // Cunhas: varre o histórico carregado em janelas de 100 candles FECHADOS (passo 5). Em cada janela: pivôs por zigue-zague (mínimo 1,5 ATR da janela),
 // linha de maior esforço de topos e de fundos (reta entre 2 pivôs que encosta em mais pivôs, tolerância 0,3 ATR, sem candle fechando além dela),
 // ambas inclinadas pro mesmo lado e convergindo (largura final < 90% da inicial). A linha vai do 1º toque até o candle que fecha fora (ou o último).
@@ -3458,11 +3476,11 @@ function grCunhasDetectar() {
     if (N < 40) return [];
     const base0 = Math.max(0, N - 2000), chave = N + '|' + all[base0].t + '|' + all[N - 1].t;
     if (window._grCunhasCache && window._grCunhasCache.chave === chave) return window._grCunhasCache.lista;
-    const W = 100, lista = [];
-    const janela = (b, e) => {
+    const lista = [];
+    const janela = (b, e, mult) => {
         const cs = all.slice(b, e), n = cs.length;
         let som = 0; for (let i = 1; i < n; i++) som += Math.max(cs[i].h - cs[i].l, Math.abs(cs[i].h - cs[i - 1].c), Math.abs(cs[i].l - cs[i - 1].c));
-        const th = 1.5 * (som / (n - 1)), tol = th / 5, piv = [];
+        const th = mult * (som / (n - 1)), tol = th / 5, piv = [];
         let dir = 0, ext = { i: 0, p: cs[0].h }, extL = { i: 0, p: cs[0].l };
         for (let i = 1; i < n; i++) {
             const c = cs[i];
@@ -3494,12 +3512,15 @@ function grCunhasDetectar() {
         let iFim = n - 1; for (let i = i1 + 1; i < n; i++) { if (cs[i].c > yH(i) || cs[i].c < yL(i)) { iFim = i; break; } }
         return { i0: b + i0, iFim: b + iFim, H0i: b + H[0].i, H0p: H[0].p, L0i: b + Lo[0].i, L0p: Lo[0].p, sH, sL, asc: sH > 0, nt: bH.nt + bL.nt };
     };
-    for (let e = Math.min(N, base0 + W); e <= N; e += 5) {
-        const w = janela(Math.max(base0, e - W), e); if (!w) continue;
-        // a mesma cunha reaparece em janelas vizinhas: mantém a de mais toques quando duas do mesmo tipo se sobrepõem em mais da metade
-        const dup = lista.findIndex(o => o.asc === w.asc && Math.min(o.iFim, w.iFim) - Math.max(o.i0, w.i0) > 0.5 * Math.min(o.iFim - o.i0, w.iFim - w.i0));
-        if (dup < 0) lista.push(w); else if (w.nt > lista[dup].nt) lista[dup] = w;
-    }
+    // duas escalas: janela de 100 candles com pivô mínimo de 1,5 ATR (cunhas grandes) e janela de 45 com 1,0 ATR (degraus pequenos de acumulação)
+    [{ W: 100, m: 1.5, passo: 5 }, { W: 45, m: 1.0, passo: 3 }].forEach(({ W, m, passo }) => {
+        for (let e = Math.min(N, base0 + W); e <= N; e += passo) {
+            const w = janela(Math.max(base0, e - W), e, m); if (!w) continue;
+            // a mesma cunha reaparece em janelas vizinhas (e nas duas escalas): mantém a de mais toques quando duas do mesmo tipo se sobrepõem em mais da metade
+            const dup = lista.findIndex(o => o.asc === w.asc && Math.min(o.iFim, w.iFim) - Math.max(o.i0, w.i0) > 0.5 * Math.min(o.iFim - o.i0, w.iFim - w.i0));
+            if (dup < 0) lista.push(w); else if (w.nt > lista[dup].nt) lista[dup] = w;
+        }
+    });
     window._grCunhasCache = { chave, lista };
     return lista;
 }
@@ -3773,7 +3794,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v863';
+const APP_VERSAO = 'v865';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -7725,6 +7746,7 @@ if (_grTipoGrafico === 'linha') {
             ctx.beginPath(); ctx.moveTo(xi, PAD.top); ctx.lineTo(xi, PAD.top + chartH); ctx.stroke(); ctx.restore();
         }
         // ── Linhas de Tendência ────────────────────────────────────
+        try { grCunhasSincronizar(); } catch (eCs) {}
         const trendsSalvasComoIdx = _trendlines.map(tl => ({
             i1: grTimeToIndex(tl.t1), p1: tl.p1, i2: grTimeToIndex(tl.t2), p2: tl.p2, cor: tl.cor || '#000000', esp: tl.esp, canal: !!tl.canal, pi: tl.pi, pe: tl.pe, hor: !!tl.hor, geo: tl.geo, larg: tl.larg, incl: tl.incl, oculta: !!tl.oculta
         }));
@@ -8298,24 +8320,6 @@ if (_grTipoGrafico === 'linha') {
                 ctx.restore();
             }
         } catch (eSent) { try { console.error('sentimento', eSent); } catch (e2) {} } }
-    // ── Cunhas automáticas (ascendente / descendente): todas as do histórico carregado, fixas ao rolar (ver grCunhasDetectar). Traço fino cinza. ──
-    try {
-        const lista = grCunhasDetectar();
-        if (lista.length) {
-            const xi = i => PAD.left + ((i - startIdx) / totalSlots) * chartW + cW / 2;
-            ctx.save();
-            ctx.beginPath(); ctx.rect(PAD.left, PAD.top, chartW, chartH); ctx.clip();
-            ctx.strokeStyle = 'rgba(142,142,147,0.95)'; ctx.lineWidth = 0.5; ctx.setLineDash([]);
-            ctx.beginPath();
-            lista.forEach(w => {
-                if (w.iFim < startIdx || w.i0 > startIdx + visible) return;
-                const yH = i => w.H0p + w.sH * (i - w.H0i), yL = i => w.L0p + w.sL * (i - w.L0i);
-                ctx.moveTo(xi(w.H0i), toY(w.H0p)); ctx.lineTo(xi(w.iFim), toY(yH(w.iFim)));
-                ctx.moveTo(xi(w.L0i), toY(w.L0p)); ctx.lineTo(xi(w.iFim), toY(yL(w.iFim)));
-            });
-            ctx.stroke(); ctx.restore();
-        }
-    } catch (eCunha) {}
     // Régua Delta ATR por ÚLTIMO no canvas principal: nada do que foi desenhado antes (candles, canal de regressão, tendências,
     // áreas, zonas, linhas) aparece por cima nem por baixo dela. Fundo opaco na faixa inteira.
     try { ctx.save(); ctx.globalAlpha = 1; ctx.setLineDash([]); if (window._grDesenharReguaDA) window._grDesenharReguaDA(); ctx.restore(); } catch (e) { console.log('Régua DA error:', e.message); }
@@ -9974,7 +9978,7 @@ function grInitTouch() {
     if (_trendDragging) {
         const tl = _trendlines[_trendDragging.li];
         _trendDragging = null;
-        if (tl) cvSalvarTrendline(tl);
+        if (tl) { tl.auto = false; cvSalvarTrendline(tl); }   // mexeu numa cunha automática: vira linha comum
         grDrawChart();
         return;
     }
@@ -10472,7 +10476,9 @@ async function cvCarregarTrendlines() {
         .map(r => ({ id: null, t1: r.t1, p1: parseFloat(r.p1), t2: r.t2, p2: parseFloat(r.p2), cor: r.cor || '#000000' }));
 }
 async function cvSalvarTrendline(tl) { grAmbienteSalvar(); }   // v93: só marca pendente; grava ao clicar em Sair
+function grCunhaLembrarApagada(tl) { if (tl && tl.wk) (window._grCunhaApagadas || (window._grCunhaApagadas = new Set())).add(tl.wk); }
 async function cvApagarTrendline(idx) {
+    grCunhaLembrarApagada(_trendlines[idx]);
     _trendlines.splice(idx, 1);
     grAmbienteSalvar();
     grDrawChart();
@@ -11266,7 +11272,7 @@ function grEdCtxApagar() {
     const { tipo, idx } = _edSel;
     cvEdicaoSair(true);
     if (tipo === 'nf') { _novosFibos.splice(idx, 1); grAmbienteSalvar(); }
-    else if (tipo === 'tl') { _trendlines.splice(idx, 1); grAmbienteSalvar(); }
+    else if (tipo === 'tl') { grCunhaLembrarApagada(_trendlines[idx]); _trendlines.splice(idx, 1); grAmbienteSalvar(); }
     else if (tipo === 'fh') { _freehands.splice(idx, 1); cvSalvarFreehandLocal(); }
     else if (tipo === 'hl') { grHLinhas().splice(idx, 1); grHLinhasSalvar(); }
     else if (tipo === 'md') { _medidas.splice(idx, 1); cvSalvarMedidas(); }
@@ -11569,7 +11575,7 @@ window._grDesenhosMapa = {};
 function grDesenhosColetar() {
     if (_ativoId && window._grTlOk === _ativoId) {
         window._grDesenhosMapa[_ativoId] = {
-            trendlines: _trendlines.map(t => ({ t1: t.t1, p1: t.p1, t2: t.t2, p2: t.p2, cor: t.cor, esp: t.esp || undefined, canal: !!t.canal, pi: t.pi || null, pe: t.pe || null, hor: !!t.hor, geo: t.geo || undefined, larg: t.larg || undefined, incl: (t.incl != null && isFinite(t.incl)) ? t.incl : undefined, oculta: !!t.oculta || undefined })),
+            trendlines: _trendlines.filter(t => !t.auto).map(t => ({ t1: t.t1, p1: t.p1, t2: t.t2, p2: t.p2, cor: t.cor, esp: t.esp || undefined, canal: !!t.canal, pi: t.pi || null, pe: t.pe || null, hor: !!t.hor, geo: t.geo || undefined, larg: t.larg || undefined, incl: (t.incl != null && isFinite(t.incl)) ? t.incl : undefined, oculta: !!t.oculta || undefined })),
             novosFibos: _novosFibos.map(f => ({ t1: f.t1, p1: f.p1, t2: f.t2, p2: f.p2, esp: f.esp || undefined, niv: Array.isArray(f.niv) ? f.niv : undefined, oculta: !!f.oculta || undefined, id: f.id || undefined }))
         };
     }
