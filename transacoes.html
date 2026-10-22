@@ -3472,7 +3472,7 @@ function grCunhasSincronizar() {
 // ambas inclinadas pro mesmo lado e convergindo (largura final < 90% da inicial). A linha vai do 1º toque até o candle que fecha fora (ou o último).
 // Resultado guardado por (nº de candles, 1º e último t): só recalcula quando entra candle novo. Índices ABSOLUTOS em _grAllCandles.
 function grCunhasDetectar() {
-    const all = _grAllCandles, N = all.length - 1;   // N = só fechados (o último está em formação)
+    const all = _grAllCandles, N = all.length - 2;   // N = índice do último candle FECHADO (o último da lista está em formação)
     const anc = (typeof _grVpAncoraTs !== 'undefined' && _grVpAncoraTs > 0) ? _grVpAncoraTs : 0;
     if (!anc || N < 10) { window._grCunhasCache = { chave: 'sem-ancora', lista: [] }; return []; }
     let a0 = 0; while (a0 < N && all[a0].t < anc) a0++;
@@ -3480,10 +3480,15 @@ function grCunhasDetectar() {
     if (window._grCunhasCache && window._grCunhasCache.chave === chave) return window._grCunhasCache.lista;
     if (nSeg < 20) { window._grCunhasCache = { chave, lista: [] }; return []; }
     const lista = [];
-    const janela = (b, e, mult) => {
-        const cs = all.slice(b, e), n = cs.length;
+    // Figura de duas linhas pela RETA DE MAIOR ESFORÇO, tolerante: pivôs por zigue-zague (1 ATR); cada linha é a reta entre 2 pivôs que encosta em mais pivôs
+    // (tolerância = 5% da altura da janela) e que menos se afasta dos candles; até 10% dos fechamentos podem passar da reta (upthrust/spring/bull trap/bear trap).
+    const janela = (b, e) => {
+        const cs = all.slice(b, e), n = cs.length; if (n < 20) return null;
         let som = 0; for (let i = 1; i < n; i++) som += Math.max(cs[i].h - cs[i].l, Math.abs(cs[i].h - cs[i - 1].c), Math.abs(cs[i].l - cs[i - 1].c));
-        const th = mult * (som / (n - 1)), tol = (th / 5) * Math.min(1.4, Math.max(1, Math.sqrt(n / 45))), minT = n >= 60 ? 3 : 2, piv = [];   // tolerância cresce um pouco com a janela (máx. 1,4×); figura grande pede 3 toques por linha
+        const atr = som / (n - 1), th = atr;
+        let hi = -Infinity, lo = Infinity; cs.forEach(c => { if (c.h > hi) hi = c.h; if (c.l < lo) lo = c.l; });
+        const Hh = hi - lo; if (!(Hh > 0)) return null;
+        const tol = 0.05 * Hh, piv = [];
         let dir = 0, ext = { i: 0, p: cs[0].h }, extL = { i: 0, p: cs[0].l };
         for (let i = 1; i < n; i++) {
             const c = cs[i];
@@ -3493,15 +3498,16 @@ function grCunhasDetectar() {
             else if (dir <= 0 && c.h - extL.p >= th && extL.i !== i) { if (dir === 0 && ext.i < extL.i && ext.p - extL.p >= th) piv.push({ i: ext.i, p: ext.p, tipo: 'H' }); piv.push({ i: extL.i, p: extL.p, tipo: 'L' }); dir = 1; ext = { i, p: c.h }; extL = { i, p: c.l }; }
         }
         const melhor = (tipo) => {
-            const ps = piv.filter(q => q.tipo === tipo).slice(-12); let best = null;
+            const ps = piv.filter(q => q.tipo === tipo); let best = null;
             for (let x = 0; x < ps.length - 1; x++) for (let y = x + 1; y < ps.length; y++) {
                 const A = ps[x], B = ps[y], sl = (B.p - A.p) / (B.i - A.i), f = i => A.p + sl * (i - A.i);
                 const toca = ps.filter(q => q.i >= A.i && Math.abs(q.p - f(q.i)) <= tol);
-                if (toca.length < minT) continue;
-                const ult = toca[toca.length - 1];
-                let furou = false; for (let i = A.i; i <= ult.i; i++) { if (tipo === 'H' ? cs[i].c > f(i) + tol : cs[i].c < f(i) - tol) { furou = true; break; } }
-                if (furou) continue;
-                if (!best || toca.length > best.nt || (toca.length === best.nt && ult.i > best.pts[best.pts.length - 1].i)) best = { nt: toca.length, pts: toca };
+                if (toca.length < 2) continue;
+                let br = 0, gap = 0, cnt = 0;
+                for (let i = A.i; i < n; i++) { const d = tipo === 'H' ? cs[i].c - f(i) : f(i) - cs[i].c; if (d > tol) br++; gap += Math.max(0, tipo === 'H' ? f(i) - cs[i].h : cs[i].l - f(i)); cnt++; }
+                if (br > 0.1 * cnt) continue;
+                const score = toca.length * 100 - (gap / cnt) / Hh * 100;
+                if (!best || score > best.score) best = { score, nt: toca.length, pts: toca };
             }
             return best;
         };
@@ -3510,25 +3516,26 @@ function grCunhasDetectar() {
         if (!(H[1].i > H[0].i && Lo[1].i > Lo[0].i)) return null;
         const sH = (H[1].p - H[0].p) / (H[1].i - H[0].i), sL = (Lo[1].p - Lo[0].p) / (Lo[1].i - Lo[0].i);
         const yH = i => H[0].p + sH * (i - H[0].i), yL = i => Lo[0].p + sL * (i - Lo[0].i);
-        const i0 = Math.min(H[0].i, Lo[0].i), i1 = Math.max(H[1].i, Lo[1].i), l0 = yH(i0) - yL(i0), l1 = yH(i1) - yL(i1);
-        // Qualquer figura de duas linhas serve (cunha, triângulo, canal, ampliação): só pede linhas que não se cruzam e que ocupem pelo menos 40% da janela.
-        if (!(l0 > 0 && l1 > 0 && (i1 - i0) >= 0.4 * n)) return null;
-        const ehCunha = ((sH > 0 && sL > 0) || (sH < 0 && sL < 0)) && l1 < l0 * 0.9;
-        // Regra da pernada: depois de pernada de ALTA só vale cunha descendente; depois de pernada de BAIXA só ascendente. Pernada = variação do fechamento
-        // nos candles antes da cunha (2× o tamanho dela, mínimo 20), acima de 3 ATR; sem pernada clara (lateral) a cunha não é marcada.
-        { const ref = Math.max(0, b + i0 - Math.max(20, 2 * (i1 - i0))), chg = all[b + i0].c - all[ref].c, atr = som / (n - 1);
-          const perna = chg > 3 * atr ? 'alta' : chg < -3 * atr ? 'baixa' : null;
-          if (ehCunha && (!perna || (perna === 'alta' && sH > 0) || (perna === 'baixa' && sH < 0))) return null; }
-        let iFim = n - 1; for (let i = i1 + 1; i < n; i++) { if (cs[i].c > yH(i) || cs[i].c < yL(i)) { iFim = i; break; } }
-        return { i0: b + i0, iFim: b + iFim, H0i: b + H[0].i, H0p: H[0].p, L0i: b + Lo[0].i, L0p: Lo[0].p, sH, sL, asc: sH > 0, nt: bH.nt + bL.nt };
+        const i0 = Math.min(H[0].i, Lo[0].i), l0 = yH(i0) - yL(i0), l1 = yH(n - 1) - yL(n - 1);
+        if (!(l0 > 0 && l1 > 0 && (n - 1 - i0) >= 0.4 * n)) return null;
+        let ins = 0, tot = 0, wsum = 0; for (let i = i0; i < n; i++) { const u = yH(i), lw = yL(i); tot++; wsum += u - lw; if (cs[i].c <= u + tol && cs[i].c >= lw - tol) ins++; }
+        if (ins / tot < 0.85) return null;   // o preço tem que viver dentro da figura
+        const conv = l1 < l0 * 0.9, ehCunha = ((sH > 0 && sL > 0) || (sH < 0 && sL < 0)) && conv;
+        // Regra da pernada (só cunhas): depois de pernada de ALTA só descendente; de BAIXA só ascendente. Pernada = variação do fechamento antes da figura (2× o tamanho, mín. 20) acima de 3 ATR.
+        if (ehCunha) {
+            const ref = Math.max(0, b + i0 - Math.max(20, 2 * (n - 1 - i0))), chg = all[b + i0].c - all[ref].c, perna = chg > 3 * atr ? 'alta' : chg < -3 * atr ? 'baixa' : null;
+            if (!perna || (perna === 'alta' && sH > 0) || (perna === 'baixa' && sH < 0)) return null;
+        }
+        // nota: toques por largura média da figura (figura justa e bem tocada vence; alargamento solto perde), com bônus para figura que converge
+        const nota = (bH.nt + bL.nt) / (wsum / tot / Hh) * (conv ? 1.2 : 1);
+        return { i0: b + i0, iFim: b + n - 1, H0i: b + H[0].i, H0p: H[0].p, L0i: b + Lo[0].i, L0p: Lo[0].p, sH, sL, asc: sH > 0, nt: bH.nt + bL.nt, nota };
     };
-    // Trecho = da âncora do VP até o último candle fechado, de qualquer tamanho: testa várias janelas que terminam agora (do fim do trecho para trás, em escalas
-    // crescentes, e o trecho inteiro) e fica com a melhor cunha (mais toques; empate: a mais longa).
+    // Trecho = da âncora do VP até o último candle fechado, de qualquer tamanho: testa janelas que terminam agora (30 candles até o trecho inteiro) e fica com a melhor nota.
     const tams = [30, 45, 70, 100, 150, 220, 320, 480].filter(L => L < nSeg).concat([Math.min(nSeg, 600)]);
     let melhorW = null;
     tams.forEach(L => {
-        const w = janela(N + 1 - L, N + 1, 1.2); if (!w) return;
-        if (!melhorW || w.nt > melhorW.nt || (w.nt === melhorW.nt && w.iFim - w.i0 > melhorW.iFim - melhorW.i0)) melhorW = w;
+        const w = janela(N + 1 - L, N + 1); if (!w) return;
+        if (!melhorW || w.nota > melhorW.nota) melhorW = w;
     });
     if (melhorW) lista.push(melhorW);
     window._grCunhasCache = { chave, lista };
@@ -3820,7 +3827,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v872';
+const APP_VERSAO = 'v873';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
