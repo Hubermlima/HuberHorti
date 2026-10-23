@@ -432,6 +432,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <button class="cv-ind-btn" id="cv-ind-deltaAtr" onclick="cvToggleInd('deltaAtr')"><span class="btn-sigla">DA</span><span class="btn-nome">Delta ATR</span></button>
       <button class="cv-ind-btn" id="cv-ind-setupCx" onclick="scToggle()"><span class="btn-sigla">SC</span><span class="btn-nome">Robô Trade</span></button>
       <button class="cv-ind-btn" id="cv-ind-acav" onclick="cvToggleInd('acav')"><span class="btn-sigla">AA</span><span class="btn-nome">Ac/Av</span></button>
+      <button class="cv-ind-btn" id="cv-ind-wyckoff" onclick="WY.menuBtn()"><span class="btn-sigla">Wy</span><span class="btn-nome">Wyckoff</span></button><!--WYCKOFF-->
       <button class="cv-ind-btn" id="cv-ind-eficiencia" onclick="cvToggleInd('eficiencia')"><span class="btn-sigla">Ef</span><span class="btn-nome">Eficiência</span></button>
     </div>
   </div>
@@ -2473,6 +2474,7 @@ function cvRenderMenuFpCfg() {
                     + '<span>' + nv + '</span><span style="font-weight:600;">' + txtValor + '</span></button>';
               }).join('')
             + '</div>';
+    } else if (_grFpCfgMenuQual === 'wyckoff') { menu.innerHTML = WY.cfgHtml();   /*WYCKOFF*/
     } else if (_grFpCfgMenuQual === 'acav') {
         menu.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;"><div style="font-size:13px;font-weight:700;color:#1C1C1E;">Ac/Av</div>' + grOlhoBtn(_acavOculto, 'acavOlho') + '</div>'
             + '<div style="font-size:12px;color:#8E8E93;max-width:220px;padding-top:4px;">AC: candle de alta com delta negativo. AV: candle de baixa com delta positivo. Só aparece com absorção acima da média; o número é o excesso sobre a média.</div>';
@@ -3835,7 +3837,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v881';
+const APP_VERSAO = 'v886';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -7750,7 +7752,7 @@ if (_grTipoGrafico === 'linha') {
                 window._grFpItens.push({ rot: 'Eficiência', abrir: (cx, cy) => cvAbrirMenuFpCfg('eficiencia', cx, cy) });
                 }
             }
-            grBarraChip('Wyckoff', WY.ligado() ? '#2962FF' : '#8E8E93', () => { try { WY.alternar(); grDrawChart(); } catch (e) {} });   /*WYCKOFF*/
+            if (window.WY && WY.ligado()) grBarraChip('Wyckoff', '#000000', (cx, cy) => cvAbrirMenuFpCfg('wyckoff', cx, cy));   /*WYCKOFF*/
             grBarraChip('Candles CSV', '#8E8E93', () => { try { grExportarCandlesCsv(); } catch (e) {} });   // provisório: exporta os candles do gráfico para teste do reconhecimento de figuras
             if (_indState.deltaAtr && window._grFaixasDA && window._grFaixasDA.length) grBarraChip('Tabela', '#2962FF', () => { try { grPilhasTabelaModal(); } catch (e) {} });   // há níveis selecionados na régua: o chip abre a tabela comparativa
             if (_indState.sent) grBarraChip('Sentimento', '#000000', (cx, cy) => cvAbrirMenuFpCfg('sent', cx, cy));   // chip PRÓPRIO na barra superior (não fica dentro do menu Footprint)
@@ -11542,9 +11544,9 @@ function cvNfCtxRemover() { const m = document.getElementById('cv-nf-ctx'); if (
 // ===== WYCKOFF:INICIO ===== (módulo isolado. Para REMOVER: apague daqui até WYCKOFF:FIM e as 2 linhas marcadas com /*WYCKOFF*/)
 // Marca no price action os eventos de Wyckoff (BC/SC, AR, ST, UT, SOW, SOS) do trecho da âncora até o último candle fechado, e a fase atual.
 // Todo corte numérico sai da própria série (percentis, ATR, mediana); nada é salvo, tudo é recalculado. Contexto visual, NÃO é gatilho de operação.
-const WY = (() => {
-    const LS = 'hh_wyckoff_on';
-    let on = false; try { on = localStorage.getItem(LS) === '1'; } catch (e) {}
+var WY = (() => {
+    const LS_OLHO = 'gr_wyckoff_oculto';
+    let on = false, oculto = false; try { oculto = localStorage.getItem(LS_OLHO) === '1'; } catch (e) {}
     let cache = null;
     const quant = (arr, q) => { const a = arr.filter(x => x === x && isFinite(x)).sort((x, y) => x - y); if (!a.length) return NaN; const p = (a.length - 1) * q, lo = Math.floor(p), hi = Math.ceil(p); return a[lo] + (a[hi] - a[lo]) * (p - lo); };
     const rank = (sorted, x) => { let lo = 0, hi = sorted.length; while (lo < hi) { const m = (lo + hi) >> 1; if (sorted[m] < x) lo = m + 1; else hi = m; } return sorted.length ? lo / sorted.length : 0; };
@@ -11580,23 +11582,24 @@ const WY = (() => {
         const adv = h.map((x, i) => (x - minW[i]) / atr[i]), dec = h.map((x, i) => (maxW[i] - l[i]) / atr[i]);
         const advq = quant(adv.slice(LB), .5), decq = quant(dec.slice(LB), .5);
         const prox = (arr, i) => { let lo = 0, hi = arr.length; while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m] <= i) lo = m + 1; else hi = m; } return lo < arr.length ? arr[lo] : -1; };
+        // AR = o extremo do recuo INTEIRO depois do clímax (até o próximo pivô do mesmo tipo do clímax), não o primeiro pivô pequeno
+        const swing = (i, bc) => { if (prox(bc ? PL : PH, i) < 0) return -1; const x2 = prox(bc ? PH : PL, i), e2 = x2 >= 0 ? x2 : n - 1; let b = -1; for (let x = i + 1; x <= e2; x++) if (b < 0 || (bc ? l[x] < l[b] : h[x] > h[b])) b = x; return b; };
         const drops = [], rises = [];
-        PH.forEach(i => { if (i > 20) { const x = prox(PL, i); if (x >= 0) drops.push((h[i] - l[x]) / atr[i]); } });
-        PL.forEach(i => { if (i > 20) { const x = prox(PH, i); if (x >= 0) rises.push((h[x] - l[i]) / atr[i]); } });
+        PH.forEach(i => { if (i > 20) { const x = swing(i, true); if (x >= 0) drops.push((h[i] - l[x]) / atr[i]); } });
+        PL.forEach(i => { if (i > 20) { const x = swing(i, false); if (x >= 0) rises.push((h[x] - l[i]) / atr[i]); } });
         const mdrop = quant(drops, .5), mrise = quant(rises, .5);
-        const gaps = []; for (let i = 1; i < P.length; i++) gaps.push(P[i] - P[i - 1]); const nmax = Math.floor(quant(gaps, .5) * 4);
         let a0 = 0; if (anc > 0) { a0 = n; for (let i = 0; i < n; i++) if (t[i] >= anc) { a0 = i; break; } }
         const cand = [];
         PH.forEach(i => {
             if (i < Math.max(LB, a0) || pv[i] < .90 || pr[i] < .80 || adv[i] < advq) return;
             if (h[i] < maxP[i - 1] - atr[i]) return;
-            const ar = prox(PL, i); if (ar < 0 || ar - i > nmax || (h[i] - l[ar]) / atr[i] < mdrop) return;
+            const ar = swing(i, true); if (ar < 0 || (h[i] - l[ar]) / atr[i] < mdrop) return;
             cand.push({ i, k: 'BC', ar });
         });
         PL.forEach(i => {
             if (i < Math.max(LB, a0) || pv[i] < .90 || pr[i] < .80 || dec[i] < decq) return;
             if (l[i] > minP[i - 1] + atr[i]) return;
-            const ar = prox(PH, i); if (ar < 0 || ar - i > nmax || (h[ar] - l[i]) / atr[i] < mrise) return;
+            const ar = swing(i, false); if (ar < 0 || (h[ar] - l[i]) / atr[i] < mrise) return;
             if ((c[i] - l[i]) / (h[i] - l[i]) <= .5) return;   // SC fecha na metade de cima
             cand.push({ i, k: 'SC', ar });
         });
@@ -11606,7 +11609,7 @@ const WY = (() => {
         cand.forEach(e => { const ref = e.k === 'BC' ? h[e.i] : l[e.i]; if (fin.every(f => f.k !== e.k || Math.abs((f.k === 'BC' ? h[f.i] : l[f.i]) - ref) > atr[e.i] || Math.abs(e.i - f.i) > LB)) fin.push(e); });
         fin.sort((a, b) => a.i - b.i);
         fin.forEach(e => {
-            e.ev = [];
+            e.ev = []; e.pvC = Math.round(pv[e.i] * 100);
             if (e.k === 'BC') {
                 const top = h[e.i], sup = l[e.ar]; e.top = top; e.sup = sup; e.ev.push({ i: e.i, tx: 'BC', cor: '#C62828', up: true }, { i: e.ar, tx: 'AR', cor: '#C62828', up: false });
                 let ut = false;
@@ -11619,9 +11622,14 @@ const WY = (() => {
                 }
             } else {
                 const bot = l[e.i], top = h[e.ar]; e.top = top; e.sup = bot; e.ev.push({ i: e.i, tx: 'SC', cor: '#1565C0', up: false }, { i: e.ar, tx: 'AR', cor: '#1565C0', up: true });
+                const q50v = quant(v, .5);
                 for (let x = e.ar + 1; x < n; x++) {
                     if (c[x] < bot) break;   // fechou abaixo do clímax: a estrutura falhou
-                    if (c[x] > top && v[x] >= q75v) { e.sos = x; e.ev.push({ i: x, tx: 'SOS', cor: '#2E7D32', up: true }); break; }
+                    if (!e.sos) {
+                        if (l[x] < bot && c[x] > bot && !e.spring) { e.spring = x; e.ev.push({ i: x, tx: v[x] <= q50v ? 'Spring' : 'Spring?', cor: '#6A1B9A', up: false }); }   // rompe o suporte do SC e volta pra dentro; volume leve = Spring clássico, volume alto fica com "?" (pede reteste de volume baixo)
+                        else if (sPL.has(x) && v[x] < v[e.i] && Math.abs(l[x] - bot) <= atr[x] && !e.ev.some(q => q.i === x)) e.ev.push({ i: x, tx: 'ST', cor: '#1565C0', up: false });   // reteste da mínima do SC com volume menor que o dele
+                        if (c[x] > top && v[x] >= q75v) { e.sos = x; e.ev.push({ i: x, tx: 'SOS', cor: '#2E7D32', up: true }); }
+                    } else if (sPL.has(x) && l[x] >= top - atr[x] && v[x] <= q50v) { e.lps = x; e.ev.push({ i: x, tx: 'LPS', cor: '#2E7D32', up: false }); break; }   // recuo quieto que segura acima da resistência rompida
                 }
             }
         });
@@ -11629,7 +11637,7 @@ const WY = (() => {
         if (fin.length) {
             const e = fin[fin.length - 1], uc = c[n - 1];
             if (e.k === 'BC') fase = 'Distribuição · ' + (e.sow ? (uc < e.sup ? 'Fase D–E (queda)' : 'Fase D') : 'Fase B');
-            else fase = 'Acumulação · ' + (e.sos ? (uc > e.top ? 'Fase D–E (alta)' : 'Fase B') : 'Fase B');
+            else fase = 'Acumulação · ' + (e.lps ? 'Fase D (LPS)' : e.sos ? (uc > e.top ? 'Fase D–E (alta)' : 'Fase B') : e.spring ? 'Fase C (Spring)' : 'Fase B');
         }
         return { est: anc > 0 ? fin : fin.slice(-2), fase };   // sem âncora: só as 2 últimas estruturas (a fase vale para a última)
     }
@@ -11642,7 +11650,7 @@ const WY = (() => {
         const r = analisar(all, N, anc); cache = { chave, r }; return r;
     }
     function desenhar(ctx, fx, fy, PAD, W, chartH) {
-        if (!on) return;
+        if (!on || oculto) return;
         const r = dados(), all = _grAllCandles, claro = (typeof _grTemaClaro !== 'undefined') ? _grTemaClaro : true;
         ctx.save(); ctx.beginPath(); ctx.rect(PAD.left, PAD.top, W - PAD.left - PAD.right, chartH); ctx.clip();
         ctx.textAlign = 'center'; ctx.lineJoin = 'round'; ctx.font = 'bold 11px -apple-system, sans-serif';
@@ -11660,17 +11668,72 @@ const WY = (() => {
                 ctx.fillStyle = ev.cor; ctx.fillText(ev.tx, x, yy);
             });
         });
-        const tag = 'Wyckoff · ' + (r.fase || 'sem estrutura no trecho');
-        ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.font = 'bold 11px -apple-system, sans-serif';
-        const tw = ctx.measureText(tag).width + 12, bx = PAD.left + 6, by = PAD.top + 6;
-        ctx.fillStyle = claro ? 'rgba(255,255,255,0.85)' : 'rgba(30,34,45,0.85)'; ctx.beginPath(); ctx.roundRect(bx, by, tw, 20, 5); ctx.fill();
-        ctx.fillStyle = claro ? '#1C1C1E' : '#FFFFFF'; ctx.fillText(tag, bx + 6, by + 10);
         ctx.restore();
     }
+    // Explicação em linguagem simples: o que cada sigla é, como se liga ao preço e o percurso do preço até agora (montado com os eventos achados).
+    function corpo() {
+        const r = dados(), all = _grAllCandles;
+        const P0 = x => Math.round(x).toLocaleString('pt-BR'), D = i => { const d = new Date(all[i].t), z = x => String(x).padStart(2, '0'); return z(d.getDate()) + '/' + z(d.getMonth() + 1) + ' ' + z(d.getHours()) + 'h'; };
+        const uc = all[all.length - 2].c;
+        const bl = [];   // blocos: [título, linhas]
+        const perc = [];
+        r.est.forEach(e => {
+            const dist = e.k === 'BC', tit = dist ? 'Distribuição (topo)' : 'Acumulação (fundo)', ln = [];
+            e.ev.forEach(ev => {
+                const k = all[ev.i], d = D(ev.i), pr = P0(ev.up ? k.h : k.l);
+                let t = '';
+                if (ev.tx === 'BC') t = 'BC (Buying Climax): o preço esticou até ' + pr + ' com volume extremo (acima de ' + e.pvC + '% dos candles) e foi rejeitado. É onde a compra se esgota. Define a RESISTÊNCIA do range: ' + P0(e.top) + '.';
+                else if (ev.tx === 'SC') t = 'SC (Selling Climax): o preço despencou até ' + pr + ' com volume extremo (acima de ' + e.pvC + '% dos candles) e fechou na metade de cima. É onde a venda se esgota. Define o SUPORTE do range: ' + P0(e.sup) + '.';
+                else if (ev.tx === 'AR') t = dist ? 'AR (Automatic Reaction): queda rápida logo após o BC, até ' + pr + '. Define o SUPORTE do range: ' + P0(e.sup) + '.' : 'AR (Automatic Rally): repique rápido logo após o SC, até ' + pr + '. Define a RESISTÊNCIA do range: ' + P0(e.top) + '.';
+                else if (ev.tx === 'ST') t = dist ? 'ST (Secondary Test): o preço voltou a testar o topo (' + pr + ') com volume alto e não passou. Testes que falham = a demanda está fraca.' : 'ST (Secondary Test): o preço voltou a testar a mínima do SC (' + pr + ') com volume menor que o dele. A venda perde força.';
+                else if (ev.tx === 'UT') t = 'UT (Upthrust): rompeu o topo (' + P0(e.top) + ') e fechou de volta abaixo. Armadilha para compradores.';
+                else if (ev.tx === 'SOW') t = 'SOW (Sign of Weakness): fechou abaixo do suporte (' + P0(e.sup) + ') com candle largo e volume alto. A oferta passou a mandar: a distribuição se confirma.';
+                else if (ev.tx === 'Spring' || ev.tx === 'Spring?') t = (ev.tx === 'Spring' ? 'Spring: ' : 'Spring? (volume alto): ') + 'perdeu o suporte (' + P0(e.sup) + ') mas fechou de volta dentro. Varre os stops dos vendidos. ' + (ev.tx === 'Spring' ? 'Com volume leve é o teste final da oferta.' : 'Com volume alto ainda precisa de um reteste de volume baixo para valer.');
+                else if (ev.tx === 'SOS') t = 'SOS (Sign of Strength): fechou acima da resistência (' + P0(e.top) + ') com volume forte. A demanda tomou o controle.';
+                else if (ev.tx === 'LPS') t = 'LPS (Last Point of Support): recuo quieto que segurou acima de ' + P0(e.top) + '. Vira suporte novo.';
+                ln.push('<b style="color:' + ev.cor + '">' + d + '</b> · ' + t);
+            });
+            perc.push([tit, ln]);
+        });
+        // onde estamos agora
+        let agora = 'Sem estrutura de Wyckoff no trecho analisado.';
+        if (r.est.length) {
+            const e = r.est[r.est.length - 1], dentro = uc <= e.top && uc >= e.sup, pos = Math.round(100 * (uc - e.sup) / (e.top - e.sup));
+            const ctx = 'Cotação ' + P0(uc) + ' · range ' + P0(e.sup) + '–' + P0(e.top);
+            if (e.k === 'BC') agora = ctx + (e.sow ? (uc < e.sup ? '. Preço ABAIXO do suporte: a distribuição já se concluiu e o preço está na queda (Fase E).' : '. O suporte foi quebrado (SOW) e o preço voltou para dentro; falta ele perder o suporte de novo para a queda seguir.') : '. Preço dentro do range (' + pos + '% da faixa). Fica em Fase B até fechar abaixo de ' + P0(e.sup) + ' com volume (SOW) ou passar de ' + P0(e.top) + ' e voltar (UT).');
+            else agora = ctx + (e.lps ? '. Houve SOS e o LPS segurou: o preço está em Fase D.' : e.sos ? (uc > e.top ? '. Acima da resistência: Fase D–E, alta em curso.' : '. O SOS aconteceu mas o preço voltou para dentro do range (' + pos + '% da faixa): a alta não se sustentou, continua Fase B.') : e.spring ? '. Houve Spring: Fase C. Falta o SOS (fechar acima de ' + P0(e.top) + ' com volume).' : '. Preço dentro do range (' + pos + '% da faixa). Fase B: espera um reteste da mínima (ST ou Spring) e depois fechar acima de ' + P0(e.top) + '. Se fechar abaixo de ' + P0(e.sup) + ' com volume, a acumulação é descartada.');
+        }
+        const GL = [
+            ['Range', 'A faixa lateral entre o SUPORTE e a RESISTÊNCIA, onde o preço fica enquanto grandes players acumulam ou distribuem. É o que o app traça com as linhas pontilhadas.'],
+            ['Acumulação / Distribuição', 'Acumulação: depois de uma queda, grandes compradores absorvem a venda num range; tende a ser seguida de alta. Distribuição: depois de uma alta, grandes vendedores absorvem a compra num range; tende a ser seguida de queda. "Tende" não é "vai".'],
+            ['Fases A–E', 'A: o movimento anterior para (clímax e AR). B: o preço oscila no range construindo a "causa" (testes repetidos). C: último teste (Spring na acumulação, UTAD na distribuição). D: o preço sai do range com força (SOS ou SOW) e recua num ponto quieto (LPS ou LPSY). E: tendência nova (alta ou queda).'],
+            ['BC · SC', 'Buying / Selling Climax: o candle de volume e amplitude extremos que encerra uma alta (BC) ou uma queda (SC). Mostra exaustão: quem queria comprar (ou vender) já comprou (vendeu) tudo.'],
+            ['AR', 'Automatic Reaction / Rally: o movimento rápido no sentido contrário logo depois do clímax. Fixa o outro lado do range.'],
+            ['ST', 'Secondary Test: volta ao extremo do clímax para ver se ainda há força. Volume menor que o do SC = a venda secou; topo que não passa = a compra secou.'],
+            ['UT', 'Upthrust: rompe o topo do range e fecha de volta dentro. Armadilha de compradores.'],
+            ['Spring', 'O contrário do UT: perde o suporte do range e fecha de volta dentro, varrendo os stops. Volume leve = teste final da venda. "Spring?" = volume alto, precisa de reteste calmo.'],
+            ['SOS · SOW', 'Sign of Strength / Weakness: candle largo com volume forte que rompe o topo (SOS) ou o fundo (SOW) do range. Indica que um lado tomou o controle.'],
+            ['LPS', 'Last Point of Support: depois do SOS, o recuo quieto que segura acima da resistência rompida. É o ponto em que a literatura usa para entrada de alta.']
+        ];
+        const sec = (t, h) => '<div style="margin:12px 0 4px;font-weight:700;font-size:13px;">' + t + '</div>' + h;
+        let html = '<div style="margin-top:6px;font-weight:700;font-size:14px;">' + (r.fase || 'Sem estrutura no trecho') + '</div>';
+        html += sec('Onde estamos agora', '<div>' + agora + '</div>');
+        html += sec('O percurso do preço até agora', perc.length ? perc.map(([t, ln]) => '<div style="margin:6px 0 2px;font-weight:600;">' + t + '</div>' + ln.map(x => '<div style="margin:3px 0 3px 8px;">' + x + '</div>').join('')).join('') : '<div>Nada achado no trecho.</div>');
+        html += sec('O que cada sigla significa', GL.map(([a, b]) => '<div style="margin:5px 0;"><b>' + a + '</b> — ' + b + '</div>').join(''));
+        html += '<div style="margin:12px 0 2px;color:#8E8E93;font-size:11px;">Os cortes (volume alto, queda rápida, topo no extremo…) saem dos percentis e do ATR da própria série; nada é salvo. É um mapa de contexto para você julgar com os próprios olhos, não um gatilho de operação, e a literatura admite que as marcações são discricionárias.</div>';
+        return html;
+    }
+    // Conteúdo do popup de configuração do chip (padrão dos outros indicadores: título + olho; aqui o corpo traz a explicação)
+    function cfgHtml() {
+        return '<div style="width:min(340px,80vw);max-height:66vh;overflow-y:auto;-webkit-overflow-scrolling:touch;font:12.5px/1.45 -apple-system,sans-serif;color:#1C1C1E;"><div style="display:flex;align-items:center;justify-content:space-between;gap:12px;"><div style="font-size:13px;font-weight:700;">Wyckoff</div>' + grOlhoBtn(oculto, 'WY.olho') + '</div>' + corpo() + '</div>';
+    }
+    function sync() { const b = document.getElementById('cv-ind-wyckoff'); if (b) b.classList.toggle('active', on); }
     return {
-        analisar, desenhar,
+        analisar, desenhar, cfgHtml,
         ligado: () => on,
-        alternar() { on = !on; try { localStorage.setItem(LS, on ? '1' : '0'); } catch (e) {} },
+        definir(v) { on = !!v; sync(); },                                  // aplica o ambiente salvo do ativo
+        menuBtn() { on = !on; sync(); try { grAmbienteSalvar(); } catch (e) {} try { grDrawChart(); } catch (e) {} },   // botão do menu de indicadores: liga/desliga (liga = chip aparece)
+        olho() { oculto = !oculto; try { localStorage.setItem(LS_OLHO, oculto ? '1' : '0'); } catch (e) {} try { cvRenderMenuFpCfg(); } catch (e) {} try { grDrawChart(); } catch (e) {} },
     };
 })();
 // ===== WYCKOFF:FIM =====
@@ -11874,6 +11937,7 @@ function grAmbAtivoColetar() {
         deltaAtr: _indState.deltaAtr,
         eficiencia: _indState.eficiencia,
         acav: _indState.acav,
+        wyckoff: (window.WY ? WY.ligado() : false),   /*WYCKOFF*/
         footprint: _grFootprintAtivo
     };
 }
@@ -11938,6 +12002,7 @@ function grAmbAtivoAplicar(f) {
     if (bAbs) bAbs.classList.toggle('active', sub === 'absorcao');
     GR_IND_SO_BTC.forEach(k => sw(k, fluxoOk && f[k]));
     sw('acav', fluxoOk && f.acav !== false);   // ambiente salvo antes do Ac/Av existir: segue ligado, como os balões eram
+    try { WY.definir(f.wyckoff === true); } catch (eWy) {}   /*WYCKOFF*/
 }
 function grAmbienteColetar() {
     // A fatia do ativo aberto entra no mapa; os campos antigos da raiz continuam sendo gravados (do BTC) para o app antigo ainda abrir.
