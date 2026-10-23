@@ -3835,7 +3835,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v878';
+const APP_VERSAO = 'v881';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -7750,6 +7750,7 @@ if (_grTipoGrafico === 'linha') {
                 window._grFpItens.push({ rot: 'Eficiência', abrir: (cx, cy) => cvAbrirMenuFpCfg('eficiencia', cx, cy) });
                 }
             }
+            grBarraChip('Wyckoff', WY.ligado() ? '#2962FF' : '#8E8E93', () => { try { WY.alternar(); grDrawChart(); } catch (e) {} });   /*WYCKOFF*/
             grBarraChip('Candles CSV', '#8E8E93', () => { try { grExportarCandlesCsv(); } catch (e) {} });   // provisório: exporta os candles do gráfico para teste do reconhecimento de figuras
             if (_indState.deltaAtr && window._grFaixasDA && window._grFaixasDA.length) grBarraChip('Tabela', '#2962FF', () => { try { grPilhasTabelaModal(); } catch (e) {} });   // há níveis selecionados na régua: o chip abre a tabela comparativa
             if (_indState.sent) grBarraChip('Sentimento', '#000000', (cx, cy) => cvAbrirMenuFpCfg('sent', cx, cy));   // chip PRÓPRIO na barra superior (não fica dentro do menu Footprint)
@@ -8647,7 +8648,7 @@ function grEdAlcas(fx, fy) {
     if (t === 'tl' || t === 'nf' || t === 'md') return [{ k: 'a', x: fx(o.t1), y: fy(o.p1) }, { k: 'b', x: fx(o.t2), y: fy(o.p2) }];
     if (t === 'fh' && o.seg) { const vs = []; (o.pontos || []).forEach((p, n) => { if (n === o.pontos.length - 1 && n > 0 && p.t === o.pontos[0].t && p.p === o.pontos[0].p) return; vs.push({ k: 'v' + n, x: fx(p.t), y: fy(p.p) }); }); return vs; }   // sequência: um vértice por bolinha (figura fechada: o último é o primeiro)
     if (t === 'fh') { const p = o.pontos[Math.floor(o.pontos.length / 2)]; return p ? [{ k: 'm', x: fx(p.t), y: fy(p.p) }] : []; }
-    if (t === 'tx') return [{ k: 'm', x: fx(o.t), y: fy(o.p) }];
+    if (t === 'tx') return [{ k: 'm', x: fx(o.t) - 30, y: fy(o.p) }];   // puxador grande à ESQUERDA do texto (dedo no celular)
     if (t === 'hl') return [{ k: 'm', x: grPadL() + (window._grChartW || 200) / 2, y: fy(o.p) }];
     if (t === 'al') return [{ k: 'm', x: grPadL() + (window._grChartW || 200) / 2, y: fy(o.preco) }];
     if (t === 'ps') {
@@ -8664,6 +8665,13 @@ function grEdAlcasDesenhar(ctx, fx, fy) {
     if (_edSel && _edSel.tipo === 'ps') { const oo = grEdObjeto(); if (oo && oo.trancada) return; }   // trancada: sem alças desenhadas
     grEdAlcas(fx, fy).forEach(a => {
         ctx.save();
+        if (_edSel.tipo === 'tx') {   // puxador grande: círculo 44 px com setas de mover (✥)
+            ctx.beginPath(); ctx.arc(a.x, a.y, 22, 0, Math.PI * 2); ctx.fillStyle = '#2962FF'; ctx.fill(); ctx.lineWidth = 2.5; ctx.strokeStyle = '#FFFFFF'; ctx.stroke();
+            ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.beginPath();
+            ctx.moveTo(a.x - 11, a.y); ctx.lineTo(a.x + 11, a.y); ctx.moveTo(a.x, a.y - 11); ctx.lineTo(a.x, a.y + 11);
+            [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(([dx, dy]) => { const ex = a.x + dx * 11, ey = a.y + dy * 11; ctx.moveTo(ex - dx * 4 + dy * 4, ey - dy * 4 + dx * 4); ctx.lineTo(ex, ey); ctx.lineTo(ex - dx * 4 - dy * 4, ey - dy * 4 - dx * 4); });
+            ctx.stroke(); ctx.restore(); return;
+        }
         ctx.beginPath(); ctx.arc(a.x, a.y, 16, 0, Math.PI * 2); ctx.fillStyle = 'rgba(255,255,255,0.18)'; ctx.fill();
         ctx.beginPath(); ctx.arc(a.x, a.y, 9, 0, Math.PI * 2); ctx.fillStyle = '#FFFFFF'; ctx.fill();
         ctx.lineWidth = 3; ctx.strokeStyle = cor; ctx.stroke();
@@ -8696,15 +8704,16 @@ function grEdToqueInicio(x, y) {   // x,y em coordenadas do canvas; devolve true
         else { window._edTapPend = { x, y, sel: _edSel }; return false; }   // longe das alças e fora da caixa: o dedo rola o gráfico normalmente (um toque simples ainda solta a caixa)
     }
     if (_edSel.tipo === 'ps' && grEdObjeto().trancada) { window._edTapPend = { x, y, sel: _edSel }; return false; }
-    if (_edSel.tipo !== 'ps' && bd > 30) {
+    const naAlcaTx = _edSel.tipo === 'tx' && bd <= 38;   // dedo no puxador do texto
+    if (_edSel.tipo !== 'ps' && bd > (_edSel.tipo === 'tx' ? 38 : 30)) {
         // linha horizontal / alerta: dá pra pegar em qualquer ponto da linha; reta, Fibo, desenho livre: só pelas alças.
         // Em cima do traço (fora das alças): só um toque (abre/fecha o menu), não arrasta nada.
-        if (_edSel.tipo === 'tx' && x >= alcas[0].x - 30 && x <= alcas[0].x + grTextoMedir(grEdObjeto()) + 30 && Math.abs(y - alcas[0].y) <= 28) best = alcas[0];
+        if (_edSel.tipo === 'tx' && x >= alcas[0].x - 40 && x <= alcas[0].x + 30 + grTextoMedir(grEdObjeto()) + 30 && Math.abs(y - alcas[0].y) <= 28) { _edDrag = { k: 'x', hx: x, hy: y, fx: x, fy: y, moved: false, sel: _edSel, snap: null }; return true; }   // corpo do texto: só toque (abre o menu), não arrasta
         else if ((_edSel.tipo === 'hl' || _edSel.tipo === 'al') && Math.abs(y - alcas[0].y) <= 28) best = alcas[0];
         else if (grEdTocouDentro(x, y)) { _edDrag = { k: 'x', hx: x, hy: y, fx: x, fy: y, moved: false, sel: _edSel, snap: null }; return true; }
         else { window._edTapPend = { x, y, sel: _edSel }; return false; }
     }   // trancada: nada a mexer aqui, o dedo rola o gráfico
-    _edDrag = { k: best.k, hx: best.x, hy: best.y, fx: x, fy: y, moved: false, sel: _edSel, snap: JSON.parse(JSON.stringify(grEdObjeto())) };
+    _edDrag = { k: best.k, hx: best.x, hy: best.y, fx: x, fy: y, moved: false, sel: _edSel, snap: JSON.parse(JSON.stringify(grEdObjeto())), hdl: naAlcaTx };
     return true;
 }
 // Ímã: stop/entrada/alvo grudam na borda de célula da régua Delta ATR mais próxima (até 12 px do dedo). Fora disso o preço é livre.
@@ -8781,7 +8790,7 @@ function grEdToqueMove(x, y) {
         const dIdx = grXToIndex(nx) - grXToIndex(d.hx), dP = grToPrice(ny) - grToPrice(d.hy);
         o.pontos = d.snap.pontos.map(pt => ({ t: grIndexToTime(grTimeToIndex(pt.t) + dIdx), p: pt.p + dP }));
     }
-    else if (tp === 'tx') { o.t = grIndexToTime(idx); o.p = preco; }
+    else if (tp === 'tx') { const dI = grXToIndex(nx) - grXToIndex(d.hx), dP = grToPrice(ny) - grToPrice(d.hy); o.t = grIndexToTime(grTimeToIndex(d.snap.t) + dI); o.p = d.snap.p + dP; }
     else if (tp === 'hl') o.p = preco;
     else if (tp === 'al') o.preco = preco;
     else if (tp === 'ps') {
@@ -8822,7 +8831,7 @@ async function grEdToqueFim() {
     if (bloq) return true;
     if (moveu && _grStopLib) _grStopLib = null;
     if (dd0.sel !== _edSel) return true;   // o toque selecionou OUTRO desenho (pela alça): já abriu o menu dele, não faz mais nada
-    if (!moveu && _edSel && _edSel.tipo === 'tx' && grEdTocouDentro(dd0.fx, dd0.fy)) { grTextoEditar(_edSel.idx); return true; }   // segundo toque no texto selecionado: reescrever
+    if (!moveu && _edSel && _edSel.tipo === 'tx' && dd0.hdl) { grTextoEditar(_edSel.idx); return true; }   // toque no puxador do texto selecionado: reescrever (toque no corpo abre o menu)
     if (!moveu && _edSel && GR_ED_CTX_TIPOS.indexOf(_edSel.tipo) >= 0 && grEdTocouDentro(dd0.fx, dd0.fy)) { window._nfCtxAberto = !window._nfCtxAberto; grDrawChart(); return true; }   // tocar de novo nele abre/fecha o menu de contexto (olho/lixeira)
     if (!moveu) { cvEdicaoSair(); return true; }   // toque simples no price action: libera o desenho
     if (dd0.k === 'x') return true;   // arrastou a partir do traço: nada foi mexido
@@ -11361,7 +11370,7 @@ function grDistSeg(px, py, a, b) {   // distância do ponto ao segmento a–b (e
 function grEdTocouDentro(px, py) {   // o toque caiu em cima do desenho selecionado (alças/linha, com 28 px de folga)?
     const o = grEdObjeto(); if (!o || !_edSel) return false;
     const fx = t => grIndexToX(grTimeToIndex(t)), M = 28;
-    if (_edSel.tipo === 'tx') { const ax = fx(o.t), ay = grLineY(o.p); return px >= ax - M && px <= ax + grTextoMedir(o) + M && Math.abs(py - ay) <= M; }
+    if (_edSel.tipo === 'tx') { const ax = fx(o.t), ay = grLineY(o.p); return px >= ax - 56 && px <= ax + grTextoMedir(o) + M && Math.abs(py - ay) <= M; }
     if (_edSel.tipo === 'hl') return Math.abs(py - grLineY(o.p)) <= M;
     if (_edSel.tipo === 'tl' || _edSel.tipo === 'nf' || _edSel.tipo === 'fh') {   // perto do traço (antes: o retângulo entre as pontas, que numa reta diagonal longa cobria quase o gráfico todo)
         const pts0 = _edSel.tipo === 'fh' ? (o.pontos || []).map(pt => ({ x: fx(pt.t), y: grLineY(pt.p) })) : grEdAlcas(fx, grLineY);
@@ -11530,9 +11539,145 @@ function cvNfCtxMenu() {   // barra de contexto do desenho selecionado (como no 
     m.style.left = x + 'px'; m.style.top = y + 'px';
 }
 function cvNfCtxRemover() { const m = document.getElementById('cv-nf-ctx'); if (m) m.remove(); try { grEdCtxFecharEsp(); } catch (e) {} }
+// ===== WYCKOFF:INICIO ===== (módulo isolado. Para REMOVER: apague daqui até WYCKOFF:FIM e as 2 linhas marcadas com /*WYCKOFF*/)
+// Marca no price action os eventos de Wyckoff (BC/SC, AR, ST, UT, SOW, SOS) do trecho da âncora até o último candle fechado, e a fase atual.
+// Todo corte numérico sai da própria série (percentis, ATR, mediana); nada é salvo, tudo é recalculado. Contexto visual, NÃO é gatilho de operação.
+const WY = (() => {
+    const LS = 'hh_wyckoff_on';
+    let on = false; try { on = localStorage.getItem(LS) === '1'; } catch (e) {}
+    let cache = null;
+    const quant = (arr, q) => { const a = arr.filter(x => x === x && isFinite(x)).sort((x, y) => x - y); if (!a.length) return NaN; const p = (a.length - 1) * q, lo = Math.floor(p), hi = Math.ceil(p); return a[lo] + (a[hi] - a[lo]) * (p - lo); };
+    const rank = (sorted, x) => { let lo = 0, hi = sorted.length; while (lo < hi) { const m = (lo + hi) >> 1; if (sorted[m] < x) lo = m + 1; else hi = m; } return sorted.length ? lo / sorted.length : 0; };
+    const rolar = (a, w, min) => { const o = new Array(a.length), dq = []; for (let i = 0; i < a.length; i++) { while (dq.length && (min ? a[dq[dq.length - 1]] >= a[i] : a[dq[dq.length - 1]] <= a[i])) dq.pop(); dq.push(i); if (dq[0] <= i - w) dq.shift(); o[i] = a[dq[0]]; } return o; };
+    function analisar(all, N, anc) {
+        const n = N + 1; if (n < 60) return { est: [], fase: '' };
+        const t = [], h = [], l = [], c = [], v = [];
+        for (let i = 0; i < n; i++) { const k = all[i]; t.push(k.t); h.push(k.h); l.push(k.l); c.push(k.c); v.push(k.v || 0); }
+        const tr = h.map((x, i) => i === 0 ? x - l[0] : Math.max(x - l[i], Math.abs(x - c[i - 1]), Math.abs(l[i] - c[i - 1])));
+        const atr = tr.map((_, i) => { if (i < 13) return NaN; let s = 0; for (let j = i - 13; j <= i; j++) s += tr[j]; return s / 14; });
+        const ds = []; for (let i = 1; i < Math.min(n, 500); i++) ds.push(t[i] - t[i - 1]); const msC = quant(ds, .5) || 14400000;
+        const LB = Math.max(10, Math.min(Math.floor(n / 3), Math.round(20 * 86400000 / msC)));   // janela de contexto em TEMPO (20 dias), não em candles
+        const rng = h.map((x, i) => (x - l[i]) / atr[i]);
+        const vs = v.slice().sort((a, b) => a - b), rs = rng.filter(x => x === x).sort((a, b) => a - b);
+        const pv = v.map(x => rank(vs, x)), pr = rng.map(x => x === x ? rank(rs, x) : 0);
+        const q75v = quant(v, .75), q75r = quant(rng, .75);
+        // pivôs: extremo que o preço só abandona depois de reverter 1 ATR, antes e depois
+        const CAP = 3000, PL = [], PH = [], P = [];
+        for (let i = 14; i < n - 1; i++) {
+            const th = atr[i]; if (!(th > 0)) continue;
+            let okL = false, okH = false, aL = false, aH = false;
+            for (let j = i + 1, e = Math.min(n, i + CAP); j < e; j++) { if (l[j] < l[i]) break; if (h[j] - l[i] >= th) { okL = true; break; } }
+            for (let j = i + 1, e = Math.min(n, i + CAP); j < e; j++) { if (h[j] > h[i]) break; if (h[i] - l[j] >= th) { okH = true; break; } }
+            if (okL) for (let k = i - 1, e = Math.max(-1, i - CAP); k > e; k--) { if (l[k] < l[i]) break; if (h[k] - l[i] >= th) { aL = true; break; } }
+            if (okH) for (let k = i - 1, e = Math.max(-1, i - CAP); k > e; k--) { if (h[k] > h[i]) break; if (h[i] - l[k] >= th) { aH = true; break; } }
+            if (okL && aL) { PL.push(i); P.push(i); }
+            if (okH && aH) { PH.push(i); P.push(i); }
+        }
+        if (P.length < 4) return { est: [], fase: '' };
+        P.sort((a, b) => a - b);
+        const sPL = new Set(PL), sPH = new Set(PH);
+        const maxP = rolar(h, LB, false), minP = rolar(l, LB, true), maxW = rolar(h, LB + 1, false), minW = rolar(l, LB + 1, true);
+        const adv = h.map((x, i) => (x - minW[i]) / atr[i]), dec = h.map((x, i) => (maxW[i] - l[i]) / atr[i]);
+        const advq = quant(adv.slice(LB), .5), decq = quant(dec.slice(LB), .5);
+        const prox = (arr, i) => { let lo = 0, hi = arr.length; while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m] <= i) lo = m + 1; else hi = m; } return lo < arr.length ? arr[lo] : -1; };
+        const drops = [], rises = [];
+        PH.forEach(i => { if (i > 20) { const x = prox(PL, i); if (x >= 0) drops.push((h[i] - l[x]) / atr[i]); } });
+        PL.forEach(i => { if (i > 20) { const x = prox(PH, i); if (x >= 0) rises.push((h[x] - l[i]) / atr[i]); } });
+        const mdrop = quant(drops, .5), mrise = quant(rises, .5);
+        const gaps = []; for (let i = 1; i < P.length; i++) gaps.push(P[i] - P[i - 1]); const nmax = Math.floor(quant(gaps, .5) * 4);
+        let a0 = 0; if (anc > 0) { a0 = n; for (let i = 0; i < n; i++) if (t[i] >= anc) { a0 = i; break; } }
+        const cand = [];
+        PH.forEach(i => {
+            if (i < Math.max(LB, a0) || pv[i] < .90 || pr[i] < .80 || adv[i] < advq) return;
+            if (h[i] < maxP[i - 1] - atr[i]) return;
+            const ar = prox(PL, i); if (ar < 0 || ar - i > nmax || (h[i] - l[ar]) / atr[i] < mdrop) return;
+            cand.push({ i, k: 'BC', ar });
+        });
+        PL.forEach(i => {
+            if (i < Math.max(LB, a0) || pv[i] < .90 || pr[i] < .80 || dec[i] < decq) return;
+            if (l[i] > minP[i - 1] + atr[i]) return;
+            const ar = prox(PH, i); if (ar < 0 || ar - i > nmax || (h[ar] - l[i]) / atr[i] < mrise) return;
+            if ((c[i] - l[i]) / (h[i] - l[i]) <= .5) return;   // SC fecha na metade de cima
+            cand.push({ i, k: 'SC', ar });
+        });
+        // um clímax por estrutura: fica o de maior volume entre os do mesmo extremo (até 1 ATR) dentro da janela
+        cand.sort((a, b) => v[b.i] - v[a.i]);
+        const fin = [];
+        cand.forEach(e => { const ref = e.k === 'BC' ? h[e.i] : l[e.i]; if (fin.every(f => f.k !== e.k || Math.abs((f.k === 'BC' ? h[f.i] : l[f.i]) - ref) > atr[e.i] || Math.abs(e.i - f.i) > LB)) fin.push(e); });
+        fin.sort((a, b) => a.i - b.i);
+        fin.forEach(e => {
+            e.ev = [];
+            if (e.k === 'BC') {
+                const top = h[e.i], sup = l[e.ar]; e.top = top; e.sup = sup; e.ev.push({ i: e.i, tx: 'BC', cor: '#C62828', up: true }, { i: e.ar, tx: 'AR', cor: '#C62828', up: false });
+                let ut = false;
+                for (let x = e.ar + 1; x < n; x++) {
+                    if (c[x] < sup && rng[x] >= q75r && v[x] >= q75v) { e.sow = x; e.ev.push({ i: x, tx: 'SOW', cor: '#6A1B9A', up: false }); break; }
+                    if (sPH.has(x) && v[x] >= q75v) {
+                        if (Math.abs(h[x] - top) <= atr[x]) e.ev.push({ i: x, tx: 'ST', cor: '#C62828', up: true });
+                        else if (h[x] > top + atr[x] && c[x] < top && !ut) { ut = true; e.ev.push({ i: x, tx: 'UT', cor: '#C62828', up: true }); }
+                    }
+                }
+            } else {
+                const bot = l[e.i], top = h[e.ar]; e.top = top; e.sup = bot; e.ev.push({ i: e.i, tx: 'SC', cor: '#1565C0', up: false }, { i: e.ar, tx: 'AR', cor: '#1565C0', up: true });
+                for (let x = e.ar + 1; x < n; x++) {
+                    if (c[x] < bot) break;   // fechou abaixo do clímax: a estrutura falhou
+                    if (c[x] > top && v[x] >= q75v) { e.sos = x; e.ev.push({ i: x, tx: 'SOS', cor: '#2E7D32', up: true }); break; }
+                }
+            }
+        });
+        let fase = '';
+        if (fin.length) {
+            const e = fin[fin.length - 1], uc = c[n - 1];
+            if (e.k === 'BC') fase = 'Distribuição · ' + (e.sow ? (uc < e.sup ? 'Fase D–E (queda)' : 'Fase D') : 'Fase B');
+            else fase = 'Acumulação · ' + (e.sos ? (uc > e.top ? 'Fase D–E (alta)' : 'Fase B') : 'Fase B');
+        }
+        return { est: anc > 0 ? fin : fin.slice(-2), fase };   // sem âncora: só as 2 últimas estruturas (a fase vale para a última)
+    }
+    function dados() {
+        const all = _grAllCandles, N = all.length - 2;   // N = último candle FECHADO
+        if (N < 60) return { est: [], fase: '' };
+        const anc = (typeof _grVpAncoraTs !== 'undefined' && _grVpAncoraTs > 0) ? _grVpAncoraTs : 0;
+        const chave = all.length + '|' + all[0].t + '|' + all[N].t + '|' + anc + '|' + all[N].c;
+        if (cache && cache.chave === chave) return cache.r;
+        const r = analisar(all, N, anc); cache = { chave, r }; return r;
+    }
+    function desenhar(ctx, fx, fy, PAD, W, chartH) {
+        if (!on) return;
+        const r = dados(), all = _grAllCandles, claro = (typeof _grTemaClaro !== 'undefined') ? _grTemaClaro : true;
+        ctx.save(); ctx.beginPath(); ctx.rect(PAD.left, PAD.top, W - PAD.left - PAD.right, chartH); ctx.clip();
+        ctx.textAlign = 'center'; ctx.lineJoin = 'round'; ctx.font = 'bold 11px -apple-system, sans-serif';
+        r.est.forEach(e => {
+            const xi = fx(all[e.i].t), xR = W - PAD.right;
+            if (isFinite(xi)) {   // linhas pontilhadas do range (resistência e suporte), do clímax até a borda direita
+                ctx.save(); ctx.setLineDash([2, 4]); ctx.lineWidth = 1; ctx.strokeStyle = e.ev[0].cor; ctx.globalAlpha = .75;
+                [e.top, e.sup].forEach(p => { const y = fy(p); if (isFinite(y)) { ctx.beginPath(); ctx.moveTo(Math.max(PAD.left, xi), y); ctx.lineTo(xR, y); ctx.stroke(); } });
+                ctx.restore();
+            }
+            e.ev.forEach(ev => {
+                const k = all[ev.i], x = fx(k.t), y = fy(ev.up ? k.h : k.l); if (!isFinite(x) || !isFinite(y)) return;
+                ctx.textBaseline = ev.up ? 'bottom' : 'top'; const yy = y + (ev.up ? -4 : 4);
+                ctx.lineWidth = 3; ctx.strokeStyle = claro ? 'rgba(255,255,255,0.9)' : 'rgba(14,17,23,0.9)'; ctx.strokeText(ev.tx, x, yy);
+                ctx.fillStyle = ev.cor; ctx.fillText(ev.tx, x, yy);
+            });
+        });
+        const tag = 'Wyckoff · ' + (r.fase || 'sem estrutura no trecho');
+        ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.font = 'bold 11px -apple-system, sans-serif';
+        const tw = ctx.measureText(tag).width + 12, bx = PAD.left + 6, by = PAD.top + 6;
+        ctx.fillStyle = claro ? 'rgba(255,255,255,0.85)' : 'rgba(30,34,45,0.85)'; ctx.beginPath(); ctx.roundRect(bx, by, tw, 20, 5); ctx.fill();
+        ctx.fillStyle = claro ? '#1C1C1E' : '#FFFFFF'; ctx.fillText(tag, bx + 6, by + 10);
+        ctx.restore();
+    }
+    return {
+        analisar, desenhar,
+        ligado: () => on,
+        alternar() { on = !on; try { localStorage.setItem(LS, on ? '1' : '0'); } catch (e) {} },
+    };
+})();
+// ===== WYCKOFF:FIM =====
 function grNfDesenhar(ctx, fx, fy, PAD, W, chartH, selIdx) {
     try { grPlAtualizar(); } catch (ePl) {}   // prévia das ferramentas de Desenho (Tendência, Canal, Livre, Medida, Linha horizontal)
     try { grTextosDesenhar(ctx, fx, fy, PAD, W, chartH); } catch (eTx) {}
+    try { WY.desenhar(ctx, fx, fy, PAD, W, chartH); } catch (eWy) {}   /*WYCKOFF*/
     try { grEdRegistrarToques(fx, fy); } catch (eRg) {}   // tocar na alça de um desenho o seleciona e abre o menu de contexto
     if (window._nfCtxAberto && _edSel && GR_ED_CTX_TIPOS.indexOf(_edSel.tipo) >= 0 && grEdObjeto()) cvNfCtxMenu(); else cvNfCtxRemover();
     if (!_indState.novoFibo) { _nfP1 = null; if (!_nfDrawing) _nfAtual = null; }
