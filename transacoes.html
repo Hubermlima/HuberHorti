@@ -3480,7 +3480,8 @@ function grCunhasDetectar() {
     const all = _grAllCandles, N = all.length - 2;   // N = índice do último candle FECHADO (o último da lista está em formação)
     const anc = (typeof _grVpAncoraTs !== 'undefined' && _grVpAncoraTs > 0) ? _grVpAncoraTs : 0;
     if (!anc || N < 10) { window._grCunhasCache = { chave: 'sem-ancora', lista: [] }; return []; }
-    let a0 = 0; while (a0 < N && all[a0].t < anc) a0++;
+    const msC = N > 0 ? all[N].t - all[N - 1].t : 0;   // duração do candle: o candle que CONTÉM a âncora entra na análise
+    let a0 = 0; while (a0 < N && all[a0].t + msC <= anc) a0++;
     const nSeg = N - a0 + 1, chave = N + '|' + anc + '|' + all[N - 1].t + '|' + (typeof _grTf !== 'undefined' ? _grTf : '');
     if (window._grCunhasCache && window._grCunhasCache.chave === chave) return window._grCunhasCache.lista;
     if (nSeg < 12) { window._grCunhasCache = { chave, lista: [] }; return []; }
@@ -3536,13 +3537,10 @@ function grCunhasDetectar() {
         const nota = (bH.nt + bL.nt) / (wsum / tot / Hh) * (conv ? 1 + 2 * Math.min(1, 1 - l1 / l0) : 1) * (firme ? 1 : 0.6);   // quanto mais as linhas convergem para o preço atual, maior o bônus
         return { i0: b + i0, iFim: b + n - 1, H0i: b + H[0].i, H0p: H[0].p, L0i: b + Lo[0].i, L0p: Lo[0].p, sH, sL, asc: sH > 0, nt: bH.nt + bL.nt, nota, firme, apex: sH !== sL ? b + (Lo[0].p - H[0].p + sH * H[0].i - sL * Lo[0].i) / (sH - sL) : null };
     };
-    // Trecho = da âncora do VP até o último candle fechado, de qualquer tamanho: testa janelas que terminam agora (30 candles até o trecho inteiro) e fica com a melhor nota.
-    const tams = [12, 20, 30, 45, 70, 100, 150, 220, 320, 480].filter(L => L < nSeg).concat([Math.min(nSeg, 600)]);
+    // Trecho = da âncora do VP até o último candle fechado, de qualquer tamanho. A figura SEMPRE parte da âncora: só a janela inteira (âncora → agora) é analisada,
+    // nada de janelas menores terminando agora (essas começavam depois da âncora).
     let melhorW = null;
-    tams.forEach(L => {
-        const w = janela(N + 1 - L, N + 1); if (!w) return;
-        if (!melhorW || w.nota > melhorW.nota) melhorW = w;
-    });
+    if (nSeg <= 1500) melhorW = janela(a0, N + 1);
     if (melhorW) lista.push(melhorW);
     window._grCunhasCache = { chave, lista };
     return lista;
@@ -3837,7 +3835,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v890';
+const APP_VERSAO = 'v894';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -11587,7 +11585,7 @@ var WY = (() => {
         PH.forEach(i => { if (i > 20) { const x = swing(i, true); if (x >= 0) drops.push((h[i] - l[x]) / atr[i]); } });
         PL.forEach(i => { if (i > 20) { const x = swing(i, false); if (x >= 0) rises.push((h[x] - l[i]) / atr[i]); } });
         const mdrop = quant(drops, .5), mrise = quant(rises, .5);
-        let a0 = 0; if (anc > 0) { a0 = n; for (let i = 0; i < n; i++) if (t[i] >= anc) { a0 = i; break; } }
+        let a0 = 0; if (anc > 0) { a0 = n; for (let i = 0; i < n; i++) if (t[i] + msC > anc) { a0 = i; break; } }   // o candle que CONTÉM a âncora entra (a âncora marca o início da perna; em TF maior ela cai dentro de um candle que abre antes)
         const cand = [];
         PH.forEach(i => {
             if (i < Math.max(LB, a0) || pv[i] < .90 || pr[i] < .80 || adv[i] < advq) return;
@@ -11611,7 +11609,10 @@ var WY = (() => {
         fin.forEach(e => {
             e.ev = []; e.pvC = Math.round(pv[e.i] * 100);
             if (e.k === 'BC') {
-                const top = h[e.i], sup = l[e.ar]; e.top = top; e.sup = sup; e.ev.push({ i: e.i, tx: 'BC', cor: '#C62828', up: true }, { i: e.ar, tx: 'AR', cor: '#C62828', up: false });
+                let top = h[e.i]; const sup = l[e.ar];
+                // início da estrutura: se o topo da alta foi feito ANTES do clímax (a até 1 ATR do máximo, dentro da janela e depois da âncora), é dele que a estrutura parte
+                for (const x of PH) { if (x >= e.i) break; if (x >= Math.max(a0, e.i - LB) && h[x] >= h[e.i] - atr[e.i]) { e.ini = x; top = Math.max(top, h[x]); e.ev.push({ i: x, tx: 'Topo', cor: '#C62828', up: true }); break; } }
+                e.top = top; e.sup = sup; e.ev.push({ i: e.i, tx: 'BC', cor: '#C62828', up: true }, { i: e.ar, tx: 'AR', cor: '#C62828', up: false });
                 let ut = false;
                 for (let x = e.ar + 1; x < n; x++) {
                     if (c[x] > top + atr[x]) { e.fail = x; break; }   // fechou acima do topo: a distribuição falhou (era alta)
@@ -11622,7 +11623,9 @@ var WY = (() => {
                     }
                 }
             } else {
-                const bot = l[e.i], top = h[e.ar]; e.top = top; e.sup = bot; e.ev.push({ i: e.i, tx: 'SC', cor: '#1565C0', up: false }, { i: e.ar, tx: 'AR', cor: '#1565C0', up: true });
+                let bot = l[e.i]; const top = h[e.ar];
+                for (const x of PL) { if (x >= e.i) break; if (x >= Math.max(a0, e.i - LB) && l[x] <= l[e.i] + atr[e.i]) { e.ini = x; bot = Math.min(bot, l[x]); e.ev.push({ i: x, tx: 'Fundo', cor: '#1565C0', up: false }); break; } }
+                e.top = top; e.sup = bot; e.ev.push({ i: e.i, tx: 'SC', cor: '#1565C0', up: false }, { i: e.ar, tx: 'AR', cor: '#1565C0', up: true });
                 const q50v = quant(v, .5);
                 for (let x = e.ar + 1; x < n; x++) {
                     if (c[x] < bot) { e.fail = x; break; }   // fechou abaixo do clímax: a estrutura falhou
@@ -11633,10 +11636,13 @@ var WY = (() => {
                     } else if (sPL.has(x) && l[x] >= top - atr[x] && v[x] <= q50v) { e.lps = x; e.ev.push({ i: x, tx: 'LPS', cor: '#2E7D32', up: false }); break; }   // recuo quieto que segura acima da resistência rompida
                 }
             }
+            e.ev.sort((p, q) => p.i - q.i);
             // Sequência: a estrutura anterior TERMINA quando é resolvida (SOW/SOS) ou falha. Clímax do lado oposto só vale depois de resolvida (ele é o fim da fase E dela);
             // do mesmo lado, só depois de falhar. Fora disso é um teste dentro da estrutura em curso, não uma nova.
             const S = seq[seq.length - 1];
-            if (S) { const res = S.sow || S.sos || 0, ok = e.k !== S.k ? (res > 0 && e.i > res) : (S.fail > 0 && e.i > S.fail); if (!ok) return; S.fim = e.i; S.fimK = e.k; }
+            if (S) { const x0 = S.sow || S.sos || 0; let seg = x0 > 0; for (let x = x0 + 1; seg && x < e.i; x++) if (S.k === 'BC' ? c[x] > S.sup + atr[x] : c[x] < S.top - atr[x]) seg = false;   // o rompimento (CoC) só encerra a estrutura se, até o novo clímax, o preço NÃO voltou para dentro do range
+                const res = seg ? x0 : 0, alem = S.k === 'BC' ? (e.k === 'BC' ? h[e.i] > S.top + atr[e.i] : l[e.i] < S.sup - atr[e.i]) : (e.k === 'BC' ? h[e.i] > S.top + atr[e.i] : l[e.i] < S.sup - atr[e.i]);   // clímax além do outro lado do range = o preço já saiu dele
+                const ok = alem || (e.k !== S.k ? (res > 0 && e.i > res) : (S.fail > 0 && e.i > S.fail)); if (!ok) return; S.fim = e.i; S.fimK = e.k; }
             seq.push(e);
         });
         fin.length = 0; seq.forEach(x => fin.push(x));
@@ -11689,14 +11695,16 @@ var WY = (() => {
             e.ev.forEach(ev => {
                 const k = all[ev.i], d = D(ev.i), pr = P0(ev.up ? k.h : k.l);
                 let t = '';
-                if (ev.tx === 'BC') t = 'BC (Buying Climax): o preço esticou até ' + pr + ' com volume extremo (acima de ' + e.pvC + '% dos candles) e foi rejeitado. É onde a compra se esgota. Define a RESISTÊNCIA do range: ' + P0(e.top) + '.';
+                if (ev.tx === 'Topo') t = 'Topo: o preço fez o máximo da alta em ' + pr + ', antes do clímax. A estrutura começa aqui; o BC veio depois, na volta ao topo.';
+                else if (ev.tx === 'Fundo') t = 'Fundo: o preço fez a mínima da queda em ' + pr + ', antes do clímax. A estrutura começa aqui; o SC veio depois, na volta ao fundo.';
+                else if (ev.tx === 'BC') t = 'BC (Buying Climax): o preço esticou até ' + pr + ' com volume extremo (acima de ' + e.pvC + '% dos candles) e foi rejeitado. É onde a compra se esgota. Define a RESISTÊNCIA do range: ' + P0(e.top) + '.';
                 else if (ev.tx === 'SC') t = 'SC (Selling Climax): o preço despencou até ' + pr + ' com volume extremo (acima de ' + e.pvC + '% dos candles) e fechou na metade de cima. É onde a venda se esgota. Define o SUPORTE do range: ' + P0(e.sup) + '.';
                 else if (ev.tx === 'AR') t = dist ? 'AR (Automatic Reaction): queda rápida logo após o BC, até ' + pr + '. Define o SUPORTE do range: ' + P0(e.sup) + '.' : 'AR (Automatic Rally): repique rápido logo após o SC, até ' + pr + '. Define a RESISTÊNCIA do range: ' + P0(e.top) + '.';
                 else if (ev.tx === 'ST') t = dist ? 'ST (Secondary Test): o preço voltou a testar o topo (' + pr + ') com volume alto e não passou. Testes que falham = a demanda está fraca.' : 'ST (Secondary Test): o preço voltou a testar a mínima do SC (' + pr + ') com volume menor que o dele. A venda perde força.';
                 else if (ev.tx === 'UT') t = 'UT (Upthrust): rompeu o topo (' + P0(e.top) + ') e fechou de volta abaixo. Armadilha para compradores.';
-                else if (ev.tx === 'SOW') t = 'SOW (Sign of Weakness): fechou abaixo do suporte (' + P0(e.sup) + ') com candle largo e volume alto. A oferta passou a mandar: a distribuição se confirma. É o CoC (mudança de caráter): a estrutura termina aqui.';
+                else if (ev.tx === 'SOW') t = 'SOW (Sign of Weakness): fechou abaixo do suporte (' + P0(e.sup) + ') com candle largo e volume alto. A oferta passou a mandar: a distribuição se confirma. É o CoC (mudança de caráter): encerra a estrutura se o preço se sustentar fora do range; se voltar para dentro, ela continua aberta.';
                 else if (ev.tx === 'Spring' || ev.tx === 'Spring?') t = (ev.tx === 'Spring' ? 'Spring: ' : 'Spring? (volume alto): ') + 'perdeu o suporte (' + P0(e.sup) + ') mas fechou de volta dentro. Varre os stops dos vendidos. ' + (ev.tx === 'Spring' ? 'Com volume leve é o teste final da oferta.' : 'Com volume alto ainda precisa de um reteste de volume baixo para valer.');
-                else if (ev.tx === 'SOS') t = 'SOS (Sign of Strength): fechou acima da resistência (' + P0(e.top) + ') com volume forte. A demanda tomou o controle. É o CoC (mudança de caráter): a estrutura termina aqui.';
+                else if (ev.tx === 'SOS') t = 'SOS (Sign of Strength): fechou acima da resistência (' + P0(e.top) + ') com volume forte. A demanda tomou o controle. É o CoC (mudança de caráter): encerra a estrutura se o preço se sustentar fora do range; se voltar para dentro, ela continua aberta.';
                 else if (ev.tx === 'LPS') t = 'LPS (Last Point of Support): recuo quieto que segurou acima de ' + P0(e.top) + '. Vira suporte novo.';
                 ln.push('<b style="color:' + ev.cor + '">' + d + '</b> · ' + t);
             });
