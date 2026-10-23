@@ -2504,7 +2504,7 @@ function cvRenderMenuFpCfg() {
         const ef = window._compValores && window._compValores.eficiencia;
         const pBid = ef ? Math.round(ef.fracBid * 100) : 50, pAsk = 100 - pBid;
         menu.innerHTML = '<div style="min-width:250px;max-width:300px;"><div style="font-size:13px;font-weight:700;color:#1C1C1E;">Eficiência Bid/Ask</div>'
-            + '<div style="font-size:12px;color:#8E8E93;padding:2px 0 8px;">Quem desloca mais preço por unidade de volume' + (ef ? ' nos últimos ' + ef.dias + ' dia(s)' : '') + '. Vermelho = vendedor (Bid), verde = comprador (Ask).</div>'
+            + '<div style="font-size:12px;color:#8E8E93;padding:2px 0 8px;">Candle típico (mediana) de cada lado: quanto o corpo anda, em ATR, por unidade de volume do lado' + (ef ? ' nos últimos ' + ef.dias + ' dia(s)' : '') + '. Vermelho = vendedor (Bid), verde = comprador (Ask). Descritivo: não prevê o preço.</div>'
             + (ef
                 ? '<div style="font-size:14px;font-weight:700;color:#1C1C1E;margin-bottom:6px;">Eficiência: ' + ef.bid + '/' + ef.ask + '</div>'
                   + '<div style="display:flex;align-items:center;gap:6px;"><span style="font-size:12px;font-weight:700;color:#EF5350;">Bid</span>'
@@ -3837,7 +3837,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v886';
+const APP_VERSAO = 'v889';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -7723,27 +7723,25 @@ if (_grTipoGrafico === 'linha') {
                 // pouco confiável. Por isso o indicador só aparece com TF <= 4H.
                 window._compValores.eficiencia = null;
                 if (_indState.eficiencia && grFootprintMsPorCandle() <= 4 * 3600000) {
-                // Não é participação de volume (isso já é o Delta, quando o CVD está ligado) — é EFICIÁCIA: quanto de
-                // deslocamento de preço cada lado CONSEGUIU produzir por unidade de volume que aplicou, dentro
-                // da MESMA Janela de Dias do painel (reaproveita dtMapaPA/inicioJanelaPA já calculados acima,
-                // zero cálculo novo de dados). Cada candle de alta soma (close−open) na conta do ASK — foi o
-                // comprador que empurrou o preço pra cima; cada candle de baixa soma (open−close) na conta do
-                // BID. Dividindo pelo volume total comprado/vendido na janela dá "quanto de preço cada lado
-                // moveu por unidade de volume" — RESULTADO ÚNICO (não é por candle), atualiza com a janela.
-                // Independente do CVD: continua calculando mesmo com o CVD desligado.
-                let altaPrecoEf = 0, quedaPrecoEf = 0, volAskEf = 0, volBidEf = 0;
+                // v889 (refeita): antes somava os corpos da janela inteira, e a soma dos corpos de alta menos a dos de baixa é o retorno da janela —
+                // a nota virava só a direção do preço (correlação 0,99 com o retorno; dividir pelo volume não mudava nada). Agora a medida é por CANDLE:
+                // para cada candle, deslocamento do corpo (em ATR) por unidade de volume do lado que moveu (compra no de alta, venda no de baixa);
+                // a eficiência de cada lado é a MEDIANA desses candles na Janela de Dias. Descritivo ("o candle típico de quem anda mais por volume"),
+                // sem poder preditivo comprovado. Independente do CVD.
+                const atrEf = []; { const cs = _grAllCandles, trs = cs.map((c, i) => i === 0 ? c.h - c.l : Math.max(c.h - c.l, Math.abs(c.h - cs[i - 1].c), Math.abs(c.l - cs[i - 1].c))); let sm = 0; for (let i = 0; i < trs.length; i++) { sm += trs[i]; if (i >= 14) sm -= trs[i - 14]; atrEf.push(i >= 13 ? sm / 14 : NaN); } }
+                const efU = [], efD = [];
                 for (let i = 0; i < _grAllCandles.length; i++) {
                     const c = _grAllCandles[i];
                     if (c.t < inicioJanelaPA) continue;
                     const dEf = dtMapaPA ? dtMapaPA.get(c.t) : null;
-                    if (!dEf) continue;
-                    volAskEf += (dEf.total + dEf.delta) / 2; // compra
-                    volBidEf += (dEf.total - dEf.delta) / 2; // venda
-                    if (c.c > c.o) altaPrecoEf += (c.c - c.o);
-                    else if (c.c < c.o) quedaPrecoEf += (c.o - c.c);
+                    if (!dEf || !(atrEf[i] > 0)) continue;
+                    const vA = (dEf.total + dEf.delta) / 2, vB = (dEf.total - dEf.delta) / 2;   // volume comprador / vendedor do candle
+                    if (c.c > c.o && vA > 0) efU.push((c.c - c.o) / atrEf[i] / vA);
+                    else if (c.c < c.o && vB > 0) efD.push((c.o - c.c) / atrEf[i] / vB);
                 }
-                const askEficiencia = volAskEf > 0 ? altaPrecoEf / volAskEf : 0;
-                const bidEficiencia = volBidEf > 0 ? quedaPrecoEf / volBidEf : 0;
+                const medEf = arr => { if (!arr.length) return 0; const o = arr.slice().sort((x, y) => x - y), m = o.length >> 1; return o.length % 2 ? o[m] : (o[m - 1] + o[m]) / 2; };
+                const askEficiencia = medEf(efU);
+                const bidEficiencia = medEf(efD);
                 const somaEficiencia = askEficiencia + bidEficiencia;
                 const fracBidEf = somaEficiencia > 0 ? bidEficiencia / somaEficiencia : 0.5;
                 const fracAskEf = 1 - fracBidEf;
@@ -11608,12 +11606,14 @@ var WY = (() => {
         const fin = [];
         cand.forEach(e => { const ref = e.k === 'BC' ? h[e.i] : l[e.i]; if (fin.every(f => f.k !== e.k || Math.abs((f.k === 'BC' ? h[f.i] : l[f.i]) - ref) > atr[e.i] || Math.abs(e.i - f.i) > LB)) fin.push(e); });
         fin.sort((a, b) => a.i - b.i);
+        const seq = [];   // estruturas em sequência: uma só começa depois que a anterior terminou
         fin.forEach(e => {
             e.ev = []; e.pvC = Math.round(pv[e.i] * 100);
             if (e.k === 'BC') {
                 const top = h[e.i], sup = l[e.ar]; e.top = top; e.sup = sup; e.ev.push({ i: e.i, tx: 'BC', cor: '#C62828', up: true }, { i: e.ar, tx: 'AR', cor: '#C62828', up: false });
                 let ut = false;
                 for (let x = e.ar + 1; x < n; x++) {
+                    if (c[x] > top + atr[x]) { e.fail = x; break; }   // fechou acima do topo: a distribuição falhou (era alta)
                     if (c[x] < sup && rng[x] >= q75r && v[x] >= q75v) { e.sow = x; e.ev.push({ i: x, tx: 'SOW', cor: '#6A1B9A', up: false }); break; }
                     if (sPH.has(x) && v[x] >= q75v) {
                         if (Math.abs(h[x] - top) <= atr[x]) e.ev.push({ i: x, tx: 'ST', cor: '#C62828', up: true });
@@ -11624,7 +11624,7 @@ var WY = (() => {
                 const bot = l[e.i], top = h[e.ar]; e.top = top; e.sup = bot; e.ev.push({ i: e.i, tx: 'SC', cor: '#1565C0', up: false }, { i: e.ar, tx: 'AR', cor: '#1565C0', up: true });
                 const q50v = quant(v, .5);
                 for (let x = e.ar + 1; x < n; x++) {
-                    if (c[x] < bot) break;   // fechou abaixo do clímax: a estrutura falhou
+                    if (c[x] < bot) { e.fail = x; break; }   // fechou abaixo do clímax: a estrutura falhou
                     if (!e.sos) {
                         if (l[x] < bot && c[x] > bot && !e.spring) { e.spring = x; e.ev.push({ i: x, tx: v[x] <= q50v ? 'Spring' : 'Spring?', cor: '#6A1B9A', up: false }); }   // rompe o suporte do SC e volta pra dentro; volume leve = Spring clássico, volume alto fica com "?" (pede reteste de volume baixo)
                         else if (sPL.has(x) && v[x] < v[e.i] && Math.abs(l[x] - bot) <= atr[x] && !e.ev.some(q => q.i === x)) e.ev.push({ i: x, tx: 'ST', cor: '#1565C0', up: false });   // reteste da mínima do SC com volume menor que o dele
@@ -11632,7 +11632,13 @@ var WY = (() => {
                     } else if (sPL.has(x) && l[x] >= top - atr[x] && v[x] <= q50v) { e.lps = x; e.ev.push({ i: x, tx: 'LPS', cor: '#2E7D32', up: false }); break; }   // recuo quieto que segura acima da resistência rompida
                 }
             }
+            // Sequência: a estrutura anterior TERMINA quando é resolvida (SOW/SOS) ou falha. Clímax do lado oposto só vale depois de resolvida (ele é o fim da fase E dela);
+            // do mesmo lado, só depois de falhar. Fora disso é um teste dentro da estrutura em curso, não uma nova.
+            const S = seq[seq.length - 1];
+            if (S) { const res = S.sow || S.sos || 0, ok = e.k !== S.k ? (res > 0 && e.i > res) : (S.fail > 0 && e.i > S.fail); if (!ok) return; S.fim = e.i; S.fimK = e.k; }
+            seq.push(e);
         });
+        fin.length = 0; seq.forEach(x => fin.push(x));
         let fase = '';
         if (fin.length) {
             const e = fin[fin.length - 1], uc = c[n - 1];
@@ -11687,12 +11693,13 @@ var WY = (() => {
                 else if (ev.tx === 'AR') t = dist ? 'AR (Automatic Reaction): queda rápida logo após o BC, até ' + pr + '. Define o SUPORTE do range: ' + P0(e.sup) + '.' : 'AR (Automatic Rally): repique rápido logo após o SC, até ' + pr + '. Define a RESISTÊNCIA do range: ' + P0(e.top) + '.';
                 else if (ev.tx === 'ST') t = dist ? 'ST (Secondary Test): o preço voltou a testar o topo (' + pr + ') com volume alto e não passou. Testes que falham = a demanda está fraca.' : 'ST (Secondary Test): o preço voltou a testar a mínima do SC (' + pr + ') com volume menor que o dele. A venda perde força.';
                 else if (ev.tx === 'UT') t = 'UT (Upthrust): rompeu o topo (' + P0(e.top) + ') e fechou de volta abaixo. Armadilha para compradores.';
-                else if (ev.tx === 'SOW') t = 'SOW (Sign of Weakness): fechou abaixo do suporte (' + P0(e.sup) + ') com candle largo e volume alto. A oferta passou a mandar: a distribuição se confirma.';
+                else if (ev.tx === 'SOW') t = 'SOW (Sign of Weakness): fechou abaixo do suporte (' + P0(e.sup) + ') com candle largo e volume alto. A oferta passou a mandar: a distribuição se confirma. É o CoC (mudança de caráter): a estrutura termina aqui.';
                 else if (ev.tx === 'Spring' || ev.tx === 'Spring?') t = (ev.tx === 'Spring' ? 'Spring: ' : 'Spring? (volume alto): ') + 'perdeu o suporte (' + P0(e.sup) + ') mas fechou de volta dentro. Varre os stops dos vendidos. ' + (ev.tx === 'Spring' ? 'Com volume leve é o teste final da oferta.' : 'Com volume alto ainda precisa de um reteste de volume baixo para valer.');
-                else if (ev.tx === 'SOS') t = 'SOS (Sign of Strength): fechou acima da resistência (' + P0(e.top) + ') com volume forte. A demanda tomou o controle.';
+                else if (ev.tx === 'SOS') t = 'SOS (Sign of Strength): fechou acima da resistência (' + P0(e.top) + ') com volume forte. A demanda tomou o controle. É o CoC (mudança de caráter): a estrutura termina aqui.';
                 else if (ev.tx === 'LPS') t = 'LPS (Last Point of Support): recuo quieto que segurou acima de ' + P0(e.top) + '. Vira suporte novo.';
                 ln.push('<b style="color:' + ev.cor + '">' + d + '</b> · ' + t);
             });
+            if (e.fim) ln.push('<b>Terminou</b> · em ' + D(e.fim) + ', quando começou ' + (e.fimK === 'SC' ? 'a acumulação (SC)' : 'a distribuição (BC)') + ' seguinte.'); else if (e.fail) ln.push('<b>Falhou</b> · em ' + D(e.fail) + ' o preço fechou ' + (dist ? 'acima do topo' : 'abaixo do suporte') + ' do range.'); else ln.push('<b>Em andamento</b>');
             perc.push([tit, ln]);
         });
         // onde estamos agora
@@ -11713,6 +11720,7 @@ var WY = (() => {
             ['UT', 'Upthrust: rompe o topo do range e fecha de volta dentro. Armadilha de compradores.'],
             ['Spring', 'O contrário do UT: perde o suporte do range e fecha de volta dentro, varrendo os stops. Volume leve = teste final da venda. "Spring?" = volume alto, precisa de reteste calmo.'],
             ['SOS · SOW', 'Sign of Strength / Weakness: candle largo com volume forte que rompe o topo (SOS) ou o fundo (SOW) do range. Indica que um lado tomou o controle.'],
+            ['CoC / CHoCH', 'Change of Character: o ponto em que o preço deixa de ficar lateral no range e passa a tendência. Na prática é o SOS (alta) ou o SOW (queda): é o que o app usa para dar a estrutura por terminada. Spring e UTAD (fase C) são o último teste antes dele, não o fim.'],
             ['LPS', 'Last Point of Support: depois do SOS, o recuo quieto que segura acima da resistência rompida. É o ponto em que a literatura usa para entrada de alta.']
         ];
         const sec = (t, h) => '<div style="margin:12px 0 4px;font-weight:700;font-size:13px;">' + t + '</div>' + h;
