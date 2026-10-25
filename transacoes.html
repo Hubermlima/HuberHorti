@@ -3628,19 +3628,20 @@ async function grExportarCandlesCsv() {
 // vendedora). O número é o EXCESSO da absorção sobre a média, em % (grAbsorcaoExcessoPct). O rótulo SEMPRE aparece: com coluna larga, em 2 linhas deitadas (sigla e %); com coluna estreita, em UMA
 // linha EM PÉ ("AC 0.39%" girado, precisa só de ~7px de largura), com a fonte reduzida até caber na coluna. Com o
 // losango ACIMA do candle ele sobe o tanto que o rótulo ocupa, pra o texto caber entre ele e o candle.
-function grDesenharSimboloAbsorcao(ctx, x, yBorda, tipo, pct, slotW, yMin, yMax, esc) {
+function grDesenharSimboloAbsorcao(ctx, x, yBorda, tipo, pct, slotW, yMin, yMax, esc, kT) {
     if (!_indState.acav || _acavOculto) return;
-    const a = { x, yBorda, tipo, pct, yMin, yMax, esc: esc > 0 ? esc : 1 };
+    const a = { x, yBorda, tipo, pct, yMin, yMax, esc: esc > 0 ? esc : 1, k: kT };
     if (window._grAbsColeta) { window._grAbsColeta.push(a); return; }   // dentro do desenho dos candles: coleta e desenha depois, do mais forte ao mais fraco, sem sobrepor
     grAbsBalao(ctx, a, false);
 }
 function grAbsBaloesFlush(ctx) {
     const L = window._grAbsColeta; window._grAbsColeta = null; if (!L || !L.length) return;
     L.sort((p, q) => Math.abs(q.pct) - Math.abs(p.pct));
-    const usados = [];
+    const usados = []; window._grAbHits = [];   /*ABALAO*/
     L.forEach(a => {
         const R = grAbsBalao(ctx, a, true);
-        if (usados.some(u => R.bx < u.bx + u.bw + 2 && R.bx + R.bw + 2 > u.bx && R.by < u.by + u.bh + 2 && R.by + R.bh + 2 > u.by)) return;
+        const fixo = window.AB && a.k != null && AB.fixo(a.k, a.tipo);   /*ABALAO: balão movido/selecionado sempre aparece*/
+        if (!fixo && usados.some(u => R.bx < u.bx + u.bw + 2 && R.bx + R.bw + 2 > u.bx && R.by < u.by + u.bh + 2 && R.by + R.bh + 2 > u.by)) return;
         usados.push(R); grAbsBalao(ctx, a, false);
     });
 }
@@ -3658,8 +3659,9 @@ function grAbsBalao(ctx, a, soMedir) {
     const xMinB = (window._grPADLeft || 0) + 2, xMaxB = (window._grPADLeft || 0) + (window._grChartW || 1e5) - 2;
     let bx = Math.max(xMinB, Math.min(xMaxB - bw, x - bw / 2));
     let by, yPonta;
-    if (compradora) { yPonta = yBorda + gap; by = yPonta + tail; by = Math.min(yMax - 3 - bh, by); }
-    else { yPonta = yBorda - gap; by = yPonta - tail - bh; by = Math.max(yMin + 3, by); }
+    const dyU = (window.AB && a.k != null) ? AB.dy(a.k, tipo) : 0;   /*ABALAO: deslocamento vertical que você escolheu (px, + = longe do candle)*/
+    if (compradora) { yPonta = yBorda + gap; by = yPonta + tail + dyU; by = Math.min(yMax - 3 - bh, by); if (dyU) by = Math.max(by, yPonta + 4 * esc); }
+    else { yPonta = yBorda - gap; by = yPonta - tail - bh - dyU; by = Math.max(yMin + 3, by); if (dyU) by = Math.min(by, yPonta - 4 * esc - bh); }
     if (soMedir) { ctx.restore(); return { bx, by, bw, bh }; }
     const xT = Math.max(bx + 6 * esc, Math.min(bx + bw - 6 * esc, x)), hw = 4 * esc;
     const yBase = compradora ? by : by + bh;
@@ -3669,6 +3671,10 @@ function grAbsBalao(ctx, a, soMedir) {
     ctx.lineWidth = 1; ctx.setLineDash([]);
     ctx.strokeStyle = _grTemaClaro ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.8)';
     ctx.stroke();
+    if (window.AB && a.k != null) {   /*ABALAO*/
+        const kk = AB.chave(a.k, tipo); (window._grAbHits = window._grAbHits || []).length < 3000 && window._grAbHits.push({ x: bx - 8, y: by - 8, w: bw + 16, h: bh + 16, k: kk, comp: compradora, minDy: -(tail - 4 * esc) });
+        if (AB.sel() === kk) { ctx.lineWidth = 2.5; ctx.strokeStyle = '#FFB300'; ctx.stroke(); }
+    }
     ctx.fillStyle = '#FFFFFF'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
     ctx.font = 'bold ' + f1 + 'px -apple-system'; ctx.fillText(sigla, bx + bw / 2, by + padY + f1 * 0.9);
     ctx.font = 'bold ' + f2 + 'px -apple-system'; ctx.fillText(pctTxt, bx + bw / 2, by + padY + f1 + f2 * 0.9);
@@ -3892,7 +3898,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v944';
+const APP_VERSAO = 'v945';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -5264,10 +5270,10 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
     const escAbs = cfg.fs > 0 ? Math.max(0.6, Math.min(3.5, cfg.fs / 7)) : Math.max(0.6, Math.min(1, cW / 14));   // mesma escala dos números dos níveis
     if (sobe && cl.delta < 0) {
         const ult = cl.linhas[cl.linhas.length - 1];
-        grDesenharSimboloAbsorcao(ctx, xSlot + cW / 2, toY(ult.p - ult.meio), 'compradora', excessoPct, cW + 1, yMin, yMax, escAbs);
+        grDesenharSimboloAbsorcao(ctx, xSlot + cW / 2, toY(ult.p - ult.meio), 'compradora', excessoPct, cW + 1, yMin, yMax, escAbs, candle.t);
     } else if (!sobe && cl.delta > 0) {
         const prim = cl.linhas[0];
-        grDesenharSimboloAbsorcao(ctx, xSlot + cW / 2, toY(prim.p + prim.meio), 'vendedora', excessoPct, cW + 1, yMin, yMax, escAbs);
+        grDesenharSimboloAbsorcao(ctx, xSlot + cW / 2, toY(prim.p + prim.meio), 'vendedora', excessoPct, cW + 1, yMin, yMax, escAbs, candle.t);
     }
     return true;
 }
@@ -7299,7 +7305,7 @@ if (_grTipoGrafico === 'linha') {
                 if (!ab) return;
                 const ex = grAbsorcaoExcessoPct(c, delta); if (ex == null) return;
                 const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
-                grDesenharSimboloAbsorcao(ctx, x, toY(c.c), ab, ex, slotWL, PAD.top, PAD.top + chartH);
+                grDesenharSimboloAbsorcao(ctx, x, toY(c.c), ab, ex, slotWL, PAD.top, PAD.top + chartH, undefined, c.t);
             });
             grAbsBaloesFlush(ctx);
         }
@@ -7358,8 +7364,8 @@ if (_grTipoGrafico === 'linha') {
         if (_grTemaClaro || cc.custom) ctx.strokeRect(x - cW / 2, bodyTop, cW, bodyH);
         }
         const slotWAbs = chartW / Math.max(totalSlots, 1);
-        if (absorcao === 'alta') grDesenharSimboloAbsorcao(ctx, x, toY(c.l), 'compradora', absExcessoPct, slotWAbs, PAD.top, PAD.top + chartH);
-        else if (absorcao === 'baixa') grDesenharSimboloAbsorcao(ctx, x, toY(c.h), 'vendedora', absExcessoPct, slotWAbs, PAD.top, PAD.top + chartH);
+        if (absorcao === 'alta') grDesenharSimboloAbsorcao(ctx, x, toY(c.l), 'compradora', absExcessoPct, slotWAbs, PAD.top, PAD.top + chartH, undefined, c.t);
+        else if (absorcao === 'baixa') grDesenharSimboloAbsorcao(ctx, x, toY(c.h), 'vendedora', absExcessoPct, slotWAbs, PAD.top, PAD.top + chartH, undefined, c.t);
         // Traços de PoC comprador/vendedor — os 2 níveis de maior volume de
         // cada lado dentro do candle (corpo OU pavio, tanto faz onde caírem).
         // Fininho, atravessa a largura do candle. Se comprador e vendedor
@@ -9519,6 +9525,7 @@ function grInitTouch() {
             if (grMetricasToqueInicio(ex2, ey2)) { e.preventDefault(); return; }
             if (cvdJacToqueInicio(ex2, ey2)) { e.preventDefault(); return; }
             try { if (RV.toqueInicio(ex2, ey2)) { e.preventDefault(); return; } } catch (eRv) {}   /*RVOL*/
+            try { if (AB.toqueInicio(ex2, ey2)) { e.preventDefault(); return; } } catch (eAb) {}   /*ABALAO*/
             // Chip "Ações" da linha OHLC com o crosshair aberto: não fecha o crosshair (o menu abre no touchend e age sobre o candle marcado)
             if (window._longPressActive && (window._grBarraSuperiorChips || []).some(h => h.manterCrosshair && ex2 >= h.x && ex2 <= h.x + h.w && ey2 >= h.y && ey2 <= h.y + h.h)) { e.preventDefault(); return; }
             // Janela do crosshair: UM botão alterna □ (expande) ↔ — (recolhe); o crosshair continua aberto
@@ -9794,6 +9801,7 @@ function grInitTouch() {
                 e.preventDefault(); return;
             }
             if (_edDrag) { const rc0 = canvas.getBoundingClientRect(); grEdToqueMove((e.touches[0].clientX - rc0.left) * (grLW(canvas) / rc0.width), (e.touches[0].clientY - rc0.top) * (grLH(canvas) / rc0.height)); e.preventDefault(); return; }
+            if (AB.arrastando()) { const rcA = canvas.getBoundingClientRect(); AB.toqueMove((e.touches[0].clientX - rcA.left) * (grLW(canvas) / rcA.width), (e.touches[0].clientY - rcA.top) * (grLH(canvas) / rcA.height)); e.preventDefault(); return; }   /*ABALAO*/
             if (RV.arrastando()) { const rcR = canvas.getBoundingClientRect(); RV.toqueMove((e.touches[0].clientX - rcR.left) * (grLW(canvas) / rcR.width), (e.touches[0].clientY - rcR.top) * (grLH(canvas) / rcR.height)); e.preventDefault(); return; }   /*RVOL*/
             if (window._cvdJacDrag) { const rcJ = canvas.getBoundingClientRect(); cvdJacToqueMove((e.touches[0].clientX - rcJ.left) * (grLW(canvas) / rcJ.width), (e.touches[0].clientY - rcJ.top) * (grLH(canvas) / rcJ.height)); e.preventDefault(); return; }
             if (window._grMetricasDrag) { // arrastando a tabela de métricas
@@ -10100,6 +10108,8 @@ function grInitTouch() {
             return;
         }
     }
+    if (AB.arrastando()) { AB.toqueFim(); isDragging = false; return; }   /*ABALAO*/
+    if (AB.pendente()) { const tcA = e.changedTouches && e.changedTouches[0]; if (tcA) { const rcA = canvas.getBoundingClientRect(); AB.tapFim((tcA.clientX - rcA.left) * (grLW(canvas) / rcA.width), (tcA.clientY - rcA.top) * (grLH(canvas) / rcA.height)); } }   /*ABALAO*/
     if (RV.arrastando()) { RV.toqueFim(e); isDragging = false; return; }   /*RVOL*/
     if (RV.pendente()) { const tcR = e.changedTouches && e.changedTouches[0]; if (tcR) { const rcR = canvas.getBoundingClientRect(); RV.tapFim((tcR.clientX - rcR.left) * (grLW(canvas) / rcR.width), (tcR.clientY - rcR.top) * (grLH(canvas) / rcR.height)); } }   /*RVOL*/
     if (window._cvdJacDrag) { cvdJacToqueFim(e); isDragging = false; return; }
@@ -11957,6 +11967,38 @@ var WY = (() => {
     };
 })();
 // ===== WYCKOFF:FIM =====
+// ===== ABALAO:INICIO — balões de absorção (AC/AV): tocar seleciona (borda amarela) e arrastar na vertical muda a distância ao candle; fica salvo por ativo. Para REMOVER: apague este bloco e os trechos /*ABALAO*/.
+window.AB = (() => {
+    let sel = null, drag = null, tapP = null, mapa = null;
+    const LS = () => 'gr_ab_dy_' + (typeof _ativoId !== 'undefined' && _ativoId ? _ativoId : 'default');
+    const carregar = () => { if (mapa) return; try { mapa = JSON.parse(localStorage.getItem(LS()) || '{}') || {}; } catch (e) { mapa = {}; } };
+    const salvar = () => { try { localStorage.setItem(LS(), JSON.stringify(mapa)); } catch (e) {} };
+    const chave = (k, tipo) => k + '|' + (tipo === 'compradora' ? 'c' : 'v');
+    const achar = (x, y) => { const L = window._grAbHits || []; for (let i = L.length - 1; i >= 0; i--) { const h = L[i]; if (x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h) return h; } return null; };
+    function toqueInicio(x, y) {
+        carregar(); const h = achar(x, y);
+        if (h && sel === h.k) { drag = { k: h.k, y0: y, d0: mapa[h.k] || 0, comp: h.comp, minDy: h.minDy, moved: false }; return true; }
+        if (h) { tapP = { x, y, t: Date.now(), k: h.k }; return false; }
+        if (sel) { sel = null; try { grDrawChart(); } catch (e) {} }
+        return false;
+    }
+    function toqueMove(x, y) {
+        if (!drag) return false; if (Math.abs(y - drag.y0) > 4) drag.moved = true;
+        const dd = (y - drag.y0) * (drag.comp ? 1 : -1);
+        mapa[drag.k] = Math.round(Math.max(drag.minDy, Math.min(400, drag.d0 + dd)));
+        try { grDrawChart(); } catch (e) {} return true;
+    }
+    function toqueFim() { if (!drag) return; drag = null; salvar(); }
+    function tapFim(x, y) { const t = tapP; tapP = null; if (!t) return; if (Math.hypot(x - t.x, y - t.y) < 10 && Date.now() - t.t < 600) { sel = (sel === t.k) ? null : t.k; try { grDrawChart(); } catch (e) {} } }
+    return {
+        toqueInicio, toqueMove, toqueFim, tapFim,
+        chave, sel: () => sel, arrastando: () => !!drag, pendente: () => !!tapP,
+        dy(k, tipo) { carregar(); return mapa[chave(k, tipo)] || 0; },
+        fixo(k, tipo) { carregar(); const kk = chave(k, tipo); return sel === kk || !!mapa[kk]; },
+        recarregar() { mapa = null; sel = null; }
+    };
+})();
+// ===== ABALAO:FIM
 // ===== RVOL:INICIO ===== (módulo isolado. Para REMOVER: apague daqui até RVOL:FIM e as linhas marcadas com /*RVOL*/ ou <!--RVOL-->)
 // RVOL = volume do candle ÷ média do volume dos 20 candles anteriores. Painel FLUTUANTE no canvas: nasce no rodapé do gráfico e dá para arrastar na vertical (arrastando) até perto dos candles.
 var RV = (() => {
