@@ -3900,7 +3900,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v959';
+const APP_VERSAO = 'v961';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -11714,6 +11714,17 @@ function cvNfCtxRemover() { const m = document.getElementById('cv-nf-ctx'); if (
 //   (delta contra o candle E preço andou por volume ≤ mediana) OU (preço andou por volume ≤ 25% da mediana, mesmo sem divergência). Doji com delta forte conta.
 // Se o TF atual não mostra, olha o TF MAIOR (1H→4H, 15M→1H, 4H→1D): a marca do TF maior aparece como anel, no último candle do bloco que fecha.
 var GR_AA2_COR = '#F59E0B', GR_AA2_N = 100;
+function grAa2CorLado(compradora) {   // cor do lado = a cor dos candles de alta (comprador) / baixa (vendedor) escolhida em Design; sem escolha, verde/vermelho do app
+    let c = null; try { const cc = grCorCandle(!!compradora); if (cc.custom) c = cc.fill; } catch (e) {}
+    if (c && /^#[0-9a-f]{6}$/i.test(c) && (0.299 * parseInt(c.slice(1, 3), 16) + 0.587 * parseInt(c.slice(3, 5), 16) + 0.114 * parseInt(c.slice(5, 7), 16)) > 235) c = null;   // quase branco não aparece
+    return c || (compradora ? '#26A69A' : '#EF5350');
+}
+function grAa2TxtSobre(cor) {   // preto ou branco, o que contrastar com o fundo (aceita #rrggbb ou rgb(r,g,b))
+    let r = 255, g = 255, b = 255, m;
+    if ((m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(cor))) { r = parseInt(m[1], 16); g = parseInt(m[2], 16); b = parseInt(m[3], 16); }
+    else if ((m = /rgba?\(\s*(\d+)\D+(\d+)\D+(\d+)/.exec(cor))) { r = +m[1]; g = +m[2]; b = +m[3]; }
+    return (0.299 * r + 0.587 * g + 0.114 * b) < 150 ? '#FFFFFF' : '#111111';
+}
 function grAa2Maior(ms) { const L = [1, 5, 15, 30, 60, 120, 240, 1440]; for (let k = 0; k < L.length; k++) if (L[k] * 60000 >= ms * 3) return L[k] * 60000; return null; }
 function grAa2Marcar(S) {   // S: [{o,h,l,c,v,d}] em ordem de tempo; d = delta do candle (null se sem dado) → ['AV'|'AC'|null]
     const out = new Array(S.length).fill(null);
@@ -11756,9 +11767,10 @@ function grAa2Desenhar(ctx, fxI, fy, PAD, W, chartH, slotW) {
     const ponto = (t, m, anel, nivel) => {
         const x = fxI(grTimeToIndex(t)); if (!isFinite(x) || x < PAD.left - 10 || x > W - PAD.right + 10) return;
         const y = m.tipo === 'AV' ? fy(m.h) - 11 - nivel * (2 * r + 3) : fy(m.l) + 11 + nivel * (2 * r + 3); if (!isFinite(y)) return;
+        const cor = grAa2CorLado(m.tipo === 'AC');   // AC (compradora) = cor da alta · AV (vendedora) = cor da baixa
         ctx.beginPath(); ctx.arc(x, y, r, 0, 6.2832);
-        if (anel) { ctx.fillStyle = '#FFFFFF'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = GR_AA2_COR; ctx.stroke(); } else { ctx.fillStyle = GR_AA2_COR; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#FFFFFF'; ctx.stroke(); }
-        if (letra) { ctx.fillStyle = anel ? '#000000' : '#FFFFFF'; ctx.font = '500 ' + (r * 1.25).toFixed(1) + 'px -apple-system'; ctx.fillText('A', x, y + 0.5); }
+        if (anel) { ctx.fillStyle = '#FFFFFF'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = cor; ctx.stroke(); } else { ctx.fillStyle = cor; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#FFFFFF'; ctx.stroke(); }
+        if (letra) { ctx.fillStyle = anel ? '#000000' : grAa2TxtSobre(cor); ctx.font = '500 ' + (r * 1.25).toFixed(1) + 'px -apple-system'; ctx.fillText('A', x, y + 0.5); }
     };
     R.base.forEach((m, t) => ponto(t, m, false, 0));
     R.alto.forEach((m, t) => { const b = R.base.get(t); ponto(t, m, true, b && b.tipo === m.tipo ? 1 : 0); });
@@ -11836,15 +11848,15 @@ function grLupaDados(m, tick) {
     const dtv = cols.map(col => { const c = col.c, d = dtMapa ? dtMapa.get(c.t) : null; if (!d || !d.total) return null; return { mv: c.o ? (c.c - c.o) / c.o * 100 : 0, dv: d.delta / d.total * 100, d }; });
     const med = a => { const x = a.filter(v => v != null && isFinite(v)).sort((p, q) => p - q); return x.length ? (x[(x.length - 1) >> 1] + x[x.length >> 1]) / 2 : 0; };
     const efv = dtv.map(q => q && q.mv !== 0 ? Math.abs(q.mv) / q.d.total : null), medEf = med(efv), medDv = med(dtv.map(q => q ? Math.abs(q.dv) : null));
-    const marcas = dtv.map(() => null); let melhor = -1;
+    const marcas = dtv.map(() => null), lados = dtv.map(() => null); let melhor = -1;   // lados: 'c' comprador · 'v' vendedor
     dtv.forEach((q, i) => {
         if (!q || !(medDv > 0)) return;
         const contra = q.mv === 0 || (q.d.delta !== 0 && (q.d.delta > 0) !== (q.mv > 0)), forte = Math.abs(q.dv) >= 0.5 * medDv, fraca = medEf > 0 && efv[i] != null && efv[i] <= 0.25 * medEf && Math.abs(q.dv) >= medDv;
-        if ((contra && forte) || fraca) marcas[i] = 'A';
+        if ((contra && forte) || fraca) { marcas[i] = 'A'; lados[i] = q.d > 0 ? 'v' : 'c'; }   // delta comprador que não subiu = absorção vendedora
         else if (q.mv !== 0 && medEf > 0 && efv[i] >= 1.2 * medEf && (melhor < 0 || efv[i] > efv[melhor])) melhor = i;
     });
-    if (melhor >= 0 && dtv.filter(Boolean).length >= 2) marcas[melhor] = 'E';
-    return { marcas, cols, kLo, kHi, tick, pLo, pHi, ms, cortou, refTop, dt: dtMapa, refs, semDado: cols.length > 0 && cols.every(q => q.n === 0) };
+    if (melhor >= 0 && dtv.filter(Boolean).length >= 2) { marcas[melhor] = 'E'; lados[melhor] = dtv[melhor].mv > 0 ? 'c' : 'v'; }
+    return { marcas, lados, cols, kLo, kHi, tick, pLo, pHi, ms, cortou, refTop, dt: dtMapa, refs, semDado: cols.length > 0 && cols.every(q => q.n === 0) };
 }
 // ── modal ──
 function grLupaFechar() {
@@ -11866,7 +11878,8 @@ function grLupaAbrir(id) {
     const FH = 96;
     const S = _grLupa = { id, m, tick: grLupaTickPadrao(Math.min(m.p1, m.p2), Math.max(m.p1, m.p2)), zi: 2, dados: null, dim: null, rx: null, ry: null, raf: 0, dpr: Math.min(window.devicePixelRatio || 1, 3), FH };
     const ov = document.createElement('div'); ov.id = 'cv-lupa-ov';
-    ov.style.cssText = 'position:fixed;inset:0;z-index:9800;background:#FFFFFF;display:flex;flex-direction:column;font-family:-apple-system,sans-serif;color:#1C1C1E;';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:9800;background:#FFFFFF;display:flex;flex-direction:column;font-family:-apple-system,sans-serif;color:#1C1C1E;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;';
+    ov.addEventListener('contextmenu', e => e.preventDefault());
     const bt = 'width:34px;height:34px;border:none;background:none;padding:0;display:flex;align-items:center;justify-content:center;flex-shrink:0;';
     ov.innerHTML = '<div style="flex-shrink:0;display:flex;align-items:center;gap:8px;padding:calc(env(safe-area-inset-top,0px) + 4px) 8px 4px 12px;min-height:40px;box-sizing:border-box;border-bottom:1px solid #000000;">'
         + '<div style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px;"><span id="cv-lupa-tit"></span><span id="cv-lupa-sub" style="font-size:11px;color:#000000;margin-left:7px;"></span></div>'
@@ -11884,7 +11897,7 @@ function grLupaAbrir(id) {
     S.sc = el('position:absolute;left:0;top:0;right:0;bottom:' + FH + 'px;overflow:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;touch-action:pan-x pan-y;background:#FFFFFF;');
     S.inner = el('position:relative;', S.sc); S.cMain = cvs(S.inner);
     const ft = el('position:absolute;left:0;right:0;bottom:0;height:' + FH + 'px;overflow:hidden;background:#FFFFFF;'); S.ftIn = el('position:absolute;left:0;top:0;height:' + FH + 'px;will-change:transform;', ft); S.cFt = cvs(S.ftIn);
-    el('position:absolute;right:4px;top:4px;width:60px;height:32px;box-sizing:border-box;overflow:hidden;z-index:3;pointer-events:none;line-height:0;background:transparent;border:none;', corpo).innerHTML = '<canvas id="cv-lupa-mini" width="1" height="1" style="display:block;width:58px;height:30px;"></canvas>';   // miniatura do movimento, dentro do gráfico
+    el('position:absolute;right:4px;top:4px;width:60px;height:32px;box-sizing:border-box;overflow:hidden;z-index:3;pointer-events:none;line-height:0;background:transparent;border:1px solid rgba(0,0,0,0.3);border-radius:6px;', corpo).innerHTML = '<canvas id="cv-lupa-mini" width="1" height="1" style="display:block;width:58px;height:30px;"></canvas>';   // miniatura do movimento, dentro do gráfico
     S.vl = el('position:absolute;top:0;width:0;border-left:1px dashed #000000;pointer-events:none;z-index:4;display:none;');
     S.hl = el('position:absolute;left:0;height:0;border-top:1px dashed #000000;pointer-events:none;z-index:4;display:none;');
     S.tip = el('position:absolute;left:8px;top:8px;max-width:calc(100% - 84px);background:rgba(28,28,30,0.88);color:#FFFFFF;font-size:12px;line-height:1.35;padding:5px 8px;border-radius:6px;pointer-events:none;z-index:5;display:none;');
@@ -11903,11 +11916,23 @@ function grLupaAbrir(id) {
     }, { passive: true });
     // zoom por pinça (dois dedos): cada ~20% de abertura/fechamento troca um degrau de zoom
     const dist = e => Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-    let pd = 0;
-    S.sc.addEventListener('touchstart', e => { if (e.touches.length === 2) { pd = dist(e); S.tPinca = Date.now(); } }, { passive: true });
-    S.sc.addEventListener('touchmove', e => { if (e.touches.length === 2 && pd) { e.preventDefault(); S.tPinca = Date.now(); const d = dist(e), r = d / pd; if (r > 1.2) { grLupaAjustar('z+'); pd = d; } else if (r < 0.83) { grLupaAjustar('z-'); pd = d; } } }, { passive: false });
-    S.sc.addEventListener('touchend', e => { if (pd) S.tPinca = Date.now(); if (e.touches.length < 2) pd = 0; }, { passive: true });
-    S.sc.addEventListener('click', e => { if (!livre() || Date.now() - (S.tPinca || 0) < 350) return; grLupaMenu(false); grLupaCruz(e.clientX, e.clientY); });   // tocar = crosshair (data/hora, A·Máx·Mín·F e o preço da linha)
+    let pd = 0, lpT = 0, lx = 0, ly = 0;   // pressão longa (≈0,25 s) = crosshair que acompanha o dedo; soltar deixa ele ali
+    S.sc.addEventListener('touchstart', e => {
+        clearTimeout(lpT); S.lpAtivo = false;
+        if (e.touches.length === 2) { pd = dist(e); S.tPinca = Date.now(); return; }
+        if (e.touches.length === 1) { lx = e.touches[0].clientX; ly = e.touches[0].clientY; S.lx0 = lx; S.ly0 = ly; lpT = setTimeout(() => { S.lpAtivo = true; S.tLong = Date.now(); grLupaMenu(false); grLupaCruz(lx, ly, true); }, 250); }
+    }, { passive: true });
+    S.sc.addEventListener('touchmove', e => {
+        if (e.touches.length === 2 && pd) { clearTimeout(lpT); e.preventDefault(); S.tPinca = Date.now(); const d = dist(e), r = d / pd; if (r > 1.2) { grLupaAjustar('z+'); pd = d; } else if (r < 0.83) { grLupaAjustar('z-'); pd = d; } return; }
+        if (e.touches.length === 1) {
+            lx = e.touches[0].clientX; ly = e.touches[0].clientY;
+            if (S.lpAtivo) { e.preventDefault(); grLupaCruz(lx, ly, true); S.tLong = Date.now(); }
+            else if (Math.hypot(lx - S.lx0, ly - S.ly0) > 8) clearTimeout(lpT);
+        }
+    }, { passive: false });
+    const fimToque = e => { clearTimeout(lpT); if (pd) S.tPinca = Date.now(); if (S.lpAtivo) { S.tLong = Date.now(); S.lpAtivo = false; } if (!e.touches || e.touches.length < 2) pd = 0; };
+    S.sc.addEventListener('touchend', fimToque, { passive: true }); S.sc.addEventListener('touchcancel', fimToque, { passive: true });
+    S.sc.addEventListener('click', e => { if (!livre() || Date.now() - (S.tPinca || 0) < 350 || Date.now() - (S.tLong || 0) < 600) return; grLupaMenu(false); grLupaCruz(e.clientX, e.clientY); });   // tocar = crosshair (data/hora, A·Máx·Mín·F e o preço da linha)
     S.onResize = () => { try { grLupaRender(true); } catch (e) {} };
     window.addEventListener('resize', S.onResize);
     S.dados = grLupaDados(m, S.tick);
@@ -11920,10 +11945,10 @@ function grLupaMenu(abrir) {   // ••• abre/fecha a barra ‹ › lixeira �
     clearTimeout(S.tMenu); if (abrir) S.tMenu = setTimeout(() => { try { grLupaMenu(false); } catch (e) {} }, 6000);
 }
 function grLupaCruzOff() { const S = _grLupa; if (!S || !S.cruz) return; S.cruz = null;[S.vl, S.hl, S.tip, S.chip].forEach(e => { if (e) e.style.display = 'none'; }); }
-function grLupaCruz(cx, cy) {   // crosshair no toque: linha na coluna do candle e na linha de preço tocada
+function grLupaCruz(cx, cy, forcar) {   // crosshair no toque: linha na coluna do candle e na linha de preço tocada
     const S = _grLupa; if (!S || !S.dim || !S.dados.cols.length) return; const D = S.dim, dd = S.dados, sc = S.sc, r = sc.getBoundingClientRect(), co = S.corpo.getBoundingClientRect();
     const i = Math.floor((sc.scrollLeft + cx - r.left) / D.colW), row = Math.floor((sc.scrollTop + cy - r.top) / D.rowH), nR = dd.kHi - dd.kLo + 1;
-    if (i < 0 || i >= dd.cols.length || row < 0 || row >= nR || (S.cruz && S.cruz.i === i && S.cruz.row === row)) { grLupaCruzOff(); return; }
+    if (i < 0 || i >= dd.cols.length || row < 0 || row >= nR || (!forcar && S.cruz && S.cruz.i === i && S.cruz.row === row)) { if (!forcar) grLupaCruzOff(); return; }
     S.cruz = { i, row }; const c = dd.cols[i].c, hh = grLupaHora(c.t), fm = v => Math.round(v).toLocaleString('pt-BR');
     const x = i * D.colW + D.colW / 2 - sc.scrollLeft + (r.left - co.left), y = row * D.rowH + D.rowH / 2 - sc.scrollTop + (r.top - co.top);
     S.vl.style.left = x + 'px'; S.vl.style.height = sc.clientHeight + 'px'; S.vl.style.display = 'block';
@@ -12064,7 +12089,6 @@ function grLupaDesenharMain(S) {   // segue a Skin das configurações (cores ·
         }
         if (tv) desenhaCandle(cxC, Math.max(3, tvGap * 2));   // TradingView: o candle fica no meio, entre venda e compra
         // sem contornos: nem o do bloco do candle nem o quadrado da POC (pedido: só as células, sem linhas delineadoras)
-        ctx.fillStyle = '#000000'; ctx.fillRect(X + D.colW - 1, y0, 1, h);
     }
 }
 function grLupaHora(t, ms) { const d = new Date(t), p = n => String(n).padStart(2, '0'); return { h: p(d.getHours()) + ':' + p(d.getMinutes()), d: p(d.getDate()) + '/' + p(d.getMonth() + 1) }; }
@@ -12082,13 +12106,14 @@ function grLupaDesenharFt(S) {   // um cartão por candle, colado embaixo da col
         if (d && d.total) { const dv = d.delta / d.total * 100; if (dv) { ctx.fillStyle = dv > 0 ? '#BFE6C9' : '#F8C6C4'; ctx.fillRect(X, top + rh, cw, rh); } }
         if (p != null) { ctx.fillStyle = grCorDeltaAnomalo(p, dd.refs.p); ctx.fillRect(X, top + 2 * rh, cw, rh); }
         ctx.fillStyle = 'rgba(0,0,0,0.55)'; for (let q = 1; q < 4; q++) ctx.fillRect(X, top + q * rh - 0.25, cw, 0.5);
-        const lin = (q, rot, v) => { const yc = top + (q + 0.5) * rh + 0.5; ctx.textAlign = 'left'; ctx.font = '400 9.5px -apple-system'; ctx.fillStyle = '#000000'; ctx.fillText(rot, X + 7, yc); ctx.textAlign = 'right'; ctx.font = '400 12px -apple-system'; ctx.fillStyle = '#111111'; ctx.fillText(v, X + cw - 7, yc); };
+        const bgs = [d ? grCorDeltaAnomalo(d.delta, dd.refs.v) : '#FFFFFF', d && d.total && d.delta ? (d.delta > 0 ? '#BFE6C9' : '#F8C6C4') : '#FFFFFF', p != null ? grCorDeltaAnomalo(p, dd.refs.p) : '#FFFFFF', '#FFFFFF'];
+        const lin = (q, rot, v) => { const yc = top + (q + 0.5) * rh + 0.5, tc = grAa2TxtSobre(bgs[q]); ctx.fillStyle = tc; ctx.textAlign = 'left'; ctx.font = '400 9.5px -apple-system'; ctx.fillText(rot, X + 7, yc); ctx.textAlign = 'right'; ctx.font = '400 12px -apple-system'; ctx.fillText(v, X + cw - 7, yc); };
         if (d) { lin(0, 'ΔV', grFmtVolCompacto(Math.abs(d.delta), 0)); if (d.total) lin(1, 'Δ%', pct(d.delta / d.total * 100)); lin(3, 'Vol', grFmtVolCompacto(d.total, 0)); }
         if (p != null) lin(2, 'Δ$', pct(p));
         ctx.restore();
-        const cor = mk === 'A' ? '#F59E0B' : mk === 'E' ? '#2E7D32' : null;
+        const cor = mk ? grAa2CorLado(dd.lados[i] === 'c') : null;   // a cor diz o lado: comprador (cor da alta) ou vendedor (cor da baixa)
         ctx.lineWidth = cor ? 1.5 : 1; ctx.strokeStyle = cor || '#000000'; rr(X + 0.5, top + 0.5, cw - 1, ch - 1, 6); ctx.stroke();
-        if (cor) { const bx = X + cw - 10, by = top; ctx.beginPath(); ctx.arc(bx, by, 6.5, 0, 6.2832); ctx.fillStyle = cor; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#FFFFFF'; ctx.stroke(); ctx.fillStyle = '#FFFFFF'; ctx.font = '500 8.5px -apple-system'; ctx.textAlign = 'center'; ctx.fillText(mk, bx, by + 0.5); }
+        if (cor) { const bx = X + cw - 10, by = top; ctx.beginPath(); ctx.arc(bx, by, 6.5, 0, 6.2832); ctx.fillStyle = cor; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#FFFFFF'; ctx.stroke(); ctx.fillStyle = grAa2TxtSobre(cor); ctx.font = '500 8.5px -apple-system'; ctx.textAlign = 'center'; ctx.fillText(mk, bx, by + 0.5); }
     }
 }
 // ===== LUPA:FIM =====
