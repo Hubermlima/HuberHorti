@@ -3900,7 +3900,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v981';
+const APP_VERSAO = 'v982';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -12166,6 +12166,17 @@ function grLupaTfAbrir(modo) {   // lista de TFs: a mesma para a lupa (remonta o
     const r = b.getBoundingClientRect(), atual = reg ? (S.regTfMs > 0 ? S.regTfMs : 0) : S.dados.ms, pop = document.createElement('div'); pop.id = 'cv-lupa-tfpop';
     pop.style.cssText = 'position:fixed;z-index:9810;left:' + Math.max(8, Math.min(r.left, window.innerWidth - 185)) + 'px;top:' + (r.bottom + 4) + 'px;max-height:60vh;overflow-y:auto;background:#FFFFFF;border:1px solid #000000;border-radius:10px;box-shadow:0 6px 22px rgba(0,0,0,0.25);min-width:84px;';
     const escolhe = ms => { if (reg) { S.regTfMs = ms > 0 ? ms : null; S.regC = {}; S.regUlt = null; grLupaRegRotulo(); grLupaRegDesenhar(); } else grLupaTfEscolher(ms); };
+    if (reg) {   // período da régua: só a lupa · desde a lupa mais antiga até agora
+        const per = grLupaRegPer();
+        [['lupa', 'Só a lupa'], ['ate', 'Desde a 1ª lupa']].forEach(([v, rot]) => {
+            const it = document.createElement('button'); it.type = 'button';
+            it.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;height:38px;padding:0 12px;border:none;background:#FFFFFF;color:#000000;font-size:14px;font-family:inherit;text-align:left;white-space:nowrap;';
+            it.innerHTML = '<span>' + rot + '</span>' + (per === v ? grHeroicon('check', 15, '#000000') : '');
+            it.onclick = ev => { ev.stopPropagation(); grLupaTfFechar(); try { localStorage.setItem('grLupaRegPer', v); } catch (e) {} S.regRef = null; S.regC = {}; S.regUlt = null; grLupaRegDesenhar(); grLupaRtDesenhar(); };
+            pop.appendChild(it);
+        });
+        const sep = document.createElement('div'); sep.style.cssText = 'height:1px;background:#000000;'; pop.appendChild(sep);
+    }
     const itens = grLupaTfsLista().map(ms => [ms, grLupaTfRot(ms)]); if (reg) itens.unshift([0, 'Auto (' + grLupaTfRot(grLupaRegTfAuto(S.dados.ms)) + ')']);
     itens.forEach(([ms, rot]) => {
         const on = reg ? ms === atual : Math.abs(ms - atual) < 1, it = document.createElement('button'); it.type = 'button';
@@ -12395,6 +12406,7 @@ function grLupaDesenharFt(S) {   // um cartão por candle, colado embaixo da col
 //    Só muda o período: soma os candles que aparecem na lupa (do 1º ao último). Presos/suporte/resistência valem no preço do fim desse período.
 const GR_LUPA_REG_W = 62;
 function grLupaColBase() { try { return FOOTPRINT_SKIN === 'cinza' ? 76 : 104; } catch (e) { return 104; } }   // skin cinza tem um total só por nível: coluna mais estreita
+function grLupaRegPer() { try { return localStorage.getItem('grLupaRegPer') === 'ate' ? 'ate' : 'lupa'; } catch (e) { return 'lupa'; } }   // 'lupa' = só os candles da lupa · 'ate' = do começo da lupa mais antiga até agora (rompimentos de verdade)
 function grLupaRegLigada() { try { return localStorage.getItem('grLupaReg') !== '0'; } catch (e) { return true; } }
 function grLupaRegTfAuto(ms) {   // igual à régua principal: um degrau acima do TF (1m→5m · 5m→30m · 15m→1h · 30m e 1h→4h · 4h→1D · 1D→1S · acima→1M)
     const m = ms / 60000, D = 86400000;
@@ -12440,10 +12452,12 @@ function grLupaRegTickEf() {   // degrau da régua = ATR do TF dela, ENCAIXADO n
 }
 function grLupaRegDados(tick) {
     const S = _grLupa, dd = S && S.dados; if (!dd || !dd.cols.length) return null;
-    if (S.regRef !== dd) { S.regRef = dd; S.regMins = null; S.regC = {}; S.regUlt = null; }
+    const per = grLupaRegPer();
+    if (S.regRef !== dd || S.regPerRef !== per) { S.regRef = dd; S.regPerRef = per; S.regMins = null; S.regC = {}; S.regUlt = null; }
     if (!S.regMins) {
-        const du = c => c.dur || dd.ms, c0 = dd.cols[0].c, c1 = dd.cols[dd.cols.length - 1].c, arr = [];
-        grFootprintParaCadaMinuto(c0.t, c1.t + du(c1), m => { arr.push(m); });
+        const du = c => c.dur || dd.ms, c0 = dd.cols[0].c, c1 = dd.cols[dd.cols.length - 1].c, arr = []; let tIni = c0.t, tFim = c1.t + du(c1);
+        if (per === 'ate') { grLupaLista(S.id).forEach(q => { tIni = Math.min(tIni, Math.min(q.t1, q.t2)); }); tFim = Date.now(); }
+        grFootprintParaCadaMinuto(tIni, tFim, m => { arr.push(m); });
         arr.sort((a, b) => a.ts - b.ts); S.regMins = arr;
     }
     S.regC = S.regC || {};
@@ -12467,10 +12481,16 @@ function grLupaRegDesenhar() {
     S.regHits = [];
     if (!S.regOn || !(vh > 0)) return;
     if (cv.width !== Math.ceil(rw * dp) || cv.height !== Math.ceil(vh * dp)) { cv.width = Math.ceil(rw * dp); cv.height = Math.ceil(vh * dp); cv.style.width = rw + 'px'; cv.style.height = vh + 'px'; }
-    const ctx = cv.getContext('2d'); ctx.setTransform(dp, 0, 0, dp, 0, 0); ctx.fillStyle = '#FFFFFF'; ctx.fillRect(0, 0, rw, vh);
+    const ctx = cv.getContext('2d'), ctx0 = ctx; ctx.setTransform(dp, 0, 0, dp, 0, 0); ctx.fillStyle = '#FFFFFF'; ctx.fillRect(0, 0, rw, vh);
     let tickDA = grLupaRegTickEf(), R = S.regC && S.regC[tickDA];
     if (!R && S.regUlt && Date.now() - (S.tPinca || 0) < 300) { R = S.regUlt; tickDA = R.tick; clearTimeout(S.regT); S.regT = setTimeout(() => { S.regT = 0; if (_grLupa === S) try { grLupaRegDesenhar(); } catch (e) {} }, 320); }   // pinçando: usa o último cálculo (a saúde dos níveis é pesada) e refaz ao parar
-    else if (!R) R = grLupaRegDados(tickDA);
+    else if (!R) {
+        if (grLupaRegPer() === 'ate') {   // janela longa: calcula fora do desenho (mostra o último resultado, ou "calculando", até ficar pronto)
+            if (S.regUlt) { R = S.regUlt; tickDA = R.tick; }
+            if (!S.regDef) S.regDef = setTimeout(() => { S.regDef = 0; if (_grLupa !== S) return; try { grLupaRegDados(grLupaRegTickEf()); grLupaRegDesenhar(); } catch (e) {} }, 40);
+            if (!R) { ctx0.save(); ctx0.fillStyle = '#000000'; ctx0.font = '400 9px -apple-system'; ctx0.textAlign = 'center'; ctx0.translate(rw / 2, vh / 2); ctx0.rotate(-Math.PI / 2); ctx0.fillText('calculando…', 0, 3); ctx0.restore(); return; }
+        } else R = grLupaRegDados(tickDA);
+    }
     const G = grLupaRtG(), st = S.sc.scrollTop;
     const aviso = txt => { ctx.save(); ctx.fillStyle = '#000000'; ctx.font = '400 9px -apple-system'; ctx.textAlign = 'center'; ctx.translate(rw / 2, vh / 2); ctx.rotate(-Math.PI / 2); ctx.fillText(txt, 0, 3); ctx.restore(); };
     if (!R || !R.mapa.size) { aviso(S.dados.semDado ? 'sem dado do Fluxo' : 'sem dados no período'); return; }
