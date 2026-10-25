@@ -437,6 +437,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <button class="cv-ind-btn" id="cv-ind-deltaAtr" onclick="cvToggleInd('deltaAtr')"><span class="btn-sigla">DA</span><span class="btn-nome">Delta ATR</span></button>
       <button class="cv-ind-btn" id="cv-ind-setupCx" onclick="scToggle()"><span class="btn-sigla">SC</span><span class="btn-nome">Robô Trade</span></button>
       <button class="cv-ind-btn" id="cv-ind-acav" onclick="cvToggleInd('acav')"><span class="btn-sigla">AA</span><span class="btn-nome">Ac/Av</span></button>
+      <button class="cv-ind-btn" id="cv-ind-acav2" onclick="cvToggleInd('acav2')"><span class="btn-sigla">A2</span><span class="btn-nome">Ac/Av 2.0</span></button><!--ACAV2-->
       <button class="cv-ind-btn" id="cv-ind-eficiencia" onclick="cvToggleInd('eficiencia')"><span class="btn-sigla">Ef</span><span class="btn-nome">Eficiência</span></button>
     </div>
     <div class="cv-grupo-menu" id="cv-grupo-volume">
@@ -3899,7 +3900,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v958';
+const APP_VERSAO = 'v959';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -8210,6 +8211,7 @@ if (_grTipoGrafico === 'linha') {
         }
         try { grNfDesenhar(ctx, t => toXIdx2(grTimeToIndex(t)), p => toY(p), PAD, W, chartH); } catch (eNf) {}
         try { grGatilhosDesenhar(ctx, t => toXIdx2(grTimeToIndex(t)), p => toY(p)); } catch (eGt) {}
+        if (_indState.acav2) { try { grAa2Desenhar(ctx, i => toXIdx2(i), p => toY(p), PAD, W, chartH, chartW / Math.max(totalSlots, 1)); } catch (eA2) {} }   /*ACAV2*/
         try { grMedidasDesenhar(ctx, t => toXIdx2(grTimeToIndex(t)), p => toY(p), i => toXIdx2(i), PAD, W, H); } catch (eMd) {}
         grEdAlcasDesenhar(ctx, t => toXIdx2(grTimeToIndex(t)), p => toY(p));
         (window._grAncBadgesMain || []).forEach(bd => {   // badge no eixo Y com o valor da EMA selecionada (mesmo estilo das pílulas dos alertas)
@@ -10481,6 +10483,7 @@ const _indState = {
     subInd:    null,
     cvdPA:     false, // CVD + Delta sobrepostos no painel de preço (segunda camada, em cima dos candles)
     deltaAtr:  false, // Regua de delta por faixa de ATR, eixo dedicado no canto esquerdo (experimental)
+    acav2:     false,   /*ACAV2*/
     acav:      true,  // Balões AC/AV (absorção compradora/vendedora): independente do painel Absorção; precisa do Fluxo (delta por candle)
     eficiencia: false, // Eficiência Bid/Ask: chip na Barra Superior; a régua Bid x Ask fica dentro do modal do chip (depende do Fluxo, TF <= 4H)
     sent:      false, // Sentimento: 3 painéis no lugar dos de baixo (Open Interest, Funding, Long/Short), escala fixa desde a âncora
@@ -11704,6 +11707,64 @@ function cvNfCtxMenu() {   // barra de contexto do desenho selecionado (como no 
     m.style.left = x + 'px'; m.style.top = y + 'px';
 }
 function cvNfCtxRemover() { const m = document.getElementById('cv-nf-ctx'); if (m) m.remove(); try { grEdCtxFecharEsp(); } catch (e) {} }
+// ===== ACAV2:INICIO ===== (módulo isolado, indicador NOVO ao lado do Ac/Av antigo. Para REMOVER: apague daqui até ACAV2:FIM, o botão <!--ACAV2-->, e as linhas marcadas com /*ACAV2*/)
+// Ac/Av 2.0: marca candle FECHADO em que um lado agrediu (delta forte) e o preço não andou por esse volume = absorção.
+//   AV (absorção vendedora, marca ACIMA do candle): delta comprador forte e o preço não subiu na proporção.   AC (absorção compradora, marca ABAIXO): o inverso.
+// Tudo é relativo à própria série (mediana dos 100 candles ANTERIORES; nunca olha o futuro). Passa se: volume ≥ mediana, |delta|/volume ≥ mediana, e
+//   (delta contra o candle E preço andou por volume ≤ mediana) OU (preço andou por volume ≤ 25% da mediana, mesmo sem divergência). Doji com delta forte conta.
+// Se o TF atual não mostra, olha o TF MAIOR (1H→4H, 15M→1H, 4H→1D): a marca do TF maior aparece como anel, no último candle do bloco que fecha.
+var GR_AA2_COR = '#F59E0B', GR_AA2_N = 100;
+function grAa2Maior(ms) { const L = [1, 5, 15, 30, 60, 120, 240, 1440]; for (let k = 0; k < L.length; k++) if (L[k] * 60000 >= ms * 3) return L[k] * 60000; return null; }
+function grAa2Marcar(S) {   // S: [{o,h,l,c,v,d}] em ordem de tempo; d = delta do candle (null se sem dado) → ['AV'|'AC'|null]
+    const out = new Array(S.length).fill(null);
+    const med = a => { if (!a.length) return 0; const x = a.slice().sort((p, q) => p - q); return (x[(x.length - 1) >> 1] + x[x.length >> 1]) / 2; };
+    for (let i = 0; i < S.length; i++) {
+        const q = S[i]; if (q.d == null || q.d === 0 || !(q.v > 0) || !(q.o > 0)) continue;
+        const ref = S.slice(Math.max(0, i - GR_AA2_N), i).filter(r => r.d != null && r.v > 0 && r.o > 0); if (ref.length < 20) continue;
+        const medV = med(ref.map(r => r.v)), medDv = med(ref.map(r => Math.abs(r.d) / r.v)), medEf = med(ref.filter(r => r.c !== r.o).map(r => Math.abs(r.c - r.o) / r.o * 100 / r.v));
+        if (!(q.v >= medV) || !(Math.abs(q.d) / q.v >= medDv) || !(medEf > 0)) continue;
+        const mv = (q.c - q.o) / q.o * 100, ef = Math.abs(mv) / q.v, contra = mv === 0 || ((q.d > 0) !== (mv > 0));
+        if ((contra && ef <= medEf) || ef <= 0.25 * medEf) out[i] = q.d > 0 ? 'AV' : 'AC';
+    }
+    return out;
+}
+function grAa2Calcular() {   // {base: Map t→{tipo,h,l}, alto: Map t→{tipo,h,l}} com cache por (qtde de candles, último candle, TF, dados do Fluxo)
+    const cs = _grAllCandles, raw = (typeof _grFootprintCandlesRaw !== 'undefined') ? _grFootprintCandlesRaw : null;
+    if (!cs || cs.length < 30 || !raw || !raw.length || !_grFootprintAtivo) return null;
+    const ms = grFootprintMsPorCandle(), key = cs.length + '|' + cs[0].t + '|' + cs[cs.length - 1].t + '|' + ms + '|' + raw.length + '|' + raw[raw.length - 1].ts;
+    if (window._grAa2 && window._grAa2.key === key) return window._grAa2.v;
+    const t0 = raw[0].ts, t1 = raw[raw.length - 1].ts + 60000;
+    if (_grDeltaMemo.size > 8000) _grDeltaMemo.clear();
+    const dDe = (t, m) => { if (t < t0 || t + m > t1) return null; const mk = t + '_' + m; let v = _grDeltaMemo.get(mk); if (v === undefined) { v = grDeltaCalcularCandle(t, m, raw); _grDeltaMemo.set(mk, v); } return v; };
+    const base = new Map(), alto = new Map(), fechados = cs.length - 1;   // o último candle é o que está formando
+    const S = []; for (let i = 0; i < fechados; i++) { const c = cs[i]; S.push({ o: c.o, h: c.h, l: c.l, c: c.c, v: c.v, d: dDe(c.t, ms) }); }
+    grAa2Marcar(S).forEach((m, i) => { if (m) base.set(cs[i].t, { tipo: m, h: cs[i].h, l: cs[i].l }); });
+    const ms2 = grAa2Maior(ms);
+    if (ms2) {   // TF maior: junta os candles do TF atual em blocos fechados
+        const B = [], fim = cs[fechados - 1].t + ms;
+        for (let i = 0; i < fechados; i++) { const c = cs[i], t = Math.floor(c.t / ms2) * ms2, u = B[B.length - 1];
+            if (u && u.t === t) { u.h = Math.max(u.h, c.h); u.l = Math.min(u.l, c.l); u.c = c.c; u.v += c.v || 0; u.ult = c.t; } else B.push({ t, o: c.o, h: c.h, l: c.l, c: c.c, v: c.v || 0, ult: c.t }); }
+        const F = B.filter(b => b.t + ms2 <= fim).map(b => ({ t: b.t, ult: b.ult, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v, d: dDe(b.t, ms2) }));
+        grAa2Marcar(F).forEach((m, i) => { if (m) alto.set(F[i].ult, { tipo: m, h: F[i].h, l: F[i].l }); });
+    }
+    const v = { base, alto }; window._grAa2 = { key, v }; return v;
+}
+function grAa2Desenhar(ctx, fxI, fy, PAD, W, chartH, slotW) {
+    if (!_indState.acav2) return; const R = grAa2Calcular(); if (!R) return;
+    const r = Math.max(3.5, Math.min(7, slotW * 0.6)), letra = r >= 6;
+    ctx.save(); ctx.beginPath(); ctx.rect(PAD.left, PAD.top, W - PAD.left - PAD.right, chartH); ctx.clip(); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const ponto = (t, m, anel, nivel) => {
+        const x = fxI(grTimeToIndex(t)); if (!isFinite(x) || x < PAD.left - 10 || x > W - PAD.right + 10) return;
+        const y = m.tipo === 'AV' ? fy(m.h) - 11 - nivel * (2 * r + 3) : fy(m.l) + 11 + nivel * (2 * r + 3); if (!isFinite(y)) return;
+        ctx.beginPath(); ctx.arc(x, y, r, 0, 6.2832);
+        if (anel) { ctx.fillStyle = '#FFFFFF'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = GR_AA2_COR; ctx.stroke(); } else { ctx.fillStyle = GR_AA2_COR; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#FFFFFF'; ctx.stroke(); }
+        if (letra) { ctx.fillStyle = anel ? '#000000' : '#FFFFFF'; ctx.font = '500 ' + (r * 1.25).toFixed(1) + 'px -apple-system'; ctx.fillText('A', x, y + 0.5); }
+    };
+    R.base.forEach((m, t) => ponto(t, m, false, 0));
+    R.alto.forEach((m, t) => { const b = R.base.get(t); ponto(t, m, true, b && b.tipo === m.tipo ? 1 : 0); });
+    ctx.restore();
+}
+// ===== ACAV2:FIM =====
 // ===== LUPA:INICIO ===== (módulo isolado. Para REMOVER: apague daqui até LUPA:FIM, o botão <!--LUPA--> e as linhas marcadas com /*LUPA*/)
 // LUPA: marca-se uma ZONA (2 cantos: tempo + preço; mesmo gesto do POC Range) e abre um modal GRANDE com os footprints dos candles da zona e,
 // embaixo, os rodapés do painel de Fluxo (Delta V, Delta/Vol, Delta $, Total) de cada candle. É uma Medida com lp:true: herda alças, olho, lixeira,
@@ -12773,7 +12834,7 @@ function grDesenhosColetar() {
 // O Fluxo (footprint/R2) e tudo que depende dele só existe para o BTC: em outro ativo ficam desligados e bloqueados.
 window._grAmbPorAtivo = window._grAmbPorAtivo || {};
 window._grAmbRaizLegada = window._grAmbRaizLegada || null; // campos antigos da raiz do JSON, vistos no carregamento (= ambiente do BTC)
-const GR_IND_SO_BTC = ['cvdPA', 'deltaAtr', 'eficiencia', 'acav']; // dependem do Fluxo/R2 (que só tem BTC)
+const GR_IND_SO_BTC = ['cvdPA', 'deltaAtr', 'eficiencia', 'acav', 'acav2'];   /*ACAV2*/ // dependem do Fluxo/R2 (que só tem BTC)
 function grAtivoTemFluxo() { return grBinSymbolAtual() === 'BTCUSDT'; }
 function grAvisoSoBtc() { try { grToast('Fluxo, CVD, OI, Delta ATR, Eficiência e Absorção só existem para o BTC', '#EF5350'); } catch (e) {} }
 function grAmbAtivoColetar() {
@@ -12792,6 +12853,7 @@ function grAmbAtivoColetar() {
         deltaAtr: _indState.deltaAtr,
         eficiencia: _indState.eficiencia,
         acav: _indState.acav,
+        acav2: _indState.acav2,   /*ACAV2*/
         wyckoff: (window.WY ? WY.ligado() : false),   /*WYCKOFF*/
         rvol: (window.RV ? RV.ligado() : false),   /*RVOL*/
         footprint: _grFootprintAtivo
@@ -12803,7 +12865,7 @@ function grAmbAtivoDaRaiz(amb) {
     return {
         t: 'BTC', tf: amb.tf, tfCustom: amb.tfCustom, zoom: amb.zoom, yFatorMapa: amb.yFatorMapa, escalaLog: _grEscalaLog,
         bollinger: amb.bollinger, rsi: amb.rsi, rsiNiveis: amb.rsiNiveis, subInd: amb.subInd || null,
-        cvdPA: amb.cvdPA, deltaAtr: amb.deltaAtr, eficiencia: amb.eficiencia, acav: amb.acav, footprint: amb.footprint === true
+        cvdPA: amb.cvdPA, deltaAtr: amb.deltaAtr, eficiencia: amb.eficiencia, acav: amb.acav, acav2: amb.acav2, footprint: amb.footprint === true
     };
 }
 // Fatia de um ativo que nunca foi aberto: herda o visual de `base` (a do ativo anterior), com escala vertical própria e sem
@@ -12813,7 +12875,7 @@ function grAmbAtivoPadrao(base) {
     return {
         tf: b.tf, tfCustom: b.tfCustom, zoom: b.zoom, yFatorMapa: {}, escalaLog: b.escalaLog === true,
         bollinger: b.bollinger, rsi: b.rsi, rsiNiveis: b.rsiNiveis, subInd: b.subInd === 'absorcao' ? null : b.subInd,
-        cvdPA: false, deltaAtr: false, eficiencia: false, acav: true, footprint: false
+        cvdPA: false, deltaAtr: false, eficiencia: false, acav: true, acav2: false, footprint: false
     };
 }
 // Fatia a aplicar ao abrir `id`: a salva; senão (BTC) os campos antigos da raiz; senão herda de `base`.
