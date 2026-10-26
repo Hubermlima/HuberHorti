@@ -3927,7 +3927,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v1060';
+const APP_VERSAO = 'v1061';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4838,7 +4838,8 @@ function grFootprintClusterDoCandle(candle, tick, getTodos) {
 // desiste do texto e fica só a cor). Chamado uma vez por desenho.
 // ── Régua de degradê (a mesma da lupa): aparece no topo quando o footprint está na tela; arrastar o cursor esconde os níveis de menor volume
 window._grGradPos = (function () { try { const v = parseFloat(localStorage.getItem('grMainGrad')); return v >= 0 && v <= 1 ? v : 0; } catch (e) { return 0; } })();
-function grMainGradD(dmax) { const p = window._grGradPos; if (!(p > 0.001)) return 0; const piso = FOOTPRINT_DENS_PISO; if (!(dmax > piso)) return 0; return piso * Math.pow(dmax / piso, p); }
+function grFpQuantil(p) { const P = window._grFpPerc; if (!P || P.arr.length < 20) return null; return P.arr[Math.min(P.arr.length - 1, Math.floor(p * P.arr.length))]; }   // densidade que está na posição p (0 a 1) do conjunto
+function grMainGradD(dmax) { const p = window._grGradPos; if (!(p > 0.001)) return 0; { const q = grFpQuantil(p); if (q != null) return q; } const piso = FOOTPRINT_DENS_PISO; if (!(dmax > piso)) return 0; return piso * Math.pow(dmax / piso, p); }
 window._grChipsOculto = (function () { try { return localStorage.getItem('grChipsOculto') === '1'; } catch (e) { return false; } })();
 function grChipsAlternar() { window._grChipsOculto = !window._grChipsOculto; try { localStorage.setItem('grChipsOculto', window._grChipsOculto ? '1' : '0'); } catch (e) {} try { grDrawChart(); } catch (e) {} }
 // A régua de gradação fica logo abaixo dos botões de TF (fim do cabeçalho); com o cabeçalho escondido sobe para o topo do gráfico
@@ -4868,7 +4869,7 @@ function grMainGradBarra(cfg) {
     if (cv.width !== Math.ceil(W * dp) || cv.height !== Math.ceil(H * dp)) { cv.width = Math.ceil(W * dp); cv.height = Math.ceil(H * dp); cv.style.width = W + 'px'; cv.style.height = H + 'px'; }
     const ctx = cv.getContext('2d'); ctx.setTransform(dp, 0, 0, dp, 0, 0); ctx.clearRect(0, 0, W, H);
     const piso = FOOTPRINT_DENS_PISO, dm = Math.max(piso * 1.01, cfg.dmax || 0), x0 = 8, x1 = W - 8, g = ctx.createLinearGradient(x0, 0, x1, 0);
-    for (let i = 0; i <= 40; i++) { const q = i / 40; g.addColorStop(q, grLupaGradCor(piso * Math.pow(dm / piso, q), cfg.refTop)); }
+    for (let i = 0; i <= 40; i++) { const q = i / 40; g.addColorStop(q, grFpGradCorQ(q, piso * Math.pow(dm / piso, q), cfg.refTop)); }
     ctx.beginPath(); ctx.roundRect(x0, 4, x1 - x0, 6, 3); ctx.fillStyle = g; ctx.fill();
     // Numeração discreta dos níveis de cor, logo abaixo da barra: 0 (mais claro) até 9 (mais escuro)
     try {
@@ -12766,6 +12767,7 @@ function grLupaRegPer() { try { return localStorage.getItem('grLupaRegPer') === 
 // ── Régua de gradação (1 cursor): arrasta do tom mais claro ao mais escuro e o footprint mostra só os níveis daquele tom para cima (tira o ruído dos níveis claros)
 function grLupaGradOn() { try { return FOOTPRINT_SKIN !== 'tv' && localStorage.getItem('grLupaGradVis') !== '0'; } catch (e) { return false; } }
 function grLupaGradPos() { try { const v = parseFloat(localStorage.getItem('grLupaGrad')); return v >= 0 && v <= 1 ? v : 0; } catch (e) { return 0; } }
+function grFpGradCorQ(q, dAntigo, refTop) { const P = window._grFpPerc; return P && P.arr.length >= 20 ? grFootprintPintar(FOOTPRINT_COR_CINZA, q, 0).cor : grLupaGradCor(dAntigo, refTop); }   // a régua é o próprio percentil: posição q = cor do percentil q
 function grLupaGradCor(d, refTop) {   // a mesma cor que a célula tem nesta densidade (paleta cinza)
     { const P = window._grFpPerc; if (P && P.arr.length >= 20) return d > 0 ? grFootprintPintar(FOOTPRINT_COR_CINZA, grFpPercentil(P.arr, d), 0).cor : '#FFFFFF'; }
     const piso = FOOTPRINT_DENS_PISO, teto = FOOTPRINT_DENS_TETO; if (!(d > piso)) return '#FFFFFF';
@@ -12776,6 +12778,7 @@ function grLupaGradCor(d, refTop) {   // a mesma cor que a célula tem nesta den
 function grLupaGradDmax(dd) { if (dd._dmax != null) return dd._dmax; let m = 0; dd.cols.forEach(c => c.mapa.forEach(a => { const d = (a.bid + a.ask) / dd.tick; if (d > m) m = d; })); return (dd._dmax = m); }
 function grLupaGradD(S) {   // densidade mínima para a célula aparecer (0 = tudo)
     const dd = S.dados, p = S.gradPos; if (!S.gradOn || !(p > 0.001) || !dd) return 0;
+    { const q = grFpQuantil(p); if (q != null) return q; }
     const piso = FOOTPRINT_DENS_PISO, dm = grLupaGradDmax(dd); if (!(dm > piso)) return 0;
     return piso * Math.pow(dm / piso, p);
 }
@@ -12785,7 +12788,7 @@ function grLupaGradDesenhar() {
     if (cv.width !== Math.ceil(W * dp) || cv.height !== Math.ceil(H * dp)) { cv.width = Math.ceil(W * dp); cv.height = Math.ceil(H * dp); cv.style.width = W + 'px'; cv.style.height = H + 'px'; }
     const ctx = cv.getContext('2d'); ctx.setTransform(dp, 0, 0, dp, 0, 0); ctx.clearRect(0, 0, W, H);
     const dd = S.dados, piso = FOOTPRINT_DENS_PISO, dm = Math.max(piso * 1.01, grLupaGradDmax(dd)), x0 = 14, x1 = W - 14, by = 7, bh = 12, g = ctx.createLinearGradient(x0, 0, x1, 0);
-    for (let i = 0; i <= 40; i++) { const q = i / 40; g.addColorStop(q, grLupaGradCor(piso * Math.pow(dm / piso, q), dd.refTop)); }
+    for (let i = 0; i <= 40; i++) { const q = i / 40; g.addColorStop(q, grFpGradCorQ(q, piso * Math.pow(dm / piso, q), dd.refTop)); }
     const rr = (x, y, w, h, r) => { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); };
     rr(x0, by, x1 - x0, bh, 6); ctx.fillStyle = g; ctx.fill();
     const cx = x0 + S.gradPos * (x1 - x0); rr(cx - 3, 4, 6, 18, 3); ctx.fillStyle = '#2962FF'; ctx.fill();
