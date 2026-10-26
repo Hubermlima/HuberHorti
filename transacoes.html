@@ -3905,7 +3905,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v1019';
+const APP_VERSAO = 'v1021';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4966,6 +4966,9 @@ function grConfigBlocoContrasteV2(svg) {
         + grConfigSliderDecimal('cv-cfg-contraste', 'Contraste', FOOTPRINT_CONTRASTE, 0, 10, 0.5, 'grFootprintContrasteSlider')
         + '</div>';
 }
+// Contraste do número com o fundo da célula (WCAG): luminância relativa em luz linear; o ponto onde preto e branco rendem o mesmo contraste é ~0,179.
+function grFpLumRel(r, g, b) { const f = v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); }
+function grFpTextoContraste(cor, padrao) { const m = String(cor).match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/); if (!m) return padrao || '#000000'; return grFpLumRel(+m[1], +m[2], +m[3]) < 0.179 ? '#FFFFFF' : '#000000'; }
 function grFootprintPintar(pal, k, destaque) {
     const w = Math.min(1, k * 5);   // k quase zero (ruído) -> quase branco
     let r = 255 + (pal.base[0] - 255) * w + (pal.forte[0] - pal.base[0]) * k;
@@ -4973,7 +4976,7 @@ function grFootprintPintar(pal, k, destaque) {
     let b = 255 + (pal.base[2] - 255) * w + (pal.forte[2] - pal.base[2]) * k;
     if (destaque > 0) { r += (8 - r) * destaque; g += (8 - g) * destaque; b += (8 - b) * destaque; }
     r = Math.round(r); g = Math.round(g); b = Math.round(b);
-    return { cor: 'rgb(' + r + ',' + g + ',' + b + ')', escura: (0.299 * r + 0.587 * g + 0.114 * b) < 130 };
+    return { cor: 'rgb(' + r + ',' + g + ',' + b + ')', escura: grFpLumRel(r, g, b) < 0.179 };
 }
 // bid/ask já por linha-base; tick em US$; refTop = densidade do p97 visível (destaque).
 function grFootprintCorCelula(bid, ask, tick, refTop) {
@@ -5127,6 +5130,7 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
             return;
         }
         geo.push({ y0, y1, pontaCortada, escura: fraca ? false : corCel.escura, fraca });
+        if (fraca) { ctx.fillStyle = '#FFFFFF'; ctx.fillRect(xCel, y0, wCel, Math.max(1, y1 - y0)); }   // base branca opaca: a cor esmaecida não deixa passar as zonas (retângulos, lupas) que estão por baixo
         ctx.fillStyle = corCel.cor;
         if (fraca) ctx.globalAlpha = 0.22;
         ctx.fillRect(xCel, y0, wCel, Math.max(1, y1 - y0));
@@ -5186,7 +5190,7 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
             const imb = ln.imbAsk || ln.imbBid;
             ctx.font = imb ? fonteNegrito : fonteNormal;
             ctx.fillStyle = imb ? (g.escura ? '#8FA5FF' : '#1A2BD8') : (g.escura ? '#FFFFFF' : '#000000');
-            if (g.fraca) ctx.globalAlpha = 0.55;
+            if (g.fraca) ctx.globalAlpha = 0.7;
             fpTxt(grFmtVolCompacto(ln.total, nivelTxt), xCel + wCel - 3, (g.y0 + g.y1) / 2, g);
             ctx.globalAlpha = 1;
         });
@@ -5197,7 +5201,7 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
     if (FOOTPRINT_SKIN === 'tv' && nivelTxt >= 0) {
         const fundo = grCorFundo();
         const lum = c => { const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(c); if (!m) return 255; return 0.299 * parseInt(m[1], 16) + 0.587 * parseInt(m[2], 16) + 0.114 * parseInt(m[3], 16); };
-        const contraste = c => lum(c) < 140 ? '#FFFFFF' : '#000000';
+        const contraste = c => { const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(c); return m && grFpLumRel(parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)) >= 0.179 ? '#000000' : (m ? '#FFFFFF' : '#000000'); };
         const desenha = (txt, xIni, ym, dentro) => {   // dentro(x) -> cor da barra sob o ponto x, ou null (fundo)
             let x = xIni;
             for (const ch of txt) {
@@ -5236,7 +5240,7 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
             ctx.font = ln.imbAsk ? fonteNegrito : fonteNormal; const wb = ctx.measureText(b).width;
             let x = xCel + (wCel - (wa + wx + wb)) / 2;
             const y = (g.y0 + g.y1) / 2;
-            if (g.fraca) ctx.globalAlpha = 0.55;
+            if (g.fraca) ctx.globalAlpha = 0.7;
             ctx.font = ln.imbBid ? fonteNegrito : fonteNormal; ctx.fillStyle = ln.imbBid ? corImb : corTxt; fpTxt(a, x, y, g); x += wa;
             ctx.font = fonteNormal;                             ctx.fillStyle = corTxt;                          fpTxt(' x ', x, y, g); x += wx;
             ctx.font = ln.imbAsk ? fonteNegrito : fonteNormal; ctx.fillStyle = ln.imbAsk ? corImb : corTxt; fpTxt(b, x, y, g);
@@ -6919,7 +6923,7 @@ function grDrawCandles(candles, emptyRight) {
                     // mais cedo, só pra decisão de cor do texto desta régua.
                     let lumInfoDA = 255;
                     { const mRgb = corInfoDA.cor.match(/rgb\((\d+),(\d+),(\d+)\)/); if (mRgb) lumInfoDA = 0.299*(+mRgb[1]) + 0.587*(+mRgb[2]) + 0.114*(+mRgb[3]); }
-                    ctx.fillStyle = lumInfoDA > 210 ? (deltaFaixa >= 0 ? '#00695C' : '#C62828') : '#FFFFFF';
+                    ctx.fillStyle = lumInfoDA > 210 ? (deltaFaixa >= 0 ? '#00695C' : '#C62828') : grFpTextoContraste(corInfoDA.cor, '#FFFFFF');
                     // Texto EMPILHADO conforme a altura da faixa:
                     //   >= 36 px: delta com sinal (+/−) / delta em % do volume / volume total (compra + venda)
                     //   >= 22 px: delta com sinal / volume total
@@ -12557,14 +12561,15 @@ function grLupaDesenharMain(S) {   // segue a Skin das configurações (cores ·
                     barra(ancL - wB, wB, corB); barra(ancR, wA, corA);
                     const texto = (txt, xIni, imb, sobre) => {   // cor decidida caractere a caractere pelo que está atrás (barra ou fundo)
                         ctx.font = (imb ? '700 ' : '400 ') + D.fs.toFixed(1) + 'px -apple-system'; ctx.textAlign = 'left'; let xx = xIni;
-                        for (const ch of txt) { const wc = ctx.measureText(ch).width, cb = sobre(xx + wc / 2); ctx.fillStyle = lum(cb || '#FFFFFF') < 140 ? '#FFFFFF' : '#000000'; ctx.fillText(ch, xx, Y + D.rowH / 2 + 0.5); xx += wc; }
+                        for (const ch of txt) { const wc = ctx.measureText(ch).width, cb = sobre(xx + wc / 2); ctx.fillStyle = (() => { const mm = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(cb || '#FFFFFF'); return mm && grFpLumRel(parseInt(mm[1], 16), parseInt(mm[2], 16), parseInt(mm[3], 16)) < 0.179 ? '#FFFFFF' : '#000000'; })(); ctx.fillText(ch, xx, Y + D.rowH / 2 + 0.5); xx += wc; }
                         ctx.textAlign = 'center';
                     };
                     if (bid >= 0.05) { ctx.font = '400 ' + D.fs.toFixed(1) + 'px -apple-system'; const tb = fmt(bid); texto(tb, ancL - 2 - ctx.measureText(tb).width, imbB, xx => (wB >= 0.5 && xx >= ancL - wB && xx <= ancL) ? corB : null); }
                     if (ask >= 0.05) { const ta = fmt(ask); texto(ta, ancR + 2, imbA, xx => (wA >= 0.5 && xx >= ancR && xx <= ancR + wA) ? corA : null); }
                 } else {
                     const cor = grFootprintCorCelula(bid, ask, dd.tick, dd.refTop);
-                    ctx.fillStyle = cor.cor; if (fraca) ctx.globalAlpha = 0.22; ctx.fillRect(cx0, Y, cw, D.rowH); ctx.globalAlpha = fraca ? 0.55 : 1;
+                    if (fraca) { ctx.fillStyle = '#FFFFFF'; ctx.fillRect(cx0, Y, cw, D.rowH); }
+                    ctx.fillStyle = cor.cor; if (fraca) ctx.globalAlpha = 0.22; ctx.fillRect(cx0, Y, cw, D.rowH); ctx.globalAlpha = fraca ? 0.7 : 1;
                     const txt = (v, x, imb, al) => {
                         if (v < 0.05) return;
                         ctx.font = (imb ? '700 ' : '400 ') + D.fs.toFixed(1) + 'px -apple-system'; ctx.fillStyle = (cor.escura && !fraca) ? '#FFFFFF' : '#111111'; ctx.textAlign = al || 'center';
@@ -17419,7 +17424,7 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
         }
         const fonteN = '600 ' + fs + 'px -apple-system', fonteB = '800 ' + fs + 'px -apple-system';
         const lum = c => { const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(c); if (!m) return 255; return 0.299 * parseInt(m[1], 16) + 0.587 * parseInt(m[2], 16) + 0.114 * parseInt(m[3], 16); };
-        const contraste = c => lum(c) < 140 ? '#FFFFFF' : '#000000';
+        const contraste = c => { const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(c); return m && grFpLumRel(parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)) >= 0.179 ? '#000000' : (m ? '#FFFFFF' : '#000000'); };
         const niveisPrecos = niveis.map(([p]) => p);
         const yForPrice = p => grFootprintYParaPreco(niveisPrecos, tick, rowH, p);
         _grFootprintCandleLinhas = [];
