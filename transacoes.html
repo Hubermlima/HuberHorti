@@ -3905,7 +3905,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v1023';
+const APP_VERSAO = 'v1025';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4881,22 +4881,18 @@ function grFootprintPrepararClusters(ctx, candles, pxPorUsd, cW) {
             if (fsUsar >= (nivel < 2 ? 6.5 : 5)) { nivelTxt = nivel; fs = fsUsar; }
         }
     }
-    // Referências de cor ESTÁVEIS: o destaque (p97) e o maior valor da régua de degradê vêm dos últimos candles com Fluxo (não só dos que estão na tela),
-    // por isso uma célula não muda de cor quando você rola o gráfico. Recalcula só quando muda a grade (zoom), o TF, o ativo ou o modo de linhas.
-    let refTop = 0, dmax = 0;
+    // Referências de cor ESTÁVEIS: o destaque (p97) e o topo da régua de degradê só SOBEM enquanto você rola (guardam o maior já visto neste ativo/TF;
+    // as densidades já são por unidade de preço, então valem para qualquer zoom). Assim uma célula não muda de cor quando você rola o gráfico.
+    // Não calcula nada a mais: usa só o que já está na tela.
+    let refTop = grFootprintDestaqueRef(clusters, tick), dmax = 0;
+    clusters.forEach(cl => cl.linhas.forEach(ln => { const d = ln.total / (cl.agrup || 1) / tick; if (d > dmax) dmax = d; }));
     try {
-        const kRef = [grBinSymbolAtual(), _grTf, tick, FOOTPRINT_LINHAS_MODO, FOOTPRINT_NIVEIS_MAX, _grAllCandles.length > 0 ? 1 : 0].join('|');
+        const kRef = grBinSymbolAtual() + '|' + _grTf;
         let R = window._grFpRefEst;
-        if (!R || R.k !== kRef || (R.ref <= 0 && Date.now() - R.t > 5000)) {
-            const m = new Map(), ult = _grAllCandles.slice(-200);
-            for (let i = 0; i < ult.length; i++) { const c2 = ult[i], cl2 = grFootprintClusterDoCandle(c2, tick, getTodos); if (cl2) m.set(c2.t, cl2); }
-            let dm2 = 0; m.forEach(cl => cl.linhas.forEach(ln => { const d = ln.total / (cl.agrup || 1) / tick; if (d > dm2) dm2 = d; }));
-            R = window._grFpRefEst = { k: kRef, ref: m.size ? grFootprintDestaqueRef(m, tick) : 0, dmax: dm2, t: Date.now() };
-        }
+        if (!R || R.k !== kRef) R = window._grFpRefEst = { k: kRef, ref: 0, dmax: 0 };
+        if (refTop > R.ref) R.ref = refTop; if (dmax > R.dmax) R.dmax = dmax;
         refTop = R.ref; dmax = R.dmax;
     } catch (eR) {}
-    if (!(refTop > 0)) refTop = grFootprintDestaqueRef(clusters, tick);
-    if (!(dmax > 0)) clusters.forEach(cl => cl.linhas.forEach(ln => { const d = ln.total / (cl.agrup || 1) / tick; if (d > dmax) dmax = d; }));
     window._grFpTickUlt = tick;   // grade da última tela (a varredura usa a mesma, pra bater com o que você vê)
     return { tick, clusters, maxTotal, refTop, nivelTxt, fs, soTotal, dmax };
 }
@@ -6702,7 +6698,14 @@ const startIdx = Math.max(0, Math.min(maxOff, _grOffset));
         console.log('Chart error:', e.message);
     }
 }
+// Envelopa o desenho: se algo der erro no meio, o footprint (que agora é desenhado por último entre as zonas) ainda é desenhado e o erro vai pro console
 function grDrawCandles(candles, emptyRight) {
+    window._grFpFlush = null;
+    try { return grDrawCandlesImpl(candles, emptyRight); }
+    catch (eDc) { try { console.log('[grDrawCandles] ' + (eDc && eDc.stack || eDc)); } catch (e2) {} throw eDc; }
+    finally { try { if (window._grFpFlush) window._grFpFlush(); } catch (e3) {} }
+}
+function grDrawCandlesImpl(candles, emptyRight) {
         emptyRight = emptyRight || 0;
         try { grPosAjustarLargura(); } catch (e) {}   // largura das caixas = fração da tela × zoom, em qualquer TF
         window._compValores = {};
@@ -7410,6 +7413,11 @@ if (_grTipoGrafico === 'linha') {
     window._grFpTotalPx = (clustersCfg && clustersCfg.nivelTxt >= 0) ? Math.ceil(clustersCfg.fs * 1.4 + 6) : 0; // altura da linha de totais bid x ask abaixo do candle (EV desce além dela)
     window._grAbsColeta = [];
     window._grFpDif = [];   // footprint: desenhado DEPOIS das zonas/objetos (primeiro plano); aqui só guarda quem desenhar
+    window._grFpFlush = () => {
+        const L = window._grFpDif || []; window._grFpDif = [];
+        if (!clustersCfg || !L.length) return;
+        L.forEach(d => { ctx.save(); ctx.setLineDash([]); ctx.globalAlpha = 1; try { grDesenharFootprintCluster(ctx, d.xs, cW, d.c, clustersCfg, toY, PAD.top, PAD.top + chartH); } catch (eFp) { try { console.log('[footprint] ' + (eFp && eFp.stack || eFp)); } catch (e2) {} } ctx.restore(); });
+    };
     candles.forEach((cReal, i) => {
         const c = grCandleVisual(cReal); // o candle em formação segue só a linha da cotação (ver grCandleVisual)
         const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
@@ -8309,10 +8317,7 @@ if (_grTipoGrafico === 'linha') {
         }
         try { grNfDesenhar(ctx, t => toXIdx2(grTimeToIndex(t)), p => toY(p), PAD, W, chartH); } catch (eNf) {}
         // FOOTPRINT EM PRIMEIRO PLANO: as células são desenhadas depois das zonas e objetos (posições, retângulos, lupas...), que ficam por baixo
-        if (clustersCfg && window._grFpDif && window._grFpDif.length) {
-            window._grFpDif.forEach(d => { ctx.save(); ctx.setLineDash([]); ctx.globalAlpha = 1; try { grDesenharFootprintCluster(ctx, d.xs, cW, d.c, clustersCfg, toY, PAD.top, PAD.top + chartH); } catch (eFp) {} ctx.restore(); });
-            window._grFpDif = [];
-        }
+        if (window._grFpFlush) window._grFpFlush();
         try { grGatilhosDesenhar(ctx, t => toXIdx2(grTimeToIndex(t)), p => toY(p)); } catch (eGt) {}
         if (_indState.acav2) { try { grAa2Desenhar(ctx, i => toXIdx2(i), p => toY(p), PAD, W, chartH, chartW / Math.max(totalSlots, 1)); } catch (eA2) {} }   /*ACAV2*/
         try { grMedidasDesenhar(ctx, t => toXIdx2(grTimeToIndex(t)), p => toY(p), i => toXIdx2(i), PAD, W, H); } catch (eMd) {}
