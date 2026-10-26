@@ -3836,6 +3836,7 @@ const FOOTPRINT_SELECAO_AUMENTO = 1.4;      // candle selecionado no crosshair: 
 const FOOTPRINT_FONTE_MAX = 24;             // teto da fonte das células (bid x ask): cresce com o zoom até aqui (antes era 7.5px fixo)
 const FOOTPRINT_SELECAO_FONTE_MAX = 30;     // ...e nunca acima de 30px
 const FOOTPRINT_CLUSTER_CW_MIN = 10;        // candle mais estreito que isso volta pro candle normal
+const FOOTPRINT_CORES_CW_MIN = 28;          // skin automática: só vira Cores quando o número de cada lado já cabe (antes virava aos 20 e ficava sem número até dar mais zoom)
 const FOOTPRINT_TEXTO_CW_MIN = 20;          // largura mínima do candle pra tentar escrever "bid x ask"
 const FOOTPRINT_COR_VERDE    = { base: [227, 241, 227], forte: [78, 159, 85] };
 const FOOTPRINT_COR_VERMELHO = { base: [252, 228, 228], forte: [232, 72, 63] };
@@ -3908,7 +3909,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v1038';
+const APP_VERSAO = 'v1040';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4882,17 +4883,16 @@ function grFootprintPrepararClusters(ctx, candles, pxPorUsd, cW) {
         const wCel = cW - barW - 0.5;
         const fsMax = Math.min(FOOTPRINT_FONTE_MAX, rowH - 3); // antes travava em 7.5px: dando zoom, o número nunca crescia
         ctx.font = '600 10px -apple-system';
-        const larguraX = ctx.measureText('|').width + 2;
+        const folgaSep = soTotal ? 0 : 6;   // linha vertical contínua no meio: bid à esquerda, ask à direita, cada lado com a mesma largura
         for (let nivel = 0; nivel <= 2 && nivelTxt < 0; nivel++) {
             let maiorLargura = 1;
             clusters.forEach(cl => cl.linhas.forEach(ln => {
                 const w = soTotal
                     ? ctx.measureText(grFmtVolCel(ln.total, nivel)).width
-                    : ctx.measureText(grFmtVolCel(ln.bid, nivel)).width + larguraX
-                      + ctx.measureText(grFmtVolCel(ln.ask, nivel)).width;
+                    : 2 * Math.max(ctx.measureText(grFmtVolCel(ln.bid, nivel)).width, ctx.measureText(grFmtVolCel(ln.ask, nivel)).width);
                 if (w > maiorLargura) maiorLargura = w;
             }));
-            const fsUsar = Math.min(fsMax, 10 * (wCel - 4) / maiorLargura);
+            const fsUsar = Math.min(fsMax, 10 * (wCel - 4 - folgaSep) / maiorLargura);
             if (fsUsar >= 5) { nivelTxt = nivel; fs = fsUsar; }   // piso 5 px (os números são esticados na vertical, seguem legíveis)
         }
     }
@@ -5063,16 +5063,15 @@ function grFootprintFonteSelecionado(ctx, cl, cfg, wCel, toY) {
     let alturaMin = Infinity;
     cl.linhas.forEach(ln => { const h = Math.abs(toY(ln.p - ln.meio) - toY(ln.p + ln.meio)); if (h < alturaMin) alturaMin = h; });
     ctx.font = '600 10px -apple-system';
-    const larguraX = ctx.measureText('|').width + 2;
     let maior = 1;
     cl.linhas.forEach(ln => {
         const w = cfg.soTotal
             ? ctx.measureText(grFmtVolCel(ln.total, cfg.nivelTxt)).width
-            : ctx.measureText(grFmtVolCel(ln.bid, cfg.nivelTxt)).width + larguraX + ctx.measureText(grFmtVolCel(ln.ask, cfg.nivelTxt)).width;
+            : 2 * Math.max(ctx.measureText(grFmtVolCel(ln.bid, cfg.nivelTxt)).width, ctx.measureText(grFmtVolCel(ln.ask, cfg.nivelTxt)).width);
         if (w > maior) maior = w;
     });
     const teto = Math.min(cfg.fs * FOOTPRINT_SELECAO_AUMENTO, FOOTPRINT_SELECAO_FONTE_MAX);
-    const fsSel = Math.min(teto, 10 * (wCel - 4) / maior, alturaMin - 3);
+    const fsSel = Math.min(teto, 10 * (wCel - 4 - (cfg.soTotal ? 0 : 6)) / maior, alturaMin - 3);
     return fsSel > cfg.fs ? fsSel : cfg.fs;
 }
 // Candle EM FORMAÇÃO (o último, se ainda é o do período atual): o corpo é ditado EXCLUSIVAMENTE pela linha da cotação
@@ -5258,7 +5257,8 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
     }
     // Skin cores: texto "bid x ask" (número do desequilíbrio diagonal em azul negrito)
     if (nivelTxt >= 0 && !cfg.soTotal && FOOTPRINT_SKIN !== 'tv') {
-        ctx.textAlign = 'left';
+        const cxL = Math.round(xCel + wCel / 2);   // linha vertical contínua no meio da célula: bid à esquerda dela, ask à direita
+        cl.linhas.forEach((ln, i) => { const g = geo[i]; if (!g) return; ctx.fillStyle = g.escura ? '#FFFFFF' : '#000000'; ctx.fillRect(cxL - 1, g.y0, 2, Math.max(1, g.y1 - g.y0)); });
         cl.linhas.forEach((ln, i) => {
             const g = geo[i];
             if (!g) return;
@@ -5266,17 +5266,13 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
             const corTxt = g.escura ? '#FFFFFF' : '#000000';
             const corImb = g.escura ? '#8FA5FF' : '#1A2BD8';
             const a = grFmtVolCel(ln.bid, nivelTxt), b = grFmtVolCel(ln.ask, nivelTxt);
-            ctx.font = ln.imbBid ? fonteNegrito : fonteNormal; const wa = ctx.measureText(a).width;
-            ctx.font = fonteNormal;                             const wx = ctx.measureText('|').width + 2;
-            ctx.font = ln.imbAsk ? fonteNegrito : fonteNormal; const wb = ctx.measureText(b).width;
-            let x = xCel + (wCel - (wa + wx + wb)) / 2;
             const y = (g.y0 + g.y1) / 2;
             if (g.fraca) ctx.globalAlpha = 0.7;
-            ctx.font = ln.imbBid ? fonteNegrito : fonteNormal; ctx.fillStyle = ln.imbBid ? corImb : corTxt; fpTxt(a, x, y, g); x += wa;
-            ctx.font = fonteNormal;                             ctx.fillStyle = corTxt;                          fpTxt('|', x + 1, y, g); x += wx;
-            ctx.font = ln.imbAsk ? fonteNegrito : fonteNormal; ctx.fillStyle = ln.imbAsk ? corImb : corTxt; fpTxt(b, x, y, g);
+            ctx.textAlign = 'right'; ctx.font = ln.imbBid ? fonteNegrito : fonteNormal; ctx.fillStyle = ln.imbBid ? corImb : corTxt; fpTxt(a, cxL - 2, y, g);
+            ctx.textAlign = 'left';  ctx.font = ln.imbAsk ? fonteNegrito : fonteNormal; ctx.fillStyle = ln.imbAsk ? corImb : corTxt; fpTxt(b, cxL + 2, y, g);
             ctx.globalAlpha = 1;
         });
+        ctx.textAlign = 'left';
     }
     // Total do candle inteiro, uma linha só, logo ABAIXO do bloco de células — não é célula nem abre nada, é só a
     // soma de todos os níveis daquele footprint. Na skin "cinza" (só total por linha) mostra só o total somado, igual
@@ -5301,11 +5297,10 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
                     fpT(t, xCel + wCel / 2 - ctx.measureText(t).width / 2);
                 } else {
                     const a = grFmtVolCel(totBid, nivelTxt), b = grFmtVolCel(totAsk, nivelTxt);
-                    const wa = ctx.measureText(a).width, wx = ctx.measureText('|').width + 2, wb = ctx.measureText(b).width;
-                    let x = xCel + (wCel - (wa + wx + wb)) / 2;
-                    fpT(a, x); x += wa;
-                    fpT('|', x + 1); x += wx;
-                    fpT(b, x);
+                    const cxT = Math.round(xCel + wCel / 2), hT = fs * 0.72 * kT;
+                    ctx.fillRect(cxT - 1, yTotal - hT, 2, Math.max(1, hT));
+                    ctx.textAlign = 'right'; fpT(a, cxT - 2);
+                    ctx.textAlign = 'left';  fpT(b, cxT + 2);
                 }
             }
         }
@@ -6873,7 +6868,7 @@ function grDrawCandlesImpl(candles, emptyRight) {
         window._grPxDolarLocal = pxDolar;
         const totalSlots = candles.length + emptyRight;
         const cW = Math.max(2, Math.floor(chartW / Math.max(totalSlots, 1)) - 1);
-        FOOTPRINT_SKIN = FOOTPRINT_TV ? 'tv' : (cW >= FOOTPRINT_TEXTO_CW_MIN ? 'cores' : 'cinza');   // skin automática pela largura do candle
+        FOOTPRINT_SKIN = FOOTPRINT_TV ? 'tv' : (cW >= FOOTPRINT_CORES_CW_MIN ? 'cores' : 'cinza');   // skin automática pela largura do candle
         { const okFp = Math.max(2, Math.floor((W - 79) / Math.max(totalSlots, 1)) - 1) >= FOOTPRINT_CLUSTER_CW_MIN;   // largura de referência FIXA (não depende de painel/régua/eixo, que mudam as margens e fariam o limite oscilar sem parar)
              // painel Delta/Total só com zoom suficiente para o footprint aparecer nos candles; ao cruzar o limite, redesenha 1x com a altura certa
           if (window._grFpCwOk !== okFp) { const antes = window._grFpCwOk; window._grFpCwOk = okFp; if (antes !== undefined || !okFp) requestAnimationFrame(() => { try { grDrawChart(); } catch (e) {} }); } }
@@ -17469,8 +17464,7 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
         const imbBid = i => i - 1 >= 0 && bidI(i) > 0 && bidI(i) >= FOOTPRINT_IMBALANCE_RATIO * askI(i - 1);
         // formato/tamanho do texto: o número mais preciso que caiba, senão compacta (igual ao Fluxo)
         ctx.font = '600 10px -apple-system';
-        const larguraX = ctx.measureText('|').width + 2;
-        const wTxt = ehTv ? (wCel / 2 - tvGap - 6) : (wCel - 8);
+        const wTxt = ehTv ? (wCel / 2 - tvGap - 6) : (wCel - 8 - (ehCinza ? 0 : 6));   // sem skin Cinza: bid | ask com linha vertical no meio, cada lado com a mesma largura
         const fsMax = Math.min(22, rowH - 10);
         let nivelTxt = -1, fs = 0;
         for (let nivel = 0; nivel <= 2 && nivelTxt < 0; nivel++) {
@@ -17479,7 +17473,7 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
                 if (!visivel(i)) return;
                 const w = ehTv ? Math.max(ctx.measureText(grFmtVolCel(v.v, nivel)).width, ctx.measureText(grFmtVolCel(v.c, nivel)).width)
                     : ehCinza ? ctx.measureText(grFmtVolCel(v.c + v.v, nivel)).width
-                    : ctx.measureText(grFmtVolCel(v.v, nivel)).width + larguraX + ctx.measureText(grFmtVolCel(v.c, nivel)).width;
+                    : 2 * Math.max(ctx.measureText(grFmtVolCel(v.v, nivel)).width, ctx.measureText(grFmtVolCel(v.c, nivel)).width);
                 if (w > maior) maior = w;
             });
             const fsU = Math.min(fsMax, 10 * wTxt / maior);
@@ -17563,13 +17557,10 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
                         ctx.textAlign = 'left';
                     } else {
                         const a = grFmtVolCel(v.v, nivelTxt), b = grFmtVolCel(v.c, nivelTxt);
-                        ctx.font = imbBid(i) ? fonteB : fonteN; const wa = ctx.measureText(a).width;
-                        ctx.font = fonteN; const wx = ctx.measureText('|').width + 2;
-                        ctx.font = imbAsk(i) ? fonteB : fonteN; const wb = ctx.measureText(b).width;
-                        let x = xCel0 + (wCel - (wa + wx + wb)) / 2;
-                        ctx.font = imbBid(i) ? fonteB : fonteN; ctx.fillStyle = imbBid(i) ? corImb : corTxt; fpTxt(a, x); x += wa;
-                        ctx.font = fonteN; ctx.fillStyle = corTxt; fpTxt('|', x + 1); x += wx;
-                        ctx.font = imbAsk(i) ? fonteB : fonteN; ctx.fillStyle = imbAsk(i) ? corImb : corTxt; fpTxt(b, x);
+                        const cxL = Math.round(xCel0 + wCel / 2);
+                        ctx.fillStyle = cc.escura ? '#FFFFFF' : '#000000'; ctx.fillRect(cxL - 1, y, 2, rowH);
+                        ctx.textAlign = 'right'; ctx.font = imbBid(i) ? fonteB : fonteN; ctx.fillStyle = imbBid(i) ? corImb : corTxt; fpTxt(a, cxL - 2);
+                        ctx.textAlign = 'left';  ctx.font = imbAsk(i) ? fonteB : fonteN; ctx.fillStyle = imbAsk(i) ? corImb : corTxt; fpTxt(b, cxL + 2);
                     }
                 }
             }
