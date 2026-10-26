@@ -3905,7 +3905,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v1021';
+const APP_VERSAO = 'v1023';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4881,8 +4881,22 @@ function grFootprintPrepararClusters(ctx, candles, pxPorUsd, cW) {
             if (fsUsar >= (nivel < 2 ? 6.5 : 5)) { nivelTxt = nivel; fs = fsUsar; }
         }
     }
-    const refTop = grFootprintDestaqueRef(clusters, tick);
-    let dmax = 0; clusters.forEach(cl => cl.linhas.forEach(ln => { const d = ln.total / (cl.agrup || 1) / tick; if (d > dmax) dmax = d; }));   // maior densidade na tela (escala da régua de degradê)
+    // Referências de cor ESTÁVEIS: o destaque (p97) e o maior valor da régua de degradê vêm dos últimos candles com Fluxo (não só dos que estão na tela),
+    // por isso uma célula não muda de cor quando você rola o gráfico. Recalcula só quando muda a grade (zoom), o TF, o ativo ou o modo de linhas.
+    let refTop = 0, dmax = 0;
+    try {
+        const kRef = [grBinSymbolAtual(), _grTf, tick, FOOTPRINT_LINHAS_MODO, FOOTPRINT_NIVEIS_MAX, _grAllCandles.length > 0 ? 1 : 0].join('|');
+        let R = window._grFpRefEst;
+        if (!R || R.k !== kRef || (R.ref <= 0 && Date.now() - R.t > 5000)) {
+            const m = new Map(), ult = _grAllCandles.slice(-200);
+            for (let i = 0; i < ult.length; i++) { const c2 = ult[i], cl2 = grFootprintClusterDoCandle(c2, tick, getTodos); if (cl2) m.set(c2.t, cl2); }
+            let dm2 = 0; m.forEach(cl => cl.linhas.forEach(ln => { const d = ln.total / (cl.agrup || 1) / tick; if (d > dm2) dm2 = d; }));
+            R = window._grFpRefEst = { k: kRef, ref: m.size ? grFootprintDestaqueRef(m, tick) : 0, dmax: dm2, t: Date.now() };
+        }
+        refTop = R.ref; dmax = R.dmax;
+    } catch (eR) {}
+    if (!(refTop > 0)) refTop = grFootprintDestaqueRef(clusters, tick);
+    if (!(dmax > 0)) clusters.forEach(cl => cl.linhas.forEach(ln => { const d = ln.total / (cl.agrup || 1) / tick; if (d > dmax) dmax = d; }));
     window._grFpTickUlt = tick;   // grade da última tela (a varredura usa a mesma, pra bater com o que você vê)
     return { tick, clusters, maxTotal, refTop, nivelTxt, fs, soTotal, dmax };
 }
@@ -7395,6 +7409,7 @@ if (_grTipoGrafico === 'linha') {
     try { grMainGradBarra(clustersCfg); } catch (eGr) {}
     window._grFpTotalPx = (clustersCfg && clustersCfg.nivelTxt >= 0) ? Math.ceil(clustersCfg.fs * 1.4 + 6) : 0; // altura da linha de totais bid x ask abaixo do candle (EV desce além dela)
     window._grAbsColeta = [];
+    window._grFpDif = [];   // footprint: desenhado DEPOIS das zonas/objetos (primeiro plano); aqui só guarda quem desenhar
     candles.forEach((cReal, i) => {
         const c = grCandleVisual(cReal); // o candle em formação segue só a linha da cotação (ver grCandleVisual)
         const x = PAD.left + (i / totalSlots) * chartW + cW / 2;
@@ -7402,7 +7417,7 @@ if (_grTipoGrafico === 'linha') {
         // Cluster de footprint no lugar do candle normal — cai no desenho
         // normal como fallback se não tiver dado de footprint pra esse candle.
         if (clustersCfg) {
-            if (grDesenharFootprintCluster(ctx, x - cW / 2, cW, c, clustersCfg, toY, PAD.top, PAD.top + chartH)) return;
+            if (clustersCfg.clusters.get(c.t)) { window._grFpDif.push({ xs: x - cW / 2, c }); return; }
         }
         // Absorção (divergência preço x delta): o candle mantém as cores normais e ganha um símbolo fora
         // dele (ver grDesenharSimboloAbsorcao).
@@ -8293,6 +8308,11 @@ if (_grTipoGrafico === 'linha') {
             }
         }
         try { grNfDesenhar(ctx, t => toXIdx2(grTimeToIndex(t)), p => toY(p), PAD, W, chartH); } catch (eNf) {}
+        // FOOTPRINT EM PRIMEIRO PLANO: as células são desenhadas depois das zonas e objetos (posições, retângulos, lupas...), que ficam por baixo
+        if (clustersCfg && window._grFpDif && window._grFpDif.length) {
+            window._grFpDif.forEach(d => { ctx.save(); ctx.setLineDash([]); ctx.globalAlpha = 1; try { grDesenharFootprintCluster(ctx, d.xs, cW, d.c, clustersCfg, toY, PAD.top, PAD.top + chartH); } catch (eFp) {} ctx.restore(); });
+            window._grFpDif = [];
+        }
         try { grGatilhosDesenhar(ctx, t => toXIdx2(grTimeToIndex(t)), p => toY(p)); } catch (eGt) {}
         if (_indState.acav2) { try { grAa2Desenhar(ctx, i => toXIdx2(i), p => toY(p), PAD, W, chartH, chartW / Math.max(totalSlots, 1)); } catch (eA2) {} }   /*ACAV2*/
         try { grMedidasDesenhar(ctx, t => toXIdx2(grTimeToIndex(t)), p => toY(p), i => toXIdx2(i), PAD, W, H); } catch (eMd) {}
