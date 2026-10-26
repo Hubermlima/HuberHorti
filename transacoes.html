@@ -3905,7 +3905,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v1013';
+const APP_VERSAO = 'v1015';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -8803,50 +8803,45 @@ function grEdAlcas(fx, fy) {
     return [];
 }
 function grEdCor() { const o = grEdObjeto(); if (o && _edSel.tipo === 'ps') return o.lado === 'short' ? '#EF5350' : '#26A69A'; if (o && _edSel.tipo === 'al') return grAlertaCor(o); return (o && (o.cor || '#000000')) || '#000000'; }
-// Sugestão de stop enquanto você arrasta o stop da caixa manual: as mesmas diretrizes do robô.
-//  • defesa no footprint (24 h): Long = onde a venda agressiva mais bateu entre o stop arrastado e a entrada; Short = o espelho (compra agressiva) · stop logo atrás dela + 1 pavio típico de 5 min
-//  • fora da varrida (M11): se ficar a menos de 1 pavio da borda de um nível da régua, passa a borda + 2 pavios
-//  • mínimo (ruído): nunca a menos de 2 candles típicos de 5 min da entrada
-// Devolve { sug, min } (preços) ou null.
+// Sugestão de stop enquanto você arrasta o stop da caixa manual: o robô desenha, só com o FUNDO da caixa, um stop mais bem protegido
+// (tracejado, ao lado da caixa, como a caixa fantasma), do stop arrastado até o sugerido, sempre ATRÁS dele. Diretrizes do robô:
+//  • defesa no footprint (24 h): Long = onde a venda agressiva mais bateu (Short = a compra); stop logo atrás dela + 1 pavio típico de 5 min
+//  • fora da varrida (M11): a menos de 1 pavio da borda de um nível da régua, passa a borda + 2 pavios
+// Sempre devolve um preço ATRÁS do stop arrastado (acompanha o arrasto); null só se não houver dados.
 function grStopSugestao(o, stopArr) {
     try {
         const ent = cvPosPivo(o); if (!(ent > 0) || !(stopArr > 0)) return null;
         const curto = o.alvo > 0 ? o.alvo < o.entrada : o.lado === 'short', sd = curto ? 1 : -1;   // sd = lado do stop em relação à entrada (+1 acima)
         if (sd * (stopArr - ent) <= 0) return null;
-        const u = window._grDaUltima, tick = (u && u.tick > 0) ? u.tick : 0;
-        const pv = window._scPavio, pav = pv ? (curto ? (pv.sup || 0) : (pv.inf || 0)) : 0, minR = window._scMedMin > 0 ? 2 * window._scMedMin : 0;
+        const u = window._grDaUltima, tick = (u && u.tick > 0) ? u.tick : 0; if (!(tick > 0)) return null;
+        const pv = window._scPavio, pav = pv ? (curto ? (pv.sup || 0) : (pv.inf || 0)) : 0;
         if (!pv && !window._grPavioBuscando) { window._grPavioBuscando = true; scPavioTf(SC_ORDEM[0]).then(r => { if (r) window._scPavio = r; }).catch(() => {}).finally(() => { window._grPavioBuscando = false; }); }
-        if (!(window._scMedMin > 0) && !window._grMedBuscando) { window._grMedBuscando = true; scMedRangeTf(SC_ORDEM[0]).then(r => { if (r > 0) window._scMedMin = r; }).catch(() => {}).finally(() => { window._grMedBuscando = false; }); }
-        let st = null;
-        const dfs = tick > 0 ? scDefesaNivel(curto ? 'short' : 'long', curto ? ent : stopArr, curto ? stopArr : ent, tick) : null;
-        if (dfs) st = curto ? dfs.p + tick / 2 + pav : dfs.p - tick / 2 - pav;
-        if (st == null) st = stopArr;
-        if (tick > 0 && pav > 0) { const kS = Math.round(st / tick), ed = (kS + sd * 0.5) * tick; if (sd * (st - ed) > -pav) st = ed + sd * 2 * pav; }   // varrida
-        let mn = minR > 0 ? ent + sd * minR : null;
-        if (mn != null && sd * (st - mn) < 0) st = mn;
-        if (!(sd * (st - ent) > 0)) return null;
-        return { sug: st, min: mn };
+        const R = Math.abs(stopArr - ent), ate = stopArr + sd * R * 0.5;   // procura a defesa da entrada até meio risco além do stop arrastado
+        const dfs = scDefesaNivel(curto ? 'short' : 'long', curto ? ent : ate, curto ? ate : ent, tick);
+        let st = dfs ? (curto ? dfs.p + tick / 2 + pav : dfs.p - tick / 2 - pav) : stopArr;
+        if (pav > 0) { const kS = Math.round(st / tick), ed = (kS + sd * 0.5) * tick; if (sd * (st - ed) > -pav) st = ed + sd * 2 * pav; }   // varrida
+        return sd * (st - stopArr) > tick / 2 ? st : stopArr + sd * Math.max(2 * pav, tick);   // stop já atrás da defesa: o fundo fica a 2 pavios (a folga do robô) logo atrás dele
     } catch (e) { return null; }
 }
-function grStopSugestaoDesenhar(ctx, fy) {
+function grStopSugestaoDesenhar(ctx, fx, fy) {
     if (!_edDrag || !_edDrag.moved || _edDrag.k !== 's' || !_edSel || _edSel.tipo !== 'ps') return;
     const o = grEdObjeto(); if (!o || !(o.stop > 0)) return;
-    const r = grStopSugestao(o, o.stop); if (!r) return;
+    const sug = grStopSugestao(o, o.stop); if (sug == null) return;
     const L = grPadL(), R = L + (window._grChartW || 300), cor = grEdCor();
-    const linha = (p, forte) => {
-        const y = fy(p); if (!(y >= _grPAD.top && y <= _grPAD.top + _grChartH)) return;
-        ctx.save(); ctx.setLineDash(forte ? [7, 4] : [2, 4]); ctx.lineWidth = forte ? 1.4 : 1; ctx.strokeStyle = cor; ctx.globalAlpha = forte ? 0.95 : 0.7;
-        ctx.beginPath(); ctx.moveTo(L, y); ctx.lineTo(R, y); ctx.stroke(); ctx.setLineDash([]);
-        ctx.globalAlpha = 1; ctx.font = (forte ? 'bold ' : '') + '10px -apple-system'; ctx.fillStyle = cor; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
-        ctx.fillText(Math.round(p).toLocaleString('pt-BR'), L + 4, y - 2);
-        ctx.restore();
-    };
-    if (r.min != null) linha(r.min, false);
-    linha(r.sug, true);
+    const gx = Math.max(L, Math.min(fx(o.t1), fx(o.t2v || o.t2))), gw = Math.max(20, Math.min(R, Math.max(fx(o.t1), fx(o.t2v || o.t2))) - gx);   // as mesmas colunas da caixa, logo abaixo do stop
+    const y1 = fy(o.stop), y2 = fy(sug), yT = Math.min(y1, y2), hT = Math.abs(y2 - y1);
+    ctx.save();
+    ctx.fillStyle = cor; ctx.globalAlpha = 0.10; ctx.fillRect(gx, yT, gw, hT); ctx.globalAlpha = 1;
+    ctx.lineWidth = 1.2; ctx.setLineDash([4, 3]); ctx.strokeStyle = cor;
+    ctx.strokeRect(gx, yT, gw, hT);
+    ctx.beginPath(); ctx.moveTo(gx, y2); ctx.lineTo(gx + gw, y2); ctx.lineWidth = 1.6; ctx.stroke();   // novo fundo da caixa
+    ctx.setLineDash([]); ctx.font = 'bold 10px -apple-system'; ctx.fillStyle = cor; ctx.textAlign = 'left'; ctx.textBaseline = y2 > y1 ? 'top' : 'bottom';
+    ctx.fillText(Math.round(sug).toLocaleString('pt-BR'), gx + 3, y2 + (y2 > y1 ? 3 : -3));
+    ctx.restore();
 }
 function grEdAlcasDesenhar(ctx, fx, fy) {
     if (!_edSel) return;
-    try { grStopSugestaoDesenhar(ctx, fy); } catch (e) {}
+    try { grStopSugestaoDesenhar(ctx, fx, fy); } catch (e) {}
     const cor = grEdCor();
     if (_edSel && _edSel.tipo === 'ps') { const oo = grEdObjeto(); if (oo && oo.trancada) return; }   // trancada: sem alças desenhadas
     grEdAlcas(fx, fy).forEach(a => {
