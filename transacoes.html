@@ -382,7 +382,6 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <canvas id="gr-valuearea-overlay-canvas" style="position:absolute;top:0;left:0;width:100%;height:calc(100% - max(env(safe-area-inset-bottom), 28px));pointer-events:none;z-index:6;"></canvas>
       <canvas id="gr-cot-overlay-canvas" style="position:absolute;top:0;left:0;width:100%;height:calc(100% - max(env(safe-area-inset-bottom), 28px));pointer-events:none;z-index:6;"></canvas>
       <canvas id="gr-crosshair-overlay-canvas" style="position:absolute;top:0;left:0;width:100%;height:calc(100% - max(env(safe-area-inset-bottom), 28px));pointer-events:none;z-index:6;"></canvas>
-      <canvas id="gr-metricas-canvas" style="position:absolute;top:0;left:0;width:100%;height:calc(100% - max(env(safe-area-inset-bottom), 28px));pointer-events:none;z-index:7;"></canvas>
     </div>
     <!-- Botão toggle barra unificada -->
     <!-- Barra unificada lateral esquerda com scroll e arrasto -->
@@ -3902,7 +3901,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v1001';
+const APP_VERSAO = 'v1003';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -5337,9 +5336,17 @@ function grCotOverlayDesenhar() {
     ctx.strokeStyle = precoColor;
     ctx.lineWidth = 1.5;
     ctx.setLineDash([]);
-    ctx.beginPath(); ctx.moveTo(g.padL, yPreco); ctx.lineTo(g.W - g.padR - 5, yPreco); ctx.stroke();   // vai até a ponta da seta do badge
+    if (window._grEixoYOculto) ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(g.padL, yPreco); ctx.lineTo(window._grEixoYOculto ? g.W - g.padR : g.W - g.padR - 5, yPreco); ctx.stroke();   // vai até a ponta da seta do badge
     ctx.restore();
     const txt = fmtN(_precoAtual);
+    if (window._grEixoYOculto) {   // selo discreto em cima da reta; arrastável na horizontal (para tirar de cima de algum componente)
+        ctx.font = '600 9px -apple-system'; const tw = ctx.measureText(txt).width, w = tw + 8, h = 13, x0 = g.padL, x1 = g.W - g.padR - w, bx = x0 + (x1 - x0) * (window._grCotFx != null ? window._grCotFx : 0.97), by = yPreco - h - 1;
+        ctx.globalAlpha = 0.9; ctx.fillStyle = precoColor; ctx.beginPath(); ctx.roundRect(bx, by, w, h, 4); ctx.fill(); ctx.globalAlpha = 1;
+        ctx.fillStyle = '#FFFFFF'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(txt, bx + w / 2, by + h / 2 + 0.5); ctx.textBaseline = 'alphabetic';
+        window._cotBadge = { x: bx, y: by, w, h }; window._cotHandleY = yPreco; window._cotHandleX = bx; window._cotHandleW = w; return;
+    }
+    window._cotBadge = null;
     ctx.font = 'bold 10px -apple-system';
     const bH = 16, bW = g.padR - 4;
     const bX = g.W - g.padR + 1, bY = yPreco - bH / 2;
@@ -6755,7 +6762,7 @@ function grDrawCandles(candles, emptyRight) {
             let maxW = 0;
             if (_grEscalaLog) ticksEixo.forEach(t => { maxW = Math.max(maxW, ctx.measureText(grFmtPrecoEixo(t.price, t.step)).width); });
             else maxW = Math.max(ctx.measureText(grFmtPrecoEixo(maxP, gridStep)).width, ctx.measureText(grFmtPrecoEixo(minP, gridStep)).width);
-            PAD.right = Math.ceil(maxW) + 14;
+            PAD.right = window._grEixoYOculto ? 6 : Math.ceil(maxW) + 14;
         }
         // Recalcula chartW com a largura do eixo atualizada
         chartW = W - PAD.left - PAD.right;
@@ -6797,7 +6804,7 @@ function grDrawCandles(candles, emptyRight) {
             ctx.setLineDash([]);
             ctx.font = fsEixo + 'px -apple-system';
             ctx.textAlign = 'right';
-            ticksEixo.forEach(tk => {
+            if (!window._grEixoYOculto) ticksEixo.forEach(tk => {
                 const y = toY(tk.price);
                 if (y < PAD.top || y > PAD.top + chartH) return;
                 ctx.strokeStyle = corGrade;
@@ -7848,7 +7855,6 @@ if (_grTipoGrafico === 'linha') {
         // Linha Stop — sempre visível, área ancorada no PM
         // Régua % (Alvo) — respeita o toggle "Visível" de Gerenciar Componentes
                                         // Linha do Preço Médio de Compra
-        grMetricasDesenhar(ctx, { PAD, W, chartW, chartH, toY, slotW: chartW / Math.max(totalSlots, 1), xLeft: xTempoArea }); // tabelinha de métricas do candle (Ver Métricas)
         // Linha de preço atual — cor dinâmica pelo último candle
         if (_precoAtual > 0) {
             const lastCandle = _grAllCandles[_grAllCandles.length - 1];
@@ -9578,8 +9584,7 @@ function grInitTouch() {
             }
             // Modo edição de desenho: arrasto relativo da alça mais próxima
             if (_edSel && grEdToqueInicio(ex2, ey2)) { e.preventDefault(); return; }
-            // Tabela de métricas: tocar e arrastar por cima dela move a janela (o ✕ é tratado como toque, pelos chips)
-            if (grMetricasToqueInicio(ex2, ey2)) { e.preventDefault(); return; }
+            if (grCotBadgeToqueInicio(ex2, ey2)) { e.preventDefault(); return; }
             if (cvdJacToqueInicio(ex2, ey2)) { e.preventDefault(); return; }
             try { if (RV.toqueInicio(ex2, ey2)) { e.preventDefault(); return; } } catch (eRv) {}   /*RVOL*/
             try { if (AB.toqueInicio(ex2, ey2)) { e.preventDefault(); return; } } catch (eAb) {}   /*ABALAO*/
@@ -9593,280 +9598,11 @@ function grInitTouch() {
                     grDrawChart(); e.preventDefault(); return;
                 }
             }
-            // Toque no botão "Ver Métricas" da janela do crosshair
-            if (window._longPressActive && window._grCrosshairMetricasBtnArea) {
-                const tm = window._grCrosshairMetricasBtnArea;
-                if (ex2 >= tm.x && ex2 <= tm.x + tm.w && ey2 >= tm.y && ey2 <= tm.y + tm.h) {
-                    if (window._grCrosshairCandleAtual) grMetricasAlternar(window._grCrosshairCandleAtual);
-                    window._longPressActive = false; clearTimeout(_longPressTimer); // fecha o crosshair: o candle e a tabela ficam à vista
-                    grDrawChart();
-                    e.preventDefault();
-                    return;
-                }
-            }
-            // Toque no botão "⚓ Ancorar" / "✕ Remover Âncora" da janela do crosshair
-            if (window._longPressActive && window._grCrosshairAncorarBtnArea) {
-                const ta = window._grCrosshairAncorarBtnArea;
-                if (ex2 >= ta.x && ex2 <= ta.x + ta.w && ey2 >= ta.y && ey2 <= ta.y + ta.h) {
-                    grVwapAncorarNoCandle(window._grCrosshairAncorarIdx);
-                    window._longPressActive = false;
-                    clearTimeout(_longPressTimer);
-                    e.preventDefault();
-                    return;
-                }
-            }
-            // Toque no botão "Ancorar Value Area" / "Remover Value Area" da janela do crosshair
-            if (window._longPressActive && window._grCrosshairValueAreaBtnArea) {
-                const tva = window._grCrosshairValueAreaBtnArea;
-                if (ex2 >= tva.x && ex2 <= tva.x + tva.w && ey2 >= tva.y && ey2 <= tva.y + tva.h) {
-                    grValueAreaAncorarNoCandle(window._grCrosshairValueAreaIdx);
-                    window._longPressActive = false;
-                    clearTimeout(_longPressTimer);
-                    e.preventDefault();
-                    return;
-                }
-            }
-            // Toque no botão "Ancorar Volume Profile" / "Remover Volume Profile" da janela do crosshair
-            if (window._longPressActive && window._grCrosshairVpBtnArea) {
-                const tvp = window._grCrosshairVpBtnArea;
-                if (ex2 >= tvp.x && ex2 <= tvp.x + tvp.w && ey2 >= tvp.y && ey2 <= tvp.y + tvp.h) {
-                    window._longPressActive = false;
-                    clearTimeout(_longPressTimer);
-                    grVpAncorarNoCandle(window._grCrosshairVpIdx); // redesenha por dentro
-                    e.preventDefault();
-                    return;
-                }
-            }
-            // LÁPIS na intersecção do crosshair: toque nele liga/desliga o modo desenho (o crosshair continua aberto). Com o modo ligado, tocar em outro ponto leva o crosshair até lá.
-            if (window._longPressActive && !grPlAtivo() && !window._mdGesto && _grCrosshairX != null && window._longPressY >= 0) {
-                { const lx0 = _grCrosshairX, Wc = grLW(canvas), axx = (lx0 + 32 + 12 > Wc - (window._grPADRight != null ? window._grPADRight : 60)) ? lx0 - 32 : lx0 + 32;
-                  const dP = Math.hypot(ex2 - lx0, ey2 - window._longPressY), dA = Math.hypot(ex2 - axx, ey2 - window._longPressY);
-                  if (dA <= 20 && dA < dP) { grTextoNovo(); e.preventDefault(); return; }   // "Aa": escrever
-                  if (dP <= 20) { mdDesenhoAlternar(); e.preventDefault(); return; } }   // pincel: modo desenho
-                if (window._mdDesenhoOn) {
-                    _grCrosshairX = e.touches[0].clientX - canvas.getBoundingClientRect().left; window._longPressY = toCanvasYCh(e.touches[0].clientY);
-                    isDragging = false; clearTimeout(_longPressTimer); _mdDw = null; window._mdDwProg = 0; grDrawChartWithCrosshair(window._longPressY); e.preventDefault(); return;
-                }
-            }
-            // Toque simples fecha o crosshair se estava ativo
-            if (window._longPressActive) {
-                window._longPressActive = false;
-                clearTimeout(_longPressTimer);
-                grDrawChart();
-                e.preventDefault();
-                return;
-            }
-            // Modo Alerta novo — igual à linha horizontal: toque posiciona, arrasto ajusta, soltar grava
-            if (_indState.alertaNovo) {
-                _alDrawing = true;
-                _alAtual = { p: grToPrice(ey2) };
-                grDrawChart();
-                e.preventDefault();
-                return;
-            }
-            // Modo Posição Long/Short — toque posiciona a entrada, arrasto ajusta, soltar cria a caixa e já abre as alças
-            if (_indState.posLong || _indState.posShort) {
-                _psDrawing = true;
-                _psAtual = { lado: _indState.posShort ? 'short' : 'long', i1: grXToIndex(ex2), p: grToPrice(ey2) };
-                grDrawChart();
-                e.preventDefault();
-                return;
-            }
-            // Modo Linha Horizontal — toque posiciona, arrasto ajusta, soltar fixa
-            if (_indState.hlinha) {
-                _hlDrawing = true;
-                _hlAtual = { p: grToPrice(ey2) };
-                grDrawChart();
-                e.preventDefault();
-                return;
-            }
-            // Modo Novo Fibo — encosta no ponto 1, arrasta até o ponto 2 (com ímã; a tela rola sozinha nas bordas) e solta para criar
-            if (false && _indState.novoFibo) {   // (criação agora é pelo crosshair + Ações)
-                const sp0 = grNfSnap(ex2, ey2 - NF_OFF);
-                _nfDrawing = true; _nfDedo = { x: ex2, y: ey2, x0: ex2, y0: ey2 };
-                _nfAtual = { t1: sp0.t, p1: sp0.p, t2: sp0.t, p2: sp0.p, cor: '#2962FF', moved: false };
-                grNfAutoIniciar(); grDrawChart();
-                e.preventDefault();
-                return;
-            }
-            // Modo Medida ativo — descartável, suspende outros gestos
-            if (_indState.medida) {
-                const idx0 = grXToIndex(ex2);
-                const price0 = grToPrice(ey2);
-                _medidaDrawing = true;
-                _medidaAtual = { i1: idx0, p1: price0, i2: idx0, p2: price0 };
-                e.preventDefault();
-                return;
-            }
-            // Modo Trendline ativo — suspende outros gestos
-            if (_indState.trend && !_canalModo) {
-                const HITT = 40;
-                let foundDrag = null;
-                for (let li = 0; li < _trendlines.length; li++) {
-                    const tl = _trendlines[li]; if (tl.oculta) continue;
-                    const x1 = grIndexToX(grTimeToIndex(tl.t1)), y1 = grLineY(tl.p1);
-                    const x2 = grIndexToX(grTimeToIndex(tl.t2)), y2 = grLineY(tl.p2);
-                    if (Math.hypot(ex2 - x1, ey2 - y1) <= HITT) { foundDrag = { li, end: '1' }; break; }
-                    if (Math.hypot(ex2 - x2, ey2 - y2) <= HITT) { foundDrag = { li, end: '2' }; break; }
-                }
-                if (foundDrag) {
-                    _trendDragging = foundDrag;
-                    e.preventDefault();
-                    return;
-                }
-                // Toque no corpo de uma linha existente — toque longo apaga
-                let foundBody = null;
-                for (let li = 0; li < _trendlines.length; li++) {
-                    const tl = _trendlines[li]; if (tl.oculta) continue;
-                    const x1 = grIndexToX(grTimeToIndex(tl.t1)), y1 = grLineY(tl.p1);
-                    const x2 = grIndexToX(grTimeToIndex(tl.t2)), y2 = grLineY(tl.p2);
-                    const dx = x2 - x1, dy = y2 - y1;
-                    const lenSq = dx * dx + dy * dy;
-                    let t = lenSq > 0 ? ((ex2 - x1) * dx + (ey2 - y1) * dy) / lenSq : 0;
-                    t = Math.max(0, Math.min(1, t));
-                    const px = x1 + t * dx, py = y1 + t * dy;
-                    if (Math.hypot(ex2 - px, ey2 - py) <= 18) { foundBody = li; break; }
-                }
-                if (foundBody !== null) {
-                    _trendDeletePending = { li: foundBody };
-                    _trendDeleteStartX = ex2; _trendDeleteStartY = ey2;
-                    _trendDeleteTimer = setTimeout(() => {
-                        if (_trendDeletePending) {
-                            cvApagarTrendline(_trendDeletePending.li);
-                            _trendDeletePending = null;
-                        }
-                    }, 500);
-                    e.preventDefault();
-                    return;
-                }
-                // Toque fora de pontas existentes — inicia linha nova
-                const idx0 = grXToIndex(ex2);
-                const price0 = grToPrice(ey2);
-                _trendDrawing = true;
-                _trendAtual = { i1: idx0, p1: price0, i2: idx0, p2: price0, cor: _trendColor, canal: _canalModo };
-                e.preventDefault();
-                return;
-            }
-            // Modo Desenho Livre ativo — vários traços em sequência, dedo não sai da tela
-            if (_indState.freehand) {
-                // Toque perto de um traço existente = candidato a apagar (toque longo, mesmo padrão da Trendline)
-                let foundStroke = null;
-                buscaTraco:
-                for (let si = 0; si < _freehands.length; si++) {
-                    const pts = _freehands[si].pontos;
-                    for (let pi = 0; pi < pts.length - 1; pi++) {
-                        const x1 = grIndexToX(grTimeToIndex(pts[pi].t)), y1 = grLineY(pts[pi].p);
-                        const x2 = grIndexToX(grTimeToIndex(pts[pi + 1].t)), y2 = grLineY(pts[pi + 1].p);
-                        const dx = x2 - x1, dy = y2 - y1;
-                        const lenSq = dx * dx + dy * dy;
-                        let t = lenSq > 0 ? ((ex2 - x1) * dx + (ey2 - y1) * dy) / lenSq : 0;
-                        t = Math.max(0, Math.min(1, t));
-                        const px = x1 + t * dx, py = y1 + t * dy;
-                        if (Math.hypot(ex2 - px, ey2 - py) <= 18) { foundStroke = si; break buscaTraco; }
-                    }
-                }
-                if (foundStroke !== null) {
-                    _freehandDeletePending = { si: foundStroke };
-                    _freehandDeleteStartX = ex2; _freehandDeleteStartY = ey2;
-                    _freehandDeleteTimer = setTimeout(() => {
-                        if (_freehandDeletePending) {
-                            cvApagarFreehand(_freehandDeletePending.si);
-                            _freehandDeletePending = null;
-                        }
-                    }, 500);
-                    e.preventDefault();
-                    return;
-                }
-                // Início de um traço novo
-                const idx0f = grXToIndex(ex2);
-                const price0f = grToPrice(ey2);
-                _freehandDrawing = true;
-                _freehandAtual = { pontos: [{ i: idx0f, p: price0f }], cor: _freehandColor };
-                _freehandLastPxX = ex2; _freehandLastPxY = ey2;
-                e.preventDefault();
-                return;
-            }
-            const yInterno = toCanvasY(e.touches[0].clientY);
-            const xInterno = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (grLW(canvas) / canvas.getBoundingClientRect().width);
-            const target = grGetDragTarget(yInterno);
-            if (target) {
-                _grDragLineCandidato = target; // decidido só no 1º movimento (ver touchmove) — não trava o scroll na hora
-                _grDragLine = null;
-                isDragging = true;
-                touchStartX = e.touches[0].clientX;
-                touchStartY = e.touches[0].clientY;
-                if (target === 'stop') window._stopHandleDragged = false;
-            }
- else {
-    _grDragLine = null; _grDragLineCandidato = null;
-    touchStartX = e.touches[0].clientX;
-    touchStartY = e.touches[0].clientY;
-    isDragging = true;
-    window._longPressY = yInterno;
-                _longPressTimer = setTimeout(() => {
-        if (isDragging) {
-            window._longPressActive = true;
-            window._grCrosshairMaximizada = false; // a janela abre sempre minimizada (só data e ΔV Nível)
-            isDragging = false;
-            _grCrosshairX = _liveTouchX - canvas.getBoundingClientRect().left;
-            window._longPressY = toCanvasYCh(_liveTouchY);
-            grDrawChartWithCrosshair(window._longPressY);
-        }
-    }, 1100);
-}
-        } else if (e.touches.length === 2) {
-            _grDragLine = null; _grDragLineCandidato = null;
-            isDragging = false;
-            clearTimeout(_longPressTimer);
-            window._longPressActive = false;
-            lastTouchDist = Math.hypot(
-                e.touches[0].clientX - e.touches[1].clientX,
-                e.touches[0].clientY - e.touches[1].clientY
-            );
-            lastTouchDistX = Math.abs(e.touches[0].clientX - e.touches[1].clientX);
-            lastTouchDistY = Math.abs(e.touches[0].clientY - e.touches[1].clientY);
-            // Novo gesto de pinça — resincroniza o acumulador com o zoom
-            // atual, pra não carregar deriva de qualquer mudança de zoom que
-            // tenha acontecido fora da pinça entre um gesto e outro.
-            _grZoomAcumulado = _grZoom;
-            // Pinça no EIXO Y: os dois dedos começam na faixa de preços (agora à DIREITA do gráfico) → só a altura muda
-            const rectP = canvas.getBoundingClientRect(), escP = grLW(canvas) / rectP.width;
-            const xa = (e.touches[0].clientX - rectP.left) * escP, xb = (e.touches[1].clientX - rectP.left) * escP;
-            const limiteEixo = grLW(canvas) - grPadR() - 10;
-            window._grPincaY = (xa > limiteEixo && xb > limiteEixo) ? { lastDist: Math.abs(e.touches[0].clientY - e.touches[1].clientY) } : null;
-            // Pinça no EIXO X: os dois dedos começam ABAIXO do gráfico de preços (faixa de baixo: painéis e margem) → só a
-            // LARGURA dos candles muda; a altura fica exatamente onde está.
-            const ya = (e.touches[0].clientY - rectP.top) * (grLH(canvas) / rectP.height), yb = (e.touches[1].clientY - rectP.top) * (grLH(canvas) / rectP.height);
-            const fundoPlot = _grPAD.top + _grChartH - 50; // área do gesto começa 50px ACIMA do fundo dos candles (nos ativos sem painel a faixa de baixo é só ~30px)
-            window._grPincaX = (!window._grPincaY && ya > fundoPlot && yb > fundoPlot) ? { lastDist: Math.abs(e.touches[0].clientX - e.touches[1].clientX) } : null;
-        }
-        e.preventDefault();
-    }, { passive: false });
-    canvas.addEventListener('touchmove', e => {
-        if (e.touches.length === 1) {
-            _liveTouchX = e.touches[0].clientX;
-            _liveTouchY = e.touches[0].clientY;
-            if (grPlAtivo() && window._nfT) {   // Novo Fibo e demais ferramentas de Desenho: o dedo arrasta o crosshair (relativo)
-                const rcN = canvas.getBoundingClientRect(), nx0 = (e.touches[0].clientX - rcN.left) * (grLW(canvas) / rcN.width), ny0 = (e.touches[0].clientY - rcN.top) * (grLH(canvas) / rcN.height), N = window._nfT;
-                if (!N.moved && Math.hypot(nx0 - N.fx, ny0 - N.fy) > 8) N.moved = true;
-                if (N.moved) {
-                    const L = window._grPADLeft || 0, Wc = window._grChartW || 0, Tp = _grPAD.top, Hc = _grChartH;
-                    _grCrosshairX = Math.max(L, Math.min(L + Wc, N.cx0 + (nx0 - N.fx))); window._longPressY = Math.max(Tp, Math.min(Tp + Hc, N.cy0 + (ny0 - N.fy)));
-                    window._longPressActive = true; if (!_nfTimer) grNfAutoIniciar();
-                    grDrawChartWithCrosshair(window._longPressY);
-                }
-                e.preventDefault(); return;
-            }
             if (_edDrag) { const rc0 = canvas.getBoundingClientRect(); grEdToqueMove((e.touches[0].clientX - rc0.left) * (grLW(canvas) / rc0.width), (e.touches[0].clientY - rc0.top) * (grLH(canvas) / rc0.height)); e.preventDefault(); return; }
             if (AB.arrastando()) { const rcA = canvas.getBoundingClientRect(); AB.toqueMove((e.touches[0].clientX - rcA.left) * (grLW(canvas) / rcA.width), (e.touches[0].clientY - rcA.top) * (grLH(canvas) / rcA.height)); e.preventDefault(); return; }   /*ABALAO*/
             if (RV.arrastando()) { const rcR = canvas.getBoundingClientRect(); RV.toqueMove((e.touches[0].clientX - rcR.left) * (grLW(canvas) / rcR.width), (e.touches[0].clientY - rcR.top) * (grLH(canvas) / rcR.height)); e.preventDefault(); return; }   /*RVOL*/
+            if (window._cotDrag) { const rcC = canvas.getBoundingClientRect(); grCotBadgeToqueMove((e.touches[0].clientX - rcC.left) * (grLW(canvas) / rcC.width)); e.preventDefault(); return; }
             if (window._cvdJacDrag) { const rcJ = canvas.getBoundingClientRect(); cvdJacToqueMove((e.touches[0].clientX - rcJ.left) * (grLW(canvas) / rcJ.width), (e.touches[0].clientY - rcJ.top) * (grLH(canvas) / rcJ.height)); e.preventDefault(); return; }
-            if (window._grMetricasDrag) { // arrastando a tabela de métricas
-                const rc = canvas.getBoundingClientRect();
-                grMetricasToqueMove((e.touches[0].clientX - rc.left) * (grLW(canvas) / rc.width), (e.touches[0].clientY - rc.top) * (grLH(canvas) / rc.height));
-                e.preventDefault();
-                return;
-            }
             if (_alDrawing && _alAtual) {
                 _alAtual.p = grToPrice(toCanvasY(e.touches[0].clientY));
                 grDrawChart();
@@ -10169,8 +9905,8 @@ function grInitTouch() {
     if (AB.pendente()) { const tcA = e.changedTouches && e.changedTouches[0]; if (tcA) { const rcA = canvas.getBoundingClientRect(); AB.tapFim((tcA.clientX - rcA.left) * (grLW(canvas) / rcA.width), (tcA.clientY - rcA.top) * (grLH(canvas) / rcA.height)); } }   /*ABALAO*/
     if (RV.arrastando()) { RV.toqueFim(e); isDragging = false; return; }   /*RVOL*/
     if (RV.pendente()) { const tcR = e.changedTouches && e.changedTouches[0]; if (tcR) { const rcR = canvas.getBoundingClientRect(); RV.tapFim((tcR.clientX - rcR.left) * (grLW(canvas) / rcR.width), (tcR.clientY - rcR.top) * (grLH(canvas) / rcR.height)); } }   /*RVOL*/
+    if (window._cotDrag) { grCotBadgeToqueFim(); isDragging = false; return; }
     if (window._cvdJacDrag) { cvdJacToqueFim(e); isDragging = false; return; }
-    if (window._grMetricasDrag) { grMetricasToqueFim(); isDragging = false; return; } // soltou a tabela de métricas (ou tocou num ⓘ/✕)
     if (window._grPincaY && e.touches.length < 2) { window._grPincaY = null; grYFatorSalvar(); } // fim da pinça no eixo Y: guarda o fator
     if (window._grPincaX && e.touches.length < 2) { window._grPincaX = null; grYFatorSalvar(); } // fim da pinça no eixo X: guarda o fator (compensado)
     isDragging = false;
@@ -10393,21 +10129,6 @@ function grCrosshairZonaDeltaPreco(preco, pctZona) {
 function grDrawChartWithCrosshair(yInterno) {
     // Métricas AUTOMÁTICAS: a tabela aparece na hora quando o crosshair está EXPLICITAMENTE em cima de um candle (dentro de máx–mín dele)
     // e não em cima de mais nada (desenhos, caixas, âncoras, a própria tabela). Saiu do candle ou foi parar em outra coisa: some.
-    if (_grFootprintAtivo && _grFootprintBins && window._grCandlesDesenhados && window._grCandlesDesenhados.length && window._grChartW && window._grTotalSlots) {
-        try {
-            const dz = window._grCandlesDesenhados, slotW = window._grChartW / window._grTotalSlots;
-            const rawI = Math.floor((_grCrosshairX - grPadL()) / slotW), cSel = (rawI >= 0 && rawI < dz.length) ? dz[rawI] : null;
-            const px = _grCrosshairX, py = yInterno, tol = 3;
-            let sobre = !!cSel && isFinite(py) && py >= grLineY(cSel.h) - tol && py <= grLineY(cSel.l) + tol;
-            if (sobre) {
-                const dentro = r => r && px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
-                if ((window._grPosRects || []).some(dentro) || dentro(window._grMetricasRect)) sobre = false;
-            }
-            if (sobre) {
-                if (_grMetricasTabTs !== cSel.t) { const eraAberta = _grMetricasTabTs != null; _grMetricasTabTs = cSel.t; _grMetricasCache = null; _grMetricasInfo = null; _grMetricasInfoScroll = 0; if (!eraAberta) _grMetricasOff = { dx: 0, dy: 0 }; }
-            } else if (_grMetricasTabTs != null) grMetricasFecharTabela();
-        } catch (e) {}
-    }
     // Desenha o gráfico sem recursão
     {
         const t = _grAllCandles.length;
@@ -10510,9 +10231,8 @@ function grDrawChartWithCrosshair(yInterno) {
     const idxCandleCrosshair = Math.max(0, Math.min(total - 1, candleIdx));
     // A janela flutuante saiu: a linha OHLC (abaixo da Barra Superior) acompanha o candle marcado e o menu "Ações" tem os botões.
     window._grCrosshairFootprintBtnArea = null; window._grCrosshairAncorarBtnArea = null; window._grCrosshairValueAreaBtnArea = null;
-    window._grCrosshairMetricasBtnArea = null; window._grCrosshairVpBtnArea = null; window._grCrosshairToggleBtnArea = null;
+    window._grCrosshairVpBtnArea = null; window._grCrosshairToggleBtnArea = null;
     if (candle) {
-        window._grCrosshairCandleAtual = candle;
         window._grOhlcCross = { candle, idx: idxCandleCrosshair };
         grDesenharLinhaOhlc(ctx, W, { candle, idx: idxCandleCrosshair, cross: true });
     }
@@ -10617,6 +10337,16 @@ function cvToggleReguaLock(qual) { // qual: 'S' ou 'A'
     grAmbienteSalvar();
     grDrawChart();
 }
+window._grEixoYOculto = (function () { try { return localStorage.getItem('grEixoYOculto') === '1'; } catch (e) { return false; } })();   // eixo Y escondido: só a reta da cotação (com um selo discreto arrastável) fica
+window._grCotFx = (function () { try { const v = parseFloat(localStorage.getItem('grCotFx')); return v >= 0 && v <= 1 ? v : 0.97; } catch (e) { return 0.97; } })();   // posição horizontal do selo (0..1 do comprimento da reta)
+function grEixoYAlternar(oculto) { window._grEixoYOculto = !!oculto; try { localStorage.setItem('grEixoYOculto', oculto ? '1' : '0'); } catch (e) {} try { grDrawChart(); } catch (e) {} }
+function grCotBadgeToqueInicio(x, y) {   // eixo Y escondido: tocar no selo da cotação e arrastar move ele ao longo da reta
+    const b = window._cotBadge; if (!window._grEixoYOculto || !b) return false;
+    if (x < b.x - 10 || x > b.x + b.w + 10 || y < b.y - 10 || y > b.y + b.h + 10) return false;
+    window._cotDrag = { dx: x - b.x }; return true;
+}
+function grCotBadgeToqueMove(x) { const d = window._cotDrag, g = window._cotGeo, b = window._cotBadge; if (!d || !g || !b) return; const x0 = g.padL, x1 = g.W - g.padR - b.w; window._grCotFx = Math.max(0, Math.min(1, (x - d.dx - x0) / Math.max(1, x1 - x0))); grCotOverlayDesenhar(); }
+function grCotBadgeToqueFim() { window._cotDrag = null; try { localStorage.setItem('grCotFx', String(window._grCotFx)); } catch (e) {} }
 window._grDaForcar = (function () { try { return localStorage.getItem('grDaForcar') === '1'; } catch (e) { return false; } })();   // olho na config da régua: mantém a régua ATR visível mesmo com pouco zoom
 function grDaVisivel() { return !!_indState.deltaAtr && (window._grFpCwOk !== false || !!window._grDaForcar); }   // régua ATR: some quando só há candles (sem footprint), exceto se o olho estiver ligado
 function grDaForcarAlternar() { window._grDaForcar = !window._grDaForcar; try { localStorage.setItem('grDaForcar', window._grDaForcar ? '1' : '0'); } catch (e) {} try { cvRenderMenuFpCfg(); } catch (e) {} try { grDrawChart(); } catch (e) {} }
@@ -10661,6 +10391,22 @@ function cvInitDrawer() {
           else if (dy < 0 && !window._grCabOculto) { zona = false; grCabAlternar(true); }
       }, { passive: true });
       container.addEventListener('touchend', () => { zona = false; }, { passive: true }); }
+    // Eixo Y: arrastar para a DIREITA em cima dele esconde · da borda direita para a ESQUERDA traz de volta (espelho da barra lateral)
+    { let ax0 = 0, ay0 = 0, zonaY = false;
+      container.addEventListener('touchstart', e => {
+          if (e.touches.length !== 1) { zonaY = false; return; }
+          ax0 = e.touches[0].clientX; ay0 = e.touches[0].clientY;
+          const dist = container.getBoundingClientRect().right - ax0;
+          zonaY = window._grEixoYOculto ? dist < 26 : dist < (window._grPADRight || 45);
+      }, { passive: true });
+      container.addEventListener('touchmove', e => {
+          if (!zonaY || e.touches.length !== 1) return;
+          const dx = e.touches[0].clientX - ax0, dy = Math.abs(e.touches[0].clientY - ay0);
+          if (Math.abs(dx) < 34 || dy > Math.abs(dx) * 0.6) return;
+          if (dx > 0 && !window._grEixoYOculto) { zonaY = false; grEixoYAlternar(true); }
+          else if (dx < 0 && window._grEixoYOculto) { zonaY = false; grEixoYAlternar(false); }
+      }, { passive: true });
+      container.addEventListener('touchend', () => { zonaY = false; }, { passive: true }); }
     // Swipe para a esquerda na barra para fechar
         let barStartX = 0, barStartY = 0;
     barra.addEventListener('touchstart', e => {
@@ -16306,208 +16052,7 @@ function grFootprintTodosOsCandlesBrutos() {
     _grFootprintDiasAvulsos.forEach(candlesDoDia => { todos = todos.concat(candlesDoDia); });
     return todos;
 }
-// ══ MÉTRICAS DO CANDLE — tabelinha minimalista desenhada no canvas, embaixo do candle escolhido ═════════════════════
-// Botão "Ver Métricas" da janela do crosshair liga/desliga a tabela daquele candle; o ✕ da tabela apaga; arrastando a tabela
-// ela muda de lugar (fica presa ao candle, acompanha o gráfico). Só com o Fluxo ligado.
-// Dados: footprint bruto por minuto (c = compra agressora, v = venda agressora, nc/nv = nº de negócios, p = preço do nível).
-// Sessão = dia UTC. Máx/Mín Δ e "domínio": delta corrente amostrado ao fim de cada minuto do candle (o footprint guarda por minuto).
-let _grMetricasTabTs = null;   // t do candle com tabela aberta (null = nenhuma)
-let _grMetricasCache = null;   // { t, raw, quando, m, vd }
-let _grMetricasOff = { dx: 0, dy: 0 }; // deslocamento da janela em relação ao ponto padrão (embaixo do candle)
-window._grMetricasRect = null; window._grMetricasDrag = null;
-function grMetricasCalcular(candle) {
-    if (!_grFootprintAtivo || !_grFootprintCandlesRaw) return null;
-    const ms = grFootprintMsPorCandle();
-    const de = candle.t, ate = candle.t + ms;
-    const sessIni = Math.floor(de / 86400000) * 86400000;
-    const fech = candle.c;
-    const minutos = [];
-    let sessC = 0, sessV = 0;
-    let cTot = 0, cPx = 0, cSob = 0, vTot = 0, vPx = 0, vSob = 0, cPerda = 0, vPerda = 0; // preços da compra/venda agressora (pra achar quem está no prejuízo)
-    // referência dos presos = fechamento de até GR_PRESO_K candles à direita (só os que já existem); sem nenhum à direita = ainda não dá pra dizer
-    const idxC = _grAllCandles.findIndex(c => c.t === candle.t);
-    const kPreso = idxC < 0 ? 0 : Math.min(GR_PRESO_K, _grAllCandles.length - 1 - idxC);
-    const ref = kPreso > 0 ? _grAllCandles[idxC + kPreso].c : null;
-    grFootprintParaCadaMinuto(Math.min(sessIni, de), ate, m => {
-        let c = 0, v = 0, nc = 0, nv = 0;
-        (m.niveis || []).forEach(n => {
-            const nC = n.c || 0, nV = n.v || 0;
-            c += nC; v += nV; nc += (n.nc || 0); nv += (n.nv || 0);
-            if (m.ts >= de) {
-                cTot += nC; cPx += n.p * nC; if (ref != null && n.p > ref) { cSob += nC; cPerda += nC * (n.p - ref) / n.p; }   // comprou acima de onde o preço está depois = preso
-                vTot += nV; vPx += n.p * nV; if (ref != null && n.p < ref) { vSob += nV; vPerda += nV * (ref - n.p) / n.p; }   // vendeu abaixo de onde o preço está depois = preso
-            }
-        });
-        if (m.ts >= sessIni) { sessC += c; sessV += v; }
-        if (m.ts >= de) minutos.push({ ts: m.ts, c, v, nc, nv });
-    });
-    if (minutos.length === 0) return null;
-    minutos.sort((a, b) => a.ts - b.ts);
-    let compra = 0, venda = 0, nc = 0, nv = 0, corrente = 0, maxD = 0, minD = 0;
-    const correntes = [];
-    minutos.forEach(m => {
-        compra += m.c; venda += m.v; nc += m.nc; nv += m.nv;
-        corrente += m.c - m.v; correntes.push(corrente);
-        if (corrente > maxD) maxD = corrente;
-        if (corrente < minD) minD = corrente;
-    });
-    const total = compra + venda, delta = compra - venda;
-    // domínio: em que fração dos minutos o delta corrente esteve do mesmo lado do delta final
-    let consist = null;
-    if (minutos.length >= 3 && delta !== 0) { const fs = Math.sign(delta); consist = correntes.filter(x => Math.sign(x) === fs).length / correntes.length; }
-    const idx = _grAllCandles.findIndex(c => c.t === candle.t);
-    let deltaAnt = null, prevDvol = null;
-    if (idx > 0) {
-        const ant = _grAllCandles[idx - 1];
-        let dc = 0, tc = 0, achou = false;
-        grFootprintParaCadaMinuto(ant.t, ant.t + ms, m => { achou = true; (m.niveis || []).forEach(n => { dc += (n.c || 0) - (n.v || 0); tc += (n.c || 0) + (n.v || 0); }); });
-        if (achou) { deltaAnt = dc; prevDvol = tc > 0 ? dc / tc : null; }
-    }
-    let volRel = null;
-    if (idx >= 5 && candle.v > 0) {
-        let soma = 0, n = 0;
-        for (let i = Math.max(0, idx - 20); i < idx; i++) { if (_grAllCandles[i].v > 0) { soma += _grAllCandles[i].v; n++; } }
-        if (n > 0 && soma > 0) volRel = candle.v / (soma / n);
-    }
-    let alturaRel = null; // range % do candle ÷ média do range % dos 20 anteriores
-    if (idx >= 5 && candle.o > 0) {
-        let soma = 0, n = 0;
-        for (let i = Math.max(0, idx - 20); i < idx; i++) { const c = _grAllCandles[i]; if (c.o > 0 && c.h > c.l) { soma += (c.h - c.l) / c.o; n++; } }
-        if (n > 0 && soma > 0) alturaRel = ((candle.h - candle.l) / candle.o) / (soma / n);
-    }
-    const emFormacao = Date.now() < ate;
-    const durMs = emFormacao ? Math.max(1000, Date.now() - de) : ms;
-    const sessTotal = sessC + sessV;
-    return {
-        nMin: minutos.length, emFormacao,
-        compra, venda, delta, total, dvol: total > 0 ? delta / total : 0,
-        maxD, minD, consist, deltaChange: deltaAnt == null ? null : delta - deltaAnt, prevDelta: deltaAnt, prevDvol,
-        sessDelta: sessC - sessV, sessTotal, sessDvol: sessTotal > 0 ? (sessC - sessV) / sessTotal : 0,
-        volSeg: total / (durMs / 1000), volRel, alturaRel, trades: nc + nv,
-        // presos: parcela do volume de cada lado que está no prejuízo em relação ao fechamento (+ preço médio do lado)
-        presoK: kPreso, presoRef: ref,
-        presoC: { pct: ref == null ? null : (cTot > 0 ? cSob / cTot : 0), vol: cSob, perda: cSob > 0 ? cPerda / cSob : 0, med: cTot > 0 ? cPx / cTot : null },
-        presoV: { pct: ref == null ? null : (vTot > 0 ? vSob / vTot : 0), vol: vSob, perda: vSob > 0 ? vPerda / vSob : 0, med: vTot > 0 ? vPx / vTot : null },
-    };
-}
-// ── Intérprete: UM veredito com nome próprio (ou nenhum, quando não há nada a dizer). Regras da sua cartilha: preço e delta em
-// sentidos opostos = absorção ("força escondida"); lado agressor que fechou no prejuízo = encurralado; mesmo sentido = movimento
-// limpo. Heurística sobre o footprint: mostra o que foi negociado, não a intenção de quem estava passivo.
-const GR_MET = { EQUIL: 0.02, CORPO_MIN: 0.15, VOL_ALTO: 1.5, ALT_CURTA: 0.8, ALT_LONGA: 1.5, DEVOLVEU: 0.5, PRESO_PCT: 0.6, PRESO_GAP: 0.35, VIRADA: 0.04, DOMINIO: 0.9 };
-function grMetricasVeredito(m, candle) {
-    const fk = v => { const a = Math.abs(v); return a >= 1e6 ? (a / 1e6).toFixed(2).replace('.', ',') + 'M' : (a >= 1e3 ? (a / 1e3).toFixed(2).replace('.', ',') + 'k' : a.toFixed(2).replace('.', ',')); };
-    const sg = v => (v >= 0 ? '+' : '−') + fk(v);
-    const rng = candle.h - candle.l;
-    const corpo = rng > 0 ? Math.abs(candle.c - candle.o) / rng : 0;
-    const sd = Math.abs(m.dvol) < GR_MET.EQUIL ? 0 : (m.delta > 0 ? 1 : -1);      // lado do delta
-    const sp = (corpo < GR_MET.CORPO_MIN || candle.c === candle.o) ? 0 : (candle.c > candle.o ? 1 : -1); // lado do preço
-    const pts = (Math.abs(m.dvol) >= 0.10 ? 2 : (Math.abs(m.dvol) >= 0.05 ? 1 : 0)) + (m.volRel != null ? (m.volRel >= GR_MET.VOL_ALTO ? 2 : (m.volRel >= 1.1 ? 1 : 0)) : 0);
-    const faixaD = m.maxD - m.minD;
-    let dev = null;
-    if (faixaD > 0 && m.nMin >= 3 && m.delta !== 0) dev = m.delta > 0 ? (m.maxD - m.delta) / faixaD : (m.delta - m.minD) / faixaD;
-    const V = '#16A34A', R = '#DC2626', A = '#D97706';
-    const pcs = v => (v * 100).toFixed(2).replace('.', ',') + '%';
-    const pcd = v => (v >= 0 ? '+' : '−') + (Math.abs(v) * 100).toFixed(2).replace('.', ',') + '%';
-    // 1) lado agressor encurralado: o delta mostra quem agrediu; se o preço fechou longe do preço médio dele, ele está no prejuízo
-    if (sd !== 0 && rng > 0 && m.presoRef != null) {
-        const lado = sd > 0 ? m.presoC : m.presoV;
-        const gap = lado.med == null ? 0 : (sd > 0 ? lado.med - m.presoRef : m.presoRef - lado.med) / rng;
-        if (lado.pct >= GR_MET.PRESO_PCT && gap >= GR_MET.PRESO_GAP) {
-            return sd > 0
-                ? { titulo: 'Compradores encurralados', sub: pcs(lado.pct) + ' da compra no prejuízo', cor: R }
-                : { titulo: 'Vendedores encurralados', sub: pcs(lado.pct) + ' da venda no prejuízo', cor: V };
-        }
-    }
-    // 2) força escondida: preço contra o delta (absorção) ou delta forte sem o preço sair do lugar
-    if (sd !== 0 && sp !== 0 && sd !== sp) {
-        return sp > 0
-            ? { titulo: 'Compra escondida', sub: 'preço sobe com delta ' + sg(m.delta), cor: V }
-            : { titulo: 'Venda escondida', sub: 'preço cai com delta ' + sg(m.delta), cor: R };
-    }
-    if (sd !== 0 && sp === 0) {
-        return sd > 0
-            ? { titulo: 'Vendedor segurando o preço', sub: 'delta ' + sg(m.delta) + ' e o preço não saiu do lugar', cor: R }
-            : { titulo: 'Comprador segurando o preço', sub: 'delta ' + sg(m.delta) + ' e o preço não saiu do lugar', cor: V };
-    }
-    // 3) virada de fluxo em relação ao candle anterior
-    if (m.prevDelta != null && m.prevDvol != null && Math.sign(m.prevDvol) !== Math.sign(m.dvol) && Math.abs(m.prevDvol) >= GR_MET.VIRADA && Math.abs(m.dvol) >= GR_MET.VIRADA) {
-        return m.dvol < 0
-            ? { titulo: 'Vendedores viraram o jogo', sub: 'antes ' + sg(m.prevDelta) + ' → agora ' + sg(m.delta), cor: R }
-            : { titulo: 'Compradores assumiram o comando', sub: 'antes ' + sg(m.prevDelta) + ' → agora ' + sg(m.delta), cor: V };
-    }
-    // 4) movimento a favor do delta, mas sem gás no fim
-    if (sd !== 0 && sp === sd && dev != null && dev >= GR_MET.DEVOLVEU) {
-        return { titulo: sp > 0 ? 'Alta perdendo o gás' : 'Queda perdendo o gás', sub: 'devolveu ' + pcs(dev) + ' do pico do delta', cor: A };
-    }
-    // 5) travamento e movimento sem esforço
-    if (sd === 0 && m.volRel != null && m.volRel >= GR_MET.VOL_ALTO && m.alturaRel != null && m.alturaRel <= GR_MET.ALT_CURTA) {
-        return { titulo: 'Parede no preço', sub: 'volume ' + m.volRel.toFixed(2).replace('.', ',') + '× em faixa curta, delta ≈ 0', cor: A };
-    }
-    if (m.alturaRel != null && m.volRel != null && m.alturaRel >= GR_MET.ALT_LONGA && m.volRel < 1) {
-        return { titulo: 'Andou sem esforço', sub: 'faixa ' + m.alturaRel.toFixed(2).replace('.', ',') + '× o normal com volume fraco', cor: A };
-    }
-    // 6) movimento limpo: quem mandou e com que convicção
-    if (sd !== 0 && sp === sd) {
-        if (m.consist != null && m.consist >= GR_MET.DOMINIO && pts >= 2) {
-            return { titulo: sp > 0 ? 'Compradores no comando' : 'Vendedores no comando', sub: 'delta a favor em ' + pcs(m.consist) + ' do candle', cor: sp > 0 ? V : R };
-        }
-        if (pts <= 1) {
-            return { titulo: sp > 0 ? 'Alta sem convicção' : 'Queda sem convicção', sub: 'Δ/Vol só ' + pcd(m.dvol) + (m.volRel != null ? ' · vol ' + m.volRel.toFixed(2).replace('.', ',') + '×' : ''), cor: A };
-        }
-    }
-    if (sd === 0 && sp !== 0) {
-        return { titulo: sp > 0 ? 'Alta sem fluxo comprador' : 'Queda sem fluxo vendedor', sub: 'delta só ' + pcd(m.dvol), cor: A };
-    }
-    return null; // nada a dizer: a tabela fica só com os números
-}
-// ── liga/desliga ──────────────────────────────────────────────────────────────────────────────────────────
-// ── explicações (ícone ⓘ ao lado de cada item: toque abre o texto, ✕ fecha) ─────────────────────────────────────────
-let _grMetricasInfo = null; // chave do item cuja explicação está aberta ('veredito' ou a chave da linha)
-const GR_MET_ITENS = [
-    ['Ask / Bid', 'Compras e vendas a mercado no candle (Ask verde, Bid vermelho): quem agrediu mais.'],
-    ['Delta', 'Ask menos Bid. Positivo: compradores agrediram mais; negativo: vendedores.'],
-    ['Delta/Volume', 'Delta em % do volume do candle: a convicção. Perto de 0% é equilíbrio; quanto maior, mais um lado mandou.'],
-    ['Δ preço', 'Variação do preço no candle (fechamento contra abertura, em %). Compare com o Delta/Volume: mesmo sinal = pressão confirmada; sinais opostos = absorção.'],
-    ['Máx / Mín Δ', 'Pico e fundo que o delta atingiu dentro do candle (amostrado por minuto). Fechar longe do pico = aquele lado perdeu força no fim.'],
-    ['Δ vs anterior', 'Delta deste candle menos o do anterior: a pressão acelerou ou virou de lado.'],
-    ['Volume', 'Volume agredido total e quantas vezes ele é a média dos 20 candles anteriores (a partir de 1,5×, em âmbar, é candle relevante).'],
-    ['Compra presa', '% da compra agressora feita ACIMA do fechamento do 3º candle à direita (ou do último que já existe) e o preço médio de compra. Comprou e o preço ficou abaixo = preso. O −X,XX% é o prejuízo médio desses compradores presos em relação à referência. A partir de 60% o veredito diz compradores encurralados. Sem candle à direita, não dá pra dizer.'],
-    ['Venda presa', '% da venda agressora feita ABAIXO do fechamento do 3º candle à direita (ou do último que já existe) e o preço médio de venda. Vendeu e o preço ficou acima = preso. O −X,XX% é o prejuízo médio desses vendedores presos em relação à referência. A partir de 60% o veredito diz vendedores encurralados.'],
-    ['méd', 'Verde: o fechamento está acima da média daquele lado; vermelho: abaixo. É exposição provável: o footprint não sabe quem já zerou.'],
-];
-function grMetricasTextoVeredito(t) {
-    const M = {
-        'Compradores encurralados': 'O comprador foi o lado que mais agrediu, mas o preço fechou longe da média de compra dele: a maior parte da compra está no prejuízo e pode virar pressão de venda.',
-        'Vendedores encurralados': 'O vendedor foi o lado que mais agrediu, mas o preço fechou longe da média de venda dele: a maior parte da venda está no prejuízo e pode virar pressão de compra.',
-        'Compra escondida': 'O preço subiu mesmo com delta vendedor: o comprador passivo absorveu a venda. Confirme se o próximo candle segue para cima.',
-        'Venda escondida': 'O preço caiu mesmo com delta comprador: o vendedor passivo absorveu a compra. Confirme se o próximo candle segue para baixo.',
-        'Vendedor segurando o preço': 'Houve delta comprador relevante e o preço não saiu do lugar: alguém vendeu de forma passiva e segurou.',
-        'Comprador segurando o preço': 'Houve delta vendedor relevante e o preço não saiu do lugar: alguém comprou de forma passiva e segurou.',
-        'Vendedores viraram o jogo': 'O delta do candle anterior era comprador e agora é vendedor, os dois com peso relevante: o fluxo virou de lado.',
-        'Compradores assumiram o comando': 'O delta do candle anterior era vendedor e agora é comprador, os dois com peso relevante: o fluxo virou de lado.',
-        'Alta perdendo o gás': 'Preço e delta subiram juntos, mas o delta devolveu mais da metade do pico no fim do candle.',
-        'Queda perdendo o gás': 'Preço e delta caíram juntos, mas o delta devolveu mais da metade do fundo no fim do candle.',
-        'Parede no preço': 'Volume alto em faixa curta com delta equilibrado: alguém grande travando o preço. O lado só aparece no candle seguinte.',
-        'Andou sem esforço': 'O candle andou muito além do normal com volume fraco: movimento sem participação.',
-        'Compradores no comando': 'O delta ficou comprador durante 90% ou mais do candle, com volume e convicção acima do fraco.',
-        'Vendedores no comando': 'O delta ficou vendedor durante 90% ou mais do candle, com volume e convicção acima do fraco.',
-        'Alta sem convicção': 'Preço e delta subiram juntos, mas o delta é pequeno e o volume está perto da média.',
-        'Queda sem convicção': 'Preço e delta caíram juntos, mas o delta é pequeno e o volume está perto da média.',
-        'Alta sem fluxo comprador': 'O preço subiu, mas o delta ficou equilibrado: o movimento não veio de agressão de um lado só.',
-        'Queda sem fluxo vendedor': 'O preço caiu, mas o delta ficou equilibrado: o movimento não veio de agressão de um lado só.',
-    };
-    return (M[t] || '') + ' Leitura automática por heurística: mostra o que foi negociado, não a intenção de quem estava passivo.';
-}
-let _grMetricasInfoScroll = 0; // rolagem do texto de ajuda (quando não cabe inteiro)
-function grMetricasInfoAlternar() { _grMetricasInfo = _grMetricasInfo ? null : true; _grMetricasInfoScroll = 0; grDrawChart(); }
-function grMetricasAlternar(candle) {
-    if (!candle) return;
-    _grMetricasTabTs = (_grMetricasTabTs === candle.t) ? null : candle.t;
-    _grMetricasCache = null; _grMetricasOff = { dx: 0, dy: 0 }; _grMetricasInfo = null;
-}
-function grMetricasFecharTabela() { _grMetricasTabTs = null; _grMetricasCache = null; _grMetricasInfo = null; window._grMetricasRect = null; window._grMetricasHits = null; window._grMetricasNoteRect = null; grDrawChart(); }
 // ── exportações em CSV (para estudar candles e recalibrar o score) ──
-const GR_PRESO_K = 3;   // usado na tabela de métricas do crosshair
 function grFootprintBaixarCsv(linhas, nome) {
     const blob = new Blob([linhas.join('\n')], { type: 'text/csv' });
     const baixar = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = nome; document.body.appendChild(a); a.click(); setTimeout(() => { a.remove(); URL.revokeObjectURL(a.href); }, 2000); };
@@ -16538,239 +16083,6 @@ function grFootprintExportarCandle() {
     grFootprintBaixarCsv(linhas, 'candle_' + new Date(de).toISOString().slice(0, 16).replace(/[:T]/g, '-') + '_' + _grTf + '.csv');
 }
 // Exporta o dia (UTC) do candle escolhido + o dia anterior e o seguinte, minuto a minuto (ts,preco,ask,bid). O candle-alvo vai no nome do arquivo.
-function grFootprintExportarAoRedor(ts) {
-    const raw = _grFootprintCandlesRaw;
-    if (!raw || !raw.length) { alert('Sem footprint carregado. Ligue o Fluxo primeiro.'); return; }
-    const d0 = Math.floor(ts / 86400000) * 86400000, t0 = d0 - 86400000, t1 = d0 + 2 * 86400000;
-    const linhas = ['ts,preco,ask,bid'], dias = new Set();
-    raw.forEach(m => { if (m.ts >= t0 && m.ts < t1) { dias.add(Math.floor(m.ts / 86400000)); (m.niveis || []).forEach(n => linhas.push(new Date(m.ts).toISOString().slice(0, 16) + ',' + n.p + ',' + (n.c || 0) + ',' + (n.v || 0))); } });
-    if (linhas.length < 2) { alert('Esses dias não estão carregados no footprint (aumente "Dias ao ligar o Fluxo").'); return; }
-    if (dias.size < 3) alert('Só ' + dias.size + ' de 3 dias estão carregados (o dia seguinte pode ainda não existir ou estar fora da janela do Fluxo). Exportando o que há.');
-    const alvo = new Date(ts).toISOString().slice(0, 16).replace(/[:T]/g, '-');
-    grFootprintBaixarCsv(linhas, 'alvo_' + alvo + '_' + _grTf + '_3dias.csv');
-}
-// ═══ EXPORTAR NÍVEIS DE PREÇO (footprint completo) DE UM PERÍODO, compactado (.csv.gz) ═══════════════════════════════
-// ── desenho (chamado por grDrawCandles, por cima dos candles; g = { PAD, W, chartW, chartH, toY, slotW, xLeft(ts) }) ──
-function grMetricasDesenhar(ctx, g) {
-    { // canvas próprio, acima do footprint, dos desenhos e do crosshair: a tabela nunca fica com elementos aparecendo por baixo
-        const cvM = document.getElementById('gr-metricas-canvas'), cvP = ctx.canvas;
-        if (cvM && cvP) { grDimensionarCanvas(cvM, grLW(cvP), grLH(cvP)); ctx = grPrepararCtx(cvM); ctx.clearRect(0, 0, grLW(cvM), grLH(cvM)); }
-    }
-    window._grMetricasRect = null; window._grMetricasHits = null; window._grMetricasNoteRect = null;
-    const ts = _grMetricasTabTs;
-    if (ts == null || !_grFootprintAtivo || !_grFootprintCandlesRaw || !_grAllCandles.length) return;
-    let lo = 0, hi = _grAllCandles.length - 1, candle = null;
-    while (lo <= hi) { const mid = (lo + hi) >> 1, c = _grAllCandles[mid]; if (c.t === ts) { candle = c; break; } if (c.t < ts) lo = mid + 1; else hi = mid - 1; }
-    if (!candle) return;
-    const cx = g.xLeft(ts) + g.slotW / 2;
-    if (cx < g.PAD.left || cx > g.W - g.PAD.right) return;
-    // cache: recalcula se mudou o candle/o footprint, e a cada 1 s se o candle ainda está em formação
-    const agora = Date.now();
-    const c0 = _grMetricasCache;
-    const emForm = agora < candle.t + grFootprintMsPorCandle();
-    if (!c0 || c0.t !== ts || c0.raw !== _grFootprintCandlesRaw.length || c0.nc !== _grAllCandles.length || (emForm && agora - c0.quando > 1000)) {
-        const m = grMetricasCalcular(candle);
-        _grMetricasCache = { t: ts, nc: _grAllCandles.length, raw: _grFootprintCandlesRaw.length, quando: agora, m, vd: m ? grMetricasVeredito(m, candle) : null };
-    }
-    const { m, vd } = _grMetricasCache;
-    if (!m) return;
-    const fk = v => { const a = Math.abs(v); return a >= 1e6 ? (a / 1e6).toFixed(2).replace('.', ',') + 'M' : (a >= 1e3 ? (a / 1e3).toFixed(2).replace('.', ',') + 'k' : a.toFixed(2).replace('.', ',')); };
-    const sg = v => (v >= 0 ? '+' : '−') + fk(v);
-    const pc = v => (v >= 0 ? '+' : '−') + (Math.abs(v) * 100).toFixed(2).replace('.', ',') + '%';
-    const nf0 = v => v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    const claro = _grTemaClaro;
-    const BG = claro ? '#FFFFFF' : '#131722', TX = claro ? '#1C1C1E' : '#E5E7EB';   // sem cinza: rótulos e textos na cor do texto
-    const VERDE = '#16A34A', VERM = '#DC2626';
-    const cd = v => v > 0 ? VERDE : (v < 0 ? VERM : TX);
-    const soData = _grTf === '1day' || _grTf === '1week' || _grTf === '1month' || (_grTf === 'custom' && (_grTfCustomUnit === 'dia' || _grTfCustomUnit === 'mes'));
-    const dataTxt = soData ? new Date(ts).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', timeZone: 'UTC' })
-        : new Date(ts).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
-    const AMBAR = '#D97706';
-    // % do lado no prejuízo (colorida quando passa do limite: comprador preso = vermelho, vendedor preso = verde) + preço médio do lado,
-    // verde se o fechamento ficou ACIMA dessa média e vermelho se ficou ABAIXO (acima favorece a alta, abaixo favorece a queda).
-    const grMetPreso = (lado, fech, corPreso) => {
-        if (lado.pct == null) return '— aguarda candle à direita';
-        fech = m.presoRef;
-        const segs = [{ t: (lado.pct * 100).toFixed(2).replace('.', ',') + '%', c: lado.pct >= GR_MET.PRESO_PCT ? corPreso : TX }];
-        if (lado.pct > 0) segs.push({ t: '  −' + (lado.perda * 100).toFixed(2).replace('.', ',') + '%', c: VERM });   // perda: sempre vermelha, nos dois lados
-        if (lado.med != null) segs.push({ t: '  méd ', c: TX }, { t: nf0(lado.med), c: fech > lado.med ? VERDE : (fech < lado.med ? VERM : TX) });
-        return segs;
-    };
-    const linhas = [
-        ['Ask / Bid', [{ t: fk(m.compra), c: VERDE }, { t: ' / ', c: TX }, { t: fk(m.venda), c: VERM }], TX, 'ask_bid'],   // Ask verde, Bid vermelho
-        ['Delta', sg(m.delta), cd(m.delta), 'delta'],
-        ['Delta/Volume', pc(m.dvol), cd(m.dvol), 'dvol'],
-        ['Δ preço', candle.o ? pc((candle.c - candle.o) / candle.o) : '—', candle.c > candle.o ? VERDE : (candle.c < candle.o ? VERM : TX), 'dpreco'],   // variação do preço no candle: compare com o Delta/Volume
-        ['Máx / Mín Δ', [{ t: sg(m.maxD), c: cd(m.maxD) }, { t: ' / ', c: TX }, { t: sg(m.minD), c: cd(m.minD) }], TX, 'maxmin'],   // pico verde, fundo vermelho
-        ['Δ vs anterior', m.deltaChange == null ? '—' : sg(m.deltaChange), m.deltaChange == null ? TX : cd(m.deltaChange), 'dant'],
-        ['Volume', m.volRel != null ? [{ t: fk(m.total) + '  ', c: TX }, { t: m.volRel.toFixed(2).replace('.', ',') + '×', c: m.volRel >= GR_MET.VOL_ALTO ? AMBAR : TX }] : fk(m.total), TX, 'volume'],   // múltiplo em destaque a partir de 1,5×
-        ['Compra presa' + (m.presoK ? ' +' + m.presoK + 'c' : ''), grMetPreso(m.presoC, candle.c, VERM), TX, 'compra_prej'],
-        ['Venda presa' + (m.presoK ? ' +' + m.presoK + 'c' : ''), grMetPreso(m.presoV, candle.c, VERM), TX, 'venda_prej'],
-    ];
-    const PADX = 8, HH = vd ? 30 : 22, RH = 13.5;
-    const titulo = vd ? vd.titulo : dataTxt, sub = vd ? vd.sub : '';
-    ctx.save();
-    ctx.font = 'bold 11px -apple-system'; const wTitulo = ctx.measureText(titulo).width;
-    ctx.font = '10px -apple-system'; const wSub = ctx.measureText(sub).width;
-    ctx.font = '10.5px -apple-system'; const wVal = v => Array.isArray(v) ? v.reduce((s, x) => s + ctx.measureText(x.t).width, 0) : ctx.measureText(v).width; const wLinhas = Math.max(...linhas.map(l => ctx.measureText(l[0]).width + 14 + wVal(l[1])));
-    ctx.restore();
-    const W_T = Math.ceil(Math.max(150, wTitulo + PADX + 76, wSub + PADX * 2, wLinhas + PADX * 2));
-    const H_T = HH + linhas.length * RH + 8;
-    // posição padrão: embaixo do candle (ou em cima, se não couber); depois o deslocamento do arrasto, sempre dentro da área do gráfico
-    const bx0 = Math.max(g.PAD.left + 2, Math.min(g.W - g.PAD.right - W_T - 2, cx - W_T / 2));
-    const yTop = g.PAD.top + 2, yBot = g.PAD.top + g.chartH - 2;
-    let by0 = g.toY(candle.l) + 8;
-    if (by0 + H_T > yBot) by0 = g.toY(candle.h) - 8 - H_T;
-    by0 = Math.max(yTop, Math.min(yBot - H_T, by0));
-    const bx = Math.max(2, Math.min(g.W - W_T - 2, bx0 + _grMetricasOff.dx));
-    const by = Math.max(yTop, Math.min(yBot - H_T, by0 + _grMetricasOff.dy));
-    _grMetricasOff.dx = bx - bx0; _grMetricasOff.dy = by - by0;   // não deixa o deslocamento passar do limite
-    const cor = vd ? vd.cor : TX;
-    ctx.save();
-    ctx.setLineDash([]);
-    // fio ligando a tabela ao candle quando ela foi arrastada pra longe
-    if (Math.abs(_grMetricasOff.dx) > 4 || Math.abs(_grMetricasOff.dy) > 4) {
-        const yCand = by + H_T / 2 > g.toY(candle.l) ? g.toY(candle.l) : g.toY(candle.h);
-        const xAlvo = Math.max(bx, Math.min(bx + W_T, cx)), yAlvo = by > yCand ? by : by + H_T;
-        ctx.strokeStyle = cor; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
-        ctx.beginPath(); ctx.moveTo(cx, yCand); ctx.lineTo(xAlvo, yAlvo); ctx.stroke();
-        ctx.setLineDash([]);
-    }
-    ctx.fillStyle = BG; ctx.globalAlpha = 1;
-    ctx.beginPath(); ctx.roundRect(bx, by, W_T, H_T, 6); ctx.fill();
-    ctx.globalAlpha = 1; ctx.lineWidth = 1; ctx.strokeStyle = cor;
-    ctx.beginPath(); ctx.roundRect(bx + 0.5, by + 0.5, W_T - 1, H_T - 1, 6); ctx.stroke();
-    // cabeçalho: veredito (única linha em negrito) + a frase curta com o número que o sustenta
-    ctx.textAlign = 'left'; ctx.font = 'bold 11px -apple-system';
-    ctx.fillStyle = cor; ctx.fillText(titulo, bx + PADX, by + 14);
-    const hits = []; window._grMetricasHits = hits;
-    // ícone ⓘ pequeno (círculo com "i"): não ocupa linha, fica logo depois do rótulo; ativo = preenchido
-    const icone = (ix, iy, ativo, corI) => {
-        ctx.save(); ctx.lineWidth = 1; ctx.strokeStyle = corI; ctx.fillStyle = corI; ctx.setLineDash([]);
-        ctx.beginPath(); ctx.arc(ix, iy, 4.3, 0, Math.PI * 2);
-        if (ativo) { ctx.fill(); ctx.fillStyle = BG; ctx.strokeStyle = BG; } else ctx.stroke();
-        ctx.beginPath(); ctx.arc(ix, iy - 1.8, 0.55, 0, Math.PI * 2); ctx.fill();
-        ctx.beginPath(); ctx.moveTo(ix, iy - 0.4); ctx.lineTo(ix, iy + 2.1); ctx.stroke();
-        ctx.restore();
-    };
-    if (sub) { ctx.font = '10px -apple-system'; ctx.fillStyle = TX; ctx.fillText(sub, bx + PADX, by + 26); }
-    // ✕ (apaga a tabela)
-    const xs = 9, xc = bx + W_T - 13, yc = by + 12;
-    ctx.strokeStyle = TX; ctx.lineWidth = 1.3;
-    ctx.beginPath(); ctx.moveTo(xc - xs / 2, yc - xs / 2); ctx.lineTo(xc + xs / 2, yc + xs / 2); ctx.moveTo(xc + xs / 2, yc - xs / 2); ctx.lineTo(xc - xs / 2, yc + xs / 2); ctx.stroke();
-    const xbtn = { x: xc - 14, y: yc - 14, w: 28, h: 28 };
-    { // chip CSV: exporta o dia do candle + o dia antes e o dia depois (minuto a minuto), com o candle-alvo no nome do arquivo
-        const cw = 26, chh = 14, cxs = xc - 23 - 10 - 6 - cw, cys = yc - chh / 2;
-        ctx.save(); ctx.setLineDash([]); ctx.lineWidth = 1; ctx.strokeStyle = TX; ctx.fillStyle = TX;
-        ctx.beginPath(); ctx.roundRect(cxs, cys, cw, chh, 4); ctx.stroke();
-        ctx.font = 'bold 9px -apple-system'; ctx.textAlign = 'center'; ctx.fillText('CSV', cxs + cw / 2, yc + 3.2); ctx.restore();
-        hits.push({ x: cxs - 4, y: cys - 6, w: cw + 8, h: chh + 12, key: 'csv', fn: () => grFootprintExportarAoRedor(ts) });
-    }
-    { const ix = xc - 23; icone(ix, yc, !!_grMetricasInfo, TX); hits.push({ x: ix - 10, y: yc - 10, w: 20, h: 20, key: 'info', fn: () => grMetricasInfoAlternar() }); } // ⓘ único: explica veredito e todos os itens
-    if (window._grBarraSuperiorChips) window._grBarraSuperiorChips.push({ x: xbtn.x, y: xbtn.y, w: xbtn.w, h: xbtn.h, abrir: () => grMetricasFecharTabela() });
-    window._grMetricasRect = { x: bx, y: by, w: W_T, h: H_T, xb: xbtn };
-    hits.push({ x: xbtn.x, y: xbtn.y, w: xbtn.w, h: xbtn.h, key: 'x', fn: () => grMetricasFecharTabela() });
-    // linhas
-    ctx.lineWidth = 1; ctx.strokeStyle = claro ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.16)';
-    ctx.beginPath(); ctx.moveTo(bx + PADX, by + HH - 1.5); ctx.lineTo(bx + W_T - PADX, by + HH - 1.5); ctx.stroke();
-    ctx.font = '10.5px -apple-system';
-    linhas.forEach((l, i) => {
-        const y = by + HH + 10 + i * RH;
-        ctx.textAlign = 'left'; ctx.fillStyle = TX; ctx.fillText(l[0], bx + PADX, y);
-        if (Array.isArray(l[1])) { // valor em segmentos coloridos, alinhado à direita
-            let xs2 = bx + W_T - PADX - wVal(l[1]);
-            ctx.textAlign = 'left';
-            l[1].forEach(sg2 => { ctx.fillStyle = sg2.c; ctx.fillText(sg2.t, xs2, y); xs2 += ctx.measureText(sg2.t).width; });
-        } else { ctx.textAlign = 'right'; ctx.fillStyle = l[2]; ctx.fillText(l[1], bx + W_T - PADX, y); }
-    });
-    // caixa de ajuda (toque no ⓘ do cabeçalho): explica o veredito atual e todos os itens; ✕ fecha; se não couber, rola com o dedo
-    if (_grMetricasInfo) {
-        const WN = Math.min(g.W - 8, 300), larg = WN - PADX * 2 - 6;
-        const ws = t => t.split(' ').filter(Boolean).map(w => ({ t: w + ' ', b: false }));
-        const paras = [];
-        paras.push([{ t: 'Veredito ', b: true }].concat(ws(vd ? grMetricasTextoVeredito(vd.titulo) : 'Sem padrão claro neste candle: só os números.')));
-        GR_MET_ITENS.forEach(it => paras.push([{ t: it[0] + ' ', b: true }].concat(ws(it[1]))));
-        const ops = []; let yy = 13;
-        paras.forEach(pp => {
-            let xx = 0;
-            pp.forEach(tok => {
-                ctx.font = (tok.b ? 'bold ' : '') + '10.5px -apple-system';
-                const w = ctx.measureText(tok.t).width;
-                if (xx + w > larg + 2 && xx > 0) { xx = 0; yy += 13; }
-                ops.push({ t: tok.t, x: xx, y: yy, b: tok.b }); xx += w;
-            });
-            yy += 17;
-        });
-        const contentH = yy - 4, HEAD = 24;
-        const HN = Math.min(HEAD + contentH + 6, yBot - yTop);
-        const visH = HN - HEAD - 6, maxScroll = Math.max(0, contentH - visH);
-        _grMetricasInfoScroll = Math.max(0, Math.min(maxScroll, _grMetricasInfoScroll));
-        const nx = Math.max(2, Math.min(g.W - WN - 2, bx));
-        let ny = by + H_T + 4;                                   // embaixo da tabela; se não couber, em cima; senão, por cima dela
-        if (ny + HN > yBot + 4) ny = by - HN - 4;
-        if (ny < yTop) ny = Math.max(yTop, yBot - HN);
-        ctx.fillStyle = BG; ctx.globalAlpha = 1; ctx.beginPath(); ctx.roundRect(nx, ny, WN, HN, 6); ctx.fill();
-        ctx.globalAlpha = 1; ctx.lineWidth = 1; ctx.strokeStyle = cor; ctx.beginPath(); ctx.roundRect(nx + 0.5, ny + 0.5, WN - 1, HN - 1, 6); ctx.stroke();
-        ctx.textAlign = 'left'; ctx.font = 'bold 11px -apple-system'; ctx.fillStyle = TX; ctx.fillText('Como ler', nx + PADX, ny + 15);
-        ctx.save();
-        ctx.beginPath(); ctx.rect(nx + 1, ny + HEAD, WN - 2, visH + 4); ctx.clip();
-        ops.forEach(o => { ctx.font = (o.b ? 'bold ' : '') + '10.5px -apple-system'; ctx.fillStyle = TX; ctx.fillText(o.t, nx + PADX + o.x, ny + HEAD + o.y - _grMetricasInfoScroll); });
-        ctx.restore();
-        if (maxScroll > 0) { // barrinha de rolagem
-            const th = Math.max(16, visH * visH / contentH), ty = ny + HEAD + (visH - th) * (_grMetricasInfoScroll / maxScroll);
-            ctx.fillStyle = TX; ctx.globalAlpha = 0.35; ctx.beginPath(); ctx.roundRect(nx + WN - 5, ty, 2.5, th, 1.2); ctx.fill(); ctx.globalAlpha = 1;
-        }
-        const nxc = nx + WN - 13, nyc = ny + 12;
-        ctx.strokeStyle = TX; ctx.lineWidth = 1.3;
-        ctx.beginPath(); ctx.moveTo(nxc - 4.5, nyc - 4.5); ctx.lineTo(nxc + 4.5, nyc + 4.5); ctx.moveTo(nxc + 4.5, nyc - 4.5); ctx.lineTo(nxc - 4.5, nyc + 4.5); ctx.stroke();
-        hits.push({ x: nxc - 14, y: nyc - 14, w: 28, h: 28, key: 'nx', fn: () => grMetricasInfoAlternar() });
-        window._grMetricasNoteRect = { x: nx, y: ny, w: WN, h: HN, max: maxScroll };
-    }
-    ctx.restore();
-}
-// ── arrasto da janela (chamado pelos handlers de toque do canvas; devolvem true quando consumiram o toque) ──────────
-function grMetricasToqueInicio(x, y) {
-    // 1) ⓘ, ✕ da caixa e ✕ da tabela: só toque (o mais próximo do dedo), nunca arrasto
-    let melhor = null, dm = 1e9;
-    (window._grMetricasHits || []).forEach(t => {
-        const cx = t.x + t.w / 2, cy = t.y + t.h / 2;
-        if (Math.abs(x - cx) <= t.w / 2 && Math.abs(y - cy) <= t.h / 2) { const d = Math.hypot(x - cx, y - cy); if (d < dm) { dm = d; melhor = t; } }
-    });
-    if (melhor) { window._grMetricasDrag = { x0: x, y0: y, moved: false, noDrag: true, tap: melhor.fn }; return true; }
-    // 2) toque na caixa de ajuda: rola o texto (e não passa pro gráfico)
-    const nr = window._grMetricasNoteRect;
-    if (nr && x >= nr.x && x <= nr.x + nr.w && y >= nr.y && y <= nr.y + nr.h) { window._grMetricasDrag = { x0: x, y0: y, s0: _grMetricasInfoScroll, moved: false, noDrag: true, rolar: true, tap: null }; return true; }
-    // 3) toque no corpo da tabela: arrasta a janela
-    const r = window._grMetricasRect;
-    if (!r || x < r.x || x > r.x + r.w || y < r.y || y > r.y + r.h) return false;
-    window._grMetricasDrag = { x0: x, y0: y, dx0: _grMetricasOff.dx, dy0: _grMetricasOff.dy, moved: false, noDrag: false, tap: null };
-    return true;
-}
-function grMetricasToqueMove(x, y) {
-    const d = window._grMetricasDrag; if (!d) return false;
-    if (Math.hypot(x - d.x0, y - d.y0) > 8) d.moved = true;
-    if (d.rolar) { _grMetricasInfoScroll = d.s0 + (d.y0 - y); grDrawChart(); return true; } // rola o texto de ajuda
-    if (d.noDrag) return true;
-    _grMetricasOff.dx = d.dx0 + (x - d.x0); _grMetricasOff.dy = d.dy0 + (y - d.y0);
-    grDrawChart();
-    return true;
-}
-function grMetricasToqueFim() { // soltou: se foi um toque (sem mover) num ⓘ/✕, executa
-    const d = window._grMetricasDrag; window._grMetricasDrag = null;
-    if (d && d.tap && !d.moved) d.tap();
-}
-
-// Abre o mesmo ladder do candle, mas alimentado pelo histograma agregado dos
-// últimos N dias — calculado direto de grFootprintTodosOsCandlesBrutos() (que
-// já inclui o minuto em formação agora), não do _grFootprintBins do overlay
-// principal (esse só atualiza 1x/minuto, rápido demais pra parecer "morto" se
-// usado aqui). Sem corpo/pavio de candle nenhum, só a régua de níveis de preço
-// — refresco='live' pula o "Sem dados" quando é só um refresh vazio no meio
-// de um segundo sem trade novo.
-// Extraído de grFootprintAbrirHistogramaAgregado pra ser reaproveitado por
-// outras features (ex: detecção de zona de alto volume no candle único) sem
-// precisar abrir o modal do histograma pra isso.
-// Início da janela do modal "Ver Agregado": a âncora do Volume Profile (a mesma do POC/VWAP/Value Area). Sem âncora, cai na "Janela de dias".
 function grFootprintAgregadoInicio() { return (typeof _grVpAncoraTs !== 'undefined' && _grVpAncoraTs > 0) ? _grVpAncoraTs : Date.now() - (_grFootprintLookbackDias * 24 * 60 * 60 * 1000); }
 function grFootprintCalcularMapaAgregado(ancorado) {
     const agora = Date.now();
