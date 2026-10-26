@@ -3901,7 +3901,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v1003';
+const APP_VERSAO = 'v1006';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4810,6 +4810,32 @@ function grFootprintClusterDoCandle(candle, tick, getTodos) {
 // linha (teto da escala de cor) e o formato/tamanho do texto (o mesmo pra todos os candles: primeiro
 // tenta o número mais preciso com fonte confortável; senão compacta e encolhe a fonte até 5px; senão
 // desiste do texto e fica só a cor). Chamado uma vez por desenho.
+// ── Régua de degradê (a mesma da lupa): aparece no topo quando o footprint está na tela; arrastar o cursor esconde os níveis de menor volume
+window._grGradPos = (function () { try { const v = parseFloat(localStorage.getItem('grMainGrad')); return v >= 0 && v <= 1 ? v : 0; } catch (e) { return 0; } })();
+function grMainGradD(dmax) { const p = window._grGradPos; if (!(p > 0.001)) return 0; const piso = FOOTPRINT_DENS_PISO; if (!(dmax > piso)) return 0; return piso * Math.pow(dmax / piso, p); }
+function grMainGradBarra(cfg) {
+    const wrap = document.getElementById('gr-chart-canvas-wrap'); if (!wrap) return;
+    const on = !!cfg && FOOTPRINT_SKIN !== 'tv'; let el = document.getElementById('gr-grad-bar');
+    if (!el) {
+        if (!on) return;
+        el = document.createElement('div'); el.id = 'gr-grad-bar'; el.style.cssText = 'position:absolute;left:44px;right:44px;top:0;height:14px;z-index:9;touch-action:none;';
+        const cv = document.createElement('canvas'); cv.style.cssText = 'position:absolute;left:0;top:0;'; el.appendChild(cv); wrap.appendChild(el);
+        const mover = e => { const r = el.getBoundingClientRect(); window._grGradPos = Math.max(0, Math.min(1, (e.clientX - r.left - 8) / Math.max(1, r.width - 16))); try { localStorage.setItem('grMainGrad', String(window._grGradPos)); } catch (er) {} try { grAgendarDesenho(); } catch (er) {} };
+        let arr = false;
+        el.addEventListener('pointerdown', e => { e.preventDefault(); e.stopPropagation(); try { el.setPointerCapture(e.pointerId); } catch (er) {} arr = true; mover(e); });
+        el.addEventListener('pointermove', e => { if (arr) { e.preventDefault(); mover(e); } });
+        el.addEventListener('pointerup', () => { arr = false; }); el.addEventListener('pointercancel', () => { arr = false; });
+        el.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+    }
+    el.style.display = on ? 'block' : 'none'; if (!on) return;
+    const W = el.clientWidth, H = 14, dp = Math.min(window.devicePixelRatio || 1, 2), cv = el.firstChild; if (!(W > 0)) return;
+    if (cv.width !== Math.ceil(W * dp) || cv.height !== Math.ceil(H * dp)) { cv.width = Math.ceil(W * dp); cv.height = Math.ceil(H * dp); cv.style.width = W + 'px'; cv.style.height = H + 'px'; }
+    const ctx = cv.getContext('2d'); ctx.setTransform(dp, 0, 0, dp, 0, 0); ctx.clearRect(0, 0, W, H);
+    const piso = FOOTPRINT_DENS_PISO, dm = Math.max(piso * 1.01, cfg.dmax || 0), x0 = 8, x1 = W - 8, g = ctx.createLinearGradient(x0, 0, x1, 0);
+    for (let i = 0; i <= 40; i++) { const q = i / 40; g.addColorStop(q, grLupaGradCor(piso * Math.pow(dm / piso, q), cfg.refTop)); }
+    ctx.beginPath(); ctx.roundRect(x0, 4, x1 - x0, 6, 3); ctx.fillStyle = g; ctx.fill();
+    const cx = x0 + window._grGradPos * (x1 - x0); ctx.beginPath(); ctx.roundRect(cx - 3, 1, 6, 12, 3); ctx.fillStyle = '#2962FF'; ctx.fill();
+}
 function grFootprintPrepararClusters(ctx, candles, pxPorUsd, cW) {
     const soTotal = FOOTPRINT_SKIN === 'cinza'; // skin cinza: 1 número por linha (o total)
     const temTexto = cW >= (soTotal ? FOOTPRINT_TEXTO_CW_MIN_CINZA : FOOTPRINT_TEXTO_CW_MIN);
@@ -4846,8 +4872,9 @@ function grFootprintPrepararClusters(ctx, candles, pxPorUsd, cW) {
         }
     }
     const refTop = grFootprintDestaqueRef(clusters, tick);
+    let dmax = 0; clusters.forEach(cl => cl.linhas.forEach(ln => { const d = ln.total / (cl.agrup || 1) / tick; if (d > dmax) dmax = d; }));   // maior densidade na tela (escala da régua de degradê)
     window._grFpTickUlt = tick;   // grade da última tela (a varredura usa a mesma, pra bater com o que você vê)
-    return { tick, clusters, maxTotal, refTop, nivelTxt, fs, soTotal };
+    return { tick, clusters, maxTotal, refTop, nivelTxt, fs, soTotal, dmax };
 }
 // ── Marcar os maiores níveis: acha, dentro da "Janela de dias" (a mesma usada por CVD/delta/zonas de disputa — não
 // mais o "Dias ao ligar o Fluxo"), o maior total (bid+ask) de uma única linha do footprint dentre TODOS os candles
@@ -5020,6 +5047,7 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
     const cl = cfg.clusters.get(candle.t);
     if (!cl) return false;
     const tick = cfg.tick, meio = tick / 2;
+    const dCorte = FOOTPRINT_SKIN === 'tv' ? 0 : grMainGradD(cfg.dmax);   // régua de degradê: abaixo desta densidade a célula não aparece
     const barW = cW >= 12 ? 2 : 1.5;
     const xCel = Math.round(xSlot + barW + 0.5);
     const wCel = Math.max(1, Math.round(xSlot + cW) - xCel);
@@ -5069,6 +5097,7 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
         yBot = Math.min(yBot, yBotReal);
         if (yBot < yTop) { geo.push(null); return; }
         if (yBot < yMin || yTop > yMax || ln.total <= 0) { geo.push(null); return; }
+        if (dCorte > 0 && ln.total / (cl.agrup || 1) / tick < dCorte) { geo.push(null); return; }
         const y0 = Math.max(yMin, yTop), y1 = Math.min(yMax, yBot);
         // por linha-base: uma linha agrupada (teto de níveis do modo ATR) soma várias, então divide pelo agrupamento
         const corCel = grFootprintCorCelula(ln.bid / (cl.agrup || 1), ln.ask / (cl.agrup || 1), cfg.tick, cfg.refTop);
@@ -6780,7 +6809,8 @@ function grDrawCandles(candles, emptyRight) {
         window._grPxDolarLocal = pxDolar;
         const totalSlots = candles.length + emptyRight;
         const cW = Math.max(2, Math.floor(chartW / Math.max(totalSlots, 1)) - 1);
-        { const okFp = Math.max(2, Math.floor((chartW + _daPad) / Math.max(totalSlots, 1)) - 1) >= FOOTPRINT_CLUSTER_CW_MIN;   // painel Delta/Total só com zoom suficiente para o footprint aparecer nos candles; ao cruzar o limite, redesenha 1x com a altura certa
+        { const okFp = Math.max(2, Math.floor((W - 79) / Math.max(totalSlots, 1)) - 1) >= FOOTPRINT_CLUSTER_CW_MIN;   // largura de referência FIXA (não depende de painel/régua/eixo, que mudam as margens e fariam o limite oscilar sem parar)
+             // painel Delta/Total só com zoom suficiente para o footprint aparecer nos candles; ao cruzar o limite, redesenha 1x com a altura certa
           if (window._grFpCwOk !== okFp) { const antes = window._grFpCwOk; window._grFpCwOk = okFp; if (antes !== undefined || !okFp) requestAnimationFrame(() => { try { grDrawChart(); } catch (e) {} }); } }
         grAtualizarTipoGraficoAuto(chartW / Math.max(totalSlots, 1)); // largura bruta, sem o clamp acima -- detecta zoom out extremo
         // Salva geometria para conversão x<->índice de candle (usado por trendlines)
@@ -7342,6 +7372,7 @@ if (_grTipoGrafico === 'linha') {
     const clustersCfg = (_grFootprintAtivo && cW >= FOOTPRINT_CLUSTER_CW_MIN)
         ? grFootprintPrepararClusters(ctx, candles, pxDolar, cW) : null;
     if (clustersCfg) clustersCfg.tSel = grCrosshairCandleSelecionadoT(candles, totalSlots, chartW);
+    try { grMainGradBarra(clustersCfg); } catch (eGr) {}
     window._grFpTotalPx = (clustersCfg && clustersCfg.nivelTxt >= 0) ? Math.ceil(clustersCfg.fs * 1.4 + 6) : 0; // altura da linha de totais bid x ask abaixo do candle (EV desce além dela)
     window._grAbsColeta = [];
     candles.forEach((cReal, i) => {
@@ -9597,6 +9628,260 @@ function grInitTouch() {
                     window._grCrosshairMaximizada = !window._grCrosshairMaximizada;
                     grDrawChart(); e.preventDefault(); return;
                 }
+            }
+            // Toque no botão "Ver Métricas" da janela do crosshair
+            // Toque no botão "⚓ Ancorar" / "✕ Remover Âncora" da janela do crosshair
+            if (window._longPressActive && window._grCrosshairAncorarBtnArea) {
+                const ta = window._grCrosshairAncorarBtnArea;
+                if (ex2 >= ta.x && ex2 <= ta.x + ta.w && ey2 >= ta.y && ey2 <= ta.y + ta.h) {
+                    grVwapAncorarNoCandle(window._grCrosshairAncorarIdx);
+                    window._longPressActive = false;
+                    clearTimeout(_longPressTimer);
+                    e.preventDefault();
+                    return;
+                }
+            }
+            // Toque no botão "Ancorar Value Area" / "Remover Value Area" da janela do crosshair
+            if (window._longPressActive && window._grCrosshairValueAreaBtnArea) {
+                const tva = window._grCrosshairValueAreaBtnArea;
+                if (ex2 >= tva.x && ex2 <= tva.x + tva.w && ey2 >= tva.y && ey2 <= tva.y + tva.h) {
+                    grValueAreaAncorarNoCandle(window._grCrosshairValueAreaIdx);
+                    window._longPressActive = false;
+                    clearTimeout(_longPressTimer);
+                    e.preventDefault();
+                    return;
+                }
+            }
+            // Toque no botão "Ancorar Volume Profile" / "Remover Volume Profile" da janela do crosshair
+            if (window._longPressActive && window._grCrosshairVpBtnArea) {
+                const tvp = window._grCrosshairVpBtnArea;
+                if (ex2 >= tvp.x && ex2 <= tvp.x + tvp.w && ey2 >= tvp.y && ey2 <= tvp.y + tvp.h) {
+                    window._longPressActive = false;
+                    clearTimeout(_longPressTimer);
+                    grVpAncorarNoCandle(window._grCrosshairVpIdx); // redesenha por dentro
+                    e.preventDefault();
+                    return;
+                }
+            }
+            // LÁPIS na intersecção do crosshair: toque nele liga/desliga o modo desenho (o crosshair continua aberto). Com o modo ligado, tocar em outro ponto leva o crosshair até lá.
+            if (window._longPressActive && !grPlAtivo() && !window._mdGesto && _grCrosshairX != null && window._longPressY >= 0) {
+                { const lx0 = _grCrosshairX, Wc = grLW(canvas), axx = (lx0 + 32 + 12 > Wc - (window._grPADRight != null ? window._grPADRight : 60)) ? lx0 - 32 : lx0 + 32;
+                  const dP = Math.hypot(ex2 - lx0, ey2 - window._longPressY), dA = Math.hypot(ex2 - axx, ey2 - window._longPressY);
+                  if (dA <= 20 && dA < dP) { grTextoNovo(); e.preventDefault(); return; }   // "Aa": escrever
+                  if (dP <= 20) { mdDesenhoAlternar(); e.preventDefault(); return; } }   // pincel: modo desenho
+                if (window._mdDesenhoOn) {
+                    _grCrosshairX = e.touches[0].clientX - canvas.getBoundingClientRect().left; window._longPressY = toCanvasYCh(e.touches[0].clientY);
+                    isDragging = false; clearTimeout(_longPressTimer); _mdDw = null; window._mdDwProg = 0; grDrawChartWithCrosshair(window._longPressY); e.preventDefault(); return;
+                }
+            }
+            // Toque simples fecha o crosshair se estava ativo
+            if (window._longPressActive) {
+                window._longPressActive = false;
+                clearTimeout(_longPressTimer);
+                grDrawChart();
+                e.preventDefault();
+                return;
+            }
+            // Modo Alerta novo — igual à linha horizontal: toque posiciona, arrasto ajusta, soltar grava
+            if (_indState.alertaNovo) {
+                _alDrawing = true;
+                _alAtual = { p: grToPrice(ey2) };
+                grDrawChart();
+                e.preventDefault();
+                return;
+            }
+            // Modo Posição Long/Short — toque posiciona a entrada, arrasto ajusta, soltar cria a caixa e já abre as alças
+            if (_indState.posLong || _indState.posShort) {
+                _psDrawing = true;
+                _psAtual = { lado: _indState.posShort ? 'short' : 'long', i1: grXToIndex(ex2), p: grToPrice(ey2) };
+                grDrawChart();
+                e.preventDefault();
+                return;
+            }
+            // Modo Linha Horizontal — toque posiciona, arrasto ajusta, soltar fixa
+            if (_indState.hlinha) {
+                _hlDrawing = true;
+                _hlAtual = { p: grToPrice(ey2) };
+                grDrawChart();
+                e.preventDefault();
+                return;
+            }
+            // Modo Novo Fibo — encosta no ponto 1, arrasta até o ponto 2 (com ímã; a tela rola sozinha nas bordas) e solta para criar
+            if (false && _indState.novoFibo) {   // (criação agora é pelo crosshair + Ações)
+                const sp0 = grNfSnap(ex2, ey2 - NF_OFF);
+                _nfDrawing = true; _nfDedo = { x: ex2, y: ey2, x0: ex2, y0: ey2 };
+                _nfAtual = { t1: sp0.t, p1: sp0.p, t2: sp0.t, p2: sp0.p, cor: '#2962FF', moved: false };
+                grNfAutoIniciar(); grDrawChart();
+                e.preventDefault();
+                return;
+            }
+            // Modo Medida ativo — descartável, suspende outros gestos
+            if (_indState.medida) {
+                const idx0 = grXToIndex(ex2);
+                const price0 = grToPrice(ey2);
+                _medidaDrawing = true;
+                _medidaAtual = { i1: idx0, p1: price0, i2: idx0, p2: price0 };
+                e.preventDefault();
+                return;
+            }
+            // Modo Trendline ativo — suspende outros gestos
+            if (_indState.trend && !_canalModo) {
+                const HITT = 40;
+                let foundDrag = null;
+                for (let li = 0; li < _trendlines.length; li++) {
+                    const tl = _trendlines[li]; if (tl.oculta) continue;
+                    const x1 = grIndexToX(grTimeToIndex(tl.t1)), y1 = grLineY(tl.p1);
+                    const x2 = grIndexToX(grTimeToIndex(tl.t2)), y2 = grLineY(tl.p2);
+                    if (Math.hypot(ex2 - x1, ey2 - y1) <= HITT) { foundDrag = { li, end: '1' }; break; }
+                    if (Math.hypot(ex2 - x2, ey2 - y2) <= HITT) { foundDrag = { li, end: '2' }; break; }
+                }
+                if (foundDrag) {
+                    _trendDragging = foundDrag;
+                    e.preventDefault();
+                    return;
+                }
+                // Toque no corpo de uma linha existente — toque longo apaga
+                let foundBody = null;
+                for (let li = 0; li < _trendlines.length; li++) {
+                    const tl = _trendlines[li]; if (tl.oculta) continue;
+                    const x1 = grIndexToX(grTimeToIndex(tl.t1)), y1 = grLineY(tl.p1);
+                    const x2 = grIndexToX(grTimeToIndex(tl.t2)), y2 = grLineY(tl.p2);
+                    const dx = x2 - x1, dy = y2 - y1;
+                    const lenSq = dx * dx + dy * dy;
+                    let t = lenSq > 0 ? ((ex2 - x1) * dx + (ey2 - y1) * dy) / lenSq : 0;
+                    t = Math.max(0, Math.min(1, t));
+                    const px = x1 + t * dx, py = y1 + t * dy;
+                    if (Math.hypot(ex2 - px, ey2 - py) <= 18) { foundBody = li; break; }
+                }
+                if (foundBody !== null) {
+                    _trendDeletePending = { li: foundBody };
+                    _trendDeleteStartX = ex2; _trendDeleteStartY = ey2;
+                    _trendDeleteTimer = setTimeout(() => {
+                        if (_trendDeletePending) {
+                            cvApagarTrendline(_trendDeletePending.li);
+                            _trendDeletePending = null;
+                        }
+                    }, 500);
+                    e.preventDefault();
+                    return;
+                }
+                // Toque fora de pontas existentes — inicia linha nova
+                const idx0 = grXToIndex(ex2);
+                const price0 = grToPrice(ey2);
+                _trendDrawing = true;
+                _trendAtual = { i1: idx0, p1: price0, i2: idx0, p2: price0, cor: _trendColor, canal: _canalModo };
+                e.preventDefault();
+                return;
+            }
+            // Modo Desenho Livre ativo — vários traços em sequência, dedo não sai da tela
+            if (_indState.freehand) {
+                // Toque perto de um traço existente = candidato a apagar (toque longo, mesmo padrão da Trendline)
+                let foundStroke = null;
+                buscaTraco:
+                for (let si = 0; si < _freehands.length; si++) {
+                    const pts = _freehands[si].pontos;
+                    for (let pi = 0; pi < pts.length - 1; pi++) {
+                        const x1 = grIndexToX(grTimeToIndex(pts[pi].t)), y1 = grLineY(pts[pi].p);
+                        const x2 = grIndexToX(grTimeToIndex(pts[pi + 1].t)), y2 = grLineY(pts[pi + 1].p);
+                        const dx = x2 - x1, dy = y2 - y1;
+                        const lenSq = dx * dx + dy * dy;
+                        let t = lenSq > 0 ? ((ex2 - x1) * dx + (ey2 - y1) * dy) / lenSq : 0;
+                        t = Math.max(0, Math.min(1, t));
+                        const px = x1 + t * dx, py = y1 + t * dy;
+                        if (Math.hypot(ex2 - px, ey2 - py) <= 18) { foundStroke = si; break buscaTraco; }
+                    }
+                }
+                if (foundStroke !== null) {
+                    _freehandDeletePending = { si: foundStroke };
+                    _freehandDeleteStartX = ex2; _freehandDeleteStartY = ey2;
+                    _freehandDeleteTimer = setTimeout(() => {
+                        if (_freehandDeletePending) {
+                            cvApagarFreehand(_freehandDeletePending.si);
+                            _freehandDeletePending = null;
+                        }
+                    }, 500);
+                    e.preventDefault();
+                    return;
+                }
+                // Início de um traço novo
+                const idx0f = grXToIndex(ex2);
+                const price0f = grToPrice(ey2);
+                _freehandDrawing = true;
+                _freehandAtual = { pontos: [{ i: idx0f, p: price0f }], cor: _freehandColor };
+                _freehandLastPxX = ex2; _freehandLastPxY = ey2;
+                e.preventDefault();
+                return;
+            }
+            const yInterno = toCanvasY(e.touches[0].clientY);
+            const xInterno = (e.touches[0].clientX - canvas.getBoundingClientRect().left) * (grLW(canvas) / canvas.getBoundingClientRect().width);
+            const target = grGetDragTarget(yInterno);
+            if (target) {
+                _grDragLineCandidato = target; // decidido só no 1º movimento (ver touchmove) — não trava o scroll na hora
+                _grDragLine = null;
+                isDragging = true;
+                touchStartX = e.touches[0].clientX;
+                touchStartY = e.touches[0].clientY;
+                if (target === 'stop') window._stopHandleDragged = false;
+            }
+ else {
+    _grDragLine = null; _grDragLineCandidato = null;
+    touchStartX = e.touches[0].clientX;
+    touchStartY = e.touches[0].clientY;
+    isDragging = true;
+    window._longPressY = yInterno;
+                _longPressTimer = setTimeout(() => {
+        if (isDragging) {
+            window._longPressActive = true;
+            window._grCrosshairMaximizada = false; // a janela abre sempre minimizada (só data e ΔV Nível)
+            isDragging = false;
+            _grCrosshairX = _liveTouchX - canvas.getBoundingClientRect().left;
+            window._longPressY = toCanvasYCh(_liveTouchY);
+            grDrawChartWithCrosshair(window._longPressY);
+        }
+    }, 1100);
+}
+        } else if (e.touches.length === 2) {
+            _grDragLine = null; _grDragLineCandidato = null;
+            isDragging = false;
+            clearTimeout(_longPressTimer);
+            window._longPressActive = false;
+            lastTouchDist = Math.hypot(
+                e.touches[0].clientX - e.touches[1].clientX,
+                e.touches[0].clientY - e.touches[1].clientY
+            );
+            lastTouchDistX = Math.abs(e.touches[0].clientX - e.touches[1].clientX);
+            lastTouchDistY = Math.abs(e.touches[0].clientY - e.touches[1].clientY);
+            // Novo gesto de pinça — resincroniza o acumulador com o zoom
+            // atual, pra não carregar deriva de qualquer mudança de zoom que
+            // tenha acontecido fora da pinça entre um gesto e outro.
+            _grZoomAcumulado = _grZoom;
+            // Pinça no EIXO Y: os dois dedos começam na faixa de preços (agora à DIREITA do gráfico) → só a altura muda
+            const rectP = canvas.getBoundingClientRect(), escP = grLW(canvas) / rectP.width;
+            const xa = (e.touches[0].clientX - rectP.left) * escP, xb = (e.touches[1].clientX - rectP.left) * escP;
+            const limiteEixo = grLW(canvas) - grPadR() - 10;
+            window._grPincaY = (xa > limiteEixo && xb > limiteEixo) ? { lastDist: Math.abs(e.touches[0].clientY - e.touches[1].clientY) } : null;
+            // Pinça no EIXO X: os dois dedos começam ABAIXO do gráfico de preços (faixa de baixo: painéis e margem) → só a
+            // LARGURA dos candles muda; a altura fica exatamente onde está.
+            const ya = (e.touches[0].clientY - rectP.top) * (grLH(canvas) / rectP.height), yb = (e.touches[1].clientY - rectP.top) * (grLH(canvas) / rectP.height);
+            const fundoPlot = _grPAD.top + _grChartH - 50; // área do gesto começa 50px ACIMA do fundo dos candles (nos ativos sem painel a faixa de baixo é só ~30px)
+            window._grPincaX = (!window._grPincaY && ya > fundoPlot && yb > fundoPlot) ? { lastDist: Math.abs(e.touches[0].clientX - e.touches[1].clientX) } : null;
+        }
+        e.preventDefault();
+    }, { passive: false });
+    canvas.addEventListener('touchmove', e => {
+        if (e.touches.length === 1) {
+            _liveTouchX = e.touches[0].clientX;
+            _liveTouchY = e.touches[0].clientY;
+            if (grPlAtivo() && window._nfT) {   // Novo Fibo e demais ferramentas de Desenho: o dedo arrasta o crosshair (relativo)
+                const rcN = canvas.getBoundingClientRect(), nx0 = (e.touches[0].clientX - rcN.left) * (grLW(canvas) / rcN.width), ny0 = (e.touches[0].clientY - rcN.top) * (grLH(canvas) / rcN.height), N = window._nfT;
+                if (!N.moved && Math.hypot(nx0 - N.fx, ny0 - N.fy) > 8) N.moved = true;
+                if (N.moved) {
+                    const L = window._grPADLeft || 0, Wc = window._grChartW || 0, Tp = _grPAD.top, Hc = _grChartH;
+                    _grCrosshairX = Math.max(L, Math.min(L + Wc, N.cx0 + (nx0 - N.fx))); window._longPressY = Math.max(Tp, Math.min(Tp + Hc, N.cy0 + (ny0 - N.fy)));
+                    window._longPressActive = true; if (!_nfTimer) grNfAutoIniciar();
+                    grDrawChartWithCrosshair(window._longPressY);
+                }
+                e.preventDefault(); return;
             }
             if (_edDrag) { const rc0 = canvas.getBoundingClientRect(); grEdToqueMove((e.touches[0].clientX - rc0.left) * (grLW(canvas) / rc0.width), (e.touches[0].clientY - rc0.top) * (grLH(canvas) / rc0.height)); e.preventDefault(); return; }
             if (AB.arrastando()) { const rcA = canvas.getBoundingClientRect(); AB.toqueMove((e.touches[0].clientX - rcA.left) * (grLW(canvas) / rcA.width), (e.touches[0].clientY - rcA.top) * (grLH(canvas) / rcA.height)); e.preventDefault(); return; }   /*ABALAO*/
