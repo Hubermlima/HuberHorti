@@ -3905,7 +3905,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v1017';
+const APP_VERSAO = 'v1019';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4817,6 +4817,11 @@ function grFootprintClusterDoCandle(candle, tick, getTodos) {
 // ── Régua de degradê (a mesma da lupa): aparece no topo quando o footprint está na tela; arrastar o cursor esconde os níveis de menor volume
 window._grGradPos = (function () { try { const v = parseFloat(localStorage.getItem('grMainGrad')); return v >= 0 && v <= 1 ? v : 0; } catch (e) { return 0; } })();
 function grMainGradD(dmax) { const p = window._grGradPos; if (!(p > 0.001)) return 0; const piso = FOOTPRINT_DENS_PISO; if (!(dmax > piso)) return 0; return piso * Math.pow(dmax / piso, p); }
+// A régua de gradação fica logo abaixo dos botões de TF (fim do cabeçalho); com o cabeçalho escondido sobe para o topo do gráfico
+function grMainGradPosicionar() {
+    const el = document.getElementById('gr-grad-bar'); if (!el) return;
+    const f = window._grCabecalhoFundo; el.style.top = ((f != null && !window._grCabOculto) ? Math.round(f + 4) : 2) + 'px';
+}
 function grMainGradBarra(cfg) {
     const wrap = document.getElementById('gr-chart-canvas-wrap'); if (!wrap) return;
     const on = !!cfg && FOOTPRINT_SKIN !== 'tv'; let el = document.getElementById('gr-grad-bar');
@@ -4832,6 +4837,7 @@ function grMainGradBarra(cfg) {
         el.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
     }
     el.style.display = on ? 'block' : 'none'; if (!on) return;
+    try { grMainGradPosicionar(); } catch (e) {}
     const W = el.clientWidth, H = 14, dp = Math.min(window.devicePixelRatio || 1, 2), cv = el.firstChild; if (!(W > 0)) return;
     if (cv.width !== Math.ceil(W * dp) || cv.height !== Math.ceil(H * dp)) { cv.width = Math.ceil(W * dp); cv.height = Math.ceil(H * dp); cv.style.width = W + 'px'; cv.style.height = H + 'px'; }
     const ctx = cv.getContext('2d'); ctx.setTransform(dp, 0, 0, dp, 0, 0); ctx.clearRect(0, 0, W, H);
@@ -5051,7 +5057,7 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
     const cl = cfg.clusters.get(candle.t);
     if (!cl) return false;
     const tick = cfg.tick, meio = tick / 2;
-    const dCorte = FOOTPRINT_SKIN === 'tv' ? 0 : grMainGradD(cfg.dmax);   // régua de degradê: abaixo desta densidade a célula não aparece
+    const dCorte = FOOTPRINT_SKIN === 'tv' ? 0 : grMainGradD(cfg.dmax);   // régua de degradê: abaixo desta densidade a célula fica bem esmaecida (o footprint continua inteiro, com os números)
     const barW = cW >= 12 ? 2 : 1.5;
     const xCel = Math.round(xSlot + barW + 0.5);
     const wCel = Math.max(1, Math.round(xSlot + cW) - xCel);
@@ -5101,7 +5107,7 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
         yBot = Math.min(yBot, yBotReal);
         if (yBot < yTop) { geo.push(null); return; }
         if (yBot < yMin || yTop > yMax || ln.total <= 0) { geo.push(null); return; }
-        if (dCorte > 0 && ln.total / (cl.agrup || 1) / tick < dCorte) { geo.push(null); return; }
+        const fraca = dCorte > 0 && ln.total / (cl.agrup || 1) / tick < dCorte;
         const y0 = Math.max(yMin, yTop), y1 = Math.min(yMax, yBot);
         // por linha-base: uma linha agrupada (teto de níveis do modo ATR) soma várias, então divide pelo agrupamento
         const corCel = grFootprintCorCelula(ln.bid / (cl.agrup || 1), ln.ask / (cl.agrup || 1), cfg.tick, cfg.refTop);
@@ -5120,9 +5126,11 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
             geo.push({ y0, y1, pontaCortada, escura: false, tv: { wB, wA, corB, corA, ancL, ancR } });
             return;
         }
-        geo.push({ y0, y1, pontaCortada, escura: corCel.escura });
+        geo.push({ y0, y1, pontaCortada, escura: fraca ? false : corCel.escura, fraca });
         ctx.fillStyle = corCel.cor;
+        if (fraca) ctx.globalAlpha = 0.22;
         ctx.fillRect(xCel, y0, wCel, Math.max(1, y1 - y0));
+        ctx.globalAlpha = 1;
     });
     // Células TOCÁVEIS: tocar numa célula (que mostra número) abre o modal só daquele nível (grFpCelAbrirModal). A zona de toque tem no mínimo 14 px.
     if (nivelTxt >= 0 && window._grFpCelHits) {
@@ -5178,7 +5186,9 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
             const imb = ln.imbAsk || ln.imbBid;
             ctx.font = imb ? fonteNegrito : fonteNormal;
             ctx.fillStyle = imb ? (g.escura ? '#8FA5FF' : '#1A2BD8') : (g.escura ? '#FFFFFF' : '#000000');
+            if (g.fraca) ctx.globalAlpha = 0.55;
             fpTxt(grFmtVolCompacto(ln.total, nivelTxt), xCel + wCel - 3, (g.y0 + g.y1) / 2, g);
+            ctx.globalAlpha = 1;
         });
         ctx.textAlign = 'left';
     }
@@ -5226,9 +5236,11 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
             ctx.font = ln.imbAsk ? fonteNegrito : fonteNormal; const wb = ctx.measureText(b).width;
             let x = xCel + (wCel - (wa + wx + wb)) / 2;
             const y = (g.y0 + g.y1) / 2;
+            if (g.fraca) ctx.globalAlpha = 0.55;
             ctx.font = ln.imbBid ? fonteNegrito : fonteNormal; ctx.fillStyle = ln.imbBid ? corImb : corTxt; fpTxt(a, x, y, g); x += wa;
             ctx.font = fonteNormal;                             ctx.fillStyle = corTxt;                          fpTxt(' x ', x, y, g); x += wx;
             ctx.font = ln.imbAsk ? fonteNegrito : fonteNormal; ctx.fillStyle = ln.imbAsk ? corImb : corTxt; fpTxt(b, x, y, g);
+            ctx.globalAlpha = 1;
         });
     }
     // Total do candle inteiro, uma linha só, logo ABAIXO do bloco de células — não é célula nem abre nada, é só a
@@ -8690,6 +8702,7 @@ function grDesenharLinhaOhlc(ctx, W, info) {
         });
     }
     window._grCabecalhoFundo = yRow + hB;
+    try { grMainGradPosicionar(); } catch (e) {}
     grPainelValores(null);
 }
 // Badge retrátil dos ajustes de ambiente (TF e Escala): começa recolhida.
@@ -12517,7 +12530,7 @@ function grLupaDesenharMain(S) {   // segue a Skin das configurações (cores ·
     const fmt = v => grFmtVolCompacto(v, 0), yDe = p => ((dd.kHi + 0.5) * dd.tick - p) / dd.tick * D.rowH, R = FOOTPRINT_IMBALANCE_RATIO;
     const lum = c => { const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(c); return m ? 0.299 * parseInt(m[1], 16) + 0.587 * parseInt(m[2], 16) + 0.114 * parseInt(m[3], 16) : 255; };
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    const dCorte = tv ? 0 : grLupaGradD(S);   // régua de gradação: abaixo desta densidade a célula não aparece
+    const dCorte = tv ? 0 : grLupaGradD(S);   // régua de gradação: abaixo desta densidade a célula fica bem esmaecida (com os números)
     for (let i = i0; i <= i1; i++) {
         const col = dd.cols[i], X = i * D.colW, cx0 = X + strip, cw = D.colW - strip, half = cw / 2, cxC = cx0 + half;
         const cd = col.c, up = cd.c >= cd.o, cc = (typeof grCorCandle === 'function') ? grCorCandle(up) : { fill: up ? '#26A69A' : '#EF5350', stroke: up ? '#26A69A' : '#EF5350' };
@@ -12531,7 +12544,8 @@ function grLupaDesenharMain(S) {   // segue a Skin das configurações (cores ·
         const tvGap = Math.max(2, Math.min(5, cw * 0.04));
         for (let r = r0; r <= r1; r++) {
             const k = dd.kHi - r, a = (col.vis && !col.vis.has(k)) ? null : col.mapa.get(k), Y = r * D.rowH, bid = a ? a.bid : 0, ask = a ? a.ask : 0;
-            if (bid + ask > 0 && !(dCorte > 0 && (bid + ask) / dd.tick < dCorte)) {
+            if (bid + ask > 0) {
+                const fraca = dCorte > 0 && (bid + ask) / dd.tick < dCorte;
                 const abaixo = k - 1 >= col.kMin ? col.mapa.get(k - 1) : null, acima = k + 1 <= col.kMax ? col.mapa.get(k + 1) : null;
                 const imbA = ask > 0 && k - 1 >= col.kMin && ask >= R * (abaixo ? abaixo.bid : 0), imbB = bid > 0 && k + 1 <= col.kMax && bid >= R * (acima ? acima.ask : 0);
                 if (tv) {   // histograma: venda à esquerda do centro, compra à direita; a linha da POC é branca (ou a cor escolhida) nos dois lados
@@ -12550,16 +12564,17 @@ function grLupaDesenharMain(S) {   // segue a Skin das configurações (cores ·
                     if (ask >= 0.05) { const ta = fmt(ask); texto(ta, ancR + 2, imbA, xx => (wA >= 0.5 && xx >= ancR && xx <= ancR + wA) ? corA : null); }
                 } else {
                     const cor = grFootprintCorCelula(bid, ask, dd.tick, dd.refTop);
-                    ctx.fillStyle = cor.cor; ctx.fillRect(cx0, Y, cw, D.rowH);
+                    ctx.fillStyle = cor.cor; if (fraca) ctx.globalAlpha = 0.22; ctx.fillRect(cx0, Y, cw, D.rowH); ctx.globalAlpha = fraca ? 0.55 : 1;
                     const txt = (v, x, imb, al) => {
                         if (v < 0.05) return;
-                        ctx.font = (imb ? '700 ' : '400 ') + D.fs.toFixed(1) + 'px -apple-system'; ctx.fillStyle = cor.escura ? '#FFFFFF' : '#111111'; ctx.textAlign = al || 'center';
+                        ctx.font = (imb ? '700 ' : '400 ') + D.fs.toFixed(1) + 'px -apple-system'; ctx.fillStyle = (cor.escura && !fraca) ? '#FFFFFF' : '#111111'; ctx.textAlign = al || 'center';
                         const s2 = fmt(v); ctx.fillText(s2, x, Y + D.rowH / 2 + 0.5);
                         if (imb) { const tw = ctx.measureText(s2).width, xl = al === 'right' ? x - tw : x - tw / 2; ctx.fillRect(xl, Y + D.rowH / 2 + D.fs * 0.55, tw, 1.5); }   // desequilíbrio diagonal (300%): negrito + sublinhado
                         ctx.textAlign = 'center';
                     };
                     if (cinza) txt(bid + ask, cx0 + cw - 4, imbA || imbB, 'right');   // cinza: um número só por linha (o total)
                     else { txt(bid, cx0 + half / 2, imbB); txt(ask, cx0 + half + half / 2, imbA); ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(Math.round(cx0 + half) - 0.5, Y + 3, 1, D.rowH - 6); }
+                    ctx.globalAlpha = 1;
                 }
             }
             
