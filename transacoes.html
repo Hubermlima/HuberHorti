@@ -3927,7 +3927,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v1058';
+const APP_VERSAO = 'v1060';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4923,6 +4923,7 @@ function grFootprintPrepararClusters(ctx, candles, pxPorUsd, cW) {
     // Referências de cor ESTÁVEIS: o destaque (p97) e o topo da régua de degradê só SOBEM enquanto você rola (guardam o maior já visto neste ativo/TF;
     // as densidades já são por unidade de preço, então valem para qualquer zoom). Assim uma célula não muda de cor quando você rola o gráfico.
     // Não calcula nada a mais: usa só o que já está na tela.
+    try { grFpPercentilGarantir(tick); } catch (eP) {}
     let refTop = grFootprintDestaqueRef(clusters, tick), dmax = 0;
     clusters.forEach(cl => cl.linhas.forEach(ln => { const d = ln.total / (cl.agrup || 1) / tick; if (d > dmax) dmax = d; }));
     try {
@@ -5039,9 +5040,35 @@ function grFootprintPintar(pal, k, destaque) {
     return { cor: 'rgb(' + r + ',' + g + ',' + b + ')', escura: grFpLumRel(r, g, b) < 0.179 };
 }
 // bid/ask já por linha-base; tick em US$; refTop = densidade do p97 visível (destaque).
+// Percentil de uma densidade dentro do conjunto ordenado (empates ficam no meio do intervalo): 0 = a mais fraca, 1 = a mais forte.
+function grFpPercentil(arr, d) {
+    let lo = 0, hi = arr.length; while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m] < d) lo = m + 1; else hi = m; }
+    let a = lo; hi = arr.length; while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m] <= d) lo = m + 1; else hi = m; }
+    return (a + lo) / 2 / arr.length;
+}
+// Conjunto da escala de cor: densidade (volume da linha ÷ agrupamento ÷ tick) de TODAS as linhas dos candles da janela de dias do footprint (a mesma do CVD/delta). Guardado por ativo/TF/grade.
+// Segurança de desempenho: no máximo os 1000 candles mais recentes da janela.
+function grFpPercentilGarantir(tick) {
+    const cs = _grAllCandles; if (!cs || !cs.length) return null;
+    const dias = _grFootprintLookbackDias || 7, lastT = cs[cs.length - 1].t;
+    const chave = grBinSymbolAtual() + '|' + _grTf + '|' + tick + '|' + FOOTPRINT_LINHAS_MODO + '|' + FOOTPRINT_NIVEIS_MAX + '|' + dias + '|' + cs.length + '|' + lastT;
+    let P = window._grFpPerc; if (P && P.k === chave) return P;
+    const t0 = lastT - dias * 86400000, v = []; let todos = null; const getTodos = () => todos || (todos = grFootprintTodosOsCandlesBrutos());
+    for (let i = cs.length - 1, n = 0; i >= 0 && n < 1000 && cs[i].t >= t0; i--, n++) {
+        const cl = grFootprintClusterDoCandle(cs[i], tick, getTodos); if (!cl) continue;
+        cl.linhas.forEach(ln => { if (ln.total > 0) v.push(ln.total / (cl.agrup || 1) / tick); });
+    }
+    window._grFpPerc = P = { k: chave, arr: Float64Array.from(v).sort() };
+    return P;
+}
 function grFootprintCorCelula(bid, ask, tick, refTop) {
     const total = bid + ask;
     const d = total / tick;
+    const P = window._grFpPerc;   // escala única das duas skins: posição (percentil) da densidade da célula entre todas as linhas da janela de dias carregada
+    if (P && P.arr.length >= 20) {
+        if (!(d > 0)) return { cor: '#FFFFFF', escura: false };
+        return grFootprintPintar(FOOTPRINT_SKIN === 'cinza' ? FOOTPRINT_COR_CINZA : (ask >= bid ? FOOTPRINT_COR_VERDE : FOOTPRINT_COR_VERMELHO), grFpPercentil(P.arr, d), 0);
+    }
     if (!(d > FOOTPRINT_DENS_PISO)) return { cor: '#FFFFFF', escura: false };
     const pal = FOOTPRINT_SKIN === 'cinza' ? FOOTPRINT_COR_CINZA : (ask >= bid ? FOOTPRINT_COR_VERDE : FOOTPRINT_COR_VERMELHO);
     let k = Math.log(d / FOOTPRINT_DENS_PISO) / Math.log(FOOTPRINT_DENS_TETO / FOOTPRINT_DENS_PISO);
@@ -12740,6 +12767,7 @@ function grLupaRegPer() { try { return localStorage.getItem('grLupaRegPer') === 
 function grLupaGradOn() { try { return FOOTPRINT_SKIN !== 'tv' && localStorage.getItem('grLupaGradVis') !== '0'; } catch (e) { return false; } }
 function grLupaGradPos() { try { const v = parseFloat(localStorage.getItem('grLupaGrad')); return v >= 0 && v <= 1 ? v : 0; } catch (e) { return 0; } }
 function grLupaGradCor(d, refTop) {   // a mesma cor que a célula tem nesta densidade (paleta cinza)
+    { const P = window._grFpPerc; if (P && P.arr.length >= 20) return d > 0 ? grFootprintPintar(FOOTPRINT_COR_CINZA, grFpPercentil(P.arr, d), 0).cor : '#FFFFFF'; }
     const piso = FOOTPRINT_DENS_PISO, teto = FOOTPRINT_DENS_TETO; if (!(d > piso)) return '#FFFFFF';
     let k = Math.log(d / piso) / Math.log(teto / piso); k = Math.max(0, Math.min(1, k)); k = Math.pow(k, grFootprintGamaContraste()); let dest = 0;
     if (refTop > 0) { const r = d / refTop, sx = Math.max(0, Math.min(1, (r - (0.75 - 0.03 * FOOTPRINT_CONTRASTE)) / 0.9)), sm = sx * sx * (3 - 2 * sx); k = Math.max(k, sm); dest = 0.8 * sm; }
