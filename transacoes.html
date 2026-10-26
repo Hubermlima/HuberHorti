@@ -1,5 +1,4 @@
 <!DOCTYPE html>
-
 <html lang="pt-BR">
 <head>
 <script src="https://cdn.jsdelivr.net/npm/eruda"></script>
@@ -3906,7 +3905,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v1028';
+const APP_VERSAO = 'v1032';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4818,6 +4817,8 @@ function grFootprintClusterDoCandle(candle, tick, getTodos) {
 // ── Régua de degradê (a mesma da lupa): aparece no topo quando o footprint está na tela; arrastar o cursor esconde os níveis de menor volume
 window._grGradPos = (function () { try { const v = parseFloat(localStorage.getItem('grMainGrad')); return v >= 0 && v <= 1 ? v : 0; } catch (e) { return 0; } })();
 function grMainGradD(dmax) { const p = window._grGradPos; if (!(p > 0.001)) return 0; const piso = FOOTPRINT_DENS_PISO; if (!(dmax > piso)) return 0; return piso * Math.pow(dmax / piso, p); }
+window._grChipsOculto = (function () { try { return localStorage.getItem('grChipsOculto') === '1'; } catch (e) { return false; } })();
+function grChipsAlternar() { window._grChipsOculto = !window._grChipsOculto; try { localStorage.setItem('grChipsOculto', window._grChipsOculto ? '1' : '0'); } catch (e) {} try { grDrawChart(); } catch (e) {} }
 // A régua de gradação fica logo abaixo dos botões de TF (fim do cabeçalho); com o cabeçalho escondido sobe para o topo do gráfico
 function grMainGradPosicionar() {
     const el = document.getElementById('gr-grad-bar'); if (!el) return;
@@ -4828,7 +4829,7 @@ function grMainGradBarra(cfg) {
     const on = !!cfg && FOOTPRINT_SKIN !== 'tv'; let el = document.getElementById('gr-grad-bar');
     if (!el) {
         if (!on) return;
-        el = document.createElement('div'); el.id = 'gr-grad-bar'; el.style.cssText = 'position:absolute;left:44px;right:44px;top:0;height:14px;z-index:9;touch-action:none;';
+        el = document.createElement('div'); el.id = 'gr-grad-bar'; el.style.cssText = 'position:absolute;left:44px;right:44px;top:0;height:22px;z-index:9;touch-action:none;';
         const cv = document.createElement('canvas'); cv.style.cssText = 'position:absolute;left:0;top:0;'; el.appendChild(cv); wrap.appendChild(el);
         const mover = e => { const r = el.getBoundingClientRect(); window._grGradPos = Math.max(0, Math.min(1, (e.clientX - r.left - 8) / Math.max(1, r.width - 16))); try { localStorage.setItem('grMainGrad', String(window._grGradPos)); } catch (er) {} try { grAgendarDesenho(); } catch (er) {} };
         let arr = false;
@@ -4839,13 +4840,18 @@ function grMainGradBarra(cfg) {
     }
     el.style.display = on ? 'block' : 'none'; if (!on) return;
     try { grMainGradPosicionar(); } catch (e) {}
-    const W = el.clientWidth, H = 14, dp = Math.min(window.devicePixelRatio || 1, 2), cv = el.firstChild; if (!(W > 0)) return;
+    const W = el.clientWidth, H = 22, dp = Math.min(window.devicePixelRatio || 1, 2), cv = el.firstChild; if (!(W > 0)) return;
     if (cv.width !== Math.ceil(W * dp) || cv.height !== Math.ceil(H * dp)) { cv.width = Math.ceil(W * dp); cv.height = Math.ceil(H * dp); cv.style.width = W + 'px'; cv.style.height = H + 'px'; }
     const ctx = cv.getContext('2d'); ctx.setTransform(dp, 0, 0, dp, 0, 0); ctx.clearRect(0, 0, W, H);
     const piso = FOOTPRINT_DENS_PISO, dm = Math.max(piso * 1.01, cfg.dmax || 0), x0 = 8, x1 = W - 8, g = ctx.createLinearGradient(x0, 0, x1, 0);
     for (let i = 0; i <= 40; i++) { const q = i / 40; g.addColorStop(q, grLupaGradCor(piso * Math.pow(dm / piso, q), cfg.refTop)); }
     ctx.beginPath(); ctx.roundRect(x0, 4, x1 - x0, 6, 3); ctx.fillStyle = g; ctx.fill();
     const cx = x0 + window._grGradPos * (x1 - x0); ctx.beginPath(); ctx.roundRect(cx - 3, 1, 6, 12, 3); ctx.fillStyle = '#2962FF'; ctx.fill();
+    // Numeração discreta dos níveis de cor, logo abaixo da barra: 0 (mais claro) · 1 · 2 · n (mais escuro)
+    try {
+        ctx.font = '700 9px -apple-system'; ctx.fillStyle = _grTemaClaro ? '#000000' : '#FFFFFF'; ctx.textBaseline = 'middle'; ctx.textAlign = 'center';
+        [['0', 0], ['1', 1 / 3], ['2', 2 / 3], ['n', 1]].forEach(([t, q]) => ctx.fillText(t, x0 + q * (x1 - x0), 17));
+    } catch (eRk) {}
 }
 function grFootprintPrepararClusters(ctx, candles, pxPorUsd, cW) {
     const soTotal = FOOTPRINT_SKIN === 'cinza'; // skin cinza: 1 número por linha (o total)
@@ -7424,6 +7430,7 @@ if (_grTipoGrafico === 'linha') {
         const L = window._grFpDif || []; window._grFpDif = [];
         if (!clustersCfg || !L.length) return;
         L.forEach(d => { ctx.save(); ctx.setLineDash([]); ctx.globalAlpha = 1; try { grDesenharFootprintCluster(ctx, d.xs, cW, d.c, clustersCfg, toY, PAD.top, PAD.top + chartH); } catch (eFp) { try { console.log('[footprint] ' + (eFp && eFp.stack || eFp)); } catch (e2) {} } ctx.restore(); });
+        if (window._cotVivo) { try { grCotOverlayDesenhar(); } catch (eCv) {} }   // o candle em formação só fica pronto agora (geometria guardada na hora de desenhar o footprint): redesenha a camada rápida dele
     };
     candles.forEach((cReal, i) => {
         const c = grCandleVisual(cReal); // o candle em formação segue só a linha da cotação (ver grCandleVisual)
@@ -7548,10 +7555,10 @@ if (_grTipoGrafico === 'linha') {
         // de fora — já têm seu próprio espaço embaixo do gráfico).
         {
             window._grBarraSuperiorChips = [];
-            const _cabOc = !!window._grCabOculto; if (_cabOc) { ctx.save(); ctx.beginPath(); ctx.rect(0, 0, 0, 0); ctx.clip(); }   // cabeçalho escondido (gesto de baixo pra cima): o bloco roda, mas nada é desenhado
+            const _cabOc = !!window._grCabOculto || !!window._grChipsOculto; if (_cabOc) { ctx.save(); ctx.beginPath(); ctx.rect(0, 0, 0, 0); ctx.clip(); }   // cabeçalho escondido (gesto de baixo pra cima): o bloco roda, mas nada é desenhado
             const corTextoBarra = _grTemaClaro ? '#000000' : '#FFFFFF'; // texto da barra: preto no tema claro, BRANCO no escuro (fundo #131722)
             const chipLineH = 16;
-            const chipY0 = PAD.top + 14, chipMenuW = 26;   // o botão ··· fica sempre no canto direito da 1ª linha; os chips se acomodam à esquerda dele
+            const chipY0 = PAD.top + 14, chipMenuW = 0;   // (o botão ··· foi para a linha OHLC, ao lado do olho)
             const chipLimiteFull = W - PAD.right - 4;
             let chipLimiteDireita = chipLimiteFull - chipMenuW;
             let chipX = PAD.left + 4;
@@ -7933,13 +7940,7 @@ if (_grTipoGrafico === 'linha') {
             if (_indState.deltaAtr && window._grFaixasDA && window._grFaixasDA.length) grBarraChip('Tabela', '#2962FF', () => { try { grPilhasTabelaModal(); } catch (e) {} });   // há níveis selecionados na régua: o chip abre a tabela comparativa
             if (_indState.sent) grBarraChip('Sentimento', '#000000', (cx, cy) => cvAbrirMenuFpCfg('sent', cx, cy));   // chip PRÓPRIO na barra superior (não fica dentro do menu Footprint)
             if (window._grFpItens.length) { const _fpIt = window._grFpItens; grBarraChip('Footprint ▾', '#000000', (cx, cy) => cvDropGrupoAbrir(cx, cy, _fpIt)); }
-            {   // botão ··· (menu): canto direito da 1ª linha
-                const xm = chipLimiteFull - 10, cym = chipY0 - 3;
-                ctx.fillStyle = corTextoBarra;
-                [-5, 0, 5].forEach(d => { ctx.beginPath(); ctx.arc(xm + d, cym, 1.6, 0, Math.PI * 2); ctx.fill(); });
-                window._grBarraSuperiorChips.push({ x: xm - 14, y: chipY0 - 16, w: 28, h: 24, abrir: () => cvToggleMenu() });
-            }
-            window._grBarraSuperiorBottom = chipY + 4; // a linha OHLC é desenhada logo abaixo dos chips
+            window._grBarraSuperiorBottom = (window._grChipsOculto && !window._grCabOculto) ? PAD.top + 2 : chipY + 4; // a linha OHLC é desenhada logo abaixo dos chips (ou no topo, com os chips escondidos)
             if (_cabOc) { ctx.restore(); window._grBarraSuperiorChips = []; }
         }
         // Linha Stop — sempre visível, área ancorada no PM
@@ -8626,7 +8627,17 @@ function grDesenharLinhaOhlc(ctx, W, info) {
         wTotal += (partes.length - 1) * fs * 0.8;
     };
     medir();
-    while (wTotal > xMax - x0 && fs > 8) { fs -= 0.5; medir(); }
+    while (wTotal > xMax - 58 - x0 && fs > 8) { fs -= 0.5; medir(); }   // 58 px reservados à direita para o olho e o ···
+    {   // olho (mostra/esconde a linha de chips) e ··· (menu), no canto direito da linha OHLC
+        if (!window._grBarraSuperiorChips) window._grBarraSuperiorChips = [];
+        const cor = _grTemaClaro ? '#000000' : '#FFFFFF', cy = yBase - fs * 0.35, xd = xMax - 9, xe = xMax - 36;
+        ctx.save(); ctx.fillStyle = cor; [-5, 0, 5].forEach(d => { ctx.beginPath(); ctx.arc(xd + d, cy, 1.6, 0, Math.PI * 2); ctx.fill(); });
+        ctx.translate(xe - 8, cy - 8); ctx.scale(16 / 24, 16 / 24); ctx.strokeStyle = cor; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+        try { ctx.stroke(new Path2D(GR_HEROICONS[window._grChipsOculto ? 'eye-slash' : 'eye'])); } catch (e) {}
+        ctx.restore();
+        window._grBarraSuperiorChips.push({ x: xd - 14, y: yBase - 18, w: 28, h: 26, abrir: () => cvToggleMenu() });
+        window._grBarraSuperiorChips.push({ x: xe - 14, y: yBase - 18, w: 28, h: 26, abrir: () => grChipsAlternar() });
+    }
     let x = x0;
     ctx.textAlign = 'left';
     partes.forEach(p => {
