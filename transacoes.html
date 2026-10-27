@@ -3907,7 +3907,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v1100';
+const APP_VERSAO = 'v1102';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -5054,18 +5054,25 @@ function grDaCorPerc(delta, mapa) {
     if (!arr || arr.length < 5 || !(m > 0)) return !(m > 0) ? { cor: '#FFFFFF', escura: false } : grFpPintarPerc(pal, 0.5);
     return grFpPintarPerc(pal, grFpPercentil(arr, m));
 }
-function grFpIlhaMontar(a, tick) {   /*ILHA: escala da zona — piso = mediana (abaixo: ruído, um tom só); acima, cada tom = o dobro do anterior até o máximo (se der mais de 9 tons, a razão é esticada para caber em 9)*/
+function grFpIlhaMontar(a, tick, nMan) {   /*ILHA: escala da zona — piso = mediana (abaixo: ruído, um tom só); acima, cada tom = o dobro do anterior até o máximo (se der mais de 9 tons, a razão é esticada para caber em 9)*/
     if (!a || a.length < 20) return null;
     const med = a[a.length >> 1], max = a[a.length - 1]; if (!(med > 0) || !(max > med)) return null;
-    let r = 2, n = Math.ceil(Math.log(max / med) / Math.log(r)); if (n > 9) { n = 9; r = Math.pow(max / med, 1 / 9); }
-    return { med, max, tick, r, n: Math.max(1, n), T: Math.max(1, n) + 1 };
+    let r = 1.5, n = Math.ceil(Math.log(max / med) / Math.log(r)); if (n > 9) { n = 9; r = Math.pow(max / med, 1 / 9); }
+    const man = nMan > 0; if (man) { n = Math.max(1, Math.min(9, Math.round(nMan))); r = Math.pow(max / med, 1 / n); }   /*manual: o usuário escolhe quantos tons; a razão se ajusta para o último chegar ao máximo*/
+    return { med, max, tick, r, n: Math.max(1, n), T: Math.max(1, n) + 1, man };
+}
+function grFpIlhaN(d) {   /*ILHA: − / + muda o nº de tons da zona ativa (guardado nela); 0 = volta ao automático*/
+    const m = grZonaAtiva(), P = window._grFpPerc; if (!m) return;
+    if (d === 0) delete m.fpN; else { const n0 = (P && P.arr && P.arr.ilha) ? P.arr.ilha.n : (m.fpN || 4); m.fpN = Math.max(1, Math.min(9, n0 + d)); }
+    cvSalvarMedidas(); window._grFpPerc = null; grDrawChart(); try { cvRenderMenuFpCfg(); } catch (e) {}
 }
 function grFpLegendaIlha() {   /*ILHA: legenda no menu — de tanto a tanto volume = tom*/
     try {
         const P = window._grFpPerc, cf = window._grAncCfg; if (!cf.fpZona || !P || !P.arr || !P.arr.ilha) return '';
         const il = P.arr.ilha, f = v => { const t = v * il.tick; return t >= 100 ? Math.round(t).toLocaleString('pt-BR') : t.toFixed(1).replace('.', ','); };
-        const cor = idx => grFpPintarPerc(FOOTPRINT_COR_VERDE, -1 - idx / (il.T - 1)).cor, lin = (idx, tx) => '<div style="display:flex;align-items:center;gap:7px;margin:2px 0;"><span style="width:22px;height:14px;border-radius:3px;background:' + cor(idx) + ';border:1px solid #1C1C1E;flex-shrink:0;"></span><span style="font-size:11.5px;color:#1C1C1E;">' + tx + '</span></div>';
-        let h = '<div style="font-size:11.5px;color:#1C1C1E;margin:6px 0 3px;">Volume por nível (' + Math.round(il.tick) + ') na zona</div>' + lin(0, 'até ' + f(il.med) + ' (ruído)');
+        const cor = idx => grFpPintarPerc(FOOTPRINT_COR_CINZA, -1 - idx / (il.T - 1)).cor, lin = (idx, tx) => '<div style="display:flex;align-items:center;gap:7px;margin:2px 0;"><span style="width:22px;height:14px;border-radius:3px;background:' + cor(idx) + ';border:1px solid #1C1C1E;flex-shrink:0;"></span><span style="font-size:11.5px;color:#1C1C1E;">' + tx + '</span></div>';
+        const bt = (tx, fn) => '<button onclick="' + fn + '" style="border:none;background:#F2F2F7;border-radius:6px;min-width:26px;height:24px;font-size:14px;font-weight:700;color:#1C1C1E;cursor:pointer;padding:0 6px;">' + tx + '</button>';
+        let h = '<div style="display:flex;align-items:center;gap:6px;margin:6px 0 3px;"><span style="font-size:11.5px;color:#1C1C1E;flex:1;">Volume por nível (' + Math.round(il.tick) + ') na zona</span>' + bt('−', 'grFpIlhaN(-1)') + '<span style="font-size:12px;font-weight:700;color:#1C1C1E;">' + il.n + '</span>' + bt('+', 'grFpIlhaN(1)') + (il.man ? bt('auto', 'grFpIlhaN(0)') : '') + '</div>' + lin(0, 'até ' + f(il.med) + ' (ruído)');
         for (let b = 0; b < il.n; b++) h += lin(b + 1, f(il.med * Math.pow(il.r, b)) + ' – ' + (b === il.n - 1 ? f(il.max) : f(il.med * Math.pow(il.r, b + 1))));
         return h;
     } catch (e) { return ''; }
@@ -5087,7 +5094,7 @@ function grFpPercentilGarantir(tick) {
     const dias = _grFootprintLookbackDias || 7, lastT = cs[cs.length - 1].t;
     const zI = (window._grAncCfg && window._grAncCfg.fpZona && typeof grCandleZonaInfo === 'function') ? grCandleZonaInfo() : null;
     if (zI) tick = (typeof grTickAtr === 'function' && grTickAtr() > 0) ? grTickAtr() : tick;   /*ILHA: grade fixa (ATR), não a da tela*/
-    const chave = grBinSymbolAtual() + '|' + (zI ? 'F' : _grTf + '|' + tick) + '|' + FOOTPRINT_LINHAS_MODO + '|' + FOOTPRINT_NIVEIS_MAX + '|' + dias + '|' + (zI ? '' : cs.length + '|') + lastT + (zI ? '|Z' + zI.id + '|' + zI.tIni + '|' + zI.lo + '|' + zI.hi : '');
+    const chave = grBinSymbolAtual() + '|' + (zI ? 'F' : _grTf + '|' + tick) + '|' + FOOTPRINT_LINHAS_MODO + '|' + FOOTPRINT_NIVEIS_MAX + '|' + dias + '|' + (zI ? '' : cs.length + '|') + lastT + (zI ? '|Z' + zI.id + '|' + (zI.fpN || 0) + '|' + zI.tIni + '|' + zI.lo + '|' + zI.hi : '');
     let P = window._grFpPerc; if (P && P.k === chave) return P;
     const t0 = zI ? zI.tIni : lastT - dias * 86400000, v = [], vl = []; let todos = null; const getTodos = () => todos || (todos = grFootprintTodosOsCandlesBrutos());
     for (let i = cs.length - 1, n = 0; i >= 0 && n < 1000 && cs[i].t >= t0; i--, n++) {
@@ -5095,7 +5102,7 @@ function grFpPercentilGarantir(tick) {
         cl.linhas.forEach(ln => { if (zI && (ln.p < zI.lo || ln.p > zI.hi)) return; if (ln.total > 0) { v.push(ln.total / tick); if (ln.bid > 0) vl.push(ln.bid / tick); if (ln.ask > 0) vl.push(ln.ask / tick); } });
     }
     window._grFpPerc = P = { k: chave, arr: Float64Array.from(v).sort(), lados: Float64Array.from(vl).sort() };
-    if (zI && P.arr.length >= 20) { const a = P.arr, l = P.lados; const ia = grFpIlhaMontar(a, tick); if (ia) { a.ilha = ia; const il2 = grFpIlhaMontar(l, tick); if (il2) l.ilha = il2; } }   /*ILHA*/
+    if (zI && P.arr.length >= 20) { const a = P.arr, l = P.lados; const ia = grFpIlhaMontar(a, tick, zI.fpN); if (ia) { a.ilha = ia; const il2 = grFpIlhaMontar(l, tick, zI.fpN); if (il2) l.ilha = il2; } }   /*ILHA*/
     return P;
 }
 function grFootprintCorCelula(bid, ask, tick, refTop, semPerc) {
@@ -9681,10 +9688,10 @@ function grCorCandleAnc(isUp) {   /*ÂNCORA: cor do candle vem da cor da âncora
 let _grCzCache = null;
 function grCandleZonaInfo() {
     const m = (typeof grZonaAtiva === 'function') ? grZonaAtiva() : null, cs = _grAllCandles; if (!m || !cs || !cs.length) return null;
-    const chave = m.id + '|' + (m.cor || '') + '|' + m.t1 + '|' + m.p1 + '|' + m.p2 + '|' + cs.length + '|' + cs[0].t;
+    const chave = m.id + '|' + (m.fpN || 0) + '|' + (m.cor || '') + '|' + m.t1 + '|' + m.p1 + '|' + m.p2 + '|' + cs.length + '|' + cs[0].t;
     if (_grCzCache && _grCzCache.k === chave) return _grCzCache.v;
     const ic = Math.max(0, Math.min(cs.length - 1, Math.round(grTimeToIndex(Math.min(m.t1, m.t2)))));
-    const v = { tIni: cs[ic].t, lo: Math.min(m.p1, m.p2), hi: Math.max(m.p1, m.p2), id: m.id };
+    const v = { tIni: cs[ic].t, lo: Math.min(m.p1, m.p2), hi: Math.max(m.p1, m.p2), id: m.id, fpN: m.fpN || 0 };
     _grCzCache = { k: chave, v }; return v;
 }
 function grCandleSobrepor(ctx, c, toY, xL, xR, isUp, fn) {   // repinta só a parte do candle dentro da faixa de preço da âncora ativa
