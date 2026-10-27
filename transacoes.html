@@ -3927,7 +3927,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v1070';
+const APP_VERSAO = 'v1073';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -4926,9 +4926,9 @@ function grFootprintPrepararClusters(ctx, candles, pxPorUsd, cW) {
     // as densidades já são por unidade de preço, então valem para qualquer zoom). Assim uma célula não muda de cor quando você rola o gráfico.
     // Não calcula nada a mais: usa só o que já está na tela.
     try { grFpPercentilGarantir(tick); } catch (eP) {}
-    try { const vv = []; clusters.forEach(cl => cl.linhas.forEach(ln => { if (ln.total > 0) vv.push(ln.total / (cl.agrup || 1) / tick); })); window._grFpVis = Float64Array.from(vv).sort(); } catch (eV) {}
+    try { const vv = []; clusters.forEach(cl => cl.linhas.forEach(ln => { if (ln.total > 0) vv.push(ln.total / tick); })); window._grFpVis = Float64Array.from(vv).sort(); } catch (eV) {}
     let refTop = grFootprintDestaqueRef(clusters, tick), dmax = 0;
-    clusters.forEach(cl => cl.linhas.forEach(ln => { const d = ln.total / (cl.agrup || 1) / tick; if (d > dmax) dmax = d; }));
+    clusters.forEach(cl => cl.linhas.forEach(ln => { const d = ln.total / tick; if (d > dmax) dmax = d; }));
     try {
         const kRef = grBinSymbolAtual() + '|' + _grTf;
         let R = window._grFpRefEst;
@@ -5006,7 +5006,7 @@ const FOOTPRINT_DENS_TETO = 160;     // BTC/US$ — dali pra cima é a cor mais 
 // DESTAQUE dos maiores volumes: o topo (p97) das células visíveis agora sobe até quase preto, em qualquer time frame.
 function grFootprintDestaqueRef(clusters, tick) {
     const v = [];
-    clusters.forEach(cl => cl.linhas.forEach(ln => { if (ln.total > 0) v.push(ln.total / (cl.agrup || 1) / tick); }));
+    clusters.forEach(cl => cl.linhas.forEach(ln => { if (ln.total > 0) v.push(ln.total / tick); }));
     if (v.length < 20) return v.length ? Math.max.apply(null, v) : 0;
     const f = Float64Array.from(v).sort();
     return f[Math.min(f.length - 1, Math.floor(f.length * 0.97))];
@@ -5044,14 +5044,25 @@ function grFootprintPintar(pal, k, destaque) {
 }
 // bid/ask já por linha-base; tick em US$; refTop = densidade do p97 visível (destaque).
 // Percentil de uma densidade dentro do conjunto ordenado (empates ficam no meio do intervalo): 0 = a mais fraca, 1 = a mais forte.
-// Pintura pela posição (percentil) k: da mediana para cima a cor vai escurecendo até quase preto (sem isso a cor "forte" satura e as células fortes ficam todas iguais).
-function grFpPintarPerc(pal, k) { const t = Math.max(0, Math.min(1, (k - 0.5) / 0.5)); return grFootprintPintar(pal, k, 0.85 * t * t * (3 - 2 * t)); }
+// Pintura por DEGRAUS: o percentil k vira um nível de 0 a 9 (décimos do conjunto, os mesmos números da régua). Os níveis 0 a 4 (metade de baixo, volumes pequenos/ruído) são claros e parecidos;
+// os níveis 5 a 9 (o que interessa) têm passos grandes, do cinza médio ao quase preto, para o olho separar cada um. Skin colorida: a mesma luminosidade de cada degrau, em verde ou vermelho.
+const GR_FP_NIVEIS = [245, 238, 231, 224, 217, 186, 146, 106, 64, 22];
+function grFpPintarPerc(pal, k) {
+    const i = Math.max(0, Math.min(9, Math.floor(k * 10))), g = GR_FP_NIVEIS[i];
+    let r = g, gg = g, b = g;
+    if (pal !== FOOTPRINT_COR_CINZA) {
+        const f = pal.forte, lf = 0.299 * f[0] + 0.587 * f[1] + 0.114 * f[2], sc = lf > 0 ? g / lf : 1, a = 0.9;
+        r = g + (Math.min(255, f[0] * sc) - g) * a; gg = g + (Math.min(255, f[1] * sc) - g) * a; b = g + (Math.min(255, f[2] * sc) - g) * a;
+    }
+    r = Math.round(r); gg = Math.round(gg); b = Math.round(b);
+    return { cor: 'rgb(' + r + ',' + gg + ',' + b + ')', escura: grFpLumRel(r, gg, b) < 0.179 };
+}
 function grFpPercentil(arr, d) {
     let lo = 0, hi = arr.length; while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m] < d) lo = m + 1; else hi = m; }
     let a = lo; hi = arr.length; while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m] <= d) lo = m + 1; else hi = m; }
     return (a + lo) / 2 / arr.length;
 }
-// Conjunto da escala de cor: densidade (volume da linha ÷ agrupamento ÷ tick) de TODAS as linhas dos candles da janela de dias do footprint (a mesma do CVD/delta). Guardado por ativo/TF/grade.
+// Conjunto da escala de cor: densidade (volume da linha, como aparece na célula, ÷ tick) de TODAS as linhas dos candles da janela de dias do footprint (a mesma do CVD/delta). Guardado por ativo/TF/grade.
 // Segurança de desempenho: no máximo os 1000 candles mais recentes da janela.
 function grFpPercentilGarantir(tick) {
     const cs = _grAllCandles; if (!cs || !cs.length) return null;
@@ -5061,7 +5072,7 @@ function grFpPercentilGarantir(tick) {
     const t0 = lastT - dias * 86400000, v = []; let todos = null; const getTodos = () => todos || (todos = grFootprintTodosOsCandlesBrutos());
     for (let i = cs.length - 1, n = 0; i >= 0 && n < 1000 && cs[i].t >= t0; i--, n++) {
         const cl = grFootprintClusterDoCandle(cs[i], tick, getTodos); if (!cl) continue;
-        cl.linhas.forEach(ln => { if (ln.total > 0) v.push(ln.total / (cl.agrup || 1) / tick); });
+        cl.linhas.forEach(ln => { if (ln.total > 0) v.push(ln.total / tick); });
     }
     window._grFpPerc = P = { k: chave, arr: Float64Array.from(v).sort() };
     return P;
@@ -5207,10 +5218,10 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
         yBot = Math.min(yBot, yBotReal);
         if (yBot < yTop) { geo.push(null); return; }
         if (yBot < yMin || yTop > yMax || ln.total <= 0) { geo.push(null); return; }
-        const fraca = dCorte > 0 && ln.total / (cl.agrup || 1) / tick < dCorte;
+        const fraca = dCorte > 0 && ln.total / tick < dCorte;
         const y0 = Math.max(yMin, yTop), y1 = Math.min(yMax, yBot);
-        // por linha-base: uma linha agrupada (teto de níveis do modo ATR) soma várias, então divide pelo agrupamento
-        const corCel = grFootprintCorCelula(ln.bid / (cl.agrup || 1), ln.ask / (cl.agrup || 1), cfg.tick, cfg.refTop);
+        // a cor segue o VALOR que está escrito na célula (inclusive a linha agrupada pelo teto de níveis): o trader lê o número e a cor tem que concordar
+        const corCel = grFootprintCorCelula(ln.bid, ln.ask, cfg.tick, cfg.refTop);
         if (FOOTPRINT_SKIN === 'tv') {
             // Skin TradingView (exclusiva): sem fundo de célula. Histograma por nível: venda (bid) à esquerda ancorada no centro, compra (ask) à direita.
             // Tamanho = volume do lado / maior volume daquele lado no candle. Tom por razão: <50% claro, 50–75% médio, >=75% escuro; a linha da POC (maior total) é branca nos dois lados.
