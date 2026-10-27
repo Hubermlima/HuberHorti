@@ -1,6 +1,5 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
-
 <head>
 <script src="https://cdn.jsdelivr.net/npm/eruda"></script>
 <script>eruda.init();</script>
@@ -383,7 +382,7 @@ transform:translateX(-100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)
       <canvas id="gr-chart-canvas" style="width:100%;height:100%;display:block;" onclick="if(_tickerDropdownAberto){cvToggleTickerDropdown();}"></canvas>
       <canvas id="gr-valuearea-overlay-canvas" style="position:absolute;top:0;left:0;width:100%;height:calc(100% - max(env(safe-area-inset-bottom), 28px));pointer-events:none;z-index:6;"></canvas>
       <canvas id="gr-cot-overlay-canvas" style="position:absolute;top:0;left:0;width:100%;height:calc(100% - max(env(safe-area-inset-bottom), 28px));pointer-events:none;z-index:6;"></canvas>
-      <canvas id="gr-crosshair-overlay-canvas" style="position:absolute;top:0;left:0;width:100%;height:calc(100% - max(env(safe-area-inset-bottom), 28px));pointer-events:none;z-index:6;"></canvas>
+      <canvas id="gr-crosshair-overlay-canvas" style="position:absolute;top:0;left:0;width:100%;height:calc(100% - max(env(safe-area-inset-bottom), 28px));pointer-events:none;z-index:20;"></canvas>
     </div>
     <!-- Botão toggle barra unificada -->
     <!-- Barra unificada lateral esquerda com scroll e arrasto -->
@@ -3928,7 +3927,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v1066';
+const APP_VERSAO = 'v1070';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -5045,6 +5044,8 @@ function grFootprintPintar(pal, k, destaque) {
 }
 // bid/ask já por linha-base; tick em US$; refTop = densidade do p97 visível (destaque).
 // Percentil de uma densidade dentro do conjunto ordenado (empates ficam no meio do intervalo): 0 = a mais fraca, 1 = a mais forte.
+// Pintura pela posição (percentil) k: da mediana para cima a cor vai escurecendo até quase preto (sem isso a cor "forte" satura e as células fortes ficam todas iguais).
+function grFpPintarPerc(pal, k) { const t = Math.max(0, Math.min(1, (k - 0.5) / 0.5)); return grFootprintPintar(pal, k, 0.85 * t * t * (3 - 2 * t)); }
 function grFpPercentil(arr, d) {
     let lo = 0, hi = arr.length; while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m] < d) lo = m + 1; else hi = m; }
     let a = lo; hi = arr.length; while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m] <= d) lo = m + 1; else hi = m; }
@@ -5065,13 +5066,13 @@ function grFpPercentilGarantir(tick) {
     window._grFpPerc = P = { k: chave, arr: Float64Array.from(v).sort() };
     return P;
 }
-function grFootprintCorCelula(bid, ask, tick, refTop) {
+function grFootprintCorCelula(bid, ask, tick, refTop, semPerc) {
     const total = bid + ask;
     const d = total / tick;
     const P = window._grFpPerc;   // escala única das duas skins: posição (percentil) da densidade da célula entre todas as linhas da janela de dias carregada
-    if (P && P.arr.length >= 20) {
+    if (P && P.arr.length >= 20 && !semPerc) {
         if (!(d > 0)) return { cor: '#FFFFFF', escura: false };
-        return grFootprintPintar(FOOTPRINT_SKIN === 'cinza' ? FOOTPRINT_COR_CINZA : (ask >= bid ? FOOTPRINT_COR_VERDE : FOOTPRINT_COR_VERMELHO), grFpPercentil(P.arr, d), 0);
+        return grFpPintarPerc(FOOTPRINT_SKIN === 'cinza' ? FOOTPRINT_COR_CINZA : (ask >= bid ? FOOTPRINT_COR_VERDE : FOOTPRINT_COR_VERMELHO), grFpPercentil(P.arr, d));
     }
     if (!(d > FOOTPRINT_DENS_PISO)) return { cor: '#FFFFFF', escura: false };
     const pal = FOOTPRINT_SKIN === 'cinza' ? FOOTPRINT_COR_CINZA : (ask >= bid ? FOOTPRINT_COR_VERDE : FOOTPRINT_COR_VERMELHO);
@@ -6792,7 +6793,8 @@ function grLenteAplicar(animar) {   // posiciona o contêiner pelo centro (L.cx,
     L.vidro.style.boxShadow = L.grande ? '0 4px 14px rgba(0,0,0,0.3)' : '0 1px 4px rgba(0,0,0,0.25)';
 }
 function grLenteAlternar() {
-    if (_grLente) { grLenteFechar(); try { grDrawChart(); } catch (e) {} return; }
+    if (_grLente) { grLenteFechar(); try { localStorage.setItem('grLenteLigada', '0'); } catch (e) {} try { grDrawChart(); } catch (e) {} return; }
+    try { localStorage.setItem('grLenteLigada', '1'); } catch (e) {}
     setTimeout(() => { try { grDrawChart(); } catch (e) {} }, 0);
     const wrap = document.getElementById('gr-chart-canvas-wrap'); if (!wrap) return;
     const D = GR_LENTE.D, B = GR_LENTE.B, Li = D - 2 * B, dp = Math.min(window.devicePixelRatio || 1, 3);
@@ -6973,7 +6975,8 @@ function grDrawCandlesImpl(candles, emptyRight) {
         const _altPan = grAlturasPaineis(H);
         if (_altPan.total > 0) PAD.bottom = _altPan.total + _grPAD.bottom + _altPan.rb;
         else { PAD.bottom = 18 + _altPan.rb; PAD.left = 6; }   // sem painel inferior: o gráfico ocupa a faixa dos rótulos do painel (esquerda) e a do eixo do tempo (embaixo)
-        const _daOn = grDaVisivel(), _daPad = _daOn ? 32 : 0; PAD.left += _daPad; // regua de Delta ATR (agora na ESQUERDA): precisa de espaço real pro número ficar legível (7.5px/15px ficava ilegível)
+        const _daOn = grDaVisivel(), _daPad = _daOn ? Math.max(32, window._grDaPadUsar || 0) : 0;   // largura da régua: 32 no mínimo, cresce para caber o maior número (nunca encolhe na sessão, para o gráfico não balançar)
+         PAD.left += _daPad; // regua de Delta ATR (agora na ESQUERDA): precisa de espaço real pro número ficar legível (7.5px/15px ficava ilegível)
         let chartW = W - PAD.left - PAD.right;
         const chartH = H - PAD.top - PAD.bottom;
         // ── Calcula indicadores sobre todos os candles ───────────────
@@ -7152,6 +7155,7 @@ function grDrawCandlesImpl(candles, emptyRight) {
             if (mapaDA && rowHDA >= 8) {
                 ctx.font = '700 10px -apple-system';
                 ctx.textAlign = 'right';
+                { const nec = window._grDaPadNeed || 0; if (nec > (window._grDaPadUsar || 0)) { window._grDaPadUsar = nec; requestAnimationFrame(() => { try { grDrawChart(); } catch (e) {} }); } }
                 const xDA = PAD.left - 3; // números alinhados à direita, colados na borda da área dos candles
                 const larguraFaixaDA = PAD.left - 2; // faixa reservada pro indicador -- o fundo colorido cobre ela inteira
                 const kIni = Math.floor(minP / tickDA), kFim = Math.ceil(maxP / tickDA);
@@ -7164,7 +7168,7 @@ function grDrawCandlesImpl(candles, emptyRight) {
                     // Mesma gradacao de cor do footprint (escala relativa + destaque):
                     // delta negativo entra como "bid", positivo como "ask" -- fundo pálido→forte→quase preto conforme
                     // o tamanho em relação ao maior |delta| das faixas visíveis agora.
-                    const corInfoDA = (_grDaCor === 'forca') ? grDaCorForca(resultadoDA && resultadoDA.saude ? resultadoDA.saude.get(k) : null) : grFootprintCorCelula(deltaFaixa < 0 ? -deltaFaixa : 0, deltaFaixa > 0 ? deltaFaixa : 0, tickDA, maxAbsDA / tickDA);   // MESMA gradação do footprint: densidade |delta|/tick, escala fixa piso–teto, destaque no p97
+                    const corInfoDA = (_grDaCor === 'forca') ? grDaCorForca(resultadoDA && resultadoDA.saude ? resultadoDA.saude.get(k) : null) : grFootprintCorCelula(deltaFaixa < 0 ? -deltaFaixa : 0, deltaFaixa > 0 ? deltaFaixa : 0, tickDA, maxAbsDA / tickDA, true);   // MESMA gradação do footprint: densidade |delta|/tick, escala fixa piso–teto, destaque no p97
                     { const hC = yBaseDA - yTopoDA, gp = hC > 14 ? 1.5 : 0.6, x0c = 2, w0c = larguraFaixaDA, y0c = yTopoDA + gp, h0c = Math.max(1, hC - 2 * gp), rc = Math.min(4, h0c / 2, w0c / 2);   // células flutuantes: cada nível é um cartão com folga e cantos arredondados
                       const cartao = () => { ctx.beginPath(); ctx.moveTo(x0c + rc, y0c); ctx.lineTo(x0c + w0c - rc, y0c); ctx.quadraticCurveTo(x0c + w0c, y0c, x0c + w0c, y0c + rc); ctx.lineTo(x0c + w0c, y0c + h0c - rc); ctx.quadraticCurveTo(x0c + w0c, y0c + h0c, x0c + w0c - rc, y0c + h0c); ctx.lineTo(x0c + rc, y0c + h0c); ctx.quadraticCurveTo(x0c, y0c + h0c, x0c, y0c + h0c - rc); ctx.lineTo(x0c, y0c + rc); ctx.quadraticCurveTo(x0c, y0c, x0c + rc, y0c); ctx.closePath(); };
                       ctx.save(); cartao(); ctx.fillStyle = corInfoDA.cor; ctx.fill(); ctx.lineWidth = 0.7; ctx.strokeStyle = 'rgba(0,0,0,0.16)'; ctx.stroke(); ctx.restore(); }   // contorno fino de cada nível; azul grosso = nível selecionado (está na tabela)
@@ -7191,6 +7195,7 @@ function grDrawCandlesImpl(candles, emptyRight) {
                     const totalFaixa = resultadoDA && resultadoDA.totais ? resultadoDA.totais.get(k) : undefined;
                     const hFaixaDA = yBaseDA - yTopoDA;
                     const txtDelta = (deltaFaixa >= 0 ? '+' : '\u2212') + grFmtVolCompacto(Math.abs(deltaFaixa), 0);
+                    { ctx.save(); ctx.font = '700 10px -apple-system'; let wT = ctx.measureText(txtDelta).width; if (totalFaixa !== undefined && hFaixaDA >= 22) { ctx.font = '500 9px -apple-system'; wT = Math.max(wT, ctx.measureText(grFmtVolCompacto(totalFaixa, 0)).width); } ctx.restore(); const nec = Math.ceil(wT) + 9; if (nec > (window._grDaPadNeed || 0)) window._grDaPadNeed = nec; }
                     const corSecundaria = lumInfoDA > 210 ? '#48484A' : 'rgba(255,255,255,0.85)';
                     if (totalFaixa !== undefined && totalFaixa > 0 && hFaixaDA >= 36) {
                         ctx.fillText(txtDelta, xDA, y - 7);
@@ -8273,23 +8278,6 @@ if (_grTipoGrafico === 'linha') {
         if (window._mdDwProg > 0 && _grCrosshairX != null && window._longPressY >= 0) {   // Medida/Tendência/Canal por permanência: anel roxo enchendo em volta do crosshair (cheio = é só mexer o dedo). Fora do bloco do Desenho Livre: aparece mesmo sem nenhum desenho livre na tela
             ctx.save(); ctx.beginPath(); ctx.arc(_grCrosshairX, window._longPressY, 16, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * window._mdDwProg);
             ctx.lineWidth = 3; ctx.lineCap = 'round'; ctx.strokeStyle = '#8B5CF6'; ctx.stroke(); ctx.restore();
-        }
-        if (window._longPressActive && !window._mdGesto && _grCrosshairX != null && window._longPressY >= 0 && !grPlAtivo()) {   // LÁPIS na intersecção: liga/desliga o modo desenho
-            const on = !!window._mdDesenhoOn, cx0 = _grCrosshairX, ly = window._longPressY, R = 12, sd = (cx0 + 64 + R > W - PAD.right) ? -1 : 1, lx = cx0 + sd * 32;   // botões de lado, fora da mira: lápis e depois o Aa, no lado que tem espaço
-            ctx.save(); ctx.beginPath(); ctx.arc(lx, ly, R, 0, Math.PI * 2); ctx.fillStyle = on ? '#8B5CF6' : 'rgba(255,255,255,0.94)'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#8B5CF6'; ctx.stroke();
-            ctx.translate(lx, ly); ctx.rotate(Math.PI / 4); ctx.lineWidth = 1.5; ctx.lineJoin = 'round'; ctx.strokeStyle = on ? '#FFFFFF' : '#6D28D9'; ctx.fillStyle = on ? '#FFFFFF' : '#6D28D9';
-            ctx.strokeRect(-1.8, -8, 3.6, 7); ctx.strokeRect(-2.6, -1, 5.2, 2.4);   // PINCEL (modo desenho): cabo, virola e cerdas
-            ctx.beginPath(); ctx.moveTo(-2.6, 1.4); ctx.lineTo(2.6, 1.4); ctx.quadraticCurveTo(2.8, 6, 0, 8.5); ctx.quadraticCurveTo(-2.8, 6, -2.6, 1.4); ctx.closePath(); ctx.fill();
-            ctx.restore();
-            // "Aa" ao lado do pincel: escrever texto no ponto do crosshair
-            const ax = cx0 + sd * 64;
-            ctx.save(); ctx.beginPath(); ctx.arc(ax, ly, R, 0, Math.PI * 2); ctx.fillStyle = 'rgba(255,255,255,0.94)'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#2962FF'; ctx.stroke();
-            ctx.fillStyle = '#2962FF'; ctx.font = 'bold 11px -apple-system, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('Aa', ax, ly + 0.5); ctx.restore();
-        }
-        if (window._longPressActive && _grCrosshairX != null && window._longPressY >= 0) {   // MIRA na intersecção do crosshair: quatro traços curtos, sólidos, em volta do centro (e do botão do lápis, quando ele aparece)
-            const mx = _grCrosshairX, my = window._longPressY, r0 = 3, r1 = r0 + 8;
-            ctx.save(); ctx.strokeStyle = _grTemaClaro ? '#1C1C1E' : '#FFFFFF'; ctx.lineWidth = 1.6; ctx.lineCap = 'round'; ctx.setLineDash([]); ctx.beginPath();
-            ctx.moveTo(mx - r1, my); ctx.lineTo(mx - r0, my); ctx.moveTo(mx + r0, my); ctx.lineTo(mx + r1, my); ctx.moveTo(mx, my - r1); ctx.lineTo(mx, my - r0); ctx.moveTo(mx, my + r0); ctx.lineTo(mx, my + r1); ctx.stroke(); ctx.restore();
         }
         if (window._mdGesto && !window._mdGesto.done && _grCrosshairX != null && window._longPressY >= 0) {   // ÍCONE DA FIGURA junto do crosshair: Medida (reta vertical), Tendência (inclinou) ou Canal (curva fechada)
             const G = window._mdGesto, tp = G.stage === 5 ? 'livre' : ((G.stage === 3 || G.stage === 4) && G.canal && G.canal.ok) ? 'canal' : (G.tipo === 'tendencia' ? 'tendencia' : 'medida'), R = 13;
@@ -10584,7 +10572,16 @@ function grInitTouch() {
     }
     });
 }
+let _grLenteRestaurada = false;
+function grLenteRestaurar() {   // reabre a lente se ela estava ligada na última vez (espera o gráfico ter tamanho na tela)
+    if (_grLenteRestaurada) return;
+    let lig = false; try { lig = localStorage.getItem('grLenteLigada') === '1'; } catch (e) {}
+    if (!lig) { _grLenteRestaurada = true; return; }
+    const w = document.getElementById('gr-chart-canvas-wrap'); if (!w || !(w.clientWidth > 50) || !(w.clientHeight > 50)) return;
+    _grLenteRestaurada = true; if (!_grLente) grLenteAlternar();
+}
 function grDrawChart() {
+    try { grLenteRestaurar(); } catch (eLr) {}
     // Se crosshair ativo, redesenha com crosshair
     if (window._longPressActive && typeof window._longPressY !== 'undefined') {
         grDrawChartWithCrosshair(window._longPressY);
@@ -10649,6 +10646,27 @@ function grCrosshairZonaDeltaPreco(preco, pctZona) {
     let compra = 0, venda = 0;
     mapa.forEach((v, p) => { if (p >= precoBaixo && p <= precoAlto) { compra += v.c; venda += v.v; } });
     return { mapa, compra, venda, delta: compra - venda, temVolume: (compra + venda) > 0, precoBaixo, precoAlto };
+}
+// Lápis, "Aa" e mira do crosshair: desenhados no canvas do próprio crosshair (acima de todas as outras camadas do gráfico), por isso ficam sempre em primeiro plano.
+function grDesenharMiraBotoes(ctx, W) {
+    const PAD = { right: grPadR() };
+    if (window._longPressActive && !window._mdGesto && _grCrosshairX != null && window._longPressY >= 0 && !grPlAtivo()) {   // LÁPIS na intersecção: liga/desliga o modo desenho
+        const on = !!window._mdDesenhoOn, cx0 = _grCrosshairX, ly = window._longPressY, R = 12, sd = (cx0 + 64 + R > W - PAD.right) ? -1 : 1, lx = cx0 + sd * 32;   // botões de lado, fora da mira: lápis e depois o Aa, no lado que tem espaço
+        ctx.save(); ctx.beginPath(); ctx.arc(lx, ly, R, 0, Math.PI * 2); ctx.fillStyle = on ? '#8B5CF6' : 'rgba(255,255,255,0.94)'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#8B5CF6'; ctx.stroke();
+        ctx.translate(lx, ly); ctx.rotate(Math.PI / 4); ctx.lineWidth = 1.5; ctx.lineJoin = 'round'; ctx.strokeStyle = on ? '#FFFFFF' : '#6D28D9'; ctx.fillStyle = on ? '#FFFFFF' : '#6D28D9';
+        ctx.strokeRect(-1.8, -8, 3.6, 7); ctx.strokeRect(-2.6, -1, 5.2, 2.4);   // PINCEL (modo desenho): cabo, virola e cerdas
+        ctx.beginPath(); ctx.moveTo(-2.6, 1.4); ctx.lineTo(2.6, 1.4); ctx.quadraticCurveTo(2.8, 6, 0, 8.5); ctx.quadraticCurveTo(-2.8, 6, -2.6, 1.4); ctx.closePath(); ctx.fill();
+        ctx.restore();
+        // "Aa" ao lado do pincel: escrever texto no ponto do crosshair
+        const ax = cx0 + sd * 64;
+        ctx.save(); ctx.beginPath(); ctx.arc(ax, ly, R, 0, Math.PI * 2); ctx.fillStyle = 'rgba(255,255,255,0.94)'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#2962FF'; ctx.stroke();
+        ctx.fillStyle = '#2962FF'; ctx.font = 'bold 11px -apple-system, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('Aa', ax, ly + 0.5); ctx.restore();
+    }
+    if (window._longPressActive && _grCrosshairX != null && window._longPressY >= 0) {   // MIRA na intersecção do crosshair: quatro traços curtos, sólidos, em volta do centro (e do botão do lápis, quando ele aparece)
+        const mx = _grCrosshairX, my = window._longPressY, r0 = 3, r1 = r0 + 8;
+        ctx.save(); ctx.strokeStyle = _grTemaClaro ? '#1C1C1E' : '#FFFFFF'; ctx.lineWidth = 1.6; ctx.lineCap = 'round'; ctx.setLineDash([]); ctx.beginPath();
+        ctx.moveTo(mx - r1, my); ctx.lineTo(mx - r0, my); ctx.moveTo(mx + r0, my); ctx.lineTo(mx + r1, my); ctx.moveTo(mx, my - r1); ctx.lineTo(mx, my - r0); ctx.moveTo(mx, my + r0); ctx.lineTo(mx, my + r1); ctx.stroke(); ctx.restore();
+    }
 }
 function grDrawChartWithCrosshair(yInterno) {
     // Métricas AUTOMÁTICAS: a tabela aparece na hora quando o crosshair está EXPLICITAMENTE em cima de um candle (dentro de máx–mín dele)
@@ -10761,6 +10779,7 @@ function grDrawChartWithCrosshair(yInterno) {
         grDesenharLinhaOhlc(ctx, W, { candle, idx: idxCandleCrosshair, cross: true });
     }
     desenharLinhasDoCrosshair();
+    try { grDesenharMiraBotoes(ctx, W); } catch (eM) {}
 }
 let _grDir = 'LONG';
 let _wsLastDraw = 0;
@@ -12775,9 +12794,9 @@ function grLupaRegPer() { try { return localStorage.getItem('grLupaRegPer') === 
 // ── Régua de gradação (1 cursor): arrasta do tom mais claro ao mais escuro e o footprint mostra só os níveis daquele tom para cima (tira o ruído dos níveis claros)
 function grLupaGradOn() { try { return FOOTPRINT_SKIN !== 'tv' && localStorage.getItem('grLupaGradVis') !== '0'; } catch (e) { return false; } }
 function grLupaGradPos() { try { const v = parseFloat(localStorage.getItem('grLupaGrad')); return v >= 0 && v <= 1 ? v : 0; } catch (e) { return 0; } }
-function grFpGradCorQ(q, dAntigo, refTop) { const P = window._grFpPerc; return P && P.arr.length >= 20 ? grFootprintPintar(FOOTPRINT_COR_CINZA, 0.05 + 0.9 * q, 0).cor : grLupaGradCor(dAntigo, refTop); }   // a régua é o próprio percentil: posição q = cor do percentil q
+function grFpGradCorQ(q, dAntigo, refTop) { const P = window._grFpPerc; return P && P.arr.length >= 20 ? grFpPintarPerc(FOOTPRINT_COR_CINZA, 0.05 + 0.9 * q).cor : grLupaGradCor(dAntigo, refTop); }   // a régua é o próprio percentil: posição q = cor do percentil q
 function grLupaGradCor(d, refTop) {   // a mesma cor que a célula tem nesta densidade (paleta cinza)
-    { const P = window._grFpPerc; if (P && P.arr.length >= 20) return d > 0 ? grFootprintPintar(FOOTPRINT_COR_CINZA, grFpPercentil(P.arr, d), 0).cor : '#FFFFFF'; }
+    { const P = window._grFpPerc; if (P && P.arr.length >= 20) return d > 0 ? grFpPintarPerc(FOOTPRINT_COR_CINZA, grFpPercentil(P.arr, d)).cor : '#FFFFFF'; }
     const piso = FOOTPRINT_DENS_PISO, teto = FOOTPRINT_DENS_TETO; if (!(d > piso)) return '#FFFFFF';
     let k = Math.log(d / piso) / Math.log(teto / piso); k = Math.max(0, Math.min(1, k)); k = Math.pow(k, grFootprintGamaContraste()); let dest = 0;
     if (refTop > 0) { const r = d / refTop, sx = Math.max(0, Math.min(1, (r - (0.75 - 0.03 * FOOTPRINT_CONTRASTE)) / 0.9)), sm = sx * sx * (3 - 2 * sx); k = Math.max(k, sm); dest = 0.8 * sm; }
@@ -12902,7 +12921,7 @@ function grLupaRegDesenhar() {
         const deltaFaixa = R.mapa.get(k); if (deltaFaixa === undefined) continue;
         const y = G.yDeP(k * tickDA) - st, yTopo = G.yDeP(k * tickDA + tickDA / 2) - st, yBase = G.yDeP(k * tickDA - tickDA / 2) - st;
         if (y < 0 || y > vh) continue;
-        const corInfo = (_grDaCor === 'forca') ? grDaCorForca(R.saude ? R.saude.get(k) : null) : grFootprintCorCelula(deltaFaixa < 0 ? -deltaFaixa : 0, deltaFaixa > 0 ? deltaFaixa : 0, tickDA, R.maxAbs / tickDA);
+        const corInfo = (_grDaCor === 'forca') ? grDaCorForca(R.saude ? R.saude.get(k) : null) : grFootprintCorCelula(deltaFaixa < 0 ? -deltaFaixa : 0, deltaFaixa > 0 ? deltaFaixa : 0, tickDA, R.maxAbs / tickDA, true);
         { const hC = yBase - yTopo, gp = hC > 14 ? 1.5 : 0.6, x0c = 2, w0c = larg, y0c = yTopo + gp, h0c = Math.max(1, hC - 2 * gp), rc = Math.min(4, h0c / 2, w0c / 2);
           ctx.save(); ctx.beginPath(); ctx.moveTo(x0c + rc, y0c); ctx.lineTo(x0c + w0c - rc, y0c); ctx.quadraticCurveTo(x0c + w0c, y0c, x0c + w0c, y0c + rc); ctx.lineTo(x0c + w0c, y0c + h0c - rc); ctx.quadraticCurveTo(x0c + w0c, y0c + h0c, x0c + w0c - rc, y0c + h0c); ctx.lineTo(x0c + rc, y0c + h0c); ctx.quadraticCurveTo(x0c, y0c + h0c, x0c, y0c + h0c - rc); ctx.lineTo(x0c, y0c + rc); ctx.quadraticCurveTo(x0c, y0c, x0c + rc, y0c); ctx.closePath();
           ctx.fillStyle = corInfo.cor; ctx.fill(); ctx.lineWidth = 0.7; ctx.strokeStyle = 'rgba(0,0,0,0.16)'; ctx.stroke(); ctx.restore(); }
