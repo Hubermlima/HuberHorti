@@ -3927,7 +3927,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v1073';
+const APP_VERSAO = 'v1076';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -5032,6 +5032,13 @@ function grConfigBlocoContrasteV2(svg) {
 }
 // Contraste do número com o fundo da célula (WCAG): luminância relativa em luz linear; o ponto onde preto e branco rendem o mesmo contraste é ~0,179.
 function grFpLumRel(r, g, b) { const f = v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); }
+// Cor do número do imbalance: azul-ciano (#6FE3FF) nas células escuras e azul-escuro (#1A2BD8) nas claras; escolhe a de maior contraste com o fundo da célula e, no tom em que nenhuma das duas fica boa, ganha contorno (preto no ciano, branco no azul).
+function grFpCorImb(bg, escura) {
+    const m = String(bg || '').match(/rgb\((\d+),\s*(\d+),\s*(\d+)/); if (!m) return { cor: escura ? '#6FE3FF' : '#1A2BD8', borda: null };
+    const lb = grFpLumRel(+m[1], +m[2], +m[3]), lC = grFpLumRel(0x6F, 0xE3, 0xFF), lA = grFpLumRel(0x1A, 0x2B, 0xD8), rz = (a, b) => (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+    const rC = rz(lb, lC), rA = rz(lb, lA), usaC = rC >= rA, melhor = usaC ? rC : rA;
+    return { cor: usaC ? '#6FE3FF' : '#1A2BD8', borda: melhor < 3.5 ? (usaC ? '#000000' : '#FFFFFF') : null };
+}
 function grFpTextoContraste(cor, padrao) { const m = String(cor).match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/); if (!m) return padrao || '#000000'; return grFpLumRel(+m[1], +m[2], +m[3]) < 0.179 ? '#FFFFFF' : '#000000'; }
 function grFootprintPintar(pal, k, destaque) {
     const w = Math.min(1, k * 5);   // k quase zero (ruído) -> quase branco
@@ -5069,12 +5076,12 @@ function grFpPercentilGarantir(tick) {
     const dias = _grFootprintLookbackDias || 7, lastT = cs[cs.length - 1].t;
     const chave = grBinSymbolAtual() + '|' + _grTf + '|' + tick + '|' + FOOTPRINT_LINHAS_MODO + '|' + FOOTPRINT_NIVEIS_MAX + '|' + dias + '|' + cs.length + '|' + lastT;
     let P = window._grFpPerc; if (P && P.k === chave) return P;
-    const t0 = lastT - dias * 86400000, v = []; let todos = null; const getTodos = () => todos || (todos = grFootprintTodosOsCandlesBrutos());
+    const t0 = lastT - dias * 86400000, v = [], vl = []; let todos = null; const getTodos = () => todos || (todos = grFootprintTodosOsCandlesBrutos());
     for (let i = cs.length - 1, n = 0; i >= 0 && n < 1000 && cs[i].t >= t0; i--, n++) {
         const cl = grFootprintClusterDoCandle(cs[i], tick, getTodos); if (!cl) continue;
-        cl.linhas.forEach(ln => { if (ln.total > 0) v.push(ln.total / tick); });
+        cl.linhas.forEach(ln => { if (ln.total > 0) { v.push(ln.total / tick); if (ln.bid > 0) vl.push(ln.bid / tick); if (ln.ask > 0) vl.push(ln.ask / tick); } });
     }
-    window._grFpPerc = P = { k: chave, arr: Float64Array.from(v).sort() };
+    window._grFpPerc = P = { k: chave, arr: Float64Array.from(v).sort(), lados: Float64Array.from(vl).sort() };
     return P;
 }
 function grFootprintCorCelula(bid, ask, tick, refTop, semPerc) {
@@ -5184,6 +5191,10 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
         if (k < 1.05) { ctx.fillText(txt, x, yc + fs * 0.35); return; }
         ctx.save(); ctx.translate(x, yc); ctx.scale(1, k); ctx.fillText(txt, 0, fs * 0.36); ctx.restore();
     };
+    const fpTxtB = (txt, x, yc, g, borda) => {
+        if (borda) { ctx.save(); ctx.lineJoin = 'round'; ctx.lineWidth = 2.4; ctx.strokeStyle = borda; const k = Math.max(1, Math.min(2.4, (g.y1 - g.y0 - 1.5) / (fs * 0.72))); if (k < 1.05) ctx.strokeText(txt, x, yc + fs * 0.35); else { ctx.translate(x, yc); ctx.scale(1, k); ctx.strokeText(txt, 0, fs * 0.36); } ctx.restore(); }
+        fpTxt(txt, x, yc, g);
+    };
     // Células. A ponta (a linha mais alta e a mais baixa do candle) pode sair cortada pela máxima/mínima real, menor que as
     // outras — é o "remainder cell" que a NinjaTrader também tem, não um bug (pesquisado e confirmado). Mas o número dela
     // não pode ficar escondido só por ser fina: fica marcada ("pontaCortada") pra pular a trava de altura mínima no texto,
@@ -5229,15 +5240,17 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
             const half = wCel / 2, hh = Math.max(1, y1 - y0 - 1), cx = xCel + half, ePoc = (i === cl.pocIdx), avail = Math.max(1, half - tvGap), ancL = cx - tvGap, ancR = cx + tvGap;
             const rb = tvMax.b > 0 ? (ln.bid || 0) / tvMax.b : 0, ra = tvMax.a > 0 ? (ln.ask || 0) / tvMax.a : 0;
             const wB = avail * rb, wA = avail * ra;
-            const corB = ePoc ? (FOOTPRINT_POC_COR || '#FFFFFF') : (rb >= 0.75 ? '#7E1F27' : rb >= 0.5 ? '#D32F3C' : '#9E4A52');
-            const corA = ePoc ? (FOOTPRINT_POC_COR || '#FFFFFF') : (ra >= 0.75 ? '#05503F' : ra >= 0.5 ? '#089981' : '#FFFFFF');
+            // mesma escala de 10 níveis das outras skins: o tom do lado (bid vermelho / ask verde) vem do percentil do volume dele entre todos os lados da janela de dias
+            const PL = window._grFpPerc, tomLado = (v, pal) => { if (PL && PL.lados && PL.lados.length >= 20 && v > 0) return grFpPintarPerc(pal, grFpPercentil(PL.lados, v / tick)).cor; return null; };
+            const corB = ePoc ? (FOOTPRINT_POC_COR || '#FFFFFF') : (tomLado(ln.bid, FOOTPRINT_COR_VERMELHO) || (rb >= 0.75 ? '#7E1F27' : rb >= 0.5 ? '#D32F3C' : '#9E4A52'));
+            const corA = ePoc ? (FOOTPRINT_POC_COR || '#FFFFFF') : (tomLado(ln.ask, FOOTPRINT_COR_VERDE) || (ra >= 0.75 ? '#05503F' : ra >= 0.5 ? '#089981' : '#FFFFFF'));
             const borda = (x0, w0) => { if (_grTemaClaro) { ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.lineWidth = 1; ctx.strokeRect(x0 + 0.5, y0 + 1, Math.max(0, w0 - 1), Math.max(0, hh - 1)); } };
             if (wB >= 0.5) { ctx.fillStyle = corB; ctx.fillRect(ancL - wB, y0 + 0.5, wB, hh); if (corB === '#FFFFFF') borda(ancL - wB, wB); }
             if (wA >= 0.5) { ctx.fillStyle = corA; ctx.fillRect(ancR, y0 + 0.5, wA, hh); if (corA === '#FFFFFF') borda(ancR, wA); }
             geo.push({ y0, y1, pontaCortada, escura: false, tv: { wB, wA, corB, corA, ancL, ancR } });
             return;
         }
-        geo.push({ y0, y1, pontaCortada, escura: fraca ? false : corCel.escura, fraca });
+        geo.push({ y0, y1, pontaCortada, escura: fraca ? false : corCel.escura, fraca, cor: fraca ? '#FFFFFF' : corCel.cor });
         if (fraca) { ctx.fillStyle = '#FFFFFF'; ctx.fillRect(xCel, y0, wCel, Math.max(1, y1 - y0)); }   // base branca opaca: a cor esmaecida não deixa passar as zonas (retângulos, lupas) que estão por baixo
         ctx.fillStyle = corCel.cor;
         if (fraca) ctx.globalAlpha = 0.22;
@@ -5290,9 +5303,10 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
             if (g.y1 - g.y0 < 8 && !g.pontaCortada) return; // fininha E não é a ponta cortada: some, como sempre
             const imb = ln.imbAsk || ln.imbBid;
             ctx.font = imb ? fonteNegrito : fonteNormal;
-            ctx.fillStyle = imb ? (g.escura ? '#8FA5FF' : '#1A2BD8') : (g.escura ? '#FFFFFF' : '#000000');
+            const imbC = imb ? grFpCorImb(g.cor, g.escura) : null;
+            ctx.fillStyle = imb ? imbC.cor : (g.escura ? '#FFFFFF' : '#000000');
             if (g.fraca) ctx.globalAlpha = 0.7;
-            fpTxt(grFmtVolCel(ln.total, nivelTxt), xCel + wCel - 3, (g.y0 + g.y1) / 2, g);
+            fpTxtB(grFmtVolCel(ln.total, nivelTxt), xCel + wCel - 3, (g.y0 + g.y1) / 2, g, imb ? imbC.borda : null);
             ctx.globalAlpha = 1;
         });
         ctx.textAlign = 'left';
@@ -5335,12 +5349,12 @@ function grDesenharFootprintCluster(ctx, xSlot, cW, candle, cfg, toY, yMin, yMax
             if (!g) return;
             if (g.y1 - g.y0 < 8 && !g.pontaCortada) return; // fininha E não é a ponta cortada: some, como sempre
             const corTxt = g.escura ? '#FFFFFF' : '#000000';
-            const corImb = g.escura ? '#8FA5FF' : '#1A2BD8';
+            const imbC = grFpCorImb(g.cor, g.escura), corImb = imbC.cor;
             const a = grFmtVolCel(ln.bid, nivelTxt), b = grFmtVolCel(ln.ask, nivelTxt);
             const y = (g.y0 + g.y1) / 2;
             if (g.fraca) ctx.globalAlpha = 0.7;
-            ctx.textAlign = 'right'; ctx.font = ln.imbBid ? fonteNegrito : fonteNormal; ctx.fillStyle = ln.imbBid ? corImb : corTxt; fpTxt(a, cxL - 2, y, g);
-            ctx.textAlign = 'left';  ctx.font = ln.imbAsk ? fonteNegrito : fonteNormal; ctx.fillStyle = ln.imbAsk ? corImb : corTxt; fpTxt(b, cxL + 2, y, g);
+            ctx.textAlign = 'right'; ctx.font = ln.imbBid ? fonteNegrito : fonteNormal; ctx.fillStyle = ln.imbBid ? corImb : corTxt; fpTxtB(a, cxL - 2, y, g, ln.imbBid ? imbC.borda : null);
+            ctx.textAlign = 'left';  ctx.font = ln.imbAsk ? fonteNegrito : fonteNormal; ctx.fillStyle = ln.imbAsk ? corImb : corTxt; fpTxtB(b, cxL + 2, y, g, ln.imbAsk ? imbC.borda : null);
             ctx.globalAlpha = 1;
         });
         ctx.textAlign = 'left';
@@ -6755,6 +6769,7 @@ function grLenteDesenhar() {
     const wrap = L.wrap, wr = wrap.getBoundingClientRect(), Li = L.Li, z = L.z, dp = L.dp, S = Li / z, cx = wr.left + L.sx, cy = wr.top + L.sy;
     const g = L.cv.getContext('2d'); g.setTransform(1, 0, 0, 1, 0, 0);
     let fundo = '#FFFFFF'; try { fundo = grCorFundo(); } catch (e) {}
+    try { const ac = _grTemaClaro ? '#1C1C1E' : '#FFFFFF'; if (L.acento !== ac) { L.acento = ac; L.vidro.style.borderColor = ac; L.cabo.haste.style.background = ac; L.cabo.bola.style.background = ac; } } catch (e) {}   // aro, cabo e bolinha: preto no tema claro, branco no escuro
     g.fillStyle = fundo; g.fillRect(0, 0, L.cv.width, L.cv.height);
     const sx0 = cx - S / 2, sy0 = cy - S / 2;
     grLenteCamadas(wrap, (c, rc) => {
@@ -6819,7 +6834,7 @@ function grLenteAlternar() {
     cabo.style.cssText = 'position:absolute;left:50%;top:100%;width:44px;margin-left:-22px;height:' + (GR_LENTE.H + 16) + 'px;pointer-events:auto;touch-action:none;';
     const haste = document.createElement('div'); haste.style.cssText = 'position:absolute;left:50%;top:0;width:3px;margin-left:-1.5px;height:' + GR_LENTE.H + 'px;background:#1C1C1E;border-radius:2px;';
     const bola = document.createElement('div'); bola.style.cssText = 'position:absolute;left:50%;top:' + (GR_LENTE.H - 6) + 'px;width:14px;height:14px;margin-left:-7px;border-radius:50%;background:#1C1C1E;';
-    cabo.appendChild(haste);
+    cabo.appendChild(haste); cabo.haste = haste; cabo.bola = bola;
     cabo.appendChild(bola); el.appendChild(cabo); wrap.appendChild(el);
     let cfg = null; try { cfg = JSON.parse(localStorage.getItem('grLenteCfg') || 'null'); } catch (e) {}
     const fx = cfg && isFinite(cfg.fx) ? cfg.fx : 0.82, fy = cfg && isFinite(cfg.fy) ? cfg.fy : 0.4;
@@ -17615,7 +17630,7 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
             if (!visivel(i) || total <= 0) return;
             yTopoBloco = Math.min(yTopoBloco, y); yBaseBloco = Math.max(yBaseBloco, y + rowH);
             const yc = y + rowH / 2;
-            const fpTxt = (txt, x) => ctx.fillText(txt, x, yc + fs * 0.35);
+            const fpTxt = (txt, x, borda) => { if (borda) { ctx.save(); ctx.lineJoin = 'round'; ctx.lineWidth = 2.4; ctx.strokeStyle = borda; ctx.strokeText(txt, x, yc + fs * 0.35); ctx.restore(); } ctx.fillText(txt, x, yc + fs * 0.35); };
             if (ehTv) {
                 const half = wCel / 2, cx = xCel0 + half, avail = Math.max(1, half - tvGap), ancL = cx - tvGap, ancR = cx + tvGap;
                 const ePoc = i === pocIdx;
@@ -17652,20 +17667,20 @@ function grFootprintDesenharCandleLadder(candle, tCandleStart, mapaFino, numCand
                 ctx.fillStyle = cc.cor;
                 ctx.fillRect(xCel0, y, wCel, rowH);
                 if (nivelTxt >= 0) {
-                    const corTxt = cc.escura ? '#FFFFFF' : '#000000', corImb = cc.escura ? '#8FA5FF' : '#1A2BD8';
+                    const corTxt = cc.escura ? '#FFFFFF' : '#000000', imbC = grFpCorImb(cc.cor, cc.escura), corImb = imbC.cor;
                     if (ehCinza) {
                         const imb = imbAsk(i) || imbBid(i);
                         ctx.font = imb ? fonteB : fonteN;
                         ctx.fillStyle = imb ? corImb : corTxt;
                         ctx.textAlign = 'right';
-                        fpTxt(grFmtVolCel(total, nivelTxt), xCel0 + wCel - 4);
+                        fpTxt(grFmtVolCel(total, nivelTxt), xCel0 + wCel - 4, imb ? imbC.borda : null);
                         ctx.textAlign = 'left';
                     } else {
                         const a = grFmtVolCel(v.v, nivelTxt), b = grFmtVolCel(v.c, nivelTxt);
                         const cxL = Math.round(xCel0 + wCel / 2);
                         ctx.fillStyle = cc.escura ? '#FFFFFF' : '#000000'; ctx.fillRect(cxL - 1, y, 2, rowH);
-                        ctx.textAlign = 'right'; ctx.font = imbBid(i) ? fonteB : fonteN; ctx.fillStyle = imbBid(i) ? corImb : corTxt; fpTxt(a, cxL - 2);
-                        ctx.textAlign = 'left';  ctx.font = imbAsk(i) ? fonteB : fonteN; ctx.fillStyle = imbAsk(i) ? corImb : corTxt; fpTxt(b, cxL + 2);
+                        ctx.textAlign = 'right'; ctx.font = imbBid(i) ? fonteB : fonteN; ctx.fillStyle = imbBid(i) ? corImb : corTxt; fpTxt(a, cxL - 2, imbBid(i) ? imbC.borda : null);
+                        ctx.textAlign = 'left';  ctx.font = imbAsk(i) ? fonteB : fonteN; ctx.fillStyle = imbAsk(i) ? corImb : corTxt; fpTxt(b, cxL + 2, imbAsk(i) ? imbC.borda : null);
                     }
                 }
             }
