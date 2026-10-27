@@ -3907,7 +3907,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v1099';
+const APP_VERSAO = 'v1100';
 (function () {
     const el = document.getElementById('cv-menu-versao');
     if (el) { el.textContent = APP_VERSAO; if (typeof grAmbStatusMostrar === 'function') grAmbStatusMostrar(); }
@@ -5034,6 +5034,10 @@ function grFootprintPintar(pal, k, destaque) {
 // os níveis 5 a 9 (o que interessa) têm passos grandes, do cinza médio ao quase preto, para o olho separar cada um. Skin colorida: a mesma luminosidade de cada degrau, em verde ou vermelho.
 const GR_FP_NIVEIS = [245, 238, 231, 224, 217, 186, 146, 106, 64, 22];
 function grFpPintarPerc(pal, k) {
+    if (k <= -1) {   /*ILHA: rampa do clarinho até a cor forte da paleta, sem passar pelo preto*/
+        const p = Math.max(0, Math.min(1, -1 - k)), bs = pal.base, fo = pal.forte, rr = Math.round(bs[0] + (fo[0] - bs[0]) * p), gg2 = Math.round(bs[1] + (fo[1] - bs[1]) * p), bb = Math.round(bs[2] + (fo[2] - bs[2]) * p);
+        return { cor: 'rgb(' + rr + ',' + gg2 + ',' + bb + ')', escura: grFpLumRel(rr, gg2, bb) < 0.179 };
+    }
     const i = Math.max(0, Math.min(9, Math.floor(k * 10))), g = GR_FP_NIVEIS[i];
     let r = g, gg = g, b = g;
     if (pal !== FOOTPRINT_COR_CINZA) {
@@ -5050,24 +5054,27 @@ function grDaCorPerc(delta, mapa) {
     if (!arr || arr.length < 5 || !(m > 0)) return !(m > 0) ? { cor: '#FFFFFF', escura: false } : grFpPintarPerc(pal, 0.5);
     return grFpPintarPerc(pal, grFpPercentil(arr, m));
 }
+function grFpIlhaMontar(a, tick) {   /*ILHA: escala da zona — piso = mediana (abaixo: ruído, um tom só); acima, cada tom = o dobro do anterior até o máximo (se der mais de 9 tons, a razão é esticada para caber em 9)*/
+    if (!a || a.length < 20) return null;
+    const med = a[a.length >> 1], max = a[a.length - 1]; if (!(med > 0) || !(max > med)) return null;
+    let r = 2, n = Math.ceil(Math.log(max / med) / Math.log(r)); if (n > 9) { n = 9; r = Math.pow(max / med, 1 / 9); }
+    return { med, max, tick, r, n: Math.max(1, n), T: Math.max(1, n) + 1 };
+}
 function grFpLegendaIlha() {   /*ILHA: legenda no menu — de tanto a tanto volume = tom*/
     try {
         const P = window._grFpPerc, cf = window._grAncCfg; if (!cf.fpZona || !P || !P.arr || !P.arr.ilha) return '';
-        const il = P.arr.ilha, n = grFpIlhaBandas(il), R = il.max / il.min, f = v => { const t = v * il.tick; return t >= 100 ? Math.round(t).toLocaleString('pt-BR') : t.toFixed(1).replace('.', ','); };
-        let h = '<div style="font-size:11.5px;color:#1C1C1E;margin:6px 0 3px;">Volume da zona: ' + f(il.min) + ' a ' + f(il.max) + '</div>';
-        for (let b = 0; b < n; b++) {
-            const lo = il.min * Math.pow(R, b / n), hi = il.min * Math.pow(R, (b + 1) / n), tom = n > 1 ? Math.round(b * 9 / (n - 1)) : 9, cor = grFpPintarPerc(FOOTPRINT_COR_VERDE, (tom + 0.5) / 10).cor;
-            h += '<div style="display:flex;align-items:center;gap:7px;margin:2px 0;"><span style="width:22px;height:14px;border-radius:3px;background:' + cor + ';border:1px solid #1C1C1E;flex-shrink:0;"></span><span style="font-size:11.5px;color:#1C1C1E;">' + f(lo) + ' – ' + f(hi) + '</span></div>';
-        }
+        const il = P.arr.ilha, f = v => { const t = v * il.tick; return t >= 100 ? Math.round(t).toLocaleString('pt-BR') : t.toFixed(1).replace('.', ','); };
+        const cor = idx => grFpPintarPerc(FOOTPRINT_COR_VERDE, -1 - idx / (il.T - 1)).cor, lin = (idx, tx) => '<div style="display:flex;align-items:center;gap:7px;margin:2px 0;"><span style="width:22px;height:14px;border-radius:3px;background:' + cor(idx) + ';border:1px solid #1C1C1E;flex-shrink:0;"></span><span style="font-size:11.5px;color:#1C1C1E;">' + tx + '</span></div>';
+        let h = '<div style="font-size:11.5px;color:#1C1C1E;margin:6px 0 3px;">Volume por nível (' + Math.round(il.tick) + ') na zona</div>' + lin(0, 'até ' + f(il.med) + ' (ruído)');
+        for (let b = 0; b < il.n; b++) h += lin(b + 1, f(il.med * Math.pow(il.r, b)) + ' – ' + (b === il.n - 1 ? f(il.max) : f(il.med * Math.pow(il.r, b + 1))));
         return h;
     } catch (e) { return ''; }
 }
-function grFpIlhaBandas(il) { const R = il.max / il.min; return Math.max(3, Math.min(10, Math.round(Math.log(R) / Math.log(1.8)))); }   /*ILHA: nº de faixas sai da amplitude real da zona (razão máx/mín)*/
 function grFpPercentil(arr, d) {
-    if (arr && arr.ilha) {   /*ILHA: escala da zona — extremos reais (mín e máx), faixas por razão (log); volume pequeno fica pálido, o grande se sobressai*/
-        const il = arr.ilha; if (!(d > 0) || !(il.max > il.min)) return 0.95;
-        const n = grFpIlhaBandas(il), pos = Math.max(0, Math.min(0.9999, Math.log(d / il.min) / Math.log(il.max / il.min))), b = Math.floor(pos * n), tom = n > 1 ? Math.round(b * 9 / (n - 1)) : 9;
-        return (tom + 0.5) / 10;
+    if (arr && arr.ilha) {   /*ILHA: devolve a posição na rampa (0..1) codificada como -1-pos; grFpPintarPerc entende*/
+        const il = arr.ilha; if (!(d > 0) || d <= il.med) return -1;
+        const b = Math.min(il.n - 1, Math.floor(Math.log(d / il.med) / Math.log(il.r)));
+        return -1 - (b + 1) / (il.T - 1 || 1);
     }
     let lo = 0, hi = arr.length; while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m] < d) lo = m + 1; else hi = m; }
     let a = lo; hi = arr.length; while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m] <= d) lo = m + 1; else hi = m; }
@@ -5079,7 +5086,8 @@ function grFpPercentilGarantir(tick) {
     const cs = _grAllCandles; if (!cs || !cs.length) return null;
     const dias = _grFootprintLookbackDias || 7, lastT = cs[cs.length - 1].t;
     const zI = (window._grAncCfg && window._grAncCfg.fpZona && typeof grCandleZonaInfo === 'function') ? grCandleZonaInfo() : null;
-    const chave = grBinSymbolAtual() + '|' + _grTf + '|' + tick + '|' + FOOTPRINT_LINHAS_MODO + '|' + FOOTPRINT_NIVEIS_MAX + '|' + dias + '|' + cs.length + '|' + lastT + (zI ? '|Z' + zI.id + '|' + zI.tIni + '|' + zI.lo + '|' + zI.hi : '');
+    if (zI) tick = (typeof grTickAtr === 'function' && grTickAtr() > 0) ? grTickAtr() : tick;   /*ILHA: grade fixa (ATR), não a da tela*/
+    const chave = grBinSymbolAtual() + '|' + (zI ? 'F' : _grTf + '|' + tick) + '|' + FOOTPRINT_LINHAS_MODO + '|' + FOOTPRINT_NIVEIS_MAX + '|' + dias + '|' + (zI ? '' : cs.length + '|') + lastT + (zI ? '|Z' + zI.id + '|' + zI.tIni + '|' + zI.lo + '|' + zI.hi : '');
     let P = window._grFpPerc; if (P && P.k === chave) return P;
     const t0 = zI ? zI.tIni : lastT - dias * 86400000, v = [], vl = []; let todos = null; const getTodos = () => todos || (todos = grFootprintTodosOsCandlesBrutos());
     for (let i = cs.length - 1, n = 0; i >= 0 && n < 1000 && cs[i].t >= t0; i--, n++) {
@@ -5087,7 +5095,7 @@ function grFpPercentilGarantir(tick) {
         cl.linhas.forEach(ln => { if (zI && (ln.p < zI.lo || ln.p > zI.hi)) return; if (ln.total > 0) { v.push(ln.total / tick); if (ln.bid > 0) vl.push(ln.bid / tick); if (ln.ask > 0) vl.push(ln.ask / tick); } });
     }
     window._grFpPerc = P = { k: chave, arr: Float64Array.from(v).sort(), lados: Float64Array.from(vl).sort() };
-    if (zI && P.arr.length >= 20) { const a = P.arr, l = P.lados; a.ilha = { min: a[0], max: a[a.length - 1], tick }; if (l.length) l.ilha = { min: l[0], max: l[l.length - 1], tick }; if (!(a.ilha.max > a.ilha.min)) { delete a.ilha; delete l.ilha; } }   /*ILHA*/
+    if (zI && P.arr.length >= 20) { const a = P.arr, l = P.lados; const ia = grFpIlhaMontar(a, tick); if (ia) { a.ilha = ia; const il2 = grFpIlhaMontar(l, tick); if (il2) l.ilha = il2; } }   /*ILHA*/
     return P;
 }
 function grFootprintCorCelula(bid, ask, tick, refTop, semPerc) {
