@@ -3915,7 +3915,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v1136';
+const APP_VERSAO = 'v1138';
 function grCorDesenho(c) {   // preto de desenho vira branco no modo escuro
     if (!c) c = '#000000';
     if (typeof _grTemaClaro !== 'undefined' && !_grTemaClaro && /^#(000000|000|111111|1c1c1e)$/i.test(c)) return '#FFFFFF';
@@ -4369,6 +4369,10 @@ function grSaudeNiveis(mins, tick, totais) {
     mins.sort((a, b) => a.ts - b.ts);
     const S = new Map(); let prevK = null, pmAgora = null;
     // ROMPIMENTO (teste, versão simples): contagem das vezes em que o preço médio do minuto cruza o preço do nível (suporte: de cima para baixo). A mínima/máxima de cada episódio é guardada.
+    // candle do TF da régua em que cada minuto cai (alinha com os candles do gráfico quando o TF é o mesmo; senão, divisão exata do tempo)
+    let bms = 0; try { bms = cvTfMsRegua() || 0; } catch (eB) {}
+    let tsC = null; try { if (bms > 0 && typeof cvTfMsGrafico === 'function' && cvTfMsGrafico() === bms && _grAllCandles && _grAllCandles.length) tsC = _grAllCandles.map(c => c.t); } catch (eC) {}
+    const bkt = ts => { if (!(bms > 0)) return ts; if (tsC) { let lo = 0, hi = tsC.length - 1; if (ts < tsC[0]) return Math.floor(ts / bms) * bms; while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (tsC[mid] <= ts) lo = mid; else hi = mid - 1; } return tsC[lo]; } return Math.floor(ts / bms) * bms; };
     for (const m of mins) {
         const ns = m.niveis || []; if (!ns.length) continue;
         let sv = 0, sp = 0; for (const n of ns) { const v = n.c + n.v; sv += v; sp += v * n.p; }
@@ -4384,15 +4388,15 @@ function grSaudeNiveis(mins, tick, totais) {
                 o.side = sd;
             }
         }
-        S.forEach((o, kk) => {   // rompimento = o preço médio do minuto cruza o PREÇO do nível (o centro): suporte, de cima para baixo; resistência, de baixo para cima. Termina quando cruza de volta.
+        const b0 = bkt(m.ts);
+        S.forEach((o, kk) => {   // rompimento = o preço médio do minuto cruza o PREÇO do nível (suporte: de cima para baixo; resistência: de baixo para cima). Conta no máximo 1 por candle do TF da régua; a mínima/máxima é a mais extrema do candle depois do 1º cruzamento.
             const cen = kk * tick;
             if (o.pB === undefined) { o.pB = pmAgora >= cen; o.pC = pmAgora <= cen; }
-            if (o.xB) { if (mnP < o.xB.ext) o.xB.ext = mnP; if (pmAgora >= cen) { o.xB.fim = m.ts; (o.rompB = o.rompB || []).push(o.xB); o.xB = null; } }
-            else if (o.pB && pmAgora < cen) o.xB = { ts: m.ts, ext: mnP, fim: null, aberto: false };
-            o.pB = pmAgora >= cen;
-            if (o.xC) { if (mxP > o.xC.ext) o.xC.ext = mxP; if (pmAgora <= cen) { o.xC.fim = m.ts; (o.rompC = o.rompC || []).push(o.xC); o.xC = null; } }
-            else if (o.pC && pmAgora > cen) o.xC = { ts: m.ts, ext: mxP, fim: null, aberto: false };
-            o.pC = pmAgora <= cen;
+            if (o.curB && o.curB.bk === b0 && mnP < o.curB.ext) o.curB.ext = mnP;
+            if (o.curC && o.curC.bk === b0 && mxP > o.curC.ext) o.curC.ext = mxP;
+            if (o.pB && pmAgora < cen && !(o.curB && o.curB.bk === b0)) { o.curB = { ts: m.ts, bk: b0, ext: mnP }; (o.rompB = o.rompB || []).push(o.curB); }
+            if (o.pC && pmAgora > cen && !(o.curC && o.curC.bk === b0)) { o.curC = { ts: m.ts, bk: b0, ext: mxP }; (o.rompC = o.rompC || []).push(o.curC); }
+            o.pB = pmAgora >= cen; o.pC = pmAgora <= cen;
         });
         for (const n of ns) {
             const k = Math.round(n.p / tick); let o = S.get(k);
@@ -4402,7 +4406,6 @@ function grSaudeNiveis(mins, tick, totais) {
         { const oc = S.get(kc); if (oc) oc.tempo = (oc.tempo || 0) + 1; }   // tempo no nível: minutos em que o preço médio do minuto esteve na faixa
         prevK = kc;
     }
-    S.forEach(o => { if (o.xB) { o.xB.aberto = true; (o.rompB = o.rompB || []).push(o.xB); o.xB = null; } if (o.xC) { o.xC.aberto = true; (o.rompC = o.rompC || []).push(o.xC); o.xC = null; } });   // ainda fora da borda no fim da janela
     const vl = [], qb = [];
     S.forEach((o, k) => {
         o.vol = o.ct + o.vt;
@@ -4646,7 +4649,7 @@ function grSaudeModal(k, tick, sd, cy, opc) {   // opc (lupa): { x, y, preco, z 
     const dlt = (sd.ct || 0) - (sd.vt || 0), deltaLin = lin('Delta', '<span style="color:' + (dlt > 0 ? '#16A34A' : dlt < 0 ? '#DC2626' : '#1C1C1E') + ';">' + (dlt > 0 ? '+' : dlt < 0 ? '−' : '') + fv(Math.abs(dlt)) + (sd.total > 0 ? ' (' + Math.round(Math.abs(dlt) / sd.total * 100) + '%)' : '') + '</span>');   // delta do nível = compra agressora − venda agressora na janela
     const pAg = pRefM, dsp = pAg ? preco - pAg : 0, distLin = pAg ? lin('Distância até a cotação', (dsp > 0 ? '+' : dsp < 0 ? '−' : '') + fmtP(Math.abs(dsp)) + ' (' + (dsp > 0 ? '+' : dsp < 0 ? '−' : '') + (Math.abs(dsp) / pAg * 100).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + '%)') : '';   // nível − cotação: negativo = abaixo do preço
     const rompLst = (sd.lado > 0 ? sd.rompB : sd.rompC) || [], nmR = sd.lado > 0 ? 'suporte' : 'resistência', extR = sd.lado > 0 ? 'mínima' : 'máxima', nR = rompLst.length;   // qualquer preço além da borda (violinada, falso rompimento ou rompimento)
-    const rompLin = sd.lado ? lin(nR + (nR === 1 ? ' rompimento ' : ' rompimentos ') + nmR, '') + lin((sd.lado > 0 ? 'Suporte' : 'Resistência') + ' do nível', fmtP(preco)) + rompLst.map((r, i) => [i, r]).slice(-12).map(([i, r]) => lin((i + 1) + 'º · ' + grDataBr(r.ts), extR + ' ' + fmtP(r.ext) + ' (' + (sd.lado > 0 ? '−' : '+') + fmtP(Math.abs(preco - r.ext)) + ')')).join('') + (nR > 12 ? lin('(mostrando os 12 últimos)', '') : '') + lin('Rompimentos firmes (regra antiga)', String(sd.rp)) : '';
+    const rompLin = sd.lado ? lin(nR + (nR === 1 ? ' rompimento ' : ' rompimentos ') + nmR + ' · candles ' + (function () { try { return cvTfSiglaRegua().replace(' auto', ''); } catch (e) { return ''; } })(), '') + lin((sd.lado > 0 ? 'Suporte' : 'Resistência') + ' do nível', fmtP(preco)) + rompLst.map((r, i) => [i, r]).slice(-12).map(([i, r]) => lin((i + 1) + 'º · ' + grDataBr(r.ts), extR + ' ' + fmtP(r.ext) + ' (' + (sd.lado > 0 ? '−' : '+') + fmtP(Math.abs(preco - r.ext)) + ')')).join('') + (nR > 12 ? lin('(mostrando os 12 últimos)', '') : '') + lin('Rompimentos firmes (regra antiga)', String(sd.rp)) : '';
     const d = document.createElement('div'); d.id = 'gr-saude-modal';
     d.style.cssText = 'position:fixed;z-index:' + (opc && opc.z ? opc.z : 9700) + ';background:#FFFFFF;border-radius:10px;box-shadow:0 4px 18px rgba(0,0,0,0.28);padding:9px 11px;font:12px -apple-system,sans-serif;min-width:270px;max-width:340px;white-space:nowrap;box-sizing:border-box;';
     d.innerHTML = '<div style="font-size:13px;font-weight:800;color:' + cor + ';">' + nome + ' · ' + fmtP(preco) + '</div>'
@@ -12149,7 +12152,14 @@ function grEdRegistrarToques(fx, fy) {   // tocar na alça (ponta) do desenho, o
     const rtLista = [];   /*RETANGULO*/
     _medidas.forEach((m, i) => { if (m.oculta) return; const x1 = fx(m.t1), x2 = fx(m.t2), y1 = fy(m.p1), y2 = fy(m.p2); if (![x1, x2, y1, y2].every(isFinite)) return;
         if (m.lp) { alca(x1, y1, 'md', i); alca(x2, y2, 'md', i); window._grPosRects.push({ x: Math.min(x1, x2), y: Math.min(y1, y2), w: Math.max(16, Math.abs(x2 - x1)), h: Math.max(16, Math.abs(y2 - y1)), abrir: abrir('md', i) }); return; }   /*LUPA: tocar na zona (ou nas alças) seleciona e abre o menu: lupa · lixeira · fechar*/
-        if (m.za) { const ps = grAncIconePos(m, fx, fy); if (ps) window._grPosRects.unshift({ x: ps.x - 20, y: ps.y - 20, w: 40, h: 40, abrir: () => grAncIconeToque(m) }); return; }   /*ZONAANC: só o ícone toca*/
+        if (m.za) {
+            const ps = grAncIconePos(m, fx, fy); if (ps) window._grPosRects.unshift({ x: ps.x - 20, y: ps.y - 20, w: 40, h: 40, abrir: () => grAncIconeToque(m) });   /*ZONAANC: o ícone liga/desliga*/
+            if (m.ativa && m.verZona) {   // o contorno tracejado também seleciona a zona (só seleciona/abre o menu, nunca desliga)
+                const xl = Math.min(x1, x2), xr = grPadL() + (window._grChartW || 200), yT = Math.min(y1, y2), yB = Math.max(y1, y2), Q = 12, sel = () => grAncZonaSelecionar(m);
+                if (xr > xl) [{ x: xl - Q, y: yT - Q, w: xr - xl + 2 * Q, h: 2 * Q }, { x: xl - Q, y: yB - Q, w: xr - xl + 2 * Q, h: 2 * Q }, { x: xl - Q, y: yT, w: 2 * Q, h: Math.max(1, yB - yT) }, { x: xr - Q, y: yT, w: 2 * Q, h: Math.max(1, yB - yT) }].forEach(q => window._grPosRects.push({ x: q.x, y: q.y, w: q.w, h: q.h, abrir: sel }));
+            }
+            return;
+        }   /*ZONAANC*/
         if (m.rt) { const xa = Math.min(x1, x2), xr = grPadL() + (window._grChartW || 200); if (xr > xa) rtLista.push({ x: xa, y: Math.min(y1, y2), w: xr - xa, h: Math.max(8, Math.abs(y2 - y1)), abrir: abrir('md', i) }); return; }   /*RETANGULO: entra na lista própria (menor primeiro)*/
         if (m.vp) { const pc = window._grVpPocY && window._grVpPocY[m.id], yp = pc > 0 ? fy(pc) : NaN; if (isFinite(yp)) { const xa = Math.min(x1, x2); window._grPosRects.push({ x: xa, y: yp - 14, w: Math.max(8, (window._grChartW || 200) + grPadL() - xa), h: 28, abrir: abrir('md', i) }); } return; }   // POC: só a linha vermelha abre o menu
         window._grPosRects.push({ x: Math.min(x1, x2), y: Math.min(y1, y2) - 4, w: Math.max(8, Math.abs(x2 - x1)), h: Math.abs(y2 - y1) + 8, abrir: abrir('md', i) }); });   // tocar dentro da medida a seleciona
@@ -13715,6 +13725,12 @@ function grZonaAuto() {   /*ÂNCORA: o preço ao vivo escolhe a âncora ativa, n
     } catch (e) {} finally { window._grZonaAutoBusy = false; }
 }
 function grZonaOrient(m) { const ta = Math.min(m.t1, m.t2), tb = Math.max(m.t1, m.t2), pa = Math.max(m.p1, m.p2), pb = Math.min(m.p1, m.p2); m.t1 = ta; m.t2 = tb; m.p1 = pa; m.p2 = pb; }   /*ÂNCORA: ponto 'a' = canto superior esquerdo (onde mora o ícone), 'b' = inferior direito*/
+function grAncZonaSelecionar(m) {   // toque no contorno tracejado da zona ativa: seleciona e abre o menu (sem alternar ligado/desligado)
+    if (!m.ativa) { grZonaAtivarId(m.id); return; }
+    const k0 = _medidas.indexOf(m), sel0 = _edSel && _edSel.tipo === 'md' && _medidas[_edSel.idx] === m;
+    if (!sel0) { try { cvEdicaoIniciar('md', k0); } catch (e) {} }
+    window._nfCtxAberto = true; grDrawChart();
+}
 function grAncIconeToque(m) { const k0 = _medidas.indexOf(m), sel0 = _edSel && _edSel.tipo === 'md' && _medidas[_edSel.idx] === m; if (m.ativa && !(sel0 && window._nfCtxAberto)) { if (!sel0) { try { cvEdicaoIniciar('md', k0); } catch (e) {} } window._nfCtxAberto = true; grDrawChart(); return; }   /*ativa com o menu fechado ou sem seleção: o toque reabre o menu*/
     if (m.ativa) { if (_edSel && _edSel.tipo === 'md' && _medidas[_edSel.idx] === m) cvEdicaoSair(true); m.ativa = false; cvSalvarMedidas(); grZonaPosMudanca(); try { cvFecharMenuFpCfg(); } catch (e) {} grDrawChart(); } else grZonaAtivarId(m.id); }   /*ÂNCORA: toque no ícone liga/desliga*/
 function grZonaNormalizar() {   // no máximo UMA ativa; âncora escondida não fica ativa
