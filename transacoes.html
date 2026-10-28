@@ -3915,7 +3915,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v1126';
+const APP_VERSAO = 'v1128';
 function grCorDesenho(c) {   // preto de desenho vira branco no modo escuro
     if (!c) c = '#000000';
     if (typeof _grTemaClaro !== 'undefined' && !_grTemaClaro && /^#(000000|000|111111|1c1c1e)$/i.test(c)) return '#FFFFFF';
@@ -5729,8 +5729,21 @@ function grFaixaDAAlternar(lo, hi, s, cor) {
     // Aditivo: só remove a zona se você tocar na MESMA faixa (mesmos limites); senão nasce outro retângulo (a zona macro de outro tf não some)
     const tol = Math.max((hi - lo) * 0.02, 1e-9);
     const ex = _medidas.findIndex(m => m.rt && m.atr && Math.abs(Math.min(m.p1, m.p2) - lo) <= tol && Math.abs(Math.max(m.p1, m.p2) - hi) <= tol);
-    if (ex >= 0) { if (_edSel && _edSel.tipo === 'md') { try { cvEdicaoSair(true); } catch (e) {} } _medidas.splice(ex, 1); }
-    else {
+    if (ex >= 0) {   /*tocar de novo num nível já marcado apagaria a zona: agora pergunta antes (toque acidental)*/
+        const alvo = _medidas[ex], old = document.getElementById('gr-da-apagar'); if (old) old.remove();
+        const ov = document.createElement('div'); ov.id = 'gr-da-apagar'; ov.style.cssText = 'position:fixed;inset:0;z-index:9900;background:rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;font-family:-apple-system,sans-serif;';
+        ov.innerHTML = '<div style="background:#fff;width:100%;max-width:280px;border-radius:16px;padding:16px;border:2px solid #000;color:#000;"><div style="font-size:16px;font-weight:700;">Apagar a zona deste nível?</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px;"><button id="gr-da-nao" type="button" style="height:40px;border-radius:11px;border:2px solid #000;background:#fff;font-size:15px;font-weight:600;color:#000;">Cancelar</button><button id="gr-da-sim" type="button" style="height:40px;border-radius:11px;border:none;background:#EF4444;font-size:15px;font-weight:700;color:#fff;">Apagar</button></div></div>';
+        document.body.appendChild(ov);
+        ov.onclick = e => { if (e.target === ov) ov.remove(); };
+        document.getElementById('gr-da-nao').onclick = () => ov.remove();
+        document.getElementById('gr-da-sim').onclick = () => {
+            ov.remove(); const k = _medidas.indexOf(alvo); if (k < 0) return;
+            if (_edSel && _edSel.tipo === 'md') { try { cvEdicaoSair(true); } catch (e) {} }
+            _medidas.splice(_medidas.indexOf(alvo), 1); try { cvSalvarMedidas(); } catch (e) {} grDrawChart();
+        };
+        return;
+    }
+    {
         const za = grZonaAtiva(), cs = (typeof _grAllCandles !== 'undefined' && _grAllCandles.length) ? _grAllCandles : null;
         const t = za ? Math.min(za.t1, za.t2) : (cs ? cs[0].t : Date.now());   // começa na âncora ativa; sem ela, o gráfico todo
         _medidas.push({ id: Date.now(), t1: t, p1: hi, t2: t, p2: lo, rt: true, atr: true, tf: (function () { try { return cvTfSiglaRegua().replace(' auto', '').toLowerCase(); } catch (e) { return ''; } })(), s: s || 0, cor: s < 0 ? '#EF5350' : '#26A69A' });
@@ -11571,12 +11584,38 @@ function grMedidaTempo(ms) {
     ms = Math.abs(ms); const m = Math.round(ms / 60000), d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60), mi = m % 60;
     return d ? d + 'd' + (h ? ' ' + h + 'h' : '') : h ? h + 'h' + (mi ? ' ' + mi + 'm' : '') : mi + 'm';
 }
+function grRetsSemMistura(gr) {   // gr: Map cor -> [[x,y,w,h,ordem]]; tira de cada retângulo as partes cobertas por retângulos MAIS NOVOS de OUTRA cor (os da mesma cor continuam somando como união)
+    const todos = []; gr.forEach((rs, c) => rs.forEach(r => todos.push({ c, r })));
+    gr.forEach((rs, c) => {
+        const saida = [];
+        rs.forEach(r => {
+            let pecas = [[r[0], r[1], r[2], r[3]]];
+            todos.forEach(o => {
+                if (o.c === c || o.r[4] <= r[4]) return;
+                const hx0 = o.r[0], hy0 = o.r[1], hx1 = o.r[0] + o.r[2], hy1 = o.r[1] + o.r[3], nova = [];
+                pecas.forEach(p => {
+                    const px1 = p[0] + p[2], py1 = p[1] + p[3];
+                    if (hx0 >= px1 || hx1 <= p[0] || hy0 >= py1 || hy1 <= p[1]) { nova.push(p); return; }
+                    if (hy0 > p[1]) nova.push([p[0], p[1], p[2], hy0 - p[1]]);
+                    if (hy1 < py1) nova.push([p[0], hy1, p[2], py1 - hy1]);
+                    const ya = Math.max(p[1], hy0), yb = Math.min(py1, hy1);
+                    if (hx0 > p[0]) nova.push([p[0], ya, hx0 - p[0], yb - ya]);
+                    if (hx1 < px1) nova.push([hx1, ya, px1 - hx1, yb - ya]);
+                });
+                pecas = nova;
+            });
+            pecas.forEach(p => saida.push(p));
+        });
+        gr.set(c, saida);
+    });
+}
 function grMedidasDesenhar(ctx, fxT, fy, fxI, PAD, W, H) {
     const lista = _medidas.filter(m => !m.oculta).map(m => ({ x1: fxT(m.t1), x2: fxT(m.t2), p1: m.p1, p2: m.p2, n: grTimeToIndex(m.t2) - grTimeToIndex(m.t1), dt: m.t2 - m.t1, vp: m.vp === true, t1: m.t1, t2: m.t2, id: m.id, ccor: m.cor, cesp: m.esp, rt: m.rt === true, lp: m.lp === true, za: m.za === true, ativa: m.ativa === true, verZona: m.verZona === true }));
     if (_medidaAtual) lista.push({ x1: fxI(_medidaAtual.i1), x2: fxI(_medidaAtual.i2), p1: _medidaAtual.p1, p2: _medidaAtual.p2, n: _medidaAtual.i2 - _medidaAtual.i1, dt: grIndexToTime(_medidaAtual.i2) - grIndexToTime(_medidaAtual.i1), prev: true, vp: _medidaAtual.vp === true, lp: _medidaAtual.lp === true, rt: _medidaAtual.rt === true, t1: grIndexToTime(_medidaAtual.i1), t2: grIndexToTime(_medidaAtual.i2) });
     {   // Retângulos da mesma cor: um caminho só, preenchido uma vez (a união) — onde dois se cruzam o tom não soma
-        const gr = new Map();
-        lista.forEach(m => { if (!m.rt || m.prev || m.za) return;   /*ÂNCORA: a zona só é pintada com 'Ver zona' ligado*/ const y1 = fy(m.p1), y2 = fy(m.p2); if (![m.x1, m.x2, y1, y2].every(isFinite)) return; const xL = Math.min(m.x1, m.x2), xR = W - PAD.right; if (!(xR > xL)) return; const c = m.ccor || '#9AA3B2'; if (!gr.has(c)) gr.set(c, []); gr.get(c).push([xL, Math.min(y1, y2), xR - xL, Math.max(1, Math.abs(y2 - y1))]); });
+        const gr = new Map(); let ordRt = 0;
+        lista.forEach(m => { if (!m.rt || m.prev || m.za) return;   /*ÂNCORA: a zona só é pintada com 'Ver zona' ligado*/ const y1 = fy(m.p1), y2 = fy(m.p2); if (![m.x1, m.x2, y1, y2].every(isFinite)) return; const xL = Math.min(m.x1, m.x2), xR = W - PAD.right; if (!(xR > xL)) return; const c = m.ccor || '#9AA3B2'; if (!gr.has(c)) gr.set(c, []); gr.get(c).push([xL, Math.min(y1, y2), xR - xL, Math.max(1, Math.abs(y2 - y1)), ordRt++]); });
+        grRetsSemMistura(gr);   /*cores diferentes não se mesclam: no cruzamento fica só a cor do retângulo mais recente*/
         gr.forEach((rs, c) => { ctx.save(); ctx.beginPath(); ctx.rect(PAD.left, PAD.top, W - PAD.left - PAD.right, 4000); ctx.clip(); ctx.beginPath(); rs.forEach(r => ctx.rect(r[0], r[1], r[2], r[3])); ctx.globalAlpha = 0.2; ctx.fillStyle = c; ctx.fill('nonzero'); ctx.restore(); });
     }
     lista.forEach(m => {
