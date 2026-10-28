@@ -2411,6 +2411,7 @@ function cvRenderMenuFpCfg() {
             + lin('POC Range', cf.pocRange, 'pr') + lin('Footprint só na zona', cf.fpZona, 'fz') + grFpLegendaIlha()
             + lin('VWAP topo', cf.vwapTopo, 'vt') + lin('VWAP fundo', cf.vwapFundo, 'vf')
             + lin('Régua Delta ATR', !!_indState.deltaAtr, 'da') + lin('CVD', !!_indState.cvdPA && !_cvdOculto, 'cvd')
+            + '<div class="cv-med-item"><span class="cv-med-lbl">Relatório da zona</span><button onclick="grAncRelatorioAbrir()" style="border:none;background:#F2F2F7;border-radius:6px;padding:4px 8px;font-size:12px;font-weight:600;color:#1C1C1E;cursor:pointer;">Abrir</button></div>'
             + '<div class="cv-med-item"><span class="cv-med-lbl">Comprimento do VP</span><button onclick="grVpAjustarComprimento();cvRenderMenuFpCfg();" style="border:none;background:#F2F2F7;border-radius:6px;padding:4px 8px;font-size:12px;font-weight:600;color:#1C1C1E;cursor:pointer;">Ajustar</button></div>';
     } else if (_grFpCfgMenuQual === 'fluxo') {
         const R = grConfigRow, S = grConfigSec, ICO = ICO_FLUXO, SEC = (k, h) => '<div data-fx-sec="' + k + '">' + h + '</div>';
@@ -3907,7 +3908,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v1112';
+const APP_VERSAO = 'v1113';
 function grCorDesenho(c) {   // preto de desenho vira branco no modo escuro
     if (!c) c = '#000000';
     if (typeof _grTemaClaro !== 'undefined' && !_grTemaClaro && /^#(000000|000|111111|1c1c1e)$/i.test(c)) return '#FFFFFF';
@@ -16192,6 +16193,65 @@ function grVpTick(pxPorUsd) {
 }
 // Reagrupa o mapa de $10 em linhas de `tick` (mesma conta dos clusters: Math.round(preço / tick) * tick).
 // POC na GRADE FINA (níveis brutos do Fluxo, a mesma da Value Area): não muda com o zoom. As barras agrupam só no desenho.
+
+/* RELATÓRIO DA ÂNCORA: placar (delta/volume), onde o volume ficou (POC, VA, acima/abaixo), absorção e leitura (acumulação/distribuição) — tudo do mapa de níveis da zona ativa */
+function grAncRelatorioCalc() {
+    const z = grZonaAtiva(); if (!z) return { erro: 'Nenhuma âncora ativa.' };
+    const d = grVpObterMapa(); if (!d || !d.mapa || !d.mapa.size) return { erro: 'Sem dados de footprint na zona (ainda carregando?).' };
+    const L = []; d.mapa.forEach((v, p) => L.push({ p, c: v.c, v: v.v, t: v.c + v.v })); L.sort((a, b) => a.p - b.p);
+    const lo = L[0].p, hi = L[L.length - 1].p, mid = (lo + hi) / 2;
+    let C = 0, V = 0; L.forEach(l => { C += l.c; V += l.v; });
+    const T = C + V; if (!(T > 0)) return { erro: 'Zona sem volume.' };
+    let ip = 0; L.forEach((l, i) => { if (l.t > L[ip].t) ip = i; });
+    const poc = L[ip].p;
+    let ia = ip, ib = ip, acc = L[ip].t;   // Value Area 70%: de dois em dois níveis, do lado mais volumoso
+    while (acc < 0.7 * T && (ia > 0 || ib < L.length - 1)) {
+        const up = (ib + 1 < L.length ? L[ib + 1].t : 0) + (ib + 2 < L.length ? L[ib + 2].t : 0), dn = (ia - 1 >= 0 ? L[ia - 1].t : 0) + (ia - 2 >= 0 ? L[ia - 2].t : 0);
+        if (up >= dn && ib < L.length - 1) { ib++; acc += L[ib].t; if (ib + 1 < L.length && up > L[ib].t) { ib++; acc += L[ib].t; } }
+        else if (ia > 0) { ia--; acc += L[ia].t; if (ia - 1 >= 0 && dn > L[ia].t) { ia--; acc += L[ia].t; } }
+        else break;
+    }
+    const val = L[ia].p, vah = L[ib].p;
+    let vAc = 0, vAb = 0; L.forEach(l => { if (l.p > poc) vAc += l.t; else if (l.p < poc) vAb += l.t; });
+    const cs = (typeof _grAllCandles !== 'undefined' && _grAllCandles.length) ? _grAllCandles : null, px = cs ? cs[cs.length - 1].c : null;
+    const pos = px == null ? null : px > vah ? 'acima da VA' : px < val ? 'abaixo da VA' : 'dentro da VA';
+    const topo = arr => arr.reduce((m, l) => (!m || l.t > m.t ? l : m), null);
+    const baixo = topo(L.filter(l => l.p < mid)), alto = topo(L.filter(l => l.p >= mid));
+    const dB = baixo ? baixo.c - baixo.v : 0, dA = alto ? alto.c - alto.v : 0;
+    const absB = baixo ? (dB < 0 ? 'compra absorveu' : 'compra agrediu') : null, absA = alto ? (dA > 0 ? 'venda absorveu' : 'venda agrediu') : null;
+    const delta = C - V;
+    const s1 = delta > 0 ? 1 : delta < 0 ? -1 : 0, s2 = poc < mid ? 1 : poc > mid ? -1 : 0, s3 = (absB === 'compra absorveu' ? 1 : 0) + (absA === 'venda absorveu' ? -1 : 0);
+    const sc = s1 + s2 + s3;
+    const leitura = sc >= 3 ? 'Acumulação' : sc <= -3 ? 'Distribuição' : sc === 2 ? 'Indício de acumulação' : sc === -2 ? 'Indício de distribuição' : 'Sem predomínio';
+    return { z, L, lo, hi, mid, C, V, T, delta, poc, val, vah, pAc: vAc / (vAc + vAb || 1), pos, px, baixo, alto, dB, dA, absB, absA, s1, s2, s3, leitura };
+}
+function grAncRelatorioAbrir() {
+    const R = grAncRelatorioCalc(), old = document.getElementById('gr-anc-rel'); if (old) old.remove();
+    const ov = document.createElement('div'); ov.id = 'gr-anc-rel'; ov.style.cssText = 'position:fixed;inset:0;z-index:9800;background:rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;font-family:-apple-system,sans-serif;';
+    const fx = v => { const a = Math.abs(v); return (v < 0 ? '−' : '') + (a >= 100 ? Math.round(a).toLocaleString('pt-BR') : a.toFixed(1).replace('.', ',')); }, fp = v => Math.round(v).toLocaleString('pt-BR'), sg = v => (v > 0 ? '+' : '') + fx(v);
+    const VERDE = '#1B9E5A', VERM = '#D32F2F', P = '#000000';
+    let h;
+    if (R.erro) h = '<div style="font-size:13px;color:' + VERM + ';margin-top:10px;">' + R.erro + '</div>';
+    else {
+        const pc = R.C / R.T * 100, NB = 12, w = (R.hi - R.lo) / NB || 1, bins = new Array(NB).fill(0);
+        R.L.forEach(l => { bins[Math.min(NB - 1, Math.floor((l.p - R.lo) / w))] += l.t; });
+        const mxb = Math.max.apply(null, bins), bp = Math.min(NB - 1, Math.floor((R.poc - R.lo) / w));
+        let perf = ''; for (let i = NB - 1; i >= 0; i--) perf += '<div style="height:7px;margin:1px 0;width:' + Math.max(2, bins[i] / mxb * 100) + '%;background:' + (i === bp ? P : '#F28B3D') + ';"></div>';
+        const lin = (nivel, ab, dl, tag) => ab ? '<div style="display:flex;justify-content:space-between;gap:8px;"><span>' + fp(nivel) + ' · ' + tag + '</span><span style="color:' + (ab.indexOf('absorveu') > 0 ? (ab[0] === 'c' ? VERDE : VERM) : P) + ';font-weight:700;">' + ab + '</span><span>Δ ' + sg(dl) + '</span></div>' : '';
+        h = '<div style="font-size:13px;color:' + P + ';margin-top:10px;">' + (R.delta > 0 ? 'Compradores dominaram' : R.delta < 0 ? 'Vendedores dominaram' : 'Equilíbrio') + '</div>'
+          + '<div style="display:flex;height:16px;border-radius:4px;overflow:hidden;margin:4px 0;border:1px solid ' + P + ';"><div style="width:' + pc + '%;background:' + VERDE + ';"></div><div style="flex:1;background:' + VERM + ';"></div></div>'
+          + '<div style="display:flex;justify-content:space-between;font-size:12px;color:' + P + ';"><span>Δ ' + sg(R.delta) + '</span><span>Vol ' + fx(R.T) + ' · ' + Math.round(pc) + '% / ' + Math.round(100 - pc) + '%</span></div>'
+          + '<div style="border-top:1px solid ' + P + ';margin:12px 0;"></div><div style="font-size:13px;color:' + P + ';margin-bottom:6px;">Onde o volume ficou</div>'
+          + '<div style="display:flex;gap:12px;font-size:12px;color:' + P + ';"><div style="width:120px;flex-shrink:0;border-left:2px solid ' + P + ';">' + perf + '</div>'
+          + '<div style="line-height:1.7;">POC ' + fp(R.poc) + '<br>VA ' + fp(R.val) + ' – ' + fp(R.vah) + '<br>Acima do POC ' + Math.round(R.pAc * 100) + '% · abaixo ' + Math.round((1 - R.pAc) * 100) + '%' + (R.pos ? '<br>Preço agora: ' + R.pos : '') + '</div></div>'
+          + '<div style="border-top:1px solid ' + P + ';margin:12px 0;"></div><div style="font-size:13px;color:' + P + ';margin-bottom:6px;">Maior volume em cada metade da zona</div>'
+          + '<div style="font-size:12px;line-height:1.8;color:' + P + ';">' + lin(R.alto && R.alto.p, R.absA, R.dA, 'topo') + lin(R.baixo && R.baixo.p, R.absB, R.dB, 'fundo') + '</div>'
+          + '<div style="margin-top:10px;font-size:12.5px;border:1px solid ' + P + ';border-radius:6px;padding:6px 8px;color:' + P + ';"><b>' + R.leitura + '</b> · delta ' + sg(R.delta) + ', POC ' + (R.s2 > 0 ? 'embaixo' : R.s2 < 0 ? 'em cima' : 'no meio') + ', ' + (R.s3 > 0 ? 'compra absorvendo' : R.s3 < 0 ? 'venda absorvendo' : 'absorção neutra') + '</div>';
+    }
+    ov.innerHTML = '<div style="background:#fff;width:100%;max-width:380px;max-height:92vh;overflow:auto;border-radius:16px;padding:14px;box-shadow:0 8px 28px rgba(0,0,0,0.28);border:2px solid #000;"><div style="display:flex;justify-content:space-between;align-items:center;font-size:15px;font-weight:700;color:#000;"><span>Âncora · ' + (R.erro ? '' : (grZonaRotulo() || '').split(' · ')[0]) + '</span><button id="gr-anc-rel-x" type="button" style="border:none;background:none;font-size:18px;color:#000;cursor:pointer;">✕</button></div>' + h + '</div>';
+    document.body.appendChild(ov);
+    ov.onclick = e => { if (e.target === ov) ov.remove(); }; document.getElementById('gr-anc-rel-x').onclick = () => ov.remove();
+}
 function grVpPocFina(dados) { if (!dados || !dados.mapa) return null; if (dados._pocFina && dados._pocFina.n === dados.mapa.size) return dados._pocFina.p;
     let mx = 0, pp = null; dados.mapa.forEach((v, p) => { const t = v.c + v.v; if (t > mx) { mx = t; pp = p; } }); dados._pocFina = { n: dados.mapa.size, p: pp }; return pp; }
 function grVpAgrupar(dados, tick) {
