@@ -3915,7 +3915,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v1128';
+const APP_VERSAO = 'v1129';
 function grCorDesenho(c) {   // preto de desenho vira branco no modo escuro
     if (!c) c = '#000000';
     if (typeof _grTemaClaro !== 'undefined' && !_grTemaClaro && /^#(000000|000|111111|1c1c1e)$/i.test(c)) return '#FFFFFF';
@@ -4368,20 +4368,25 @@ function grSaudeNiveis(mins, tick, totais) {
     if (!mins.length) return null;
     mins.sort((a, b) => a.ts - b.ts);
     const S = new Map(); let prevK = null, pmAgora = null;
+    const ativas = new Set();   // níveis com um rompimento em curso (preço firme do outro lado): guarda o ponto mais fundo/alto atingido
+    const fechaB = (o, kk) => { if (o.faseB) { (o.rompB = o.rompB || []).push({ ts: o.faseB.ts, prof: Math.max(0, kk * tick - tick / 2 - o.faseB.ext), aberto: false }); o.faseB = null; } };   // suporte rompido: profundidade abaixo da borda de baixo
+    const fechaC = (o, kk) => { if (o.faseC) { (o.rompC = o.rompC || []).push({ ts: o.faseC.ts, prof: Math.max(0, o.faseC.ext - (kk * tick + tick / 2)), aberto: false }); o.faseC = null; } };   // resistência rompida: profundidade acima da borda de cima
     for (const m of mins) {
         const ns = m.niveis || []; if (!ns.length) continue;
         let sv = 0, sp = 0; for (const n of ns) { const v = n.c + n.v; sv += v; sp += v * n.p; }
         if (!(sv > 0)) continue;
         pmAgora = sp / sv;
+        let mnP = Infinity, mxP = -Infinity; for (const n of ns) { if (n.p < mnP) mnP = n.p; if (n.p > mxP) mxP = n.p; }   // menor e maior preço negociado no minuto
         const kc = Math.round(sp / sv / tick), a = (prevK == null ? kc : Math.min(prevK, kc)) - 1, b = (prevK == null ? kc : Math.max(prevK, kc)) + 1;
         for (let kk = a; kk <= b; kk++) {
             const o = S.get(kk); if (!o) continue;
             const sd = kc > kk + 1 ? 1 : kc < kk - 1 ? -1 : 0;
             if (sd !== 0) {
-                if (o.side !== 0 && o.side !== sd) { o.quebras++; o.tQ = m.ts; o.dirQ = sd; if (sd > 0) o.qCima++; else o.qBaixo++; }   // atravessou: firme do outro lado
+                if (o.side !== 0 && o.side !== sd) { o.quebras++; o.tQ = m.ts; o.dirQ = sd; if (sd > 0) o.qCima++; else o.qBaixo++; if (sd < 0) { fechaC(o, kk); o.faseB = { ts: m.ts, ext: mnP }; } else { fechaB(o, kk); o.faseC = { ts: m.ts, ext: mxP }; } ativas.add(kk); }   // atravessou: firme do outro lado (e abre a medida de profundidade)
                 o.side = sd;
             }
         }
+        ativas.forEach(kk => { const o = S.get(kk); if (!o) return; if (o.faseB && mnP < o.faseB.ext) o.faseB.ext = mnP; if (o.faseC && mxP > o.faseC.ext) o.faseC.ext = mxP; });
         for (const n of ns) {
             const k = Math.round(n.p / tick); let o = S.get(k);
             if (!o) { const sd0 = kc > k + 1 ? 1 : kc < k - 1 ? -1 : 0; o = { side: sd0, quebras: 0, qCima: 0, qBaixo: 0, dirQ: 0, tQ: 0, ct: 0, vt: 0 }; S.set(k, o); }
@@ -4390,6 +4395,9 @@ function grSaudeNiveis(mins, tick, totais) {
         { const oc = S.get(kc); if (oc) oc.tempo = (oc.tempo || 0) + 1; }   // tempo no nível: minutos em que o preço médio do minuto esteve na faixa
         prevK = kc;
     }
+    ativas.forEach(kk => { const o = S.get(kk); if (!o) return;   // rompimentos ainda em curso no fim da janela
+        if (o.faseB) { fechaB(o, kk); o.rompB[o.rompB.length - 1].aberto = true; }
+        if (o.faseC) { fechaC(o, kk); o.rompC[o.rompC.length - 1].aberto = true; } });
     const vl = [], qb = [];
     S.forEach((o, k) => {
         o.vol = o.ct + o.vt;
@@ -4632,12 +4640,14 @@ function grSaudeModal(k, tick, sd, cy, opc) {   // opc (lupa): { x, y, preco, z 
         + fluxo('baixa', 'Fluxo de baixa', (sd.presoC || 0) + (sd.defV || 0), -1, lin('Compradores presos', pn(sd.presoC)) + lin('Vendedores defendendo', pn(sd.defV)));   // nível do preço: os dois lados somados; tocar abre os atores
     const dlt = (sd.ct || 0) - (sd.vt || 0), deltaLin = lin('Delta', '<span style="color:' + (dlt > 0 ? '#16A34A' : dlt < 0 ? '#DC2626' : '#1C1C1E') + ';">' + (dlt > 0 ? '+' : dlt < 0 ? '−' : '') + fv(Math.abs(dlt)) + (sd.total > 0 ? ' (' + Math.round(Math.abs(dlt) / sd.total * 100) + '%)' : '') + '</span>');   // delta do nível = compra agressora − venda agressora na janela
     const pAg = pRefM, dsp = pAg ? preco - pAg : 0, distLin = pAg ? lin('Distância até a cotação', (dsp > 0 ? '+' : dsp < 0 ? '−' : '') + fmtP(Math.abs(dsp)) + ' (' + (dsp > 0 ? '+' : dsp < 0 ? '−' : '') + (Math.abs(dsp) / pAg * 100).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + '%)') : '';   // nível − cotação: negativo = abaixo do preço
+    const rompLst = (sd.lado > 0 ? sd.rompB : sd.rompC) || [], sgR = sd.lado > 0 ? '−' : '+';   // TESTE: profundidade de cada rompimento (a partir da borda do nível)
+    const rompLin = sd.lado ? lin('Rompimento mais fundo', rompLst.length ? sgR + fmtP(Math.max.apply(null, rompLst.map(r => r.prof))) : '—') + rompLst.slice(-8).reverse().map(r => lin(grDataBr(r.ts), sgR + fmtP(r.prof) + (r.aberto ? ' · em curso' : ''))).join('') : '';
     const d = document.createElement('div'); d.id = 'gr-saude-modal';
     d.style.cssText = 'position:fixed;z-index:' + (opc && opc.z ? opc.z : 9700) + ';background:#FFFFFF;border-radius:10px;box-shadow:0 4px 18px rgba(0,0,0,0.28);padding:9px 11px;font:12px -apple-system,sans-serif;min-width:270px;max-width:340px;white-space:nowrap;box-sizing:border-box;';
     d.innerHTML = '<div style="font-size:13px;font-weight:800;color:' + cor + ';">' + nome + ' · ' + fmtP(preco) + '</div>'
         + lin('Faixa de preço', fmtP(preco - tick / 2) + ' – ' + fmtP(preco + tick / 2)) + lin(opc ? 'Preço no fim' : 'Cotação atual', pRefM ? fmtP(pRefM) : '—') + distLin
         + lin('Volume total', fv(sd.total)) + deltaLin + (sd.lado < 0 ? lC + lin('Vendedores defendendo', pc(sd.defV, -1)) : sd.lado > 0 ? lV + lin('Compradores defendendo', pc(sd.defC, 1)) : acordeaoFluxo())
-        + (sd.lado ? lin('Tempo no nível', tempoTxt(sd.tempo || 0)) + lin(sd.lado > 0 ? 'Rompimentos Suporte' : 'Rompimentos Resistência', String(sd.rp)) + '<div style="margin-top:7px;font-weight:800;color:#1C1C1E;">Força</div>' + lin('Presos', sd.rkP + 'º de ' + sd.nL) + lin('Horas por rompimento', ((sd.rp > 0 ? ((sd.tempo || 0) / 60 / sd.rp).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' h' : 'sem rompimentos') + ' (' + sd.rkT + 'º de ' + sd.nL + ')'))
+        + (sd.lado ? lin('Tempo no nível', tempoTxt(sd.tempo || 0)) + lin(sd.lado > 0 ? 'Rompimentos Suporte' : 'Rompimentos Resistência', String(sd.rp)) + rompLin + '<div style="margin-top:7px;font-weight:800;color:#1C1C1E;">Força</div>' + lin('Presos', sd.rkP + 'º de ' + sd.nL) + lin('Horas por rompimento', ((sd.rp > 0 ? ((sd.tempo || 0) / 60 / sd.rp).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' h' : 'sem rompimentos') + ' (' + sd.rkT + 'º de ' + sd.nL + ')'))
             : lin('Rompimentos Suporte', String(sd.qBaixo)) + lin('Rompimentos Resistência', String(sd.qCima)))
         + (!sd.lado && sd.luC != null ? '<div style="margin-top:7px;font-weight:800;color:#1C1C1E;">Informativo</div>' + lin('Lucro latente compradores', milUsd(sd.luC, sd.luC + sd.luV) + seta(-1)) + lin('Lucro latente vendedores', milUsd(sd.luV, sd.luC + sd.luV) + seta(1)) : '');
     const copiar = (txt, bt, rot) => { const ok = () => { try { bt.textContent = 'Copiado'; setTimeout(() => { bt.textContent = rot; }, 1200); } catch (e) {} }; const fb = () => { try { const ta = document.createElement('textarea'); ta.value = txt; ta.style.cssText = 'position:fixed;opacity:0;'; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); ok(); } catch (e) {} }; try { navigator.clipboard.writeText(txt).then(ok, fb); } catch (e) { fb(); } };
