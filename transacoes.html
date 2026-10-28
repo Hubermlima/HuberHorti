@@ -2989,7 +2989,7 @@ const GR_BLOCO_RESERVA = 64;   // px reservados embaixo do gráfico para o bloco
 // devia invalidar nada aqui. Quem mantém isso correto é grFootprintAtualizarCachesLive, chamada a cada tick: ela escreve
 // DIRETO no candle que mudou (quase sempre só o último), sem re-varrer os milhares de candles carregados. Antes, qualquer
 // tick forçava refazer o mapa inteiro do zero — com centenas de dias carregados isso travava o app por quase 1s por tick.
-const _grDtMemo = new Map(), _grDeltaMemo = new Map(), _grPocsMemo = new Map();
+const _grDtMemo = new Map(), _grDeltaMemo = new Map(), _grPocsMemo = new Map(), _grCVMemo = new Map();
 // Varre os minutos de UM candle e soma compra/venda — a conta-base reaproveitada pelo cálculo cheio e pelo atualizador ao vivo.
 function grDtCalcularCandle(de, msPorCandle, raw) {
     const ate = de + msPorCandle;
@@ -3027,6 +3027,13 @@ function grDeltaCalcularCandle(de, msPorCandle, raw) {
         (raw[j].niveis || []).forEach(n => { compra += (n.c || 0); venda += (n.v || 0); });
     }
     return compra - venda;
+}
+function grCompraVendaCandle(de, ms, raw) {   // {c: compras, v: vendas} do candle, com memo (RVOL empilhado)
+    const mk = de + '_' + ms; let r = _grCVMemo.get(mk); if (r) return r;
+    if (_grCVMemo.size > 8000) _grCVMemo.clear();
+    let c = 0, v = 0; const ate = de + ms;
+    for (let j = grFootprintIdxMinuto(raw, de); j < raw.length && raw[j].ts < ate; j++) (raw[j].niveis || []).forEach(n => { c += (n.c || 0); v += (n.v || 0); });
+    r = { c, v }; _grCVMemo.set(mk, r); return r;
 }
 let _grDeltaPorCandleCache = { key: null, mapa: null, candlesRef: null, msPorCandle: null };
 function grObterDeltaPorCandle(candles) {
@@ -3908,7 +3915,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v1122';
+const APP_VERSAO = 'v1124';
 function grCorDesenho(c) {   // preto de desenho vira branco no modo escuro
     if (!c) c = '#000000';
     if (typeof _grTemaClaro !== 'undefined' && !_grTemaClaro && /^#(000000|000|111111|1c1c1e)$/i.test(c)) return '#FFFFFF';
@@ -13464,10 +13471,18 @@ var RV = (() => {
         const corA = (typeof grCorCandleOu === 'function') ? grCorCandleOu(true, '#26A69A') : '#26A69A', corB = (typeof grCorCandleOu === 'function') ? grCorCandleOu(false, '#EF5350') : '#EF5350';
         ctx.save(); ctx.beginPath(); ctx.rect(x0, yMin, x1 - x0, chartH); ctx.clip();
         let mxV = 0;
+        let msD = 0; try { if (_grFootprintAtivo && _grFootprintCandlesRaw && _grFootprintCandlesRaw.length) msD = grFootprintMsPorCandle(); } catch (eD) {}
         vis.forEach(q => {
             const k = all[q.i], h = Math.max(1, alt(r[q.i])); if (h > mxV) mxV = h;
-            ctx.fillStyle = k.c >= k.o ? corA : corB;
-            ctx.fillRect(q.x - bw / 2, yB - h, bw, h);
+            let cv = null; if (msD > 0) { try { cv = grCompraVendaCandle(k.t, msD, _grFootprintCandlesRaw); } catch (eD2) {} }
+            const xb = q.x - bw / 2;
+            if (cv && cv.c + cv.v > 0) {   /*BARRA EMPILHADA: embaixo as compras (verde), em cima as vendas (vermelho); altura total = RVOL; contorno amarelo = delta contra o preço do candle*/
+                const tot = cv.c + cv.v, hC = h * cv.c / tot, hV = h - hC, pC = Math.round(cv.c / tot * 100), dv = cv.c - cv.v;
+                ctx.fillStyle = '#16A34A'; ctx.fillRect(xb, yB - hC, bw, hC);
+                ctx.fillStyle = '#EF4444'; ctx.fillRect(xb, yB - h, bw, hV);
+                if (bw >= 20) { ctx.font = '700 9px -apple-system, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#FFFFFF'; if (hC >= 11) ctx.fillText(pC + '%', q.x, yB - hC / 2); if (hV >= 11) ctx.fillText((100 - pC) + '%', q.x, yB - h + hV / 2); ctx.textAlign = 'left'; }
+                if (dv !== 0 && ((k.c > k.o && dv < 0) || (k.c < k.o && dv > 0))) { ctx.lineWidth = 2.5; ctx.setLineDash([]); ctx.strokeStyle = '#FFC400'; ctx.strokeRect(xb - 1, yB - h - 1, bw + 2, h + 2); }
+            } else { ctx.fillStyle = k.c >= k.o ? corA : corB; ctx.fillRect(xb, yB - h, bw, h); }
         });
         ctx.setLineDash([3, 3]); ctx.lineWidth = 1; ctx.strokeStyle = claro ? 'rgba(60,60,70,.75)' : 'rgba(210,214,222,.75)';
         ctx.font = '600 9px -apple-system, sans-serif'; ctx.textBaseline = 'bottom'; ctx.textAlign = 'left';
@@ -15314,7 +15329,7 @@ function grFootprintAtualizarCachesLive(minTs, maxTs) {
             if (vDt) _grDtPorCandleCache.mapa.set(de, vDt); else _grDtPorCandleCache.mapa.delete(de);
         }
         const vDelta = grDeltaCalcularCandle(de, msPorCandle, raw);
-        _grDeltaMemo.set(mk, vDelta);
+        _grDeltaMemo.set(mk, vDelta); _grCVMemo.delete(mk);
         if (_grDeltaPorCandleCache.mapa && _grDeltaPorCandleCache.candlesRef === candles && _grDeltaPorCandleCache.msPorCandle === msPorCandle) {
             _grDeltaPorCandleCache.mapa.set(de, vDelta);
         }
@@ -15329,12 +15344,12 @@ function grFootprintInvalidarDerivados(minTs, maxTs) {
     _grDtPorCandleCache = { key: null, mapa: null };
     _grDeltaPorCandleCache = { key: null, mapa: null };
     _grPocsPorCandleCache = { key: null, mapa: null };
-    if (minTs == null) { _grDtMemo.clear(); _grDeltaMemo.clear(); _grPocsMemo.clear(); return; }
+    if (minTs == null) { _grDtMemo.clear(); _grDeltaMemo.clear(); _grPocsMemo.clear(); _grCVMemo.clear(); return; }
     const podar = memo => memo.forEach((v, k) => {
         const u = k.indexOf('_'), t = +k.slice(0, u), ms = +k.slice(u + 1);
         if (t <= maxTs && t + ms > minTs) memo.delete(k);
     });
-    podar(_grDtMemo); podar(_grDeltaMemo); podar(_grPocsMemo);
+    podar(_grDtMemo); podar(_grDeltaMemo); podar(_grPocsMemo); podar(_grCVMemo);
 }
 // Clusters (células) já montados que tocam os minutos [minTs, maxTs] — só esses são refeitos (antes: todos, a cada lote
 // de download e a cada 60 s). O cache só guarda o timeframe atual (é zerado ao trocar), então a duração do candle é a de agora.
