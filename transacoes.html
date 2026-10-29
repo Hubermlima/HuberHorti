@@ -3915,7 +3915,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v1141';
+const APP_VERSAO = 'v1144';
 function grCorDesenho(c) {   // preto de desenho vira branco no modo escuro
     if (!c) c = '#000000';
     if (typeof _grTemaClaro !== 'undefined' && !_grTemaClaro && /^#(000000|000|111111|1c1c1e)$/i.test(c)) return '#FFFFFF';
@@ -4367,11 +4367,10 @@ function grDaCorForca(sd) {   // matiz = lado (verde suporte / vermelho resistê
 function grSaudeNiveis(mins, tick, totais) {
     if (!mins.length) return null;
     mins.sort((a, b) => a.ts - b.ts);
-    const S = new Map(); let prevK = null, pmAgora = null, curBk = null, bOpMx = 0, bOpMn = 0;
-    // ROMPIMENTO = perfuração da borda da zona por candle do TF da régua (ver abaixo).
-    // candle do TF da régua em que cada minuto cai (alinha com os candles do gráfico quando o TF é o mesmo; senão, divisão exata do tempo)
+    const S = new Map(); let prevK = null, pmAgora = null;
+    // ROMPIMENTO (por candle do TF da régua): x = borda da faixa; a = fechamento do candle anterior; b = mínima (suporte) ou máxima (resistência) do candle atual. Suporte: a > x e b < x → +1 (máx. 1 por candle). Resistência: a < x e b > x → +1.
     let bms = 0; try { bms = cvTfMsRegua() || 0; } catch (eB) {}
-    let tsC = null; try { if (bms > 0 && typeof cvTfMsGrafico === 'function' && cvTfMsGrafico() === bms && _grAllCandles && _grAllCandles.length) tsC = _grAllCandles.map(c => c.t); } catch (eC) {}
+    let tsC = null; try { if (bms > 0 && typeof cvTfMsGrafico === 'function' && cvTfMsGrafico() === bms && _grAllCandles && _grAllCandles.length) tsC = _grAllCandles.map(c => c.t); } catch (eC) {}   // mesmo TF do gráfico: usa a abertura real dos candles
     const bkt = ts => { if (!(bms > 0)) return ts; if (tsC) { let lo = 0, hi = tsC.length - 1; if (ts < tsC[0]) return Math.floor(ts / bms) * bms; while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (tsC[mid] <= ts) lo = mid; else hi = mid - 1; } return tsC[lo]; } return Math.floor(ts / bms) * bms; };
     for (const m of mins) {
         const ns = m.niveis || []; if (!ns.length) continue;
@@ -4389,18 +4388,20 @@ function grSaudeNiveis(mins, tick, totais) {
             }
         }
         const b0 = bkt(m.ts);
-        if (b0 !== curBk) { curBk = b0; bOpMx = mxP; bOpMn = mnP; }   // abertura do candle da régua = 1º minuto dele (máxima e mínima negociadas), valendo também para níveis que só aparecem depois, no meio do candle
-        S.forEach((o, kk) => {   // rompimento = PERFURAÇÃO DA ZONA: o candle do TF da régua abriu do lado de dentro/de cima da faixa e a mínima (suporte) ou máxima (resistência) negociada passou da BORDA. Pavio que entra na faixa e volta = teste, não conta. 1 por candle; a mínima/máxima é a mais extrema do candle.
+        S.forEach((o, kk) => {
             const bI = kk * tick - tick / 2, bS = kk * tick + tick / 2;
-            if (o.bkR !== b0) { o.bkR = b0; o.abB = bOpMx >= bI; o.abC = bOpMn <= bS; o.curB = null; o.curC = null; }   // abriu na faixa ou do lado de cá dela (suporte: o 1º minuto do candle negociou na borda ou acima)
+            if (o.bkR !== b0) { o.bkR = b0; o.pcl = o.pa; o.curB = null; o.curC = null; }   // novo candle: a = último preço do candle anterior
             if (o.curB && mnP < o.curB.ext) o.curB.ext = mnP;
             if (o.curC && mxP > o.curC.ext) o.curC.ext = mxP;
-            if (o.abB && !o.curB && mnP < bI) { o.curB = { ts: m.ts, bk: b0, ext: mnP }; (o.rompB = o.rompB || []).push(o.curB); }
-            if (o.abC && !o.curC && mxP > bS) { o.curC = { ts: m.ts, bk: b0, ext: mxP }; (o.rompC = o.rompC || []).push(o.curC); }
+            if (o.pcl !== undefined) {
+                if (!o.curB && o.pcl > bI && mnP < bI) { o.curB = { ts: m.ts, ext: mnP }; (o.rompB = o.rompB || []).push(o.curB); }
+                if (!o.curC && o.pcl < bS && mxP > bS) { o.curC = { ts: m.ts, ext: mxP }; (o.rompC = o.rompC || []).push(o.curC); }
+            }
+            o.pa = pmAgora;
         });
         for (const n of ns) {
             const k = Math.round(n.p / tick); let o = S.get(k);
-            if (!o) { const sd0 = kc > k + 1 ? 1 : kc < k - 1 ? -1 : 0; o = { side: sd0, quebras: 0, qCima: 0, qBaixo: 0, dirQ: 0, tQ: 0, ct: 0, vt: 0 }; S.set(k, o); }
+            if (!o) { const sd0 = kc > k + 1 ? 1 : kc < k - 1 ? -1 : 0; o = { side: sd0, quebras: 0, qCima: 0, qBaixo: 0, dirQ: 0, tQ: 0, ct: 0, vt: 0, pa: pmAgora, bkR: b0 }; S.set(k, o); }   // nível que nasce no meio do candle: sem fechamento anterior conhecido, não conta neste candle
             if (!o.pp) o.pp = new Map(); const e0 = o.pp.get(n.p); if (e0) { e0[0] += n.c; e0[1] += n.v; } else o.pp.set(n.p, [n.c, n.v]); o.ct += n.c; o.vt += n.v;   // pp: volume por preço exato (para os presos)
         }
         { const oc = S.get(kc); if (oc) oc.tempo = (oc.tempo || 0) + 1; }   // tempo no nível: minutos em que o preço médio do minuto esteve na faixa
