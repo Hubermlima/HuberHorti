@@ -3915,7 +3915,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v1147';
+const APP_VERSAO = 'v1148';
 function grCorDesenho(c) {   // preto de desenho vira branco no modo escuro
     if (!c) c = '#000000';
     if (typeof _grTemaClaro !== 'undefined' && !_grTemaClaro && /^#(000000|000|111111|1c1c1e)$/i.test(c)) return '#FFFFFF';
@@ -4391,10 +4391,11 @@ function grSaudeNiveis(mins, tick, totais) {
                 if (pa < bS && pmAgora > bS) (o.rompC = o.rompC || []).push({ ts: m.ts, ext: mxP });
             }
             o.pa = pmAgora;
+            if (mxP > o.exMx) o.exMx = mxP; if (mnP < o.exMn) o.exMn = mnP;   // preço mais alto e mais baixo já negociados enquanto o nível existe (base da penetração)
         });
         for (const n of ns) {
             const k = Math.round(n.p / tick); let o = S.get(k);
-            if (!o) { const sd0 = kc > k + 1 ? 1 : kc < k - 1 ? -1 : 0; o = { side: sd0, quebras: 0, qCima: 0, qBaixo: 0, dirQ: 0, tQ: 0, ct: 0, vt: 0, pa: pmAgora }; S.set(k, o); }
+            if (!o) { const sd0 = kc > k + 1 ? 1 : kc < k - 1 ? -1 : 0; o = { side: sd0, quebras: 0, qCima: 0, qBaixo: 0, dirQ: 0, tQ: 0, ct: 0, vt: 0, pa: pmAgora, exMx: mxP, exMn: mnP }; S.set(k, o); }
             if (!o.pp) o.pp = new Map(); const e0 = o.pp.get(n.p); if (e0) { e0[0] += n.c; e0[1] += n.v; } else o.pp.set(n.p, [n.c, n.v]); o.ct += n.c; o.vt += n.v;   // pp: volume por preço exato (para os presos)
         }
         { const oc = S.get(kc); if (oc) oc.tempo = (oc.tempo || 0) + 1; }   // tempo no nível: minutos em que o preço médio do minuto esteve na faixa
@@ -4427,11 +4428,12 @@ function grSaudeNiveis(mins, tick, totais) {
     S.forEach((o, k) => { o.lado = kAg == null || k === kAg ? 0 : (k < kAg ? 1 : -1); o.forca = 0; o.zF = 0; if (o.lado) { o.pf = Math.log(1 + (o.lado > 0 ? o.presoV : o.presoC)); gr[o.lado].push(o.pf); } });
     // Força (níveis de cima e de baixo): z(presos) + z(horas no nível por rompimento do papel atual), cada z contra os níveis do MESMO lado; o total é padronizado de novo e vira 1–5 anéis
     const lst = { 1: [], '-1': [] };
-    S.forEach(o => { if (!o.lado) return; o.rp = (o.lado > 0 ? o.rompB : o.rompC) ? (o.lado > 0 ? o.rompB : o.rompC).length : 0; o.hr = ((o.tempo || 0) / 60) / (o.rp + 1); o.tp = Math.log(1 + o.hr); lst[o.lado].push(o); });   // rp = nº de travessias da borda (rompimentos) do papel atual
+    S.forEach((o, k) => { if (!o.lado) return; if (o.lado > 0) { o.penPx = o.exMn; o.pen = Math.max(0, (k * tick + tick / 2) - o.exMn) / tick; } else { o.penPx = o.exMx; o.pen = Math.max(0, o.exMx - (k * tick - tick / 2)) / tick; } o.pe = Math.log(1 + o.pen);   // penetração máxima: quanto o preço já entrou na faixa a partir da borda de entrada (suporte: pela de cima · resistência: pela de baixo), em alturas da faixa; >1 = perfurou
+        o.rp = (o.lado > 0 ? o.rompB : o.rompC) ? (o.lado > 0 ? o.rompB : o.rompC).length : 0; o.hr = ((o.tempo || 0) / 60) / (o.rp + 1); o.tp = Math.log(1 + o.hr); lst[o.lado].push(o); });   // rp = nº de travessias da borda (rompimentos) do papel atual
     [1, -1].forEach(ld => {
         const L = lst[ld], zz = (campo, o, R) => R && R.sg > 0 ? (o[campo] - R.m) / R.sg : 0;
-        const ok = L.length >= 3, RP = ok ? robusto(L.map(o => o.pf)) : null, RT = ok ? robusto(L.map(o => o.tp)) : null;
-        L.forEach(o => { o.zP = zz('pf', o, RP); o.zT = zz('tp', o, RT); o.zS = o.zP + o.zT; });
+        const ok = L.length >= 3, RP = ok ? robusto(L.map(o => o.pf)) : null, RT = ok ? robusto(L.map(o => o.tp)) : null, RE = ok ? robusto(L.map(o => o.pe)) : null;
+        L.forEach(o => { o.zP = zz('pf', o, RP); o.zT = zz('tp', o, RT); o.zE = -zz('pe', o, RE); o.zS = o.zP + o.zT + o.zE; });   // força = presos + horas por rompimento + (menor penetração = mais forte)
         { const rk = (campo, tag) => { const o2 = L.slice().sort((a, b) => b[campo] - a[campo]); o2.forEach((o, i) => { o[tag] = i + 1; o.nL = L.length; }); }; rk('zP', 'rkP'); rk('zT', 'rkT'); }   // posição entre os níveis do mesmo lado (1º = o mais forte nesse fator)
         const RS = ok ? robusto(L.map(o => o.zS)) : null;
         { let mn = Infinity, mx = -Infinity; L.forEach(o => { if (o.zS < mn) mn = o.zS; if (o.zS > mx) mx = o.zS; }); L.forEach(o => { o.nota = ok && mx > mn ? Math.round(100 * (o.zS - mn) / (mx - mn)) : 50; }); }   // nota 0–100: 100 = o nível mais forte do lado, 0 = o mais fraco, proporcional à soma dos fatores (presos + horas por rompimento)
@@ -4561,8 +4563,8 @@ function grPilhasLinhas() {
         const k = Math.round((f.lo + f.hi) / 2 / tick), sd = sm.get(k); if (!sd) return;
         const preco = k * tick, dlt = (sd.ct || 0) - (sd.vt || 0), dsp = pAg ? preco - pAg : 0;
         const hh = sd.lado && sd.rp > 0 ? ((sd.tempo || 0) / 60 / sd.rp).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' h' : '—';
-        out.push({ preco, lado: sd.lado, tick, ord: (sd.lado && sd.rp > 0 ? (sd.tempo || 0) / sd.rp : sd.lado ? Infinity : 0), ord2: sd.lado ? (sd.lado > 0 ? sd.presoV : sd.presoC) || 0 : 0,
-            cols: [sg(dlt) + fv(Math.abs(dlt)), fmtP(preco), sd.lado > 0 ? 'Sup' : sd.lado < 0 ? 'Res' : 'Preço', sd.lado ? String(sd.nota != null ? sd.nota : '—') : '—', pAg ? sg(dsp) + fmtP(Math.abs(dsp)) : '—', fv(sd.total), sd.lado ? Math.round((sd.lado > 0 ? sd.presoV : sd.presoC) / (sd.total || 1) * 100) + '%' : '—', hh, sd.lado ? String(sd.rp) : '—', sd.lado ? tempoTxt(sd.tempo || 0) : '—'] });
+        out.push({ preco, lado: sd.lado, tick, nota: sd.nota, pen: sd.pen || 0, penPx: sd.penPx, ord: (sd.lado && sd.rp > 0 ? (sd.tempo || 0) / sd.rp : sd.lado ? Infinity : 0), ord2: sd.lado ? (sd.lado > 0 ? sd.presoV : sd.presoC) || 0 : 0,
+            cols: [sg(dlt) + fv(Math.abs(dlt)), fmtP(preco), sd.lado > 0 ? 'Sup' : sd.lado < 0 ? 'Res' : 'Preço', sd.lado ? String(sd.nota != null ? sd.nota : '—') : '—', sd.lado ? Math.round((sd.pen || 0) * 100) + '%' : '—', pAg ? sg(dsp) + fmtP(Math.abs(dsp)) : '—', fv(sd.total), sd.lado ? Math.round((sd.lado > 0 ? sd.presoV : sd.presoC) / (sd.total || 1) * 100) + '%' : '—', hh, sd.lado ? String(sd.rp) : '—', sd.lado ? tempoTxt(sd.tempo || 0) : '—'] });
     });
     return out;
 }
@@ -4572,7 +4574,7 @@ async function grPilhasTabelaModal() {
     let pv = window._scPavio; if (!pv) { try { pv = await scPavioTf(SC_ORDEM[0]); if (pv) window._scPavio = pv; } catch (e) {} }   // pavio típico de 5 min (o mesmo do robô); sem ele, cai em 1 faixa
     const old = document.getElementById('gr-pilhas-tab'); if (old) old.remove();
     const rows0 = grPilhasLinhas(); if (!rows0.length) return;
-    const CAB = ['Delta', 'Nível', 'Tipo', 'Força', 'Dist.', 'Volume', 'Presos', 'Horas/romp.', 'Rompim.', 'Tempo'];
+    const CAB = ['Delta', 'Nível', 'Tipo', 'Força', 'Pen. máx', 'Dist.', 'Volume', 'Presos', 'Horas/romp.', 'Rompim.', 'Tempo'];
     const ov = document.createElement('div'); ov.id = 'gr-pilhas-tab'; ov.style.cssText = 'position:fixed;left:0;top:0;right:0;bottom:0;z-index:9800;background:rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;';
     const box = document.createElement('div'); box.style.cssText = 'background:#FFFFFF;border-radius:12px;box-shadow:0 4px 18px rgba(0,0,0,0.28);padding:10px 12px;font:12px -apple-system,sans-serif;max-width:94vw;max-height:80vh;overflow:auto;box-sizing:border-box;';
     ov.appendChild(box); ov.addEventListener('touchstart', e => { if (e.target === ov) { ov.remove(); } }); ov.addEventListener('mousedown', e => { if (e.target === ov) ov.remove(); });
@@ -4586,11 +4588,22 @@ async function grPilhasTabelaModal() {
         const fInf = pv && pv.inf > 0 ? 2 * pv.inf : (sup.length ? sup[0].tick : 0), fSup = pv && pv.sup > 0 ? 2 * pv.sup : (res.length ? res[0].tick : 0);   // folga = 2 pavios típicos de 5 min além da borda (regra M11 do robô)
         const minR = window._scMedMin > 0 ? 2 * window._scMedMin : 0;   // distância mínima: 2 candles típicos de 5 min entre a entrada (aqui, a cotação) e o stop (regra do robô)
         let nSup = sup.length ? Math.min.apply(null, sup.map(r => r.preco - r.tick / 2)) - fInf : null, nRes = res.length ? Math.max.apply(null, res.map(r => r.preco + r.tick / 2)) + fSup : null;
+        const abrigos = [];   // ABRIGO do stop: entre os níveis do lado (3 ou mais), os de força acima da mediana; o mais perto do preço. Stop = ponto mais fundo já alcançado nele + a folga
+        [[sup, 1], [res, -1]].forEach(([L, ld]) => {
+            if (L.length < 3) return;
+            const nt = L.map(r => r.nota || 0).sort((a, b) => a - b), md = nt.length % 2 ? nt[(nt.length - 1) / 2] : (nt[nt.length / 2 - 1] + nt[nt.length / 2]) / 2;
+            const bons = L.filter(r => (r.nota || 0) >= md); if (!bons.length) return;
+            const r = bons.reduce((a, b) => (ld > 0 ? b.preco > a.preco : b.preco < a.preco) ? b : a);   // o mais perto do preço
+            const stp = ld > 0 ? Math.min(r.penPx, r.preco + r.tick / 2) - fInf : Math.max(r.penPx, r.preco - r.tick / 2) + fSup;
+            if (ld > 0) nSup = stp; else nRes = stp;
+            abrigos.push('Abrigo ' + (ld > 0 ? 'suporte' : 'resistência') + ': ' + fP(r.preco) + ' · força ' + (r.nota || 0) + ' · pen. máx ' + Math.round(r.pen * 100) + '%');
+        });
         const pzE = grPilhasCaixaAlvo(), eC = pzE ? (pzE.tradeId && pzE.pm > 0 ? pzE.pm : pzE.entrada) : 0;   // entrada da caixa do slot; sem caixa (ou caixa do outro lado do stop, ex.: velha), a cotação
         if (minR > 0) {
             if (nSup != null) { const ref = eC > nSup ? eC : pAg; if (ref) nSup = Math.min(nSup, ref - minR); }
             if (nRes != null) { const ref = eC > 0 && eC < nRes ? eC : pAg; if (ref) nRes = Math.max(nRes, ref + minR); }
         }
+        abrigos.forEach(x => stops.push(x));
         if (nSup != null) stops.push((so1 ? 'Stop suporte: ' : 'Stop: ') + fP(nSup));
         if (nRes != null) stops.push((so1 ? 'Stop resistência: ' : 'Stop: ') + fP(nRes));
         const pzA = grPilhasCaixaAlvo();
@@ -4650,7 +4663,7 @@ function grSaudeModal(k, tick, sd, cy, opc) {   // opc (lupa): { x, y, preco, z 
     d.innerHTML = '<div style="font-size:13px;font-weight:800;color:' + cor + ';">' + nome + ' · ' + fmtP(preco) + '</div>'
         + lin('Faixa de preço', fmtP(preco - tick / 2) + ' – ' + fmtP(preco + tick / 2)) + lin(opc ? 'Preço no fim' : 'Cotação atual', pRefM ? fmtP(pRefM) : '—') + distLin
         + lin('Volume total', fv(sd.total)) + deltaLin + (sd.lado < 0 ? lC + lin('Vendedores defendendo', pc(sd.defV, -1)) : sd.lado > 0 ? lV + lin('Compradores defendendo', pc(sd.defC, 1)) : acordeaoFluxo())
-        + (sd.lado ? lin('Tempo no nível', tempoTxt(sd.tempo || 0)) + rompLin + '<div style="margin-top:7px;font-weight:800;color:#1C1C1E;">Força</div>' + lin('Presos', sd.rkP + 'º de ' + sd.nL) + lin('Horas por rompimento', ((sd.rp > 0 ? ((sd.tempo || 0) / 60 / sd.rp).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' h' : 'sem rompimentos') + ' (' + sd.rkT + 'º de ' + sd.nL + ')'))
+        + (sd.lado ? lin('Tempo no nível', tempoTxt(sd.tempo || 0)) + rompLin + '<div style="margin-top:7px;font-weight:800;color:#1C1C1E;">Força</div>' + lin('Presos', sd.rkP + 'º de ' + sd.nL) + lin('Penetração máxima', Math.round((sd.pen || 0) * 100) + '%') + lin('Horas por rompimento', ((sd.rp > 0 ? ((sd.tempo || 0) / 60 / sd.rp).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' h' : 'sem rompimentos') + ' (' + sd.rkT + 'º de ' + sd.nL + ')'))
             : lin('Rompimentos Suporte', String(sd.qBaixo)) + lin('Rompimentos Resistência', String(sd.qCima)))
         + (!sd.lado && sd.luC != null ? '<div style="margin-top:7px;font-weight:800;color:#1C1C1E;">Informativo</div>' + lin('Lucro latente compradores', milUsd(sd.luC, sd.luC + sd.luV) + seta(-1)) + lin('Lucro latente vendedores', milUsd(sd.luV, sd.luC + sd.luV) + seta(1)) : '');
     const copiar = (txt, bt, rot) => { const ok = () => { try { bt.textContent = 'Copiado'; setTimeout(() => { bt.textContent = rot; }, 1200); } catch (e) {} }; const fb = () => { try { const ta = document.createElement('textarea'); ta.value = txt; ta.style.cssText = 'position:fixed;opacity:0;'; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); ok(); } catch (e) {} }; try { navigator.clipboard.writeText(txt).then(ok, fb); } catch (e) { fb(); } };
