@@ -3915,7 +3915,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v1139';
+const APP_VERSAO = 'v1140';
 function grCorDesenho(c) {   // preto de desenho vira branco no modo escuro
     if (!c) c = '#000000';
     if (typeof _grTemaClaro !== 'undefined' && !_grTemaClaro && /^#(000000|000|111111|1c1c1e)$/i.test(c)) return '#FFFFFF';
@@ -4368,7 +4368,7 @@ function grSaudeNiveis(mins, tick, totais) {
     if (!mins.length) return null;
     mins.sort((a, b) => a.ts - b.ts);
     const S = new Map(); let prevK = null, pmAgora = null;
-    // ROMPIMENTO (teste, versão simples): contagem das vezes em que o preço médio do minuto cruza o preço do nível (suporte: de cima para baixo). A mínima/máxima de cada episódio é guardada.
+    // ROMPIMENTO = perfuração da borda da zona por candle do TF da régua (ver abaixo).
     // candle do TF da régua em que cada minuto cai (alinha com os candles do gráfico quando o TF é o mesmo; senão, divisão exata do tempo)
     let bms = 0; try { bms = cvTfMsRegua() || 0; } catch (eB) {}
     let tsC = null; try { if (bms > 0 && typeof cvTfMsGrafico === 'function' && cvTfMsGrafico() === bms && _grAllCandles && _grAllCandles.length) tsC = _grAllCandles.map(c => c.t); } catch (eC) {}
@@ -4389,14 +4389,13 @@ function grSaudeNiveis(mins, tick, totais) {
             }
         }
         const b0 = bkt(m.ts);
-        S.forEach((o, kk) => {   // rompimento = o preço médio do minuto cruza o PREÇO do nível (suporte: de cima para baixo; resistência: de baixo para cima). Conta no máximo 1 por candle do TF da régua; a mínima/máxima é a mais extrema do candle depois do 1º cruzamento.
-            const cen = kk * tick;
-            if (o.pB === undefined) { o.pB = pmAgora >= cen; o.pC = pmAgora <= cen; }
-            if (o.curB && o.curB.bk === b0 && mnP < o.curB.ext) o.curB.ext = mnP;
-            if (o.curC && o.curC.bk === b0 && mxP > o.curC.ext) o.curC.ext = mxP;
-            if (o.pB && pmAgora < cen && !(o.curB && o.curB.bk === b0)) { o.curB = { ts: m.ts, bk: b0, ext: mnP }; (o.rompB = o.rompB || []).push(o.curB); }
-            if (o.pC && pmAgora > cen && !(o.curC && o.curC.bk === b0)) { o.curC = { ts: m.ts, bk: b0, ext: mxP }; (o.rompC = o.rompC || []).push(o.curC); }
-            o.pB = pmAgora >= cen; o.pC = pmAgora <= cen;
+        S.forEach((o, kk) => {   // rompimento = PERFURAÇÃO DA ZONA: o candle do TF da régua abriu do lado de dentro/de cima da faixa e a mínima (suporte) ou máxima (resistência) negociada passou da BORDA. Pavio que entra na faixa e volta = teste, não conta. 1 por candle; a mínima/máxima é a mais extrema do candle.
+            const bI = kk * tick - tick / 2, bS = kk * tick + tick / 2;
+            if (o.bkR !== b0) { o.bkR = b0; o.abB = pmAgora >= bI; o.abC = pmAgora <= bS; o.curB = null; o.curC = null; }   // abertura do candle (1º minuto do candle com o nível já conhecido)
+            if (o.curB && mnP < o.curB.ext) o.curB.ext = mnP;
+            if (o.curC && mxP > o.curC.ext) o.curC.ext = mxP;
+            if (o.abB && !o.curB && mnP < bI) { o.curB = { ts: m.ts, bk: b0, ext: mnP }; (o.rompB = o.rompB || []).push(o.curB); }
+            if (o.abC && !o.curC && mxP > bS) { o.curC = { ts: m.ts, bk: b0, ext: mxP }; (o.rompC = o.rompC || []).push(o.curC); }
         });
         for (const n of ns) {
             const k = Math.round(n.p / tick); let o = S.get(k);
@@ -4649,7 +4648,7 @@ function grSaudeModal(k, tick, sd, cy, opc) {   // opc (lupa): { x, y, preco, z 
     const dlt = (sd.ct || 0) - (sd.vt || 0), deltaLin = lin('Delta', '<span style="color:' + (dlt > 0 ? '#16A34A' : dlt < 0 ? '#DC2626' : '#1C1C1E') + ';">' + (dlt > 0 ? '+' : dlt < 0 ? '−' : '') + fv(Math.abs(dlt)) + (sd.total > 0 ? ' (' + Math.round(Math.abs(dlt) / sd.total * 100) + '%)' : '') + '</span>');   // delta do nível = compra agressora − venda agressora na janela
     const pAg = pRefM, dsp = pAg ? preco - pAg : 0, distLin = pAg ? lin('Distância até a cotação', (dsp > 0 ? '+' : dsp < 0 ? '−' : '') + fmtP(Math.abs(dsp)) + ' (' + (dsp > 0 ? '+' : dsp < 0 ? '−' : '') + (Math.abs(dsp) / pAg * 100).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + '%)') : '';   // nível − cotação: negativo = abaixo do preço
     const rompLst = (sd.lado > 0 ? sd.rompB : sd.rompC) || [], nmR = sd.lado > 0 ? 'suporte' : 'resistência', extR = sd.lado > 0 ? 'mínima' : 'máxima', nR = rompLst.length;   // qualquer preço além da borda (violinada, falso rompimento ou rompimento)
-    const rompLin = sd.lado ? lin(nR + (nR === 1 ? ' rompimento ' : ' rompimentos ') + nmR + ' · candles ' + (function () { try { return cvTfSiglaRegua().replace(' auto', ''); } catch (e) { return ''; } })(), '') + lin((sd.lado > 0 ? 'Suporte' : 'Resistência') + ' do nível', fmtP(preco)) + rompLst.map((r, i) => [i, r]).slice(-12).map(([i, r]) => lin((i + 1) + 'º · ' + grDataBr(r.ts), extR + ' ' + fmtP(r.ext) + ' (' + (sd.lado > 0 ? '−' : '+') + fmtP(Math.abs(preco - r.ext)) + ')')).join('') + (nR > 12 ? lin('(mostrando os 12 últimos)', '') : '') + lin('Rompimentos firmes (regra antiga)', String(sd.rp)) : '';
+    const rompLin = sd.lado ? lin(nR + (nR === 1 ? ' rompimento ' : ' rompimentos ') + nmR + ' · candles ' + (function () { try { return cvTfSiglaRegua().replace(' auto', ''); } catch (e) { return ''; } })(), '') + lin((sd.lado > 0 ? 'Suporte' : 'Resistência') + ' do nível', fmtP(preco)) + rompLst.map((r, i) => [i, r]).slice(-12).map(([i, r]) => lin((i + 1) + 'º · ' + grDataBr(r.ts), extR + ' ' + fmtP(r.ext) + ' (' + (sd.lado > 0 ? '−' : '+') + fmtP(Math.abs(preco + (sd.lado > 0 ? -tick / 2 : tick / 2) - r.ext)) + ' da borda)')).join('') + (nR > 12 ? lin('(mostrando os 12 últimos)', '') : '') + lin('Rompimentos firmes (regra antiga)', String(sd.rp)) : '';
     const d = document.createElement('div'); d.id = 'gr-saude-modal';
     d.style.cssText = 'position:fixed;z-index:' + (opc && opc.z ? opc.z : 9700) + ';background:#FFFFFF;border-radius:10px;box-shadow:0 4px 18px rgba(0,0,0,0.28);padding:9px 11px;font:12px -apple-system,sans-serif;min-width:270px;max-width:340px;white-space:nowrap;box-sizing:border-box;';
     d.innerHTML = '<div style="font-size:13px;font-weight:800;color:' + cor + ';">' + nome + ' · ' + fmtP(preco) + '</div>'
