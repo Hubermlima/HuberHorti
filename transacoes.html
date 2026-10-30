@@ -3920,7 +3920,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v1188';
+const APP_VERSAO = 'v1191';
 function grCorDesenho(c) {   // preto de desenho vira branco no modo escuro
     if (!c) c = '#000000';
     if (typeof _grTemaClaro !== 'undefined' && !_grTemaClaro && /^#(000000|000|111111|1c1c1e)$/i.test(c)) return '#FFFFFF';
@@ -4371,6 +4371,11 @@ function grDaCorForca(sd) {   // matiz = lado (verde suporte / vermelho resistê
 //  · PRESOS (por preço exato dentro do nível): comprou acima do preço de agora = comprador preso; vendeu abaixo do preço de agora = vendedor preso.
 // Contagens valem para a janela inteira da régua. Coração: escala que EMERGE dos dados (z robusto = mediana e MAD entre todos os níveis da janela) para o volume (em log) e para os rompimentos:
 //  saudável = volume ≥ mediana (z ≥ 0) e rompimentos normais (z < 1); gasto = volume bem abaixo (z ≤ −1) ou rompimentos bem acima do normal (z ≥ 1); testado = o resto.
+// Ordem dos níveis do mesmo lado: nota; empate → mais testes (tentativas do papel); empate → mais presos do lado; empate → soma das posições
+function grDesempateNiveis(x, y) {
+    const pr = o => (o.lado < 0 ? o.presoC : o.presoV) || 0;
+    return ((y.nota != null ? y.nota : 0) - (x.nota != null ? x.nota : 0)) || ((y.nTeste || 0) - (x.nTeste || 0)) || (pr(y) - pr(x)) || ((y.zS || 0) - (x.zS || 0));
+}
 function grSaudeNiveis(mins, tick, totais) {
     if (!mins.length) return null;
     mins.sort((a, b) => a.ts - b.ts);
@@ -4774,29 +4779,55 @@ function grSaudeModal(k, tick, sd, cy, opc) {   // opc (lupa): { x, y, preco, z 
     const rastroCorpo = sd.lado && sd.trc ? rastroSvg()
         + '<div style="display:flex;justify-content:space-between;gap:10px;margin-top:6px;border-bottom:1px solid #000000;padding-bottom:2px;color:#1C1C1E;"><span style="flex:1.1;">Região</span><span style="flex:1.5;">Tempo</span><span style="flex:0 0 112px;text-align:right;">Volume</span></div>'
         + rgLin('Acima da zona', sd.tA || 0, sd.volA || 0, '#16A34A', sd.lado < 0 ? (sd.presoAcima || 0) : 0) + rgLin('Dentro da zona', sd.tD || 0, sd.vol || sd.total || 0, '#000000', 0) + rgLin('Abaixo da zona', sd.tB || 0, sd.volB || 0, '#DC2626', sd.lado > 0 ? (sd.presoAbaixo || 0) : 0) : '';
-    const listaNiveis = () => {   // todos os níveis com lado, por ordem de nota (do mais forte ao mais fraco): resistências e depois suportes
-        const td = sd.todos; if (!td) return '';
-        const nt = o => o.nota != null ? o.nota : 0, ord = arr => arr.slice().sort((x, y) => nt(y) - nt(x) || y.zS - x.zS);
-        const pcw = (v, t) => (t > 0 ? Math.round(100 * v / t) : 0) + '%';
-        const distCot = o => {   // distância da BORDA mais próxima da zona até a cotação, em % da cotação (+ zona acima do preço, − abaixo; 0 com o preço dentro da zona)
-            if (!(pRefM > 0)) return '—'; const bI = o.k * tick - tick / 2, bS = o.k * tick + tick / 2, dd = pRefM > bS ? bS - pRefM : pRefM < bI ? bI - pRefM : 0, pc2 = dd / pRefM * 100;
-            return (pc2 > 0 ? '+' : pc2 < 0 ? '−' : '') + Math.abs(pc2).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + '%'; };
-        const colBase = ['Nota', 'Nível', 'Dist. Cotação', 'Tempo acima', 'Tempo dentro', 'Tempo abaixo', 'Volume acima', 'Volume dentro', 'Volume abaixo'];
-        const grupo = (tit, arr, cr, fundo, resist) => {
-            if (!arr.length) return '';
-            const colunas = colBase.concat([resist ? 'Compradores presos acima' : 'Vendedores presos abaixo']);   // presos do lado oposto são iguais em todos os níveis do grupo: só vale o do lado do papel
-            const stk = (i, bg) => i === 0 ? 'position:sticky;left:0;background:' + bg + ';' : i === 1 ? 'position:sticky;left:38px;background:' + bg + ';' : '';
-            const th = colunas.map((c, i) => '<td style="' + stk(i, '#FFFFFF') + 'padding:3px 12px 3px 0;border-bottom:1px solid #000000;white-space:nowrap;vertical-align:bottom;">' + c + '</td>').join('');
-            const linhas = ord(arr).map(o => {
-                const tt = (o.tA || 0) + (o.tD || 0) + (o.tB || 0), vt = (o.volA || 0) + (o.vol || 0) + (o.volB || 0), bg = o === sd ? fundo : '#FFFFFF';
-                const cel = [String(nt(o)), fmtP(o.k * tick), distCot(o), dias(o.tA || 0) + ' · ' + pcw(o.tA || 0, tt), dias(o.tD || 0) + ' · ' + pcw(o.tD || 0, tt), dias(o.tB || 0) + ' · ' + pcw(o.tB || 0, tt),
-                    fv(o.volA || 0) + ' · ' + pcw(o.volA || 0, vt), fv(o.vol || 0) + ' · ' + pcw(o.vol || 0, vt), fv(o.volB || 0) + ' · ' + pcw(o.volB || 0, vt),
-                    (resist ? (o.presoAcima > 0 ? fv(o.presoAcima) + ' · ' + pcw(o.presoAcima, o.volA) : '—') : (o.presoAbaixo > 0 ? fv(o.presoAbaixo) + ' · ' + pcw(o.presoAbaixo, o.volB) : '—'))];
-                return '<tr data-lv="' + o.k + '" data-r="' + (resist ? 1 : 0) + '" style="cursor:pointer;">' + cel.map((c, i) => '<td style="' + stk(i, bg) + 'padding:3px 12px 3px 0;white-space:nowrap;' + (i === 0 ? 'color:' + cr + ';' : '') + (i > 1 && bg !== '#FFFFFF' ? 'background:' + bg + ';' : '') + '">' + c + '</td>').join('') + '</tr>';
-            }).join('');
-            return '<tr><td colspan="10" style="position:sticky;left:0;padding-top:12px;color:' + cr + ';">' + tit + ' (' + arr.length + ')</td></tr><tr>' + th + '</tr>' + linhas;
-        };
-        return '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;"><table style="border-collapse:collapse;font:inherit;">' + grupo('Resistências', td.res, '#DC2626', '#FDE4E2', true) + grupo('Suportes', td.sup, '#16A34A', '#E0F4E6', false) + '</table></div>';
+    // ===== ABA NÍVEIS: tabela do timeframe da régua (o seletor e a régua andam juntos) + árvore pai/filhas das zonas marcadas em outros timeframes =====
+    let Tr = tick, ND = sd.todos, soMarc = true;
+    const pcw = (v, t) => (t > 0 ? Math.round(100 * v / t) : 0) + '%';
+    const etqAtual = () => { try { return String(cvTfSiglaRegua()).replace(' auto', '').toUpperCase(); } catch (e) { return ''; } };
+    const dadosTick = T => {
+        if (Math.abs(T - tick) <= 1e-9 * Math.max(1, T)) return sd.todos;
+        try { const R = grDeltaPorFaixaATR(T); let r = null; if (R && R.saude) R.saude.forEach(o => { if (!r && o.todos) r = o.todos; }); return r; } catch (e) { return null; }
+    };
+    const nivelDe = (T, k) => { const dd = dadosTick(T); return dd ? [].concat(dd.res || [], dd.sup || []).find(o => o.k === k) || null : null; };
+    const distBanda = (lo, hi) => {   // distância da BORDA mais próxima da zona até a cotação, em % da cotação (+ zona acima do preço, − abaixo; 0 com o preço dentro)
+        if (!(pRefM > 0)) return '—'; const dd = pRefM > hi ? hi - pRefM : pRefM < lo ? lo - pRefM : 0, pc2 = dd / pRefM * 100;
+        return (pc2 > 0 ? '+' : pc2 < 0 ? '−' : '') + Math.abs(pc2).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + '%'; };
+    const ordN = arr => arr.slice().sort((x, y) => grDesempateNiveis(x.o || {}, y.o || {}));
+    const lin2 = (no, filho) => {   // no = { o, T, lo, hi, etq }
+        const o = no.o, tt = o ? (o.tA || 0) + (o.tD || 0) + (o.tB || 0) : 0, vt = o ? (o.volA || 0) + (o.vol || 0) + (o.volB || 0) : 0, res = o ? o.lado < 0 : null;
+        const nome = (filho ? '↳ ' : '') + fmtP((no.lo + no.hi) / 2) + (no.etq ? ' · ' + no.etq : '');
+        const pr = !o ? '—' : (res ? (o.presoAcima > 0 ? fv(o.presoAcima) + ' · ' + pcw(o.presoAcima, o.volA) : '—') : (o.presoAbaixo > 0 ? fv(o.presoAbaixo) + ' · ' + pcw(o.presoAbaixo, o.volB) : '—'));
+        const cel = [o ? String(o.nota != null ? o.nota : 0) : '—', nome, distBanda(no.lo, no.hi)].concat(o ? [dias(o.tA || 0) + ' · ' + pcw(o.tA || 0, tt), dias(o.tD || 0) + ' · ' + pcw(o.tD || 0, tt), dias(o.tB || 0) + ' · ' + pcw(o.tB || 0, tt), fv(o.volA || 0) + ' · ' + pcw(o.volA || 0, vt), fv(o.vol || 0) + ' · ' + pcw(o.vol || 0, vt), fv(o.volB || 0) + ' · ' + pcw(o.volB || 0, vt), pr] : ['—', '—', '—', '—', '—', '—', '—']);
+        const corN = o ? (res ? '#DC2626' : '#16A34A') : '#1C1C1E', cF = o ? grDaCorForca(o).cor : '';
+        return '<tr data-lo="' + no.lo + '" data-hi="' + no.hi + '" data-s="' + (res === false ? 1 : -1) + '" data-cf="' + String(cF).replace(/"/g, '') + '" style="cursor:pointer;">' + cel.map((c, i) => '<td style="' + (i === 0 ? 'position:sticky;left:0;background:#FFFFFF;' : i === 1 ? 'position:sticky;left:38px;background:#FFFFFF;' : '') + 'padding:3px 12px 3px 0;white-space:nowrap;' + (i === 0 ? 'color:' + corN + ';' : '') + '">' + c + '</td>').join('') + '</tr>';
+    };
+    const colBase = ['Nota', 'Nível', 'Dist. Cotação', 'Tempo acima', 'Tempo dentro', 'Tempo abaixo', 'Volume acima', 'Volume dentro', 'Volume abaixo'];
+    const cabTab = ult => '<tr>' + colBase.concat([ult]).map((c, i) => '<td style="' + (i === 0 ? 'position:sticky;left:0;background:#FFFFFF;' : i === 1 ? 'position:sticky;left:38px;background:#FFFFFF;' : '') + 'padding:3px 12px 3px 0;border-bottom:1px solid #000000;white-space:nowrap;vertical-align:bottom;">' + c + '</td>').join('') + '</tr>';
+    const tit = (t, cr) => '<tr><td colspan="10" style="position:sticky;left:0;padding-top:12px;color:' + cr + ';">' + t + '</td></tr>';
+    const arvoreNiveis = () => {   // zonas marcadas em OUTROS timeframes: a maior é pai (e os níveis daqui dentro dela são filhas); a menor é filha do nível daqui que a contém
+        const T = Tr, ml = grFaixasDA().filter(z => Math.abs((z.hi - z.lo) - T) > T * 0.02); if (!ml.length) return null;
+        const all = [].concat(ND.res || [], ND.sup || []), nodes = [], ea = etqAtual();
+        ml.forEach(z => {
+            const w = z.hi - z.lo, zc = (z.lo + z.hi) / 2, kz = Math.round(zc / w), etq = String(z.tf || '').toUpperCase();
+            if (w > T) { const no = { o: nivelDe(w, kz), lo: z.lo, hi: z.hi, etq, filhos: [] }; all.forEach(o => { if (Math.abs(o.k * T - zc) <= w / 2) no.filhos.push({ o, lo: o.k * T - T / 2, hi: o.k * T + T / 2, etq: ea }); }); nodes.push(no); }
+            else { const pai = all.find(o => zc >= o.k * T - T / 2 && zc < o.k * T + T / 2), fl = { o: nivelDe(w, kz), lo: z.lo, hi: z.hi, etq };
+                let no = pai ? nodes.find(n => n.o === pai) : null; if (!no && pai) { no = { o: pai, lo: pai.k * T - T / 2, hi: pai.k * T + T / 2, etq: ea, filhos: [] }; nodes.push(no); }
+                if (no) no.filhos.push(fl); else nodes.push({ o: fl.o, lo: fl.lo, hi: fl.hi, etq: fl.etq, filhos: [] }); }
+        });
+        return ordN(nodes).map(n => lin2(n, false) + ordN(n.filhos).map(f => lin2(f, true)).join('')).join('');
+    };
+    const listaNiveis = () => {
+        const td = ND; if (!td) return '<div style="margin-top:10px;">Sem níveis neste timeframe</div>';
+        const arv = soMarc ? arvoreNiveis() : null;
+        if (arv) return '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;"><table style="border-collapse:collapse;font:inherit;">' + tit('Marcados', '#1C1C1E') + cabTab('Presos') + arv + '</table></div>';
+        const grupo = (t, arr, cr, resist) => arr.length ? tit(t + ' (' + arr.length + ')', cr) + cabTab(resist ? 'Compradores presos acima' : 'Vendedores presos abaixo') + arr.slice().sort(grDesempateNiveis).map(o => lin2({ o, lo: o.k * Tr - Tr / 2, hi: o.k * Tr + Tr / 2, etq: '' }, false)).join('') : '';
+        return '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;"><table style="border-collapse:collapse;font:inherit;">' + grupo('Resistências', td.res || [], '#DC2626', true) + grupo('Suportes', td.sup || [], '#16A34A', false) + '</table></div>';
+    };
+    const cabNiveis = () => {
+        let ops = []; try { ops = grDaOpcoesTf().filter(o => o[0] !== 'novo'); } catch (e) {}
+        const atual = (() => { try { return _grDaAuto ? 'auto' : ((_grDaTf === 'custom' && _grDaTfCustom) ? (grDaEh3d() ? '3d' : 'custom') : (_grDaTf || '')); } catch (e) { return ''; } })();
+        const sel = opc ? '' : '<select data-tf="1" style="font:12px -apple-system,sans-serif;color:#000000;background:#FFFFFF;border:1px solid #000000;border-radius:6px;padding:3px 6px;max-width:190px;">' + ops.map(o => '<option value="' + o[0] + '"' + (o[0] === atual ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>';
+        const tem = grFaixasDA().some(z => Math.abs((z.hi - z.lo) - Tr) > Tr * 0.02);
+        return '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px;"><span>Timeframe</span>' + sel + '</div>' + (tem ? '<div data-fil="1" style="margin-top:6px;cursor:pointer;color:#1C1C1E;text-decoration:underline;">' + (soMarc ? 'Mostrar todos os níveis' : 'Mostrar só os marcados') + '</div>' : '');
     };
     const ultTot = totLst.length ? totLst[totLst.length - 1].ts : 0;
     const histNovo = sd.lado ? ''
@@ -4805,23 +4836,33 @@ function grSaudeModal(k, tick, sd, cy, opc) {   // opc (lupa): { x, y, preco, z 
     d.style.cssText = 'position:fixed;z-index:' + (opc && opc.z ? opc.z : 9700) + ';background:#FFFFFF;border-radius:10px;box-shadow:0 4px 18px rgba(0,0,0,0.28);padding:9px 11px;font:12px -apple-system,sans-serif;min-width:min(340px,94vw);max-width:min(420px,94vw);max-height:80vh;overflow-y:auto;-webkit-overflow-scrolling:touch;white-space:nowrap;box-sizing:border-box;';
     if (sd.lado && sd.todos) d.style.width = 'min(420px,94vw)';   // largura fixa: a aba Níveis rola na horizontal por dentro, sem alargar o modal
     d.innerHTML = '<div style="position:sticky;top:-9px;z-index:2;background:#FFFFFF;margin:-9px -11px 0;padding:9px 11px 4px;display:flex;justify-content:space-between;align-items:center;gap:10px;"><div style="font-size:13px;font-weight:800;color:' + cor + ';">' + (sd.lado ? (sd.lado > 0 ? 'Suporte' : 'Resistência') : nome) + ' · ' + fmtP(preco) + '</div><div data-x="1" style="width:26px;height:26px;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1C1C1E" stroke-width="2.4" stroke-linecap="round"><path d="M5 5l14 14M19 5L5 19"/></svg></div></div>'
-        + (sd.lado && sd.todos ? '<div style="display:flex;gap:20px;margin-top:6px;border-bottom:1px solid #000000;"><div data-tb="zona" style="padding:4px 0;cursor:pointer;border-bottom:2px solid #000000;margin-bottom:-1px;">Zona</div><div data-tb="niveis" style="padding:4px 0;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;">Níveis</div></div>' : '') + '<div data-tab="zona">'
+        + (sd.lado && sd.todos ? '<div style="display:flex;gap:20px;margin-top:6px;border-bottom:1px solid #000000;"><div data-tb="niveis" style="padding:4px 0;cursor:pointer;border-bottom:2px solid #000000;margin-bottom:-1px;">Níveis</div><div data-tb="zona" style="padding:4px 0;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;">Zona</div></div>' : '') + (sd.lado && sd.todos ? '<div data-tab="niveis" style="display:block;">' + cabNiveis() + listaNiveis() + '</div>' : '') + '<div data-tab="zona"' + (sd.lado && sd.todos ? ' style="display:none;"' : '') + '>'
         + (sd.lado ? '<div style="margin-top:2px;color:#1C1C1E;">Nota ' + (sd.nota != null ? sd.nota : '') + ' &nbsp;·&nbsp; faixa ' + fmtP(preco - tick / 2) + ' – ' + fmtP(preco + tick / 2) + '</div><div style="margin-top:4px;color:' + cor + ';">' + veredito + '</div><div style="border-top:1px solid #000000;margin-top:6px;"></div>'
             + secao('agora', 'Agora', agoraCorpo, true) + secao('porque', 'Por que nota ' + (sd.nota != null ? sd.nota : ''), porqueCorpo, true) + (rastroCorpo ? secao('rastro', 'Rastreio do preço na zona', rastroCorpo, true) : '') + secao('hist', 'Histórico da zona', histNovo, true)
-            : secao('nivel', 'Nível', nivelCorpo, true)) + '</div>' + (sd.lado && sd.todos ? '<div data-tab="niveis" style="display:none;">' + listaNiveis() + '</div>' : '')
+            : secao('nivel', 'Nível', nivelCorpo, true)) + '</div>' 
         + (!sd.lado && sd.luC != null ? secao('info', 'Informativo', lin('Lucro latente compradores', milUsd(sd.luC, sd.luC + sd.luV) + seta(-1)) + lin('Lucro latente vendedores', milUsd(sd.luV, sd.luC + sd.luV) + seta(1)), true) : '');
-    if (sd.lado && sd.todos) {   // tocar numa linha da aba Níveis marca a zona do nível na régua ATR (mesmo retângulo do toque na régua): a linha e a zona levam a mesma cor, que dá para trocar no quadradinho
-        const zDe = tr => { const k = +tr.dataset.lv, lo = k * tick - tick / 2, hi = k * tick + tick / 2, tl = Math.max((hi - lo) * 0.02, 1e-9); return { lo, hi, m: _medidas.find(q => q.rt && q.atr && Math.abs(Math.min(q.p1, q.p2) - lo) <= tl && Math.abs(Math.max(q.p1, q.p2) - hi) <= tl) }; };
+    if (sd.lado && sd.todos) {   // tocar numa linha da aba Níveis marca a zona (retângulo da régua ATR): a linha e a zona levam a mesma cor, que dá para trocar no quadradinho
+        const zDe = tr => { const lo = +tr.dataset.lo, hi = +tr.dataset.hi, tl = Math.max((hi - lo) * 0.02, 1e-9); return { lo, hi, m: _medidas.find(q => q.rt && q.atr && Math.abs(Math.min(q.p1, q.p2) - lo) <= tl && Math.abs(Math.max(q.p1, q.p2) - hi) <= tl) }; };
         const tom = c => { const m2 = /^#([0-9a-f]{6})$/i.exec(c || ''), m3 = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(c || ''); return m2 ? 'rgba(' + parseInt(m2[1].slice(0, 2), 16) + ',' + parseInt(m2[1].slice(2, 4), 16) + ',' + parseInt(m2[1].slice(4), 16) + ',0.4)' : m3 ? 'rgba(' + m3[1] + ',' + m3[2] + ',' + m3[3] + ',0.4)' : (c || ''); };
-        const pintar = () => d.querySelectorAll('tr[data-lv]').forEach(tr => {
+        const pintar = () => d.querySelectorAll('[data-tab="niveis"] tr[data-lo]').forEach(tr => {
             const z = zDe(tr), tds = tr.querySelectorAll('td'), sw = tr.querySelector('[data-sw]'); if (sw) sw.remove();
             tds.forEach(td => { if (td.dataset.b0 === undefined) td.dataset.b0 = td.style.background; td.style.background = z.m ? tom(z.m.cor) : td.dataset.b0; });
             if (z.m) { const q = document.createElement('span'); q.setAttribute('data-sw', '1'); q.style.cssText = 'display:inline-block;width:11px;height:11px;border-radius:3px;margin-left:6px;vertical-align:-1px;border:1px solid #000000;background:' + (z.m.cor || '#EF5350') + ';'; tds[1].appendChild(q);
                 q.onclick = ev => { ev.stopPropagation(); const r = q.getBoundingClientRect(); cvAbrirPaletaCor(r.left, r.bottom + 6, z.m.cor, async c => { z.m.cor = c; try { cvSalvarMedidas(); } catch (e) {} grDrawChart(); pintar(); }); }; }
         });
-        d.querySelectorAll('tr[data-lv]').forEach(tr => { tr.onclick = () => { const z = zDe(tr), res = tr.dataset.r === '1', o = [].concat(sd.todos.res || [], sd.todos.sup || []).find(q => q.k === +tr.dataset.lv), cF = o ? grDaCorForca(o).cor : null;   // cor de partida = a do degradê de força (0–100) do nível na régua
-                grFaixaDAAlternar(z.lo, z.hi, res ? -1 : 1, cF, () => { const z2 = zDe(tr); if (z2.m && cF && !z2.m._corForca) { z2.m.cor = cF; z2.m._corForca = 1; try { cvSalvarMedidas(); } catch (e) {} grDrawChart(); } pintar(); }); }; });
-        pintar();
+        const ligarNiveis = () => {
+            d.querySelectorAll('[data-tab="niveis"] tr[data-lo]').forEach(tr => { tr.onclick = () => { const z = zDe(tr), cF = tr.dataset.cf || null, sg = +tr.dataset.s || -1;   // cor de partida = a do degradê de força (0–100) do nível na régua
+                grFaixaDAAlternar(z.lo, z.hi, sg, cF, () => { const z2 = zDe(tr); if (z2.m && cF && !z2.m._corForca) { z2.m.cor = cF; z2.m._corForca = 1; try { cvSalvarMedidas(); } catch (e) {} grDrawChart(); } pintar(); }); }; });
+            const se = d.querySelector('[data-tf]'); if (se) se.onchange = () => { try { grDaDefinirTf(se.value); } catch (e) {} };
+            const fl = d.querySelector('[data-fil]'); if (fl) fl.onclick = () => { soMarc = !soMarc; renderN(); };
+            pintar();
+        };
+        const renderN = () => { const el = d.querySelector('[data-tab="niveis"]'); if (el) { el.innerHTML = cabNiveis() + listaNiveis(); ligarNiveis(); } };
+        ligarNiveis();
+        if (!opc) { const iv = setInterval(() => {   // a tabela acompanha a régua: mudou o tamanho do nível (timeframe da régua) → refaz
+            if (!document.body.contains(d)) { clearInterval(iv); return; }
+            const T = window._grTickDAUlt; if (T > 0 && Math.abs(T - Tr) > 1e-9 * T) { const dd = dadosTick(T); if (dd) { Tr = T; ND = dd; renderN(); } }
+        }, 600); }
     }
     const copiar = (txt, bt, rot) => { const ok = () => { try { bt.textContent = 'Copiado'; setTimeout(() => { bt.textContent = rot; }, 1200); } catch (e) {} }; const fb = () => { try { const ta = document.createElement('textarea'); ta.value = txt; ta.style.cssText = 'position:fixed;opacity:0;'; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); ok(); } catch (e) {} }; try { navigator.clipboard.writeText(txt).then(ok, fb); } catch (e) { fb(); } };
     const estBt = 'flex:1;margin-top:9px;padding:6px 0;text-align:center;font-weight:800;color:#1C1C1E;background:#F2F2F7;border-radius:7px;cursor:pointer;';
@@ -4836,9 +4877,9 @@ function grSaudeModal(k, tick, sd, cy, opc) {   // opc (lupa): { x, y, preco, z 
             const ls = []; d.querySelectorAll('div').forEach(e => { const tbx = e.closest('[data-tab]'); if (tbx && tbx.style.display === 'none') return; if (e.parentNode === rodape || e === rodape || e.querySelector('div')) return; if (e.hasAttribute('data-acc')) { ls.push(e.children[0].textContent.trim()); return; } const sp = e.children.length >= 2 && e.children[0].tagName === 'SPAN' ? e.children : null; ls.push(sp ? sp[0].textContent.trim() + ': ' + sp[1].textContent.trim() : e.textContent.trim()); });
             copiar(ls.filter(Boolean).join('\n'), g('c'), 'Copiar'); };
         const bc = g('csv'); if (bc) bc.onclick = () => {   // CSV de todos os níveis (uma linha por nível) com os valores brutos, para análise
-            const r3 = v => v == null || isNaN(v) ? '' : String(Math.round(v * 1000) / 1000), td = sd.todos, cab = ['lado', 'nivel', 'faixa_inf', 'faixa_sup', 'atual', 'nota', 'rk_presos', 'rk_carater', 'n_niveis_lado', 'pos_presos', 'pos_carater', 'pos_soma', 'carater_tempo_pct', 'acertos', 'falhas', 'taxa_acerto', 'taxa_suavizada', 'min_como_suporte', 'min_como_resistencia', 'min_acima', 'min_dentro', 'min_abaixo', 'vol_acima', 'vol_dentro', 'vol_abaixo', 'compradores_agressores_dentro', 'vendedores_agressores_dentro', 'compradores_defendendo_dentro', 'vendedores_defendendo_dentro', 'presos_lado', 'tentativas_suporte', 'tentativas_resistencia', 'rompimentos_totais'];
-            const lin = (ld, o) => [ld, r3(o.k * tick), r3(o.k * tick - tick / 2), r3(o.k * tick + tick / 2), o === sd ? 1 : 0, o.nota, o.rkP, o.rkR, o.nL, r3(o.zP), r3(o.zR), r3(o.zS), r3(o.carT), o.hit || 0, o.fail || 0, r3(o.taxa), r3(o.taxaS), o.cS || 0, o.cR || 0, o.tA || 0, o.tD || 0, o.tB || 0, r3(o.volA), r3(o.vol), r3(o.volB), r3(o.ct), r3(o.vt), r3(o.defC), r3(o.defV), r3(ld === 'resistencia' ? o.presoAcima : o.presoAbaixo), o.nB || 0, o.nC || 0, o.qT || 0].join(',');
-            const ls = [cab.join(',')]; (td.res || []).slice().sort((x, y) => (y.nota || 0) - (x.nota || 0)).forEach(o => ls.push(lin('resistencia', o))); (td.sup || []).slice().sort((x, y) => (y.nota || 0) - (x.nota || 0)).forEach(o => ls.push(lin('suporte', o)));
+            const r3 = v => v == null || isNaN(v) ? '' : String(Math.round(v * 1000) / 1000), td = ND, cab = ['lado', 'nivel', 'faixa_inf', 'faixa_sup', 'atual', 'nota', 'rk_presos', 'rk_carater', 'n_niveis_lado', 'pos_presos', 'pos_carater', 'pos_soma', 'carater_tempo_pct', 'acertos', 'falhas', 'taxa_acerto', 'taxa_suavizada', 'min_como_suporte', 'min_como_resistencia', 'min_acima', 'min_dentro', 'min_abaixo', 'vol_acima', 'vol_dentro', 'vol_abaixo', 'compradores_agressores_dentro', 'vendedores_agressores_dentro', 'compradores_defendendo_dentro', 'vendedores_defendendo_dentro', 'presos_lado', 'tentativas_suporte', 'tentativas_resistencia', 'rompimentos_totais'];
+            const lin = (ld, o) => [ld, r3(o.k * Tr), r3(o.k * Tr - Tr / 2), r3(o.k * Tr + Tr / 2), o === sd ? 1 : 0, o.nota, o.rkP, o.rkR, o.nL, r3(o.zP), r3(o.zR), r3(o.zS), r3(o.carT), o.hit || 0, o.fail || 0, r3(o.taxa), r3(o.taxaS), o.cS || 0, o.cR || 0, o.tA || 0, o.tD || 0, o.tB || 0, r3(o.volA), r3(o.vol), r3(o.volB), r3(o.ct), r3(o.vt), r3(o.defC), r3(o.defV), r3(ld === 'resistencia' ? o.presoAcima : o.presoAbaixo), o.nB || 0, o.nC || 0, o.qT || 0].join(',');
+            const ls = [cab.join(',')]; (td.res || []).slice().sort(grDesempateNiveis).forEach(o => ls.push(lin('resistencia', o))); (td.sup || []).slice().sort(grDesempateNiveis).forEach(o => ls.push(lin('suporte', o)));
             const dt = new Date(), z2 = n => String(n).padStart(2, '0'); grFootprintBaixarCsv(ls, 'niveis_zona_' + dt.getFullYear() + z2(dt.getMonth() + 1) + z2(dt.getDate()) + '_' + z2(dt.getHours()) + z2(dt.getMinutes()) + '.csv'); };
         const vt = g('vt'); if (vt) vt.onclick = () => { d.remove(); grPilhasTabelaModal(); };
         { const t = parseFloat(d.style.top); if (!isNaN(t)) d.style.top = Math.max(6, Math.min(window.innerHeight - d.offsetHeight - 6, t)) + 'px'; }
@@ -5869,7 +5910,7 @@ async function cvIrParaCaixa(id, segunda) {
 function grPosicoes() { const k = String(_ativoId || 'default'); return _grPosMapa[k] || (_grPosMapa[k] = []); }
 const GR_FAIXA_DA_OPACIDADE = 0.5;   // opacidade da zona marcada (a cor é a do nível; abaixo disso as cores fortes ficam fracas demais)
 // Zonas da régua ATR = retângulos (_medidas com atr:true): herdam cor, alças, olho, lixeira e trava do retângulo
-function grFaixasDA() { if (window._grFaixasDAPend) { const l = window._grFaixasDAPend; window._grFaixasDAPend = null; try { grFaixasDAMigrar(l); } catch (e) {} } return (typeof _medidas !== 'undefined' ? _medidas : []).filter(m => m.rt && m.atr).map(m => ({ id: m.id, lo: Math.min(m.p1, m.p2), hi: Math.max(m.p1, m.p2), s: m.s || 0, cor: m.cor || null })); }
+function grFaixasDA() { if (window._grFaixasDAPend) { const l = window._grFaixasDAPend; window._grFaixasDAPend = null; try { grFaixasDAMigrar(l); } catch (e) {} } return (typeof _medidas !== 'undefined' ? _medidas : []).filter(m => m.rt && m.atr).map(m => ({ id: m.id, lo: Math.min(m.p1, m.p2), hi: Math.max(m.p1, m.p2), s: m.s || 0, cor: m.cor || null, tf: m.tf || '' })); }
 function grFaixaDAAlternar(lo, hi, s, cor, depois) {
     // Aditivo: só remove a zona se você tocar na MESMA faixa (mesmos limites); senão nasce outro retângulo (a zona macro de outro tf não some)
     const tol = Math.max((hi - lo) * 0.02, 1e-9);
@@ -7374,7 +7415,7 @@ function grDrawCandlesImpl(candles, emptyRight) {
                             if (sd.lado) { let lumI = 255; const mI = String(corInfoDA.cor).match(/rgb\((\d+),(\d+),(\d+)\)/); if (mI) lumI = 0.299 * (+mI[1]) + 0.587 * (+mI[2]) + 0.114 * (+mI[3]); ctx.save(); ctx.font = '600 8px -apple-system'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = grDaTxt(corInfoDA.cor); ctx.fillText(String(sd.nota != null ? sd.nota : ''), 5, cyH + 0.5); ctx.restore(); }   // nota de força 0–100 (suporte/resistência); o nível do preço mantém a pilha
                             window._grDAHits.push({ x: 0, y: yTopoDA, w: sd.lado ? 24 : 17, h: Math.max(8, yBaseDA - yTopoDA), abrir: () => grSaudeModal(k, tickDA, sd, cyH) }); } }
                     { const loDA = k * tickDA - tickDA / 2, hiDA = k * tickDA + tickDA / 2, sDA = deltaFaixa >= 0 ? 1 : -1;
-                      window._grDAHits.push({ x: 0, y: yTopoDA, w: PAD.left, h: Math.max(4, yBaseDA - yTopoDA), abrir: () => grFaixaDAAlternar(loDA, hiDA, sDA, corInfoDA.cor) }); }
+                      window._grDAHits.push({ x: 0, y: yTopoDA, w: PAD.left, h: Math.max(4, yBaseDA - yTopoDA), abrir: () => { const sdT = resultadoDA && resultadoDA.saude ? resultadoDA.saude.get(k) : null; if (sdT) grSaudeModal(k, tickDA, sdT, (yTopoDA + yBaseDA) / 2); } }); }   // a célula inteira abre o modal; a zona só se cria pela aba Níveis
                     // Fundo abaixo do piso vira branco puro (sem tom) -- aí o sinal sumia. Em vez de preto neutro,
                     // colore o próprio número de verde/vermelho pra continuar dando pra ler o sinal de longe -- MAS só
                     // nessa faixa bem pálida mesmo: o "escura" do footprint (luminância < 130) só vira branco perto do
@@ -13241,7 +13282,7 @@ function grLupaRegDesenhar() {
             if (!sd.lado) grSetaDesenhar(ctx, cxH, cyH, szH, 0, 0, sd, yBase - yTopo);
             if (sd.lado) { let lumI = 255; const mI = String(corInfo.cor).match(/rgb\((\d+),(\d+),(\d+)\)/); if (mI) lumI = 0.299 * (+mI[1]) + 0.587 * (+mI[2]) + 0.114 * (+mI[3]); ctx.save(); ctx.font = '600 8px -apple-system'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = grDaTxt(corInfo.cor); ctx.fillText(String(sd.nota != null ? sd.nota : ''), 5, cyH + 0.5); ctx.restore(); }
             S.regHits.push({ y: yTopo, h: Math.max(8, yBase - yTopo), x2: sd.lado ? 24 : 17, abrir: (cx, cy2) => grLupaRegSaude(k, tickDA, sd, R, cx, cy2) }); }
-        { const lo = k * tickDA - tickDA / 2, hi = k * tickDA + tickDA / 2, s = deltaFaixa >= 0 ? 1 : -1; S.regHits.push({ y: yTopo, h: Math.max(4, yBase - yTopo), x2: rw, abrir: () => grFaixaDAAlternar(lo, hi, s, corInfo.cor) }); }
+        { const lo = k * tickDA - tickDA / 2, hi = k * tickDA + tickDA / 2, s = deltaFaixa >= 0 ? 1 : -1; S.regHits.push({ y: yTopo, h: Math.max(4, yBase - yTopo), x2: rw, abrir: (cx, cy2) => { if (sd) grLupaRegSaude(k, tickDA, sd, R, cx, cy2); } }); }
         let lum = 255; { const mRgb = String(corInfo.cor).match(/rgb\((\d+),(\d+),(\d+)\)/); if (mRgb) lum = 0.299 * (+mRgb[1]) + 0.587 * (+mRgb[2]) + 0.114 * (+mRgb[3]); }
         ctx.fillStyle = lum > 210 ? (deltaFaixa >= 0 ? '#00695C' : '#C62828') : grDaTxt(corInfo.cor);
         const tot = R.totais.get(k), hF = yBase - yTopo, txtDelta = (deltaFaixa >= 0 ? '+' : '−') + grFmtVolCompacto(Math.abs(deltaFaixa), 0), sec = grDaTxt(corInfo.cor);
@@ -13648,10 +13689,12 @@ var HM = (() => {
         const j0 = Math.max(c.idx0, startIdx), j1 = Math.min(c.idx0 + c.NT - 1, startIdx + totalSlots - 1); if (j1 < j0) return;
         const sw = chartW / totalSlots, dx = PAD.left + (j0 - startIdx) * sw, dw = (j1 - j0 + 1) * sw, sx = j0 - c.idx0, sW = j1 - j0 + 1;
         ctx.save(); ctx.beginPath(); ctx.rect(PAD.left, PAD.top, chartW, chartH); ctx.clip(); ctx.imageSmoothingEnabled = false;
-        for (let k = 0; k < c.K; k++) {
-            const pc = c.p0 + k * c.cel, y1 = toY(pc + c.cel / 2), y2 = toY(pc - c.cel / 2), top = Math.min(y1, y2), h = Math.abs(y2 - y1);
-            if (top > PAD.top + chartH || top + h < PAD.top) continue;
-            ctx.drawImage(c.cv, sx, k, sW, 1, dx, top - 0.3, dw, h + 0.6);
+        let ultB = -Infinity;   // faixas coladas, sem sobra nem folga (nada de linha entre elas)
+        for (let k = c.K - 1; k >= 0; k--) {
+            const pc = c.p0 + k * c.cel, yT = Math.round(toY(pc + c.cel / 2)), yB = Math.round(toY(pc - c.cel / 2)), t2 = Math.max(yT, ultB);
+            if (yB <= t2) continue; ultB = yB;
+            if (t2 > PAD.top + chartH || yB < PAD.top) continue;
+            ctx.drawImage(c.cv, sx, k, sW, 1, dx, t2, dw, yB - t2);
         }
         ctx.restore();
     }
@@ -13723,7 +13766,8 @@ var BK = (() => {
         const j0 = Math.max(c.idx0, startIdx), j1 = Math.min(c.idx0 + c.NT - 1, startIdx + totalSlots - 1); if (j1 < j0) return;
         const sw = chartW / totalSlots, dx = PAD.left + (j0 - startIdx) * sw, dw = (j1 - j0 + 1) * sw, sx = j0 - c.idx0, sW = j1 - j0 + 1;
         ctx.save(); ctx.beginPath(); ctx.rect(PAD.left, PAD.top, chartW, chartH); ctx.clip(); ctx.imageSmoothingEnabled = false;
-        for (let k = 0; k < c.K; k++) { const pc = (c.kmin + k) * bs, y1 = toY(pc + bs), y2 = toY(pc), top = Math.min(y1, y2), h = Math.abs(y2 - y1); if (top > PAD.top + chartH || top + h < PAD.top) continue; ctx.drawImage(c.cv, sx, k, sW, 1, dx, top - 0.3, dw, h + 0.6); }
+        let ultB = -Infinity;   // faixas coladas, sem sobra nem folga
+        for (let k = c.K - 1; k >= 0; k--) { const pc = (c.kmin + k) * bs, yT = Math.round(toY(pc + bs)), yB = Math.round(toY(pc)), t2 = Math.max(yT, ultB); if (yB <= t2) continue; ultB = yB; if (t2 > PAD.top + chartH || yB < PAD.top) continue; ctx.drawImage(c.cv, sx, k, sW, 1, dx, t2, dw, yB - t2); }
         ctx.restore();
     }
     const hm = ts => { const q = new Date(ts), z = n => String(n).padStart(2, '0'); return z(q.getHours()) + ':' + z(q.getMinutes()) + ':' + z(q.getSeconds()); };
