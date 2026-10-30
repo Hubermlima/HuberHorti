@@ -3916,7 +3916,7 @@ grFootprintSkinAtualizarRotulo();
 // Carimbo de versão (hora de Manaus da entrega + nº de linhas): aparece no fim do menu e no console do Eruda,
 // pra saber na hora QUAL arquivo está rodando no aparelho. É atualizado a cada entrega (tools/entregar.sh).
 window._grAmbStatus = { carga: 'ainda não carregou', save: 'nenhum salvamento ainda' };
-const APP_VERSAO = 'v1177';
+const APP_VERSAO = 'v1178';
 function grCorDesenho(c) {   // preto de desenho vira branco no modo escuro
     if (!c) c = '#000000';
     if (typeof _grTemaClaro !== 'undefined' && !_grTemaClaro && /^#(000000|000|111111|1c1c1e)$/i.test(c)) return '#FFFFFF';
@@ -7323,7 +7323,7 @@ function grDrawCandlesImpl(candles, emptyRight) {
             };
             if (!_grFootprintAtivo) avisoDA('ligue o Fluxo (FX)');
             else {
-            const tickDA = grTickDaRegua(pxDolar);   // mesma grade usada pelo Volume Profile enquanto a régua está ligada
+            const tickDA = grTickDaRegua(pxDolar); window._grTickDAUlt = tickDA;   // mesma grade usada pelo Volume Profile enquanto a régua está ligada
             const resultadoDA = grDeltaPorFaixaATR(tickDA);
             if (resultadoDA && resultadoDA.mapa && resultadoDA.mapa.size) window._grDaUltima = { tick: tickDA, atr: 5 * (grDaTickProprio() || grTickAtr()), mapa: resultadoDA.mapa, totais: resultadoDA.totais, pocK: resultadoDA.pocK, minP, maxP, dias: _grFootprintLookbackDias || 7, tfRot: grDaTfRotulo() };   // o 'Melhor' lê os níveis exatamente como estão desenhados
             const mapaDA = resultadoDA ? resultadoDA.mapa : null;
@@ -8333,6 +8333,7 @@ if (_grTipoGrafico === 'linha') {
             grBarraChip('Candles CSV', '#8E8E93', () => { try { grExportarCandlesCsv(); } catch (e) {} });   // provisório: exporta os candles do gráfico para teste do reconhecimento de figuras
             if (_indState.deltaAtr && grFaixasDA().length) grBarraChip('Tabela', '#2962FF', () => { try { grPilhasTabelaModal(); } catch (e) {} });   // há níveis selecionados na régua: o chip abre a tabela comparativa
             if (_indState.sent) grBarraChip('Sentimento', '#000000', (cx, cy) => cvAbrirMenuFpCfg('sent', cx, cy));   // chip PRÓPRIO na barra superior (não fica dentro do menu Footprint)
+            if (_grFootprintAtivo) window._grFpItens.push({ rot: 'Baixar footprint por minuto', abrir: () => { try { grExportarFootprintMin(); } catch (e) {} } });   // exporta os minutos (preço × compra × venda) desde a âncora, compactado
             if (window._grFpItens.length) { const _fpIt = window._grFpItens; grBarraChip('Footprint ▾', '#000000', (cx, cy) => cvDropGrupoAbrir(cx, cy, _fpIt)); }
             window._grBarraSuperiorBottom = (window._grChipsOculto && !window._grCabOculto) ? PAD.top + 2 : chipY + 4; // a linha OHLC é desenhada logo abaixo dos chips (ou no topo, com os chips escondidos)
             if (_cabOc) { ctx.restore(); window._grBarraSuperiorChips = []; }
@@ -17013,6 +17014,40 @@ function grFootprintBaixarCsv(linhas, nome) {
     document.body.appendChild(ov);
     document.getElementById('gr-csv-ok').onclick = () => { compartilhar().then(() => ov.remove()); };
     document.getElementById('gr-csv-x').onclick = () => ov.remove();
+}
+// ── Exporta o footprint POR MINUTO (preço × compra × venda), desde a âncora ativa (sem âncora: janela de dias), compactado (.csv.gz) ──
+// Linha 1 = meta (início, fim, tick da régua, preço atual); depois: ts_s (epoch, segundos), preco, compra, venda. Com isso dá para refazer fora do app a mesma conta dos níveis.
+async function grExportarFootprintMin() {
+    if (!_grFootprintAtivo || !SCX.fpRaw) { scAviso('Ligue o Footprint para exportar os minutos', '#EF5350', null, 'Footprint'); return; }
+    const de = grDaInicio(), ate = Date.now(), r3 = v => Math.round(v * 1000) / 1000, partes = []; let buf = [], nMin = 0, nLin = 0;
+    const tk = window._grTickDAUlt || '', pa = (typeof _precoAtual !== 'undefined' && _precoAtual > 0) ? _precoAtual : '';
+    partes.push('meta,inicio_ts_s,fim_ts_s,tick_regua,preco_atual\nmeta,' + Math.floor(de / 1000) + ',' + Math.floor(ate / 1000) + ',' + tk + ',' + pa + '\nts_s,preco,compra,venda\n');
+    grFootprintParaCadaMinuto(de, ate, m => { const ns = m.niveis || []; if (!ns.length) return; nMin++; const t = Math.floor(m.ts / 1000); ns.forEach(n => { buf.push(t + ',' + n.p + ',' + r3(n.c || 0) + ',' + r3(n.v || 0)); nLin++; }); if (buf.length >= 40000) { partes.push(buf.join('\n') + '\n'); buf = []; } });
+    if (buf.length) partes.push(buf.join('\n') + '\n');
+    if (!nLin) { scAviso('Sem minutos de footprint no período', '#EF5350', null, 'Footprint'); return; }
+    scAviso('Compactando ' + nMin + ' minutos…', '#2962FF', null, 'Footprint');
+    let blob = new Blob(partes, { type: 'text/csv' }), nome = 'footprint_min_' + new Date(de).toISOString().slice(0, 10).replace(/-/g, '') + '_' + new Date(ate).toISOString().slice(0, 16).replace(/[-:T]/g, '') + '.csv', tipo = 'text/csv';
+    try { if (typeof CompressionStream === 'function') { blob = await new Response(blob.stream().pipeThrough(new CompressionStream('gzip'))).blob(); nome += '.gz'; tipo = 'application/gzip'; } } catch (e) {}
+    grEntregarArquivo(blob, nome, tipo, nMin + ' minutos · ' + nLin + ' linhas');
+}
+// Entrega um arquivo: compartilhar (celular) ou baixar; abre um botão para um toque novo quando o toque que iniciou a ação já expirou (a compactação demora).
+function grEntregarArquivo(blob, nome, tipo, info) {
+    const baixar = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = nome; document.body.appendChild(a); a.click(); setTimeout(() => { a.remove(); URL.revokeObjectURL(a.href); }, 4000); };
+    const compartilhar = () => {
+        let f = null; try { f = new File([blob], nome, { type: tipo }); } catch (e) {}
+        if (f && navigator.canShare && navigator.canShare({ files: [f] })) return navigator.share({ files: [f], title: nome }).then(() => true).catch(() => { baixar(); return true; });
+        baixar(); return Promise.resolve(true);
+    };
+    const ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;font-family:-apple-system,sans-serif;';
+    ov.innerHTML = '<div style="background:#FFFFFF;color:#1C1C1E;border-radius:14px;padding:18px;width:82%;max-width:340px;text-align:center;">'
+        + '<div style="font-size:14px;font-weight:700;">Arquivo pronto</div>'
+        + '<div style="font-size:12px;margin-top:4px;word-break:break-all;">' + nome + ' · ' + (blob.size >= 1048576 ? (blob.size / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(blob.size / 1024)) + ' KB') + (info ? ' · ' + info : '') + '</div>'
+        + '<button id="gr-ea-ok" style="width:100%;margin-top:14px;border:none;border-radius:10px;padding:12px 0;font-size:14px;font-weight:700;background:#1C1C1E;color:#FFFFFF;">Compartilhar / salvar</button>'
+        + '<button id="gr-ea-x" style="width:100%;margin-top:8px;border:none;border-radius:10px;padding:10px 0;font-size:13px;font-weight:700;background:#E8F0FE;color:#1C1C1E;">Fechar</button></div>';
+    document.body.appendChild(ov);
+    document.getElementById('gr-ea-ok').onclick = () => { compartilhar().then(() => ov.remove()); };
+    document.getElementById('gr-ea-x').onclick = () => ov.remove();
 }
 // CSV só do candle aberto no Histórico (minuto a minuto: ts,preco,ask,bid). Horário UTC.
 function grFootprintExportarCandle() {
